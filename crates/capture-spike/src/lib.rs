@@ -3,5 +3,11 @@
 //! HDR-off reference. See docs/COLOR_PIPELINE.md and docs/TEST_MATRIX.md.
 #![cfg(windows)]
 
+pub mod analysis;
+pub mod capture;
 pub mod color;
+pub mod display;
 pub mod gpu;
+pub mod png_io;
+pub mod raw;
+pub mod snapshot;
