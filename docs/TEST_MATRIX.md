@@ -1,7 +1,9 @@
 # Test matrix: Milestone 0
 
-The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) is **open**. Milestone 1
-starts only after it passes. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
+The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) is **open**. The first
+session (2026-09-27) passed every valid comparison but two of its captures
+showed the wrong browser tab; see [Retaking captures](#retaking-captures).
+Milestone 1 starts only after the gate passes. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
 what is being tested.
 
 ## Automated checks
@@ -80,7 +82,11 @@ At each step it prints what to set, and waits for Enter:
 For each scene it prints `Show ...`: press Enter, switch to Edge (Alt+Tab),
 select the scene's tab, and leave it on screen. The capture happens 5 seconds
 later, and the terminal beeps when it is done. Take longer with `--delay 8`.
-If a capture fails it says why and asks again. Type `q` at any prompt to stop.
+If a capture fails it says why and asks again. After each capture it also
+checks the right tab was showing: `fixture` must hold no HDR content, `mixed`
+must (except at brightness 100, where a panel may have no headroom left), and
+no two scenes of a state may be identical. If one looks wrong it offers to
+retake it. Type `q` at any prompt to stop.
 
 When the four states are done it writes
 `captures\gate-<timestamp>\summary.md` and prints it. To re-run only the
@@ -90,13 +96,27 @@ analysis: `capture-spike gate-report captures\gate-<timestamp>`.
 
 The verdict at the end is **PASS** only when all of these hold:
 
-- the session is valid: reference not in HDR, three distinct SDR white levels;
-- every HDR state matches the reference, per scene: mean ΔE00 ≤ 0.5 and 99th
-  percentile ≤ 1.0, over every pixel the shoulder did not change;
+- the session is valid: reference not in HDR, three distinct SDR white levels,
+  each scene showing what its name says (otherwise the verdict is
+  **UNDECIDED**);
+- every HDR state matches the reference, per scene: mean ΔE00 ≤ 0.5, 99th
+  percentile ≤ 1.0, and no 64×64 block averaging over 1.0;
 - the three HDR states match each other by the same measure.
 
-These thresholds were fixed before any measurement. The expected result is an
-exact match: the model predicts identical codes, and SDR content measured
+In a frame with HDR content, the region of that content is left out: tiles
+where a quarter of the pixels are not SDR content, grown by one tile and filled
+to each area's bounding box. With HDR off, Edge tone maps the image itself,
+which a capture cannot reproduce. The captures table gives the region's
+bounds, so you can check it is the image and nothing else. Without HDR content
+nothing is left out.
+
+The report re-converts HDR captures from their saved FP16 frames with the
+current transform, so an old session can be re-analysed after a fix.
+
+The mean and percentile thresholds were fixed before any measurement. The
+block limit was added after the first session, where a wrong 768×384 region
+passed the other two because it covered under 1% of the frame. The expected
+result is an exact match: the model predicts identical codes, and SDR content measured
 100% on the code grid. A systematic ±1-code tint fails on purpose: it is a
 model error even though it is below one just-noticeable difference.
 
@@ -111,8 +131,6 @@ The summary also holds:
   the two modes.
 - **Highlights** in the mixed scene: how many pixels exceed SDR white, and how
   many distinct output colors they keep with the shoulder versus clipping.
-  (The HDR image is left out of the SDR comparison; with HDR off Edge tone
-  maps it itself, which a capture cannot reproduce.)
 
 `diffs\` holds a heatmap per comparison: the reference dimmed, red where it
 differs (full red at ΔE00 4), blue where left out. A passing heatmap is plain
@@ -131,13 +149,25 @@ dim grey, with blue only on the HDR image.
 Keep the rest (`source.fp16` is 66 MB per capture). Those files allow a
 `transfer`, `probe` or `convert` re-analysis without capturing again.
 
+### Retaking captures
+
+To retake some states of a session, point `--out` at it and name the states.
+The rest of the session is kept, and the report covers all of it:
+
+```powershell
+.	argeteleasepture-spike.exe gate --out capturesgate-20260927-112049 --states hdr-low,hdr-mid
+```
+
+That is what the first session needs: at `hdr-low` the `mixed` capture showed
+the plain tab, and at `hdr-mid` the `fixture` capture showed the `?hdr` tab.
+
 ## Manual tools
 
 | Command | Use |
 |---|---|
 | `capture-spike list` | Monitors, mode, SDR white level, `S` |
 | `capture-spike capture [--monitor DISPLAY1] [--delay 5]` | One capture into `captures\` |
-| `capture-spike compare A.png B.png [--source B.fp16] [--roi X,Y,W,H] [--heatmap D.png]` | ΔE00 comparison; `--source` leaves out HDR content |
+| `capture-spike compare A.png B.png [--source B.fp16] [--roi X,Y,W,H] [--heatmap D.png]` | ΔE00 comparison; `--source` leaves out the HDR content region |
 | `capture-spike transfer REF.png SRC.fp16` | Measured SDR transfer against an HDR-off reference |
 | `capture-spike fit SRC.fp16 [--roi …] [--map M.png]` | The same without a reference: how close values sit to 8-bit codes |
 | `capture-spike probe SRC.fp16 X,Y,W,H` | Exact values over a region |
@@ -152,15 +182,15 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Monitor enumeration, Advanced Color / HDR state, SDR white level (§8.2–8.4) | Passed locally | `list`: 4K HDR, level 3000 (240 nits), mode from `ADVANCED_COLOR_INFO_2` |
 | WGC FP16 capture → shader → sRGB PNG (§8.5, §9.2) | Passed locally | 4K in 68 ms + 9.5 ms |
 | Shader arithmetic (§33 golden tests) | Passed | WARP and RTX 4090 |
-| Windows stores SDR as `S × sRGB⁻¹(code)` | Passed locally | 100.00% on the code grid (terminal region) |
+| Windows stores SDR as `S × sRGB⁻¹(code)` | Passed | 100.00% on the code grid (terminal); against HDR-off references at `S` = 1.5, 3.5, 6: within 0.17 code, white / `S` = 1.00000 |
 | SDR content untouched beside HDR content (§9.6) | Passed locally | Mixed scene: only the HDR image changes |
 | Highlight texture kept (§9.6, §34.2) | Passed locally, needs your eyes | Mixed scene: steps and strips separate; clip flattens them |
-| **HDR off vs on, fixture (§32.1, §34.2)** | **Pending: gate** | `summary.md` |
-| **SDR brightness 10 / 50 / 100 invariance (§32.2)** | **Pending: gate** | `summary.md` |
-| Light-theme browser (§31) | Pending: gate (fixture) | |
-| Light-theme IDE, dark-theme IDE (§31) | Pending: gate (fixture code blocks); optionally add `--scenes fixture,mixed,vscode-light,vscode-dark` | |
-| Saturated colors (§31) | Pending: gate (fixture) | |
-| HDR content beside SDR UI (§31) | Pending: gate (mixed) | |
-| SDR monitor path (§9.5) | Pending: gate `hdr-off` state | Report's FP16-vs-8-bit check |
+| **HDR off vs on, fixture (§32.1, §34.2)** | **Undecided: retake `hdr-mid` fixture** | Identical at `S` = 1.5 and 6; ≤ 1 code at 3.5 (from the `?hdr` capture) |
+| **SDR brightness 10 / 50 / 100 invariance (§32.2)** | **Passed in the first session; confirm on retake** | All pairs pass; slider = 80 + 4 × value nits |
+| Light-theme browser (§31) | Passed at `S` = 1.5, 6; pending retake at 3.5 | Fixture |
+| Light-theme IDE, dark-theme IDE (§31) | As the fixture (its code blocks); optionally add `--scenes fixture,mixed,vscode-light,vscode-dark` | |
+| Saturated colors (§31) | Passed at `S` = 1.5, 6; with HDR on screen after the v3 cross-talk fix | Fixture |
+| HDR content beside SDR UI (§31) | Passed at `S` = 3.5 and 6; pending retake at 1.5 | Mixed scene |
+| SDR monitor path (§9.5) | Passed | HDR off: FP16 path and 8-bit capture identical |
 | Advanced Color SDR (WCG) hardware | Not available | `S = 1` from the SDK's description |
 | 125/150/200% scaling, second monitor (§32.3) | Milestone 5 | |

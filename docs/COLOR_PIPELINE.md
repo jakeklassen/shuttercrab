@@ -1,8 +1,10 @@
 # Color pipeline
 
-Status: **implemented and measured on this machine; the HDR-off / HDR-on gate
-is not yet run.** Milestone 0 is open until [TEST_MATRIX.md](TEST_MATRIX.md)'s
-gate passes. Transform version: `sdr-codes-exact-shoulder-v2`.
+Status: **model confirmed against HDR-off references at all three SDR
+brightness settings; the gate is undecided** because two captures of the first
+session showed the wrong browser tab (see [Evidence](#evidence)). Milestone 0 is
+open until [TEST_MATRIX.md](TEST_MATRIX.md)'s gate passes. Transform version:
+`sdr-codes-exact-shoulder-v3`.
 
 This is the color decision record the PRD requires (§37, items 3 and 4): what
 Framecut does to turn a Windows desktop capture into an SDR PNG, why, and the
@@ -98,11 +100,12 @@ For each pixel of scRGB `C`:
    The prior spike clipped negative channels to 0 instead, which lightens and
    shifts the color.
 
-3. **Is it SDR content?** A channel is *on the code grid* when it is
-   negligible (`|n| < 0.005`, below code ≈ 18) or when
-   `0 ≤ n ≤ 1 + ε` and `|255 E(n) − round(255 E(n))| ≤ 0.25`. A pixel is
-   **SDR content** when all its channels, and all channels of its four
-   neighbours, are on the grid.
+3. **Is it SDR content?** A channel `n` of a pixel whose peak channel is `t`
+   is *on the code grid* when it is negligible (`|n| < 0.005`, below code
+   ≈ 18), or when `0 ≤ n ≤ 1 + ε` and, with `c = round(255 E(n))`, either
+   `|255 E(n) − c| ≤ 0.25` or `|n − D(c/255)| ≤ 0.001 t`. A pixel is
+   **SDR content** when all channels of it and its eight neighbours are on
+   the grid.
 
 4. **Frame peak.** `P = max over the frame of max(N.r, N.g, N.b)`, after step 2.
 
@@ -139,6 +142,7 @@ and no HDR metadata.
 | `β` (`SHOULDER_BETA`) | 0.25 | Share of the SDR range the shoulder may borrow; the knee falls from 1 (no headroom) toward 0.75 |
 | `CODE_TOLERANCE` | 0.25 code | Near white one FP16 step is ≈ 0.073 code. Edge compositing SDR content in its own FP16 pipeline lands up to 2 steps off. This allows ≈ 3 |
 | `NEGLIGIBLE` | 0.005 | Edge leaks ≈ +0.0001 into channels that should be 0 (code 0.4 of red in pure green); channels this dark are far below any knee |
+| `CROSS_TALK` | 0.001 × peak | Edge's FP16 color conversion moves a dim channel beside a bright one by up to ≈ 0.0004 × the bright one: red codes 22–61 on a green gradient sat 0.27–0.37 code off the grid |
 | `TILE` | 16 px | Only the GPU reduction of `P` uses it |
 
 What the shoulder does at a few peaks: SDR white (`m = 1`) in non-SDR content
@@ -162,10 +166,17 @@ as `P → ∞`. Everything between 1 and `P` spreads over the codes above that.
   gradients and reversing brightness order between regions. With one curve, a
   brighter source pixel is never a darker output pixel within the non-SDR
   content.
-- **Five pixels, not one.** Non-SDR content lands on the grid by chance half the
-  time per significant channel. Requiring the four neighbours too makes a
-  chance match need ~15 coincidences. The cost is that the one-pixel rim of SDR
-  content bordering HDR content goes through the shoulder.
+- **Nine pixels, not one.** Non-SDR content lands on the grid by chance about
+  half the time per tested channel, and in a bright, saturated HDR pixel the
+  dim channels pass the cross-talk test anyway, leaving one channel really
+  tested. Requiring the 3×3 neighbourhood makes a chance match need nine
+  coincidences even then (≈ 0.2%), and ~27 for neutral content. The cost is
+  that the one-pixel rim of SDR content bordering HDR content goes through
+  the shoulder.
+- **Tolerances come from measurements.** Each one was widened only after a
+  real capture showed SDR content off the grid, and only as far as that
+  cause (FP16 rounding, zero-channel residue, cross-talk) explains. The
+  regression tests hold the measured pixel values.
 - **No scene-dependent exposure for SDR content.** Nothing about SDR content
   depends on the rest of the frame: no histogram, no auto-exposure, no gamma
   approximation. HDR content's curve depends on the frame's peak only.
@@ -210,7 +221,7 @@ DXGI peak 456 nits.
 
 | What | Result |
 |---|---|
-| Unit tests (CPU) | 35 pass: sRGB transfer, every code at seven white levels, hand-derived scRGB → code values, gamut mapping, shoulder values and monotonicity, grid classification, CIEDE2000 against Sharma et al.'s published pairs |
+| Unit tests (CPU) | 38 pass: sRGB transfer, every code at seven white levels, hand-derived scRGB → code values, gamut mapping, shoulder values and monotonicity, grid classification (including pixels measured from Edge), CIEDE2000 against Sharma et al.'s published pairs, the gate's region and block checks |
 | GPU golden tests | Pass on WARP and the RTX 4090: every grey/R/G/B code comes back exactly at `S` ∈ {1, 1.25, 1.5, 2.4, 3, 3.5, 6}; mixed scenes match the CPU reference within one code; SDR codes touching an HDR ramp stay exact |
 | SDR white in a real capture | Frame peak exactly 1.000 × `S` on a desktop without HDR content |
 | Model fit, SDR app region (terminal) | piecewise sRGB: 100.00% of 9,475,648 channel values within 0.1 code, mean 0.008; gamma 2.2: 65.93%, mean 0.118 |
@@ -219,8 +230,26 @@ DXGI peak 456 nits.
 | Mixed scene (fixture `?hdr` in Edge) | Edge renders the PQ test image as HDR, limited to ≈ 1.9 × SDR white by the panel's peak; the shoulder applies to 262,414 px, all within the 294,912 px image; every other pixel is identical to the clip-mode output |
 | Timing (release, 4K) | FP16 capture 68 ms, all four passes + readback 9.5 ms |
 
-What is **not** yet shown, and is the gate's job: that applications draw the
-same codes with HDR off as with HDR on, across brightness settings.
+### First gate session (2026-09-27, `gate-20260927-112049`)
+
+Captured with transform v2 and re-analysed from the saved FP16 frames with v3.
+HDR off was plain SDR mode (not WCG). The SDR content brightness slider maps
+linearly to 80 + 4 × slider nits: 10, 50 and 100 read `SDRWhiteLevel` 1500,
+3500 and 6000 (`S` = 1.5, 3.5, 6).
+
+| What | Result |
+|---|---|
+| SDR monitor path | FP16 capture + shader vs Windows' 8-bit capture: identical (max 0 codes) |
+| Fixture, `S` = 1.5 and 6, vs HDR off | Identical: 8,294,400 px, max difference 0 codes |
+| Fixture content at `S` = 3.5, HDR image on screen, vs HDR off | Max 1 code (rounding) outside the HDR image's region |
+| Mixed page at `S` = 6, vs HDR off | Max 1 code outside the HDR image's region |
+| Brightness invariance, all pairs | Pass |
+| Measured transfer at every `S`, against the reference | piecewise sRGB within 0.17 code at every grey code; measured white / `S` = 1.00000 (0.99935, one FP16 step, in Edge's HDR path); gamma 2.2 off by 8.5 codes |
+| v2 → v3 | v2 dimmed 748 px of saturated green in Edge (≤ 5 codes) when HDR content was on screen: red cross-talk from Edge's conversion failed the grid test. v3's cross-talk tolerance fixes it; the pixels are now regression tests |
+| Invalid captures | `hdr-low/mixed` showed the plain tab and `hdr-mid/fixture` the `?hdr` tab. The gate now detects both mistakes |
+
+Still to show: the mixed scene at `S` = 1.5, where the HDR image has the most
+headroom (≈ 3.8× SDR white on this panel), and the plain fixture at `S` = 3.5.
 
 ## Known limits and expected differences
 
@@ -234,7 +263,7 @@ same codes with HDR off as with HDR on, across brightness settings.
   HDR content in the frame it is still reproduced by `C/S` (off by its own
   error). With HDR content in the frame it goes through the shoulder.
 - **One-pixel rim.** SDR content directly bordering non-SDR content is shouldered
-  (the five-pixel rule).
+  (the nine-pixel rule).
 - **Global `P`.** A single very bright highlight compresses all HDR content in
   the frame more. In Milestone 1 the frame is the user's selection, so this is
   local to what they capture.
