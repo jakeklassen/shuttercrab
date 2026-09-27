@@ -2,8 +2,8 @@
 
 The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
-captures](#retaking-captures)). Milestone 1 starts once the project owner
-confirms. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
+captures](#retaking-captures)). The project owner confirmed the
+pass the same day, and Milestone 1 began. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
 what is being tested.
 
 ## Automated checks

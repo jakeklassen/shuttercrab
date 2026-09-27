@@ -19,7 +19,7 @@ a GPU shader, and writes a PNG.
 - [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md): the HDR-off / HDR-on gate that
   decides Milestone 0, and how to run it.
 
-The Milestone 0 gate passed on 2026-09-27.
+Milestone 0 passed on 2026-09-27. Milestone 1 (area screenshot MVP) is in progress.
 
 ## Setup
 
