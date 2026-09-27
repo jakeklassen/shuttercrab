@@ -248,6 +248,7 @@ linearly to 80 + 4 × slider nits: 10, 50 and 100 read `SDRWhiteLevel` 1500,
 | Retakes | `hdr-low/mixed` had shown the plain tab and `hdr-mid/fixture` the `?hdr` tab (the gate now detects both); a retake of `hdr-mid/fixture` then caught a notification. Final captures: all as labelled |
 | Final verdict | **PASS**: fixture identical to HDR off (0 codes, every pixel) at `S` = 1.5, 3.5 and 6; mixed scene ≤ 1 code outside the HDR image at all three; brightness invariance passes for every pair |
 | Highlights | At `S` = 1.5 the HDR image peaks at 3.79× SDR white: 29 distinct output colors on its extended pixels with the shoulder, 8 clipped (18 vs 8 at 1.62×, 3 vs 1 at 1.06×) |
+| Highlight policy (owner's review) | Shoulder kept over clipping: "neither beats the live ?hdr tab, but the shoulder is a little better". Matching a live HDR display is not possible in SDR; the decision is between the two |
 
 ## Known limits and expected differences
 
@@ -262,6 +263,12 @@ linearly to 80 + 4 × slider nits: 10, 50 and 100 read `SDRWhiteLevel` 1500,
   error). With HDR content in the frame it goes through the shoulder.
 - **One-pixel rim.** SDR content directly bordering non-SDR content is shouldered
   (the nine-pixel rule).
+- **Reference white inside HDR content.** Browsers place HDR content at 203
+  nits (BT.2408 reference white) exactly at SDR white, so it sits on the code
+  grid and stays at 255, while brighter HDR pixels are compressed to just
+  below 255. In the test image the 203-nit square is whiter than the 250–500
+  nit squares beside it. Applying one curve to the whole HDR region would
+  remove the inversion; decide on real HDR video in Milestone 1.
 - **Global `P`.** A single very bright highlight compresses all HDR content in
   the frame more. In Milestone 1 the frame is the user's selection, so this is
   local to what they capture.

@@ -187,7 +187,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Shader arithmetic (§33 golden tests) | Passed | WARP and RTX 4090 |
 | Windows stores SDR as `S × sRGB⁻¹(code)` | Passed | 100.00% on the code grid (terminal); against HDR-off references at `S` = 1.5, 3.5, 6: within 0.17 code, white / `S` = 1.00000 |
 | SDR content untouched beside HDR content (§9.6) | Passed locally | Mixed scene: only the HDR image changes |
-| Highlight texture kept (§9.6, §34.2) | Measured; visual judgment pending | Mixed scene: steps and strips separate; clip flattens them |
+| Highlight texture kept (§9.6, §34.2) | Passed: owner prefers the shoulder to clipping | Mixed scene at 3.79×: 29 distinct colors vs 8 clipped; known inversion at reference white (COLOR_PIPELINE.md) |
 | **HDR off vs on, fixture (§32.1, §34.2)** | **Passed** | Identical, every pixel, at `S` = 1.5, 3.5 and 6 |
 | **SDR brightness 10 / 50 / 100 invariance (§32.2)** | **Passed** | All pairs pass; slider = 80 + 4 × value nits |
 | Light-theme browser (§31) | Passed | Fixture |
