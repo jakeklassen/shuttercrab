@@ -48,8 +48,9 @@ level at each step and refuses to continue if two states share one.
 ### Before you start
 
 1. Build: `mise exec -- cargo build --release -p capture-spike`
-2. Night light off. Keep the same resolution and scaling (currently 3840×2160 at
-   150%) throughout.
+2. Night light off, and Do Not Disturb on (Win+N, then the bell): a
+   notification in a capture fails the comparison. Keep the same resolution
+   and scaling (currently 3840×2160 at 150%) throughout.
 3. Open the two scenes as two tabs of one Edge window. Edge is the browser the
    HDR test image was verified in. From PowerShell in the repository root:
 
@@ -158,8 +159,10 @@ The rest of the session is kept, and the report covers all of it:
 .	argeteleasepture-spike.exe gate --out capturesgate-20260927-112049 --states hdr-low,hdr-mid
 ```
 
-That is what the first session needs: at `hdr-low` the `mixed` capture showed
-the plain tab, and at `hdr-mid` the `fixture` capture showed the `?hdr` tab.
+Add `--scenes` to retake only some scenes, e.g. `--states hdr-mid --scenes
+fixture`. The first session needed both: two captures showed the wrong tab,
+and the retake of `hdr-mid/fixture` caught a notification (a 480×120 block in
+the bottom-right corner; every other pixel matched the reference exactly).
 
 ## Manual tools
 

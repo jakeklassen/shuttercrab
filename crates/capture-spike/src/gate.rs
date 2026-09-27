@@ -78,7 +78,16 @@ pub fn parse_states(text: Option<&str>) -> Result<Vec<&'static str>> {
 }
 
 /// Something about a capture that suggests the wrong thing was on screen.
-fn scene_doubt(state: &str, scene: &str, frame_peak: f32, dir: &Path) -> Option<String> {
+/// It is compared for identity with the captures of `peers` in the same state
+/// only: during a session, those taken in this run, not stale ones about to
+/// be retaken.
+fn scene_doubt(
+    state: &str,
+    scene: &str,
+    frame_peak: f32,
+    dir: &Path,
+    peers: &[String],
+) -> Option<String> {
     let hdr_content = frame_peak > 1.0 + color::EXTENDED_EPSILON;
     let hdr_state = state != REFERENCE;
     if scene == "fixture" && hdr_state && hdr_content {
@@ -92,11 +101,9 @@ fn scene_doubt(state: &str, scene: &str, frame_peak: f32, dir: &Path) -> Option<
         ));
     }
     let this = png_io::read_rgba8(&dir.join(state).join(scene).join("capture.png")).ok()?;
-    let others = std::fs::read_dir(dir.join(state)).ok()?;
-    for other in others.flatten() {
-        let name = other.file_name().to_string_lossy().into_owned();
+    for name in peers {
         if name != scene
-            && let Ok(that) = png_io::read_rgba8(&other.path().join("capture.png"))
+            && let Ok(that) = png_io::read_rgba8(&dir.join(state).join(name).join("capture.png"))
             && that == this
         {
             return Some(format!(
@@ -176,7 +183,8 @@ pub fn run(
             }
             break;
         }
-        for scene in scenes {
+        for (index, scene) in scenes.iter().enumerate() {
+            let taken = &scenes[..index];
             loop {
                 prompt(&format!(
                     "Show {}.\nPress Enter, then switch to it... ",
@@ -195,7 +203,8 @@ pub fn run(
                             shot.white_scale,
                             shot.frame_peak
                         );
-                        if let Some(doubt) = scene_doubt(state, scene, shot.frame_peak, dir) {
+                        if let Some(doubt) = scene_doubt(state, scene, shot.frame_peak, dir, taken)
+                        {
                             println!("Check: {doubt}");
                             if prompt("Enter to retake it, or type keep to keep it: ")? != "keep" {
                                 continue;
@@ -643,7 +652,7 @@ fn session_problems(captures: &Captures, scenes: &[String], dir: &Path) -> Vec<S
         if hdr && scene == scenes[0] {
             levels.insert(c.report["monitor"]["sdr_white_level_raw"].as_u64());
         }
-        if let Some(doubt) = scene_doubt(state, scene, c.frame_peak, dir) {
+        if let Some(doubt) = scene_doubt(state, scene, c.frame_peak, dir, scenes) {
             problems.push(doubt);
         }
     }
