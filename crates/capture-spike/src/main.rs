@@ -53,13 +53,15 @@ USAGE
   capture-spike probe SOURCE.fp16 X,Y,W,H
       Mean, min and max FP16 values over a region, relative to SDR white.
 
-  capture-spike gate [--monitor M] [--scenes fixture,mixed] [--delay SECONDS] [--out DIR]
+  capture-spike gate [--monitor M] [--scenes fixture,mixed] [--states hdr-off,...]
+                     [--delay SECONDS] [--out DIR]
       The Milestone 0 gate: a guided session that captures each scene with HDR
       off and at three SDR content brightness settings, then writes summary.md.
-      Default delay 5 s, default directory captures/gate-TIMESTAMP.
+      Default delay 5 s, default directory captures/gate-TIMESTAMP. With --out
+      set to an existing session and --states, retakes only those states.
 
   capture-spike gate-report DIR [--scenes fixture,mixed]
-      Re-run the gate analysis on a finished session.
+      Re-run the gate analysis on a session (by default, every scene in it).
 
   capture-spike hdr-fixture OUT.png
       Write the HDR test image (BT.2020 PQ PNG) used by the mixed scene.
@@ -211,7 +213,8 @@ fn compare(mut args: Args) -> Result<()> {
                 (raw.width, raw.height) == (width, height),
                 "the FP16 source is a different size"
             );
-            let (mask, near) = analysis::shoulder_mask(&raw);
+            let region = analysis::hdr_region(&raw);
+            let (mask, near) = (region.mask, region.pixels);
             if near > 0 {
                 println!("Leaving out {near} px of HDR content");
             }
@@ -257,7 +260,13 @@ fn transfer(mut args: Args) -> Result<()> {
         .map(|r| Roi::parse(&r))
         .transpose()?
         .unwrap_or(Roi::full(width, height));
-    print!("{}", analysis::transfer(&rgba, &raw, roi)?.markdown());
+    // HDR content has no SDR code to measure; leave its region out.
+    let region = analysis::hdr_region(&raw);
+    let exclude = (region.pixels > 0).then_some(&region.mask[..]);
+    print!(
+        "{}",
+        analysis::transfer(&rgba, &raw, roi, exclude)?.markdown()
+    );
     Ok(())
 }
 
@@ -366,10 +375,11 @@ impl Args {
     }
 }
 
-fn scenes(args: &mut Args) -> Result<Vec<String>> {
-    let scenes: Vec<String> = args
-        .option("--scenes")?
-        .unwrap_or_else(|| "fixture,mixed".into())
+fn scenes(args: &mut Args) -> Result<Option<Vec<String>>> {
+    let Some(text) = args.option("--scenes")? else {
+        return Ok(None);
+    };
+    let scenes: Vec<String> = text
         .split(',')
         .map(|s| s.trim().to_owned())
         .filter(|s| !s.is_empty())
@@ -381,12 +391,14 @@ fn scenes(args: &mut Args) -> Result<Vec<String>> {
         "scene names may only contain letters, digits, '-' and '_'"
     );
     ensure!(!scenes.is_empty(), "--scenes needs at least one scene");
-    Ok(scenes)
+    Ok(Some(scenes))
 }
 
 fn gate(mut args: Args) -> Result<()> {
     let monitor = args.option("--monitor")?;
-    let scenes = scenes(&mut args)?;
+    let scenes = scenes(&mut args)?.unwrap_or_else(|| vec!["fixture".into(), "mixed".into()]);
+    let states = args.option("--states")?;
+    let states = gate::parse_states(states.as_deref())?;
     let delay: f64 = args
         .option("--delay")?
         .map(|d| d.parse())
@@ -397,14 +409,14 @@ fn gate(mut args: Args) -> Result<()> {
         .map(PathBuf::from)
         .unwrap_or_else(gate::default_dir);
     args.finish()?;
-    gate::run(monitor.as_deref(), &scenes, &dir, delay)
+    gate::run(monitor.as_deref(), &scenes, &states, &dir, delay)
 }
 
 fn gate_report(mut args: Args) -> Result<()> {
     let scenes = scenes(&mut args)?;
     let dir = PathBuf::from(args.positional("DIR")?);
     args.finish()?;
-    println!("{}", gate::report(&dir, &scenes)?);
+    println!("{}", gate::report(&dir, scenes.as_deref())?);
     Ok(())
 }
 

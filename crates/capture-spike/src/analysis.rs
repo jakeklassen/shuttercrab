@@ -17,6 +17,10 @@ use anyhow::{Result, ensure};
 /// difference).
 pub const PASS_MEAN_DE: f64 = 0.5;
 pub const PASS_P99_DE: f64 = 1.0;
+/// Added after the first gate session, where a wrong 768×384 region passed
+/// the two thresholds above because it was under 1% of the frame: no 64×64
+/// block may average more than 1.0.
+pub const PASS_BLOCK_DE: f64 = 1.0;
 
 /// A rectangle in physical pixels relative to the captured monitor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -170,13 +174,21 @@ pub struct Comparison {
 
 impl Comparison {
     pub fn passes(&self) -> bool {
-        self.compared > 0 && self.mean_de <= PASS_MEAN_DE && self.p99_de <= PASS_P99_DE
+        self.compared > 0
+            && self.mean_de <= PASS_MEAN_DE
+            && self.p99_de <= PASS_P99_DE
+            && self.worst_block_de() <= PASS_BLOCK_DE
+    }
+
+    /// Mean ΔE00 of the worst 64×64 block (with at least a quarter of it compared).
+    pub fn worst_block_de(&self) -> f64 {
+        self.worst_blocks.first().map_or(0.0, |b| b.mean_de)
     }
 
     pub fn summary(&self) -> String {
         format!(
-            "{} over {} px ({} excluded): ΔE00 mean {:.3}, p99 {:.3}, p99.9 {:.3}, max {:.2}; \
-             code diff mean {:.3}, max {}; channels >2 codes {:.3}%",
+            "{} over {} px ({} excluded): ΔE00 mean {:.3}, p99 {:.3}, p99.9 {:.3}, max {:.2}, \
+             worst block {:.3}; code diff mean {:.3}, max {}; channels >2 codes {:.3}%",
             if self.passes() { "PASS" } else { "FAIL" },
             self.compared,
             self.excluded,
@@ -184,6 +196,7 @@ impl Comparison {
             self.p99_de,
             self.p999_de,
             self.max_de,
+            self.worst_block_de(),
             self.mean_code_difference,
             self.max_code_difference,
             self.channels_over_2,
@@ -267,7 +280,7 @@ pub fn compare(
     let mut worst_blocks: Vec<Block> = block_sums
         .iter()
         .enumerate()
-        .filter(|(_, (sum, n))| *n > 0 && *sum > 0.0)
+        .filter(|(_, (sum, n))| *n >= (BLOCK * BLOCK / 4) as u64 && *sum > 0.0)
         .map(|(i, (sum, n))| Block {
             x: (i as u32 % blocks_x) * BLOCK,
             y: (i as u32 / blocks_x) * BLOCK,
@@ -309,25 +322,118 @@ pub fn heatmap(reference: &[u8], comparison: &Comparison, exclude: Option<&[bool
     out
 }
 
-/// Pixels the SDR comparison must skip: those the shoulder changes, which
-/// is HDR and other non-SDR content in a frame that holds values above SDR
-/// white. There the HDR-off reference shows the application's own tone
-/// mapping, which a desktop capture cannot reproduce. Empty otherwise.
-pub fn shoulder_mask(raw: &RawFrame) -> (Vec<bool>, u64) {
-    let map = raw.analysis();
-    let mut mask = vec![false; (raw.width * raw.height) as usize];
-    let mut count = 0;
-    if map.has_extended() {
-        for y in 0..raw.height {
-            for x in 0..raw.width {
-                if map.shoulder_applies(x, y) {
-                    mask[(y * raw.width + x) as usize] = true;
-                    count += 1;
+/// The part of a frame the SDR comparison leaves out.
+pub struct HdrRegion {
+    pub mask: Vec<bool>,
+    pub pixels: u64,
+    /// Bounding box of the region, so a reader can check it is where the
+    /// HDR content is.
+    pub bounds: Option<Roi>,
+}
+
+/// Tiles, in pixels, of the HDR region.
+const REGION_TILE: u32 = 16;
+
+/// In a frame that holds values above SDR white, the region of HDR content:
+/// every 16×16 tile in which at least a quarter of the pixels are not SDR
+/// content, grown by one tile, each connected area filled to its bounding
+/// box. There the HDR-off reference shows the
+/// application's own tone mapping of that content, which a desktop capture
+/// cannot reproduce. Whole tiles are left out because HDR content has dim
+/// parts that the shoulder passes through, and the reference still differs
+/// there. Scattered misclassified pixels do not fill a quarter of a tile, so
+/// damage to SDR content stays in the comparison. Without HDR content the
+/// region is empty.
+pub fn hdr_region(raw: &RawFrame) -> HdrRegion {
+    let (w, h) = (raw.width, raw.height);
+    let mut region = HdrRegion {
+        mask: vec![false; (w * h) as usize],
+        pixels: 0,
+        bounds: None,
+    };
+    let analysis = raw.analysis();
+    if !analysis.has_extended() {
+        return region;
+    }
+    let (tw, th) = (w.div_ceil(REGION_TILE), h.div_ceil(REGION_TILE));
+    let mut non_sdr = vec![0u32; (tw * th) as usize];
+    for y in 0..h {
+        for x in 0..w {
+            if !analysis.sdr_content(x, y) {
+                non_sdr[((y / REGION_TILE) * tw + x / REGION_TILE) as usize] += 1;
+            }
+        }
+    }
+    let full = REGION_TILE * REGION_TILE;
+    let hdr_tile = |tx: i64, ty: i64| {
+        (0..tw as i64).contains(&tx)
+            && (0..th as i64).contains(&ty)
+            && non_sdr[(ty as u32 * tw + tx as u32) as usize] * 4 >= full
+    };
+    // Grow HDR tiles by one tile, then fill each connected area to its
+    // bounding box: HDR content is rectangular in practice (an image, a
+    // video, a game), and its flat parts can land on the code grid by
+    // chance, which would otherwise leave holes.
+    let mut grown = vec![false; (tw * th) as usize];
+    for ty in 0..th {
+        for tx in 0..tw {
+            grown[(ty * tw + tx) as usize] =
+                (-1..=1).any(|dy| (-1..=1).any(|dx| hdr_tile(tx as i64 + dx, ty as i64 + dy)));
+        }
+    }
+    let mut filled = vec![false; (tw * th) as usize];
+    let mut seen = vec![false; (tw * th) as usize];
+    for start in 0..(tw * th) as usize {
+        if !grown[start] || seen[start] {
+            continue;
+        }
+        let (mut bx0, mut by0, mut bx1, mut by1) = (u32::MAX, u32::MAX, 0, 0);
+        let mut stack = vec![start];
+        seen[start] = true;
+        while let Some(i) = stack.pop() {
+            let (tx, ty) = (i as u32 % tw, i as u32 / tw);
+            (bx0, by0, bx1, by1) = (bx0.min(tx), by0.min(ty), bx1.max(tx), by1.max(ty));
+            for (dx, dy) in [(-1i64, 0i64), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (tx as i64 + dx, ty as i64 + dy);
+                if (0..tw as i64).contains(&nx) && (0..th as i64).contains(&ny) {
+                    let j = (ny as u32 * tw + nx as u32) as usize;
+                    if grown[j] && !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        for ty in by0..=by1 {
+            for tx in bx0..=bx1 {
+                filled[(ty * tw + tx) as usize] = true;
+            }
+        }
+    }
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for ty in 0..th {
+        for tx in 0..tw {
+            if !filled[(ty * tw + tx) as usize] {
+                continue;
+            }
+            for y in ty * REGION_TILE..((ty + 1) * REGION_TILE).min(h) {
+                for x in tx * REGION_TILE..((tx + 1) * REGION_TILE).min(w) {
+                    region.mask[(y * w + x) as usize] = true;
+                    region.pixels += 1;
+                    (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
                 }
             }
         }
     }
-    (mask, count)
+    if region.pixels > 0 {
+        region.bounds = Some(Roi {
+            x: x0,
+            y: y0,
+            width: x1 - x0 + 1,
+            height: y1 - y0 + 1,
+        });
+    }
+    region
 }
 
 // ---------------------------------------------------------------- transfer
@@ -457,7 +563,12 @@ fn median(values: &mut [f32]) -> f64 {
 
 /// For every neutral code in the 8-bit `reference`, the median value the
 /// HDR `raw` frame holds at the same pixels, over `roi`.
-pub fn transfer(reference: &[u8], raw: &RawFrame, roi: Roi) -> Result<Transfer> {
+pub fn transfer(
+    reference: &[u8],
+    raw: &RawFrame,
+    roi: Roi,
+    exclude: Option<&[bool]>,
+) -> Result<Transfer> {
     ensure!(
         reference.len() == (raw.width * raw.height * 4) as usize,
         "the reference and the FP16 frame differ in size"
@@ -467,6 +578,9 @@ pub fn transfer(reference: &[u8], raw: &RawFrame, roi: Roi) -> Result<Transfer> 
     let mut by_code: Vec<Vec<f32>> = vec![Vec::new(); 256];
     let mut primaries: [Vec<[f32; 3]>; 3] = Default::default();
     for (x, y) in roi.pixels() {
+        if exclude.is_some_and(|e| e[(y * raw.width + x) as usize]) {
+            continue;
+        }
         let i = (y * raw.width + x) as usize * 4;
         let [r, g, b] = [reference[i], reference[i + 1], reference[i + 2]];
         let p = raw.pixel(x, y);
@@ -700,14 +814,14 @@ mod tests {
             .flat_map(|c| [c as u8, c as u8, c as u8, 255])
             .collect();
         let srgb = raw_of(256, 1, s, |i| [color::code_to_linear(i as u8) * s; 3]);
-        let t = transfer(&reference, &srgb, Roi::full(256, 1)).unwrap();
+        let t = transfer(&reference, &srgb, Roi::full(256, 1), None).unwrap();
         assert_eq!(t.rows.len(), 256);
         assert!(t.worst_error(Curve::Srgb, 1).unwrap().1.abs() < 0.2);
         assert!(t.worst_error(Curve::Gamma22, 1).unwrap().1.abs() > 2.0);
         assert!((t.white_ratio().unwrap() - 1.0).abs() < 1e-3);
 
         let gamma = raw_of(256, 1, s, |i| [((i as f32 / 255.0).powf(2.2)) * s; 3]);
-        let t = transfer(&reference, &gamma, Roi::full(256, 1)).unwrap();
+        let t = transfer(&reference, &gamma, Roi::full(256, 1), None).unwrap();
         assert!(t.worst_error(Curve::Gamma22, 1).unwrap().1.abs() < 0.2);
         assert!(t.worst_error(Curve::Srgb, 1).unwrap().1.abs() > 2.0);
     }
@@ -722,6 +836,65 @@ mod tests {
         // A wrong white scale spoils the fit too.
         let wrong = raw_of(256, 1, s, |i| [color::code_to_linear(i as u8) * s * 1.1; 3]);
         assert!(code_fit(&wrong, Roi::full(256, 1)).unwrap()[0].within_0_1 < 60.0);
+    }
+
+    /// The first gate session showed a wrong 768×384 region passing the mean
+    /// and 99th-percentile thresholds; the worst-block limit catches it.
+    #[test]
+    fn a_small_wrong_region_fails() {
+        let (w, h) = (1024, 1024);
+        let a = solid(w, h, [255, 255, 255]);
+        let mut b = a.clone();
+        for y in 512..576 {
+            for x in 512..576 {
+                let i = ((y * w + x) * 4) as usize;
+                b[i..i + 3].copy_from_slice(&[0, 0, 0]);
+            }
+        }
+        let c = compare(&a, &b, w, h, Roi::full(w, h), None).unwrap();
+        assert!(
+            c.mean_de <= PASS_MEAN_DE && c.p99_de <= PASS_P99_DE,
+            "{}",
+            c.summary()
+        );
+        assert!(!c.passes());
+        assert!(c.worst_block_de() > 99.0);
+    }
+
+    #[test]
+    fn the_hdr_region_covers_hdr_content_only() {
+        let s = 2.0;
+        let (w, h) = (256, 128);
+        // SDR codes everywhere, and a 40×40 patch of HDR content (off-grid,
+        // partly above SDR white, with a dim part) at (100, 40).
+        let frame = raw_of(w, h, s, |i| {
+            let (x, y) = (i % w, i / w);
+            if (112..128).contains(&x) && (52..68).contains(&y) {
+                // A flat part of the HDR content that lands on the code grid.
+                [color::code_to_linear(200) * s; 3]
+            } else if (100..140).contains(&x) && (40..80).contains(&y) {
+                let v = 0.1 + 0.037 * (x - 100) as f32 + 0.0013 * (y - 40) as f32;
+                [v * s; 3]
+            } else {
+                [color::code_to_linear(((x + y) % 256) as u8) * s; 3]
+            }
+        });
+        let region = hdr_region(&frame);
+        let b = region.bounds.unwrap();
+        assert!(
+            b.x <= 100 && b.y <= 40 && b.x + b.width >= 140 && b.y + b.height >= 80,
+            "{b:?}"
+        );
+        assert!(b.x >= 100 - 32 && b.x + b.width <= 140 + 32, "{b:?}");
+        for y in 40..80 {
+            for x in 100..140 {
+                assert!(region.mask[(y * w + x) as usize]);
+            }
+        }
+        assert!(!region.mask[(10 * w + 10) as usize]);
+        // Without anything above SDR white, nothing is left out.
+        let sdr = raw_of(w, h, s, |i| [color::code_to_linear((i % 256) as u8) * s; 3]);
+        assert_eq!(hdr_region(&sdr).pixels, 0);
     }
 
     #[test]

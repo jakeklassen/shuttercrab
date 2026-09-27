@@ -2,10 +2,11 @@
 //! report that decides it.
 //!
 //! Captures land in `DIR/<state>/<scene>/` (see `snapshot`), so `report`
-//! can be re-run on a finished session without capturing again.
+//! can be re-run on a finished session without capturing again, and single
+//! captures can be retaken with `--states`.
 
 use crate::{
-    analysis::{self, Comparison, Roi},
+    analysis::{self, Comparison, HdrRegion, Roi},
     color::{self, ColorMode, Highlights},
     display,
     gpu::{Gpu, SdrConverter},
@@ -15,7 +16,7 @@ use crate::{
 };
 use anyhow::{Context, Result, bail, ensure};
 use std::{
-    collections::BTreeSet,
+    collections::{BTreeMap, BTreeSet},
     fmt::Write as _,
     io::{BufRead, Write as _},
     path::{Path, PathBuf},
@@ -34,11 +35,9 @@ const REFERENCE: &str = "hdr-off";
 
 fn scene_hint(scene: &str) -> String {
     match scene {
-        "fixture" => {
-            "fixtures/sdr-reference.html in Edge or Chrome, full screen (F11), zoom 100%".into()
-        }
+        "fixture" => "the fixture tab (fixtures/sdr-reference.html, no ?hdr), full screen".into(),
         "mixed" => {
-            "fixtures/sdr-reference.html?hdr (the same page with the HDR test image), full screen"
+            "the mixed tab (fixtures/sdr-reference.html?hdr, with the HDR test image), full screen"
                 .into()
         }
         other => format!("{other}, arranged exactly as in the other states"),
@@ -57,8 +56,65 @@ fn prompt(text: &str) -> Result<String> {
     Ok(line)
 }
 
-/// Run the guided capture session, then the report.
-pub fn run(monitor: Option<&str>, scenes: &[String], dir: &Path, delay: f64) -> Result<()> {
+/// Parse `--states`: a comma-separated subset of the gate's states.
+pub fn parse_states(text: Option<&str>) -> Result<Vec<&'static str>> {
+    let Some(text) = text else {
+        return Ok(STATES.iter().map(|(s, _)| *s).collect());
+    };
+    text.split(',')
+        .map(str::trim)
+        .map(|name| {
+            STATES
+                .iter()
+                .map(|(s, _)| *s)
+                .find(|s| *s == name)
+                .with_context(|| {
+                    format!(
+                        "unknown state {name:?}; the states are hdr-off, hdr-low, hdr-mid, hdr-high"
+                    )
+                })
+        })
+        .collect()
+}
+
+/// Something about a capture that suggests the wrong thing was on screen.
+fn scene_doubt(state: &str, scene: &str, frame_peak: f32, dir: &Path) -> Option<String> {
+    let hdr_content = frame_peak > 1.0 + color::EXTENDED_EPSILON;
+    let hdr_state = state != REFERENCE;
+    if scene == "fixture" && hdr_state && hdr_content {
+        return Some(format!(
+            "{state}/fixture holds HDR content (peak {frame_peak:.2}× SDR white): is the ?hdr tab showing?"
+        ));
+    }
+    if scene == "mixed" && hdr_state && !hdr_content && state != "hdr-high" {
+        return Some(format!(
+            "{state}/mixed holds no HDR content: is the plain tab showing instead of ?hdr?"
+        ));
+    }
+    let this = png_io::read_rgba8(&dir.join(state).join(scene).join("capture.png")).ok()?;
+    let others = std::fs::read_dir(dir.join(state)).ok()?;
+    for other in others.flatten() {
+        let name = other.file_name().to_string_lossy().into_owned();
+        if name != scene
+            && let Ok(that) = png_io::read_rgba8(&other.path().join("capture.png"))
+            && that == this
+        {
+            return Some(format!(
+                "{state}/{scene} is pixel-identical to {state}/{name}: the same tab was captured twice"
+            ));
+        }
+    }
+    None
+}
+
+/// Run the guided capture session for `states`, then the report.
+pub fn run(
+    monitor: Option<&str>,
+    scenes: &[String],
+    states: &[&str],
+    dir: &Path,
+    delay: f64,
+) -> Result<()> {
     let monitors = display::enumerate()?;
     let target = match monitor {
         Some(spec) => display::select(&monitors, Some(spec))?,
@@ -79,7 +135,7 @@ pub fn run(monitor: Option<&str>, scenes: &[String], dir: &Path, delay: f64) -> 
     );
 
     let mut white_levels: Vec<(String, u32)> = Vec::new();
-    for (state, slider) in STATES {
+    for (state, slider) in STATES.iter().filter(|(s, _)| states.contains(s)) {
         let instruction = match slider {
             None => format!(
                 "Turn HDR OFF for {device}: Settings > System > Display > HDR (Use HDR: Off)."
@@ -112,7 +168,7 @@ pub fn run(monitor: Option<&str>, scenes: &[String], dir: &Path, delay: f64) -> 
                         continue;
                     }
                 }
-                white_levels.push((state.to_owned(), level));
+                white_levels.push((state.to_string(), level));
                 println!(
                     "SDR white level {level} ({:.0} nits).",
                     color::sdr_white_nits(level)
@@ -134,11 +190,18 @@ pub fn run(monitor: Option<&str>, scenes: &[String], dir: &Path, delay: f64) -> 
                 match snapshot::take(Some(&device), &out, Highlights::Shoulder) {
                     Ok(shot) => {
                         println!(
-                            "\x07Captured {state}/{scene}: {}, S = {}, frame peak {:.2}\n",
+                            "\x07Captured {state}/{scene}: {}, S = {}, frame peak {:.2}",
                             shot.color_mode.name(),
                             shot.white_scale,
                             shot.frame_peak
                         );
+                        if let Some(doubt) = scene_doubt(state, scene, shot.frame_peak, dir) {
+                            println!("Check: {doubt}");
+                            if prompt("Enter to retake it, or type keep to keep it: ")? != "keep" {
+                                continue;
+                            }
+                        }
+                        println!();
                         break;
                     }
                     Err(e) => println!("\x07Capture failed: {e:#}\nTrying again."),
@@ -146,42 +209,88 @@ pub fn run(monitor: Option<&str>, scenes: &[String], dir: &Path, delay: f64) -> 
             }
         }
     }
-    let summary = report(dir, scenes)?;
+    let summary = report(dir, None)?;
     println!("{summary}");
     println!("Written to {}", dir.join("summary.md").display());
     Ok(())
 }
 
 struct Capture {
+    /// The product output, re-derived from `raw` with the current transform
+    /// for HDR and WCG captures.
     rgba: Vec<u8>,
     windows_rgba: Vec<u8>,
     raw: RawFrame,
     width: u32,
     height: u32,
     report: serde_json::Value,
+    /// Left out of SDR comparisons (see `analysis::hdr_region`).
+    region: HdrRegion,
+    frame_peak: f32,
 }
 
-fn load(dir: &Path) -> Result<Capture> {
-    let (width, height, rgba) = png_io::read_rgba8(&dir.join("capture.png"))?;
+fn load(dir: &Path, gpu: &Gpu, converter: &SdrConverter) -> Result<Capture> {
+    let (width, height, stored) = png_io::read_rgba8(&dir.join("capture.png"))?;
     let (_, _, windows_rgba) = png_io::read_rgba8(&dir.join("windows-8bit.png"))?;
     let raw = RawFrame::read(&dir.join("source.fp16"))?;
     let report = serde_json::from_str(&std::fs::read_to_string(dir.join("report.json"))?)?;
+    let texture = gpu.upload_rgba16f(raw.width, raw.height, &raw.data)?;
+    let sdr = converter.convert(gpu, &texture, raw.white_scale, Highlights::Shoulder)?;
+    let rgba = match raw.color_mode {
+        // The SDR product path is the 8-bit capture, not a transform.
+        ColorMode::Sdr => stored,
+        ColorMode::Wcg | ColorMode::Hdr => sdr.rgba,
+    };
+    let region = analysis::hdr_region(&raw);
     Ok(Capture {
         rgba,
         windows_rgba,
-        raw,
         width,
         height,
         report,
+        region,
+        frame_peak: sdr.frame_peak,
+        raw,
     })
+}
+
+/// The capture's HDR region as a comparison mask, if it has one.
+fn region_mask(c: &Capture) -> Option<&[bool]> {
+    (c.region.pixels > 0).then_some(&c.region.mask[..])
 }
 
 fn or_masks(a: &[bool], b: &[bool]) -> Vec<bool> {
     a.iter().zip(b).map(|(x, y)| *x || *y).collect()
 }
 
-/// Analyse a finished gate directory and write `summary.md`.
-pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
+/// Scenes present in a session directory, `fixture` and `mixed` first.
+fn discover_scenes(dir: &Path) -> Vec<String> {
+    let mut found = BTreeSet::new();
+    for (state, _) in STATES {
+        if let Ok(entries) = std::fs::read_dir(dir.join(state)) {
+            for entry in entries.flatten().filter(|e| e.path().is_dir()) {
+                found.insert(entry.file_name().to_string_lossy().into_owned());
+            }
+        }
+    }
+    let mut scenes: Vec<String> = ["fixture", "mixed"]
+        .into_iter()
+        .filter(|s| found.remove(*s))
+        .map(String::from)
+        .collect();
+    scenes.extend(found);
+    scenes
+}
+
+/// Analyse a finished gate directory and write `summary.md`. With no
+/// `scenes`, every scene in the directory is analysed.
+pub fn report(dir: &Path, scenes: Option<&[String]>) -> Result<String> {
+    let scenes: Vec<String> = match scenes {
+        Some(s) => s.to_vec(),
+        None => discover_scenes(dir),
+    };
+    let scenes = &scenes[..];
+    ensure!(!scenes.is_empty(), "no captures in {}", dir.display());
     let diffs = dir.join("diffs");
     std::fs::create_dir_all(&diffs)?;
     let mut md = String::new();
@@ -191,18 +300,20 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
     writeln!(md, "# Framecut Milestone 0 gate\n")?;
     writeln!(
         md,
-        "Session `{}`, transform `{}`, capture-spike {}.\n",
+        "Session `{}`, analysed with transform `{}` (capture-spike {}). HDR captures are \
+         re-converted from their saved FP16 source with this transform.\n",
         dir.file_name().map_or("?".into(), |n| n.to_string_lossy()),
         color::TRANSFORM_VERSION,
         env!("CARGO_PKG_VERSION")
     )?;
 
-    // Load everything up front; a missing capture is reported, not fatal.
-    let mut captures = std::collections::BTreeMap::new();
+    let gpu = Gpu::hardware(None)?;
+    let converter = SdrConverter::new(&gpu)?;
+    let mut captures: Captures = BTreeMap::new();
     for (state, _) in STATES {
         for scene in scenes {
             let path = dir.join(state).join(scene);
-            match load(&path) {
+            match load(&path, &gpu, &converter) {
                 Ok(c) => {
                     captures.insert((state, scene.as_str()), c);
                 }
@@ -230,21 +341,25 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
     writeln!(md, "## Captures\n")?;
     writeln!(
         md,
-        "| state | scene | mode | SDR white level | S | frame peak | product path |"
+        "| state | scene | mode | SDR white level | S | frame peak | left out of SDR comparisons |"
     )?;
     writeln!(md, "|---|---|---|---:|---:|---:|---|")?;
     for (state, scene, c) in in_order(&captures, scenes) {
         let mon = &c.report["monitor"];
+        let left_out = match c.region.bounds {
+            Some(b) => format!(
+                "{} px, within ({}, {}) {}×{}",
+                c.region.pixels, b.x, b.y, b.width, b.height
+            ),
+            None => "none".into(),
+        };
         writeln!(
             md,
-            "| {state} | {scene} | {} | {} | {} | {:.3} | {} |",
+            "| {state} | {scene} | {} | {} | {} | {:.3} | {left_out} |",
             mon["color_mode"].as_str().unwrap_or("?"),
             mon["sdr_white_level_raw"],
             c.raw.white_scale,
-            c.report["frame"]["peak_relative_to_sdr_white"]
-                .as_f64()
-                .unwrap_or(f64::NAN),
-            c.report["product_path"].as_str().unwrap_or("?"),
+            c.frame_peak,
         )?;
         if let Some(fp) = c.report["fp16_path_vs_windows_8bit"].as_object()
             && c.raw.color_mode == ColorMode::Sdr
@@ -257,21 +372,15 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
         }
     }
 
-    let masks: std::collections::BTreeMap<_, _> = captures
-        .iter()
-        .map(|(key, c)| (*key, analysis::shoulder_mask(&c.raw)))
-        .collect();
-
     let compare_md = |md: &mut String,
                       label: &str,
                       a: &Capture,
-                      b: &Capture,
                       b_rgba: &[u8],
                       mask: Option<&[bool]>,
                       heatmap_name: &str|
      -> Result<Comparison> {
         ensure!(
-            (a.width, a.height) == (b.width, b.height),
+            a.rgba.len() == b_rgba.len(),
             "{label}: captures differ in size"
         );
         let result = analysis::compare(
@@ -290,9 +399,8 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
                 block.x, block.y, block.mean_de
             )?;
         }
-        let heatmap = diffs.join(heatmap_name);
         png_io::write_srgb(
-            &heatmap,
+            &diffs.join(heatmap_name),
             a.width,
             a.height,
             &analysis::heatmap(&a.rgba, &result, mask),
@@ -303,10 +411,12 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
     writeln!(md, "\n## The gate: HDR on vs the HDR-off reference\n")?;
     writeln!(
         md,
-        "Pass: mean ΔE00 ≤ {} and 99th percentile ≤ {}. Pixels the shoulder changes (content that is \
-         not SDR, in a frame with HDR content) are left out; without HDR content, none are.\n",
+        "Pass: mean ΔE00 ≤ {}, 99th percentile ≤ {}, and no 64×64 block averaging over {}. In a frame \
+         with HDR content, the region of that content is left out (see the table above): there the \
+         reference shows the application's own tone mapping. Without HDR content nothing is left out.\n",
         analysis::PASS_MEAN_DE,
-        analysis::PASS_P99_DE
+        analysis::PASS_P99_DE,
+        analysis::PASS_BLOCK_DE
     )?;
     for scene in scenes {
         let Some(reference) = captures.get(&(REFERENCE, scene.as_str())) else {
@@ -316,15 +426,12 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
             let Some(test) = captures.get(&(*state, scene.as_str())) else {
                 continue;
             };
-            let mask = &masks[&(*state, scene.as_str())];
-            let label = format!("{scene}: {state} vs {REFERENCE}");
             let result = compare_md(
                 &mut md,
-                &label,
+                &format!("{scene}: {state} vs {REFERENCE}"),
                 reference,
-                test,
                 &test.rgba,
-                (mask.1 > 0).then_some(&mask.0[..]),
+                region_mask(test),
                 &format!("{scene}-{state}.png"),
             )?;
             gate_results.push(result.passes());
@@ -334,23 +441,22 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
     writeln!(md, "\n## SDR content brightness invariance\n")?;
     let hdr_states: Vec<&str> = STATES.iter().skip(1).map(|(s, _)| *s).collect();
     for scene in scenes {
-        for pair in [(0, 1), (1, 2), (0, 2)] {
-            let (sa, sb) = (hdr_states[pair.0], hdr_states[pair.1]);
+        for (ia, ib) in [(0, 1), (1, 2), (0, 2)] {
+            let (sa, sb) = (hdr_states[ia], hdr_states[ib]);
             let (Some(a), Some(b)) = (
                 captures.get(&(sa, scene.as_str())),
                 captures.get(&(sb, scene.as_str())),
             ) else {
                 continue;
             };
-            let (ma, mb) = (&masks[&(sa, scene.as_str())], &masks[&(sb, scene.as_str())]);
-            let mask = or_masks(&ma.0, &mb.0);
+            let mask = or_masks(&a.region.mask, &b.region.mask);
+            let any = a.region.pixels + b.region.pixels > 0;
             let result = compare_md(
                 &mut md,
                 &format!("{scene}: {sb} vs {sa}"),
                 a,
-                b,
                 &b.rgba,
-                (ma.1 + mb.1 > 0).then_some(&mask[..]),
+                any.then_some(&mask[..]),
                 &format!("{scene}-{sb}-vs-{sa}.png"),
             )?;
             invariance_results.push(result.passes());
@@ -374,15 +480,18 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
                 &mut md,
                 &format!("{scene}: Windows 8-bit hdr-mid vs {REFERENCE}"),
                 reference,
-                test,
                 &test.windows_rgba,
-                None,
+                region_mask(test),
                 &format!("{scene}-windows-8bit-hdr-mid.png"),
             )?;
         }
     }
 
     writeln!(md, "\n## How Windows placed SDR codes in scRGB\n")?;
+    writeln!(
+        md,
+        "Measured against the reference, outside any HDR region.\n"
+    )?;
     for scene in scenes {
         let Some(reference) = captures.get(&(REFERENCE, scene.as_str())) else {
             continue;
@@ -392,16 +501,16 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
                 continue;
             };
             let roi = Roi::full(test.width, test.height);
-            let transfer = analysis::transfer(&reference.rgba, &test.raw, roi)?;
-            writeln!(md, "### {scene}, {state}: against the reference\n")?;
+            let transfer = analysis::transfer(&reference.rgba, &test.raw, roi, region_mask(test))?;
+            writeln!(md, "### {scene}, {state}\n")?;
             let table = transfer.markdown();
             if *state == "hdr-mid" {
                 writeln!(md, "{table}")?;
             } else {
                 // The findings only; the full table is shown for hdr-mid.
-                writeln!(md, "{}", table.split("\n\n").next().unwrap_or(""))?;
+                writeln!(md, "{}\n", table.split("\n\n").next().unwrap_or(""))?;
             }
-            writeln!(md, "Without a reference (code-grid fit):\n")?;
+            writeln!(md, "Without a reference (code-grid fit, whole frame):\n")?;
             writeln!(
                 md,
                 "{}",
@@ -413,24 +522,18 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
     writeln!(md, "## Highlights\n")?;
     let mut any_hdr = false;
     for (state, scene, c) in in_order(&captures, scenes) {
-        let map = c.raw.analysis();
-        if !map.has_extended() {
+        let analysis = c.raw.analysis();
+        if !analysis.has_extended() {
             continue;
         }
         any_hdr = true;
-        let (_, near) = &masks[&(state, scene)];
-        let gpu = Gpu::hardware(None)?;
         let texture = gpu.upload_rgba16f(c.raw.width, c.raw.height, &c.raw.data)?;
-        let clipped = SdrConverter::new(&gpu)?.convert(
-            &gpu,
-            &texture,
-            c.raw.white_scale,
-            Highlights::Clip,
-        )?;
-        let pixels = c.raw.pixels();
+        let clipped = converter.convert(&gpu, &texture, c.raw.white_scale, Highlights::Clip)?;
         let (mut shoulder, mut clip) = (BTreeSet::new(), BTreeSet::new());
-        let mut extended = 0u64;
-        for (i, p) in pixels.iter().enumerate() {
+        let (mut extended, mut shouldered) = (0u64, 0u64);
+        for (i, p) in c.raw.pixels().iter().enumerate() {
+            let (x, y) = (i as u32 % c.raw.width, i as u32 / c.raw.width);
+            shouldered += u64::from(analysis.shoulder_applies(x, y));
             if color::peak(color::normalize([p[0], p[1], p[2]], c.raw.white_scale))
                 > 1.0 + color::EXTENDED_EPSILON
             {
@@ -441,10 +544,10 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
         }
         writeln!(
             md,
-            "- {state}/{scene}: frame peak {:.2}× SDR white; {extended} px above SDR white, {near} px through \
-             the shoulder. Distinct output colors on the extended pixels: {} with the shoulder, {} \
+            "- {state}/{scene}: frame peak {:.2}× SDR white; {extended} px above SDR white, {shouldered} px \
+             through the shoulder. Distinct output colors on the extended pixels: {} with the shoulder, {} \
              clipped.",
-            map.frame_peak,
+            analysis.frame_peak,
             shoulder.len(),
             clip.len()
         )?;
@@ -457,14 +560,14 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
         )?;
     }
 
-    let problems = session_problems(&captures, scenes);
+    let problems = session_problems(&captures, scenes, dir);
     let gate = !gate_results.is_empty() && gate_results.iter().all(|p| *p);
     let invariant = !invariance_results.is_empty() && invariance_results.iter().all(|p| *p);
     writeln!(md, "\n## Verdict\n")?;
     if problems.is_empty() {
         writeln!(
             md,
-            "- Session: valid (reference not HDR, distinct SDR white levels)"
+            "- Session: valid (reference not HDR, distinct SDR white levels, scenes as labelled)"
         )?;
     }
     for problem in &problems {
@@ -487,7 +590,9 @@ pub fn report(dir: &Path, scenes: &[String]) -> Result<String> {
     writeln!(
         md,
         "\n**Milestone 0 gate: {}**",
-        if problems.is_empty() && gate && invariant {
+        if !problems.is_empty() {
+            "UNDECIDED (fix the session problems above and re-run)"
+        } else if gate && invariant {
             "PASS"
         } else {
             "FAIL"
@@ -507,7 +612,7 @@ pub fn default_dir() -> PathBuf {
     PathBuf::from("captures").join(format!("gate-{}", snapshot::timestamp()))
 }
 
-type Captures<'a> = std::collections::BTreeMap<(&'a str, &'a str), Capture>;
+type Captures<'a> = BTreeMap<(&'a str, &'a str), Capture>;
 
 /// Captures in session order: states as captured, scenes as given.
 fn in_order<'a>(
@@ -524,7 +629,7 @@ fn in_order<'a>(
 }
 
 /// Reasons the session cannot decide the gate, if any.
-fn session_problems(captures: &Captures, scenes: &[String]) -> Vec<String> {
+fn session_problems(captures: &Captures, scenes: &[String], dir: &Path) -> Vec<String> {
     let mut problems = Vec::new();
     let mut levels = BTreeSet::new();
     for (state, scene, c) in in_order(captures, scenes) {
@@ -538,6 +643,9 @@ fn session_problems(captures: &Captures, scenes: &[String]) -> Vec<String> {
         if hdr && scene == scenes[0] {
             levels.insert(c.report["monitor"]["sdr_white_level_raw"].as_u64());
         }
+        if let Some(doubt) = scene_doubt(state, scene, c.frame_peak, dir) {
+            problems.push(doubt);
+        }
     }
     if levels.len() < STATES.len() - 1 {
         problems.push(format!(
@@ -547,4 +655,19 @@ fn session_problems(captures: &Captures, scenes: &[String]) -> Vec<String> {
         ));
     }
     problems
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn states_parse() {
+        assert_eq!(parse_states(None).unwrap().len(), 4);
+        assert_eq!(
+            parse_states(Some("hdr-low, hdr-mid")).unwrap(),
+            ["hdr-low", "hdr-mid"]
+        );
+        assert!(parse_states(Some("hdr-medium")).is_err());
+    }
 }
