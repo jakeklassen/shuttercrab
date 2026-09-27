@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/capture-spike", "crates/framecut-capture"]
+members = ["crates/capture-spike", "crates/framecut-capture", "crates/framecut-platform"]
 resolver = "3"
 
 [workspace.package]
