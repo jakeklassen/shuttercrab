@@ -149,7 +149,7 @@ pub fn take(monitor: Option<&str>, dir: &Path, highlights: Highlights) -> Result
             "version": color::TRANSFORM_VERSION,
             "white_scale": white_scale,
             "highlights": highlights.name(),
-            "shoulder_beta": color::SHOULDER_BETA,
+            "tone_knee": color::TONE_KNEE,
             "tile": color::TILE,
             "code_tolerance": color::CODE_TOLERANCE,
             "extended_epsilon": color::EXTENDED_EPSILON,

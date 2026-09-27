@@ -28,12 +28,12 @@ USAGE
       Enumerate monitors: bounds, DPI, Advanced Color and HDR state, SDR white level.
 
   capture-spike capture [--monitor M] [--delay SECONDS] [--label NAME] [--out DIR]
-                        [--highlights shoulder|clip]
+                        [--highlights tonemap|clip]
       Capture one monitor into DIR/NAME-TIMESTAMP/ (default ./captures).
       M is a list index or a device name such as DISPLAY1; default: the
       monitor under the pointer when the capture starts.
 
-  capture-spike convert SOURCE.fp16 OUT.png [--highlights shoulder|clip]
+  capture-spike convert SOURCE.fp16 OUT.png [--highlights tonemap|clip]
       Re-run the transform on a saved FP16 frame.
 
   capture-spike compare REFERENCE.png TEST.png [--roi X,Y,W,H] [--source TEST.fp16]
@@ -158,7 +158,7 @@ pub fn print_snapshot(shot: &snapshot::Snapshot) {
     );
     if shot.frame_peak > 1.0 + color::EXTENDED_EPSILON {
         println!(
-            "HDR content present: frame peak {:.2}x SDR white; non-SDR content goes through the shoulder",
+            "HDR content present: frame peak {:.2}x SDR white; HDR regions tone mapped",
             shot.frame_peak
         );
     } else {
@@ -331,7 +331,7 @@ fn highlights(args: &mut Args) -> Result<Highlights> {
     args.option("--highlights")?
         .map(|h| Highlights::parse(&h))
         .transpose()
-        .map(|h| h.unwrap_or(Highlights::Shoulder))
+        .map(|h| h.unwrap_or(Highlights::Tonemap))
 }
 
 /// Just enough argument parsing for a spike: a command, positionals, and

@@ -1,6 +1,6 @@
 //! Direct3D 11 device, texture helpers, and the GPU color transform.
 
-use crate::color::{Highlights, TILE};
+use crate::color::{HdrRegion, Highlights, MAX_REGIONS, TILE, TileStats, find_regions};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use windows::{
     Graphics::DirectX::Direct3D11::IDirect3DDevice,
@@ -181,9 +181,8 @@ pub fn wide_to_string(s: &[u16]) -> String {
 
 /// The compiled HDR/WCG → SDR shader passes.
 pub struct SdrConverter {
-    tile_peak: ID3D11ComputeShader,
-    frame_peak: ID3D11ComputeShader,
     classify: ID3D11ComputeShader,
+    tile_stats: ID3D11ComputeShader,
     convert: ID3D11ComputeShader,
 }
 
@@ -195,6 +194,8 @@ pub struct SdrFrame {
     pub rgba: Vec<u8>,
     /// Peak of the frame relative to SDR white. Above 1 means HDR content.
     pub frame_peak: f32,
+    /// Where HDR content was found and tone mapped.
+    pub regions: Vec<HdrRegion>,
 }
 
 #[repr(C)]
@@ -208,12 +209,34 @@ struct Params {
     unused: [u32; 2],
 }
 
+/// Mirrors `cbuffer Regions` in the shader.
+#[repr(C)]
+struct RegionParams {
+    count: u32,
+    unused: [u32; 3],
+    rects: [[u32; 4]; MAX_REGIONS],
+    peaks: [f32; MAX_REGIONS],
+}
+
+/// Mirrors `struct TileStat` in the shader.
+#[repr(C)]
+#[derive(Clone, Copy)]
+struct GpuTileStat {
+    peak: f32,
+    non_sdr: u32,
+    extended: u32,
+    min_x: u32,
+    min_y: u32,
+    max_x: u32,
+    max_y: u32,
+    unused: u32,
+}
+
 impl SdrConverter {
     pub fn new(gpu: &Gpu) -> Result<Self> {
         Ok(Self {
-            tile_peak: compile(gpu, s!("tile_peak"))?,
-            frame_peak: compile(gpu, s!("frame_peak"))?,
             classify: compile(gpu, s!("classify"))?,
+            tile_stats: compile(gpu, s!("tile_stats"))?,
             convert: compile(gpu, s!("convert"))?,
         })
     }
@@ -239,10 +262,13 @@ impl SdrConverter {
         );
         let (width, height) = (desc.Width, desc.Height);
         let (tiles_x, tiles_y) = (width.div_ceil(TILE), height.div_ceil(TILE));
-        let read_write = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
-        let peaks = gpu.texture(tiles_x, tiles_y, DXGI_FORMAT_R32_FLOAT, read_write, None)?;
-        let peak = gpu.texture(1, 1, DXGI_FORMAT_R32_FLOAT, read_write, None)?;
-        let classes = gpu.texture(width, height, DXGI_FORMAT_R8_UNORM, read_write, None)?;
+        let classes = gpu.texture(
+            width,
+            height,
+            DXGI_FORMAT_R8_UNORM,
+            D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
+            None,
+        )?;
         let output = gpu.texture(
             width,
             height,
@@ -250,94 +276,192 @@ impl SdrConverter {
             D3D11_BIND_UNORDERED_ACCESS,
             None,
         )?;
+        let tile_count = tiles_x * tiles_y;
+        let stats = structured_buffer(gpu, tile_count, size_of::<GpuTileStat>() as u32)?;
+        let stats_uav = buffer_uav(gpu, &stats, tile_count)?;
         let source_srv = srv(gpu, source)?;
-        let params = Params {
-            white_scale,
-            width,
-            height,
-            tiles_x,
-            tiles_y,
-            highlight_mode: match mode {
-                Highlights::Shoulder => 0,
-                Highlights::Clip => 1,
-            },
-            unused: [0; 2],
-        };
-        let mut buffer = None;
-        unsafe {
-            gpu.device.CreateBuffer(
-                &D3D11_BUFFER_DESC {
-                    ByteWidth: size_of::<Params>() as u32,
-                    Usage: D3D11_USAGE_IMMUTABLE,
-                    BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
-                    ..Default::default()
+        let params = constant_buffer(
+            gpu,
+            &Params {
+                white_scale,
+                width,
+                height,
+                tiles_x,
+                tiles_y,
+                highlight_mode: match mode {
+                    Highlights::Tonemap => 0,
+                    Highlights::Clip => 1,
                 },
-                Some(&D3D11_SUBRESOURCE_DATA {
-                    pSysMem: (&params as *const Params).cast(),
-                    ..Default::default()
-                }),
-                Some(&mut buffer),
-            )?;
-        }
+                unused: [0; 2],
+            },
+        )?;
 
+        let ctx = &gpu.context;
         // Each pass binds exactly what it reads and writes; everything else is
         // unbound, so no resource is ever an input and an output at once.
         let pass = |shader: &ID3D11ComputeShader,
-                    inputs: [Option<ID3D11ShaderResourceView>; 3],
-                    outputs: [Option<ID3D11UnorderedAccessView>; 2],
+                    inputs: [Option<ID3D11ShaderResourceView>; 2],
+                    outputs: [Option<ID3D11UnorderedAccessView>; 3],
+                    buffers: [Option<ID3D11Buffer>; 2],
                     groups: (u32, u32)| unsafe {
-            let ctx = &gpu.context;
-            ctx.CSSetUnorderedAccessViews(0, 2, Some([None, None].as_ptr()), None);
-            ctx.CSSetShaderResources(0, Some(&[None, None, None]));
+            ctx.CSSetUnorderedAccessViews(0, 3, Some([None, None, None].as_ptr()), None);
+            ctx.CSSetShaderResources(0, Some(&[None, None]));
             ctx.CSSetShader(shader, None);
-            ctx.CSSetConstantBuffers(0, Some(&[buffer.clone()]));
+            ctx.CSSetConstantBuffers(0, Some(&buffers));
             ctx.CSSetShaderResources(0, Some(&inputs));
-            ctx.CSSetUnorderedAccessViews(0, 2, Some(outputs.as_ptr()), None);
+            ctx.CSSetUnorderedAccessViews(0, 3, Some(outputs.as_ptr()), None);
             ctx.Dispatch(groups.0, groups.1, 1);
         };
         pass(
-            &self.tile_peak,
-            [Some(source_srv.clone()), None, None],
-            [Some(uav(gpu, &peaks)?), None],
-            (tiles_x, tiles_y),
-        );
-        pass(
-            &self.frame_peak,
-            [None, Some(srv(gpu, &peaks)?), None],
-            [Some(uav(gpu, &peak)?), None],
-            (1, 1),
-        );
-        pass(
             &self.classify,
-            [Some(source_srv.clone()), None, None],
-            [Some(uav(gpu, &classes)?), None],
+            [Some(source_srv.clone()), None],
+            [Some(uav(gpu, &classes)?), None, None],
+            [Some(params.clone()), None],
             (width.div_ceil(8), height.div_ceil(8)),
         );
         pass(
+            &self.tile_stats,
+            [Some(source_srv.clone()), Some(srv(gpu, &classes)?)],
+            [None, None, Some(stats_uav)],
+            [Some(params.clone()), None],
+            (tiles_x, tiles_y),
+        );
+
+        // The CPU turns the small per-tile summary into regions.
+        let tiles: Vec<TileStats> = read_buffer::<GpuTileStat>(gpu, &stats, tile_count)?
+            .into_iter()
+            .map(|t| TileStats {
+                peak: t.peak,
+                non_sdr: t.non_sdr,
+                extended: t.extended,
+                min_x: t.min_x,
+                min_y: t.min_y,
+                max_x: t.max_x,
+                max_y: t.max_y,
+            })
+            .collect();
+        let frame_peak = tiles.iter().fold(0.0f32, |a, t| a.max(t.peak));
+        let regions = find_regions(&tiles, tiles_x, tiles_y);
+        let mut region_params = RegionParams {
+            count: regions.len() as u32,
+            unused: [0; 3],
+            rects: [[0; 4]; MAX_REGIONS],
+            peaks: [0.0; MAX_REGIONS],
+        };
+        for (i, r) in regions.iter().enumerate() {
+            region_params.rects[i] = [r.x0, r.y0, r.x1, r.y1];
+            region_params.peaks[i] = r.peak;
+        }
+        let region_buffer = constant_buffer(gpu, &region_params)?;
+
+        pass(
             &self.convert,
-            [
-                Some(source_srv),
-                Some(srv(gpu, &classes)?),
-                Some(srv(gpu, &peak)?),
-            ],
-            [None, Some(uav(gpu, &output)?)],
+            [Some(source_srv), None],
+            [None, Some(uav(gpu, &output)?), None],
+            [Some(params), Some(region_buffer)],
             (width.div_ceil(8), height.div_ceil(8)),
         );
         unsafe {
-            let ctx = &gpu.context;
-            ctx.CSSetUnorderedAccessViews(0, 2, Some([None, None].as_ptr()), None);
-            ctx.CSSetShaderResources(0, Some(&[None, None, None]));
+            ctx.CSSetUnorderedAccessViews(0, 3, Some([None, None, None].as_ptr()), None);
+            ctx.CSSetShaderResources(0, Some(&[None, None]));
             ctx.CSSetShader(None, None);
         }
-        let peak_bytes = gpu.read_back(&peak)?;
         // R32_UINT packs r | g << 8 | b << 16 | a << 24, so the little-endian
         // bytes are already RGBA.
         Ok(SdrFrame {
             width,
             height,
             rgba: gpu.read_back(&output)?,
-            frame_peak: f32::from_le_bytes(peak_bytes[..4].try_into()?),
+            frame_peak,
+            regions,
         })
+    }
+}
+
+fn constant_buffer<T>(gpu: &Gpu, value: &T) -> Result<ID3D11Buffer> {
+    let mut buffer = None;
+    unsafe {
+        gpu.device.CreateBuffer(
+            &D3D11_BUFFER_DESC {
+                ByteWidth: size_of::<T>() as u32,
+                Usage: D3D11_USAGE_IMMUTABLE,
+                BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                ..Default::default()
+            },
+            Some(&D3D11_SUBRESOURCE_DATA {
+                pSysMem: (value as *const T).cast(),
+                ..Default::default()
+            }),
+            Some(&mut buffer),
+        )?;
+    }
+    buffer.context("CreateBuffer returned no constant buffer")
+}
+
+fn structured_buffer(gpu: &Gpu, count: u32, stride: u32) -> Result<ID3D11Buffer> {
+    let mut buffer = None;
+    unsafe {
+        gpu.device.CreateBuffer(
+            &D3D11_BUFFER_DESC {
+                ByteWidth: count * stride,
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_UNORDERED_ACCESS.0 as u32,
+                MiscFlags: D3D11_RESOURCE_MISC_BUFFER_STRUCTURED.0 as u32,
+                StructureByteStride: stride,
+                ..Default::default()
+            },
+            None,
+            Some(&mut buffer),
+        )?;
+    }
+    buffer.context("CreateBuffer returned no structured buffer")
+}
+
+fn buffer_uav(gpu: &Gpu, buffer: &ID3D11Buffer, count: u32) -> Result<ID3D11UnorderedAccessView> {
+    let desc = D3D11_UNORDERED_ACCESS_VIEW_DESC {
+        Format: DXGI_FORMAT_UNKNOWN,
+        ViewDimension: D3D11_UAV_DIMENSION_BUFFER,
+        Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+            Buffer: D3D11_BUFFER_UAV {
+                FirstElement: 0,
+                NumElements: count,
+                Flags: 0,
+            },
+        },
+    };
+    let mut view = None;
+    unsafe {
+        gpu.device
+            .CreateUnorderedAccessView(buffer, Some(&desc), Some(&mut view))?
+    };
+    view.context("no unordered access view")
+}
+
+/// Copy a structured buffer of `count` plain-old-data `T` to system memory.
+fn read_buffer<T: Copy>(gpu: &Gpu, buffer: &ID3D11Buffer, count: u32) -> Result<Vec<T>> {
+    let bytes = count * size_of::<T>() as u32;
+    let mut staging = None;
+    unsafe {
+        gpu.device.CreateBuffer(
+            &D3D11_BUFFER_DESC {
+                ByteWidth: bytes,
+                Usage: D3D11_USAGE_STAGING,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                ..Default::default()
+            },
+            None,
+            Some(&mut staging),
+        )?;
+    }
+    let staging = staging.context("CreateBuffer returned no staging buffer")?;
+    unsafe {
+        gpu.context.CopyResource(&staging, buffer);
+        let mut map = D3D11_MAPPED_SUBRESOURCE::default();
+        gpu.context
+            .Map(&staging, 0, D3D11_MAP_READ, 0, Some(&mut map))?;
+        let values = std::slice::from_raw_parts(map.pData.cast::<T>(), count as usize).to_vec();
+        gpu.context.Unmap(&staging, 0);
+        Ok(values)
     }
 }
 

@@ -12,17 +12,14 @@
 use anyhow::{Result, bail};
 
 /// Recorded in capture reports so a PNG can be traced to the math that made it.
-pub const TRANSFORM_VERSION: &str = "sdr-codes-exact-shoulder-v3";
+pub const TRANSFORM_VERSION: &str = "sdr-exact-hdr-regions-v4";
 
-/// Side of the square tiles the GPU reduces the frame peak over, in pixels.
+/// Side of the square tiles the frame is analysed in, in pixels.
 pub const TILE: u32 = 16;
 /// Normalized values up to `1 + EXTENDED_EPSILON` are SDR white. This absorbs
 /// FP16 rounding of `S × 1.0` (at most 2⁻¹¹ relative) with margin, so SDR
 /// white never registers as an HDR highlight.
 pub const EXTENDED_EPSILON: f32 = 1.0 / 256.0;
-/// Fraction of the SDR range the shoulder may borrow as headroom grows
-/// without bound. See `shoulder`.
-pub const SHOULDER_BETA: f32 = 0.25;
 /// BT.709 / sRGB relative luminance weights.
 pub const LUMA: [f32; 3] = [0.2126, 0.7152, 0.0722];
 /// Largest finite FP16 value; scRGB input is clamped to it.
@@ -31,9 +28,9 @@ const FP16_MAX: f32 = 65504.0;
 /// How values above SDR white are brought into range.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Highlights {
-    /// Default. SDR content is reproduced exactly; when the frame holds
-    /// values above SDR white, all other content goes through a shoulder.
-    Shoulder,
+    /// Default. Content outside HDR regions is reproduced as captured;
+    /// HDR regions go through `hdr_curve`.
+    Tonemap,
     /// Diagnostic. Every pixel is projected onto the SDR cube along its RGB
     /// ray. This is the prior spike's behaviour: neutral highlights go flat white.
     Clip,
@@ -42,16 +39,16 @@ pub enum Highlights {
 impl Highlights {
     pub fn name(self) -> &'static str {
         match self {
-            Highlights::Shoulder => "shoulder",
+            Highlights::Tonemap => "tonemap",
             Highlights::Clip => "clip",
         }
     }
 
     pub fn parse(name: &str) -> Result<Self> {
         match name {
-            "shoulder" => Ok(Highlights::Shoulder),
+            "tonemap" => Ok(Highlights::Tonemap),
             "clip" => Ok(Highlights::Clip),
-            _ => bail!("unknown highlight mode {name:?}; expected shoulder or clip"),
+            _ => bail!("unknown highlight mode {name:?}; expected tonemap or clip"),
         }
     }
 }
@@ -174,26 +171,6 @@ pub fn peak(n: [f32; 3]) -> f32 {
     max3(n)
 }
 
-/// Knee of the shoulder for local headroom `h` (> 1): `1 − β(1 − 1/h)`.
-/// It starts at 1 when there is no headroom and falls toward `1 − β`.
-pub fn knee(h: f32) -> f32 {
-    1.0 - SHOULDER_BETA * (1.0 - 1.0 / h)
-}
-
-/// Compress `[0, h]` into `[0, 1]`: identity up to the knee `k`, then an
-/// extended-Reinhard shoulder that leaves the knee with slope 1 and lands
-/// exactly on 1 at `h`. Monotonic; tends to identity as `h → 1`.
-pub fn shoulder(x: f32, h: f32) -> f32 {
-    let k = knee(h);
-    if x <= k {
-        return x;
-    }
-    let x = x.min(h);
-    let a = (x - k) / (1.0 - k);
-    let big_a = (h - k) / (1.0 - k);
-    k + (1.0 - k) * (a * (1.0 + a / (big_a * big_a)) / (1.0 + a))
-}
-
 /// Distance from an integer 8-bit code within which a channel counts as an
 /// SDR code value. Near white one FP16 step is about 0.073 of a code (less
 /// lower down), and applications that composite SDR content in their own
@@ -206,7 +183,7 @@ pub const CODE_TOLERANCE: f32 = 0.25;
 /// checked against the grid. Applications that convert colors in FP16 leave
 /// residue of about ±0.0001 in channels that should be 0 (Edge puts code 0.4
 /// of red into pure green), and a channel this dark is far below the
-/// shoulder's knee, so whether it is SDR content never changes the result.
+/// curve's knee, so whether it is SDR content never matters.
 pub const NEGLIGIBLE: f32 = 0.005;
 /// Cross-talk between channels, as a share of the pixel's peak, still read as
 /// an SDR code. Edge's FP16 color conversion moves a dim channel beside a
@@ -235,37 +212,196 @@ pub fn on_code_grid(c: [f32; 3], white_scale: f32) -> bool {
     })
 }
 
-/// What `tone_map` needs to know about a pixel's frame and surroundings.
+/// Where HDR content is: its rectangles and each one's peak. Found from
+/// per-tile statistics, which the GPU computes and the CPU turns into
+/// rectangles with `find_regions`.
+///
+/// A tile qualifies when it holds a pixel above SDR white, or when at least
+/// a quarter of its pixels are not SDR content. Qualifying tiles are grown by
+/// one tile to join the pieces of one image or video; an area that holds no
+/// pixel above SDR white is left alone (SDR video, compositor effects). The
+/// rectangle is the bounding box of the area's non-SDR pixels, shrunk by the
+/// one pixel: the ring of SDR pixels the 3×3 rule marks around any non-SDR
+/// content.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct TileStats {
+    /// Peak of the normalized pixels.
+    pub peak: f32,
+    /// Pixels that are not SDR content.
+    pub non_sdr: u32,
+    /// Pixels above SDR white.
+    pub extended: u32,
+    /// Bounding box of the non-SDR pixels, in frame pixels. Empty when
+    /// `min_x > max_x`.
+    pub min_x: u32,
+    pub min_y: u32,
+    pub max_x: u32,
+    pub max_y: u32,
+}
+
+impl Default for TileStats {
+    fn default() -> Self {
+        Self {
+            peak: 0.0,
+            non_sdr: 0,
+            extended: 0,
+            min_x: u32::MAX,
+            min_y: u32::MAX,
+            max_x: 0,
+            max_y: 0,
+        }
+    }
+}
+
+/// A rectangle of HDR content, inclusive, in frame pixels.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct HdrRegion {
+    pub x0: u32,
+    pub y0: u32,
+    pub x1: u32,
+    pub y1: u32,
+    /// Peak of the content inside, over SDR white.
+    pub peak: f32,
+}
+
+impl HdrRegion {
+    pub fn contains(&self, x: u32, y: u32) -> bool {
+        (self.x0..=self.x1).contains(&x) && (self.y0..=self.y1).contains(&y)
+    }
+}
+
+/// A tile qualifies when this share of it (1/4) is not SDR content.
+pub const REGION_SHARE: u32 = 4;
+/// The shader holds at most this many regions; beyond that they are merged.
+pub const MAX_REGIONS: usize = 32;
+
+pub fn find_regions(stats: &[TileStats], tiles_x: u32, tiles_y: u32) -> Vec<HdrRegion> {
+    let (tw, th) = (tiles_x as i64, tiles_y as i64);
+    let index = |x: i64, y: i64| (y * tw + x) as usize;
+    let qualifies: Vec<bool> = stats
+        .iter()
+        .map(|s| s.extended > 0 || s.non_sdr * REGION_SHARE >= TILE * TILE)
+        .collect();
+    let grown: Vec<bool> = (0..th)
+        .flat_map(|y| (0..tw).map(move |x| (x, y)))
+        .map(|(x, y)| {
+            (-1..=1).any(|dy| {
+                (-1..=1).any(|dx| {
+                    let (nx, ny) = (x + dx, y + dy);
+                    (0..tw).contains(&nx) && (0..th).contains(&ny) && qualifies[index(nx, ny)]
+                })
+            })
+        })
+        .collect();
+    let mut seen = vec![false; stats.len()];
+    let mut regions = Vec::new();
+    for start in 0..stats.len() {
+        if !grown[start] || seen[start] {
+            continue;
+        }
+        seen[start] = true;
+        let mut stack = vec![start];
+        let (mut extended, mut peak) = (false, 0.0f32);
+        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+        while let Some(i) = stack.pop() {
+            let s = &stats[i];
+            if qualifies[i] {
+                extended |= s.extended > 0;
+                peak = peak.max(s.peak);
+            }
+            // The box takes every tile of the area, so the one-pixel border is
+            // trimmed evenly whichever tiles it falls in.
+            if s.min_x <= s.max_x {
+                (x0, y0, x1, y1) = (
+                    x0.min(s.min_x),
+                    y0.min(s.min_y),
+                    x1.max(s.max_x),
+                    y1.max(s.max_y),
+                );
+            }
+            let (x, y) = (i as i64 % tw, i as i64 / tw);
+            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
+                let (nx, ny) = (x + dx, y + dy);
+                if (0..tw).contains(&nx) && (0..th).contains(&ny) {
+                    let j = index(nx, ny);
+                    if grown[j] && !seen[j] {
+                        seen[j] = true;
+                        stack.push(j);
+                    }
+                }
+            }
+        }
+        if !extended || x0 > x1 {
+            continue;
+        }
+        if x1 - x0 >= 2 && y1 - y0 >= 2 {
+            (x0, y0, x1, y1) = (x0 + 1, y0 + 1, x1 - 1, y1 - 1);
+        }
+        regions.push(HdrRegion {
+            x0,
+            y0,
+            x1,
+            y1,
+            peak,
+        });
+    }
+    if regions.len() > MAX_REGIONS {
+        let merged = regions.iter().fold(regions[0], |a, r| HdrRegion {
+            x0: a.x0.min(r.x0),
+            y0: a.y0.min(r.y0),
+            x1: a.x1.max(r.x1),
+            y1: a.y1.max(r.y1),
+            peak: a.peak.max(r.peak),
+        });
+        regions = vec![merged];
+    }
+    regions
+}
+
+/// Output level up to which HDR content stays linear after its gain.
+pub const TONE_KNEE: f32 = 0.45;
+
+/// The curve for HDR content with peak `p` (over SDR white): dim by
+/// `g = 1/√p`, keep linear up to `TONE_KNEE`, then roll off with an
+/// extended-Reinhard shoulder that reaches 1 exactly at the peak. Fitted to
+/// Edge's own HDR-off rendering of the HDR test image (docs/COLOR_PIPELINE.md);
+/// the project owner chose it over lighter curves.
+pub fn hdr_curve(m: f32, p: f32) -> f32 {
+    let p = p.max(1.0);
+    let g = 1.0 / p.sqrt();
+    let top = p.sqrt().max(TONE_KNEE + 1e-3);
+    let x = g * m;
+    if x <= TONE_KNEE {
+        return x;
+    }
+    let a = (x.min(top) - TONE_KNEE) / (1.0 - TONE_KNEE);
+    let big = (top - TONE_KNEE) / (1.0 - TONE_KNEE);
+    TONE_KNEE + (1.0 - TONE_KNEE) * a * (1.0 + a / (big * big)) / (1.0 + a)
+}
+
+/// What `tone_map` needs to know about a pixel.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct PixelContext {
-    /// Peak of the whole frame over SDR white: the headroom the shoulder
-    /// maps to 1.
-    pub frame_peak: f32,
-    /// The pixel and its eight neighbours are all SDR code values, so it is
-    /// ordinary SDR content, which is reproduced exactly.
-    pub sdr_content: bool,
+    /// The peak of the HDR region the pixel lies in, if it lies in one.
+    pub region_peak: Option<f32>,
 }
 
 impl PixelContext {
-    /// Ordinary SDR content: left as it is.
-    pub const SDR: Self = Self {
-        frame_peak: 1.0,
-        sdr_content: true,
-    };
+    /// Outside any HDR region: left as it is.
+    pub const SDR: Self = Self { region_peak: None };
 }
 
 /// Step 3 and 4: bring a normalized pixel into the SDR cube. Returns linear
-/// sRGB in `[0, 1]`.
-///
-/// When the frame holds values above SDR white, everything that is not SDR
-/// content goes through one shoulder curve for the whole frame, so
-/// highlights keep their order and texture. SDR content is never touched.
+/// sRGB in `[0, 1]`. Inside an HDR region the curve applies to the pixel's
+/// peak channel, scaling all three channels alike; everything else is left as
+/// it is, and anything still outside the cube is projected onto it along its
+/// RGB ray.
 pub fn tone_map(n: [f32; 3], at: PixelContext, mode: Highlights) -> [f32; 3] {
     let mut n = n;
-    if mode == Highlights::Shoulder {
+    if let (Highlights::Tonemap, Some(p)) = (mode, at.region_peak) {
         let m = peak(n);
-        if at.frame_peak > 1.0 + EXTENDED_EPSILON && !at.sdr_content && m > 0.0 {
-            let scale = shoulder(m, at.frame_peak) / m;
+        if m > 0.0 {
+            let scale = hdr_curve(m, p) / m;
             n = n.map(|v| v * scale);
         }
     }
@@ -278,30 +414,53 @@ pub fn encode_pixel(l: [f32; 3]) -> [u8; 3] {
     l.map(|v| quantize(srgb_encode(v)))
 }
 
-/// The per-frame analysis the shader does before converting: the frame's
-/// peak, and which pixels are SDR code values.
+/// The per-frame analysis the shader does before converting.
 pub struct FrameAnalysis {
     pub width: u32,
     pub height: u32,
     pub frame_peak: f32,
     pub on_grid: Vec<bool>,
+    pub tiles: Vec<TileStats>,
+    pub regions: Vec<HdrRegion>,
 }
 
 impl FrameAnalysis {
     pub fn new(scrgb: &[[f32; 4]], width: u32, height: u32, white_scale: f32) -> Self {
-        let mut frame_peak = 0.0f32;
-        let mut on_grid = Vec::with_capacity(scrgb.len());
-        for p in scrgb {
-            let c = [p[0], p[1], p[2]];
-            frame_peak = frame_peak.max(peak(normalize(c, white_scale)));
-            on_grid.push(on_code_grid(c, white_scale));
-        }
-        Self {
+        let on_grid: Vec<bool> = scrgb
+            .iter()
+            .map(|p| on_code_grid([p[0], p[1], p[2]], white_scale))
+            .collect();
+        let (tiles_x, tiles_y) = (width.div_ceil(TILE), height.div_ceil(TILE));
+        let mut analysis = Self {
             width,
             height,
-            frame_peak,
+            frame_peak: 0.0,
             on_grid,
+            tiles: vec![TileStats::default(); (tiles_x * tiles_y) as usize],
+            regions: Vec::new(),
+        };
+        for y in 0..height {
+            for x in 0..width {
+                let p = scrgb[(y * width + x) as usize];
+                let m = peak(normalize([p[0], p[1], p[2]], white_scale));
+                let sdr = analysis.sdr_content(x, y);
+                let t = &mut analysis.tiles[((y / TILE) * tiles_x + x / TILE) as usize];
+                t.peak = t.peak.max(m);
+                t.extended += u32::from(m > 1.0 + EXTENDED_EPSILON);
+                if !sdr {
+                    t.non_sdr += 1;
+                    (t.min_x, t.min_y, t.max_x, t.max_y) = (
+                        t.min_x.min(x),
+                        t.min_y.min(y),
+                        t.max_x.max(x),
+                        t.max_y.max(y),
+                    );
+                }
+            }
         }
+        analysis.frame_peak = analysis.tiles.iter().fold(0.0, |a, t| a.max(t.peak));
+        analysis.regions = find_regions(&analysis.tiles, tiles_x, tiles_y);
+        analysis
     }
 
     /// The pixel and its eight neighbours (clamped at the edges) are all SDR
@@ -315,22 +474,19 @@ impl FrameAnalysis {
         (y0..=y1).all(|y| (x0..=x1).all(|x| self.on_grid[(y * w + x) as usize]))
     }
 
+    pub fn region_at(&self, x: u32, y: u32) -> Option<&HdrRegion> {
+        self.regions.iter().find(|r| r.contains(x, y))
+    }
+
     pub fn at(&self, x: u32, y: u32) -> PixelContext {
         PixelContext {
-            frame_peak: self.frame_peak,
-            sdr_content: self.sdr_content(x, y),
+            region_peak: self.region_at(x, y).map(|r| r.peak),
         }
     }
 
     /// Whether any pixel is brighter than SDR white.
     pub fn has_extended(&self) -> bool {
         self.frame_peak > 1.0 + EXTENDED_EPSILON
-    }
-
-    /// Whether the shoulder changes this pixel's treatment: the frame has
-    /// HDR content and the pixel is not SDR content.
-    pub fn shoulder_applies(&self, x: u32, y: u32) -> bool {
-        self.has_extended() && !self.sdr_content(x, y)
     }
 }
 
@@ -363,11 +519,10 @@ mod tests {
         (a - b).abs() <= tolerance
     }
 
-    /// A pixel on HDR content in a frame whose peak is `frame_peak`.
-    fn on(frame_peak: f32) -> PixelContext {
+    /// A pixel in an HDR region whose peak is `peak`.
+    fn region(peak: f32) -> PixelContext {
         PixelContext {
-            frame_peak,
-            sdr_content: false,
+            region_peak: Some(peak),
         }
     }
 
@@ -414,7 +569,7 @@ mod tests {
                 let c = code_to_linear(code) * s;
                 for pixel in [[c, c, c], [c, 0.0, 0.0], [0.0, c, 0.0], [0.0, 0.0, c]] {
                     let n = normalize(pixel, s);
-                    let out = encode_pixel(tone_map(n, PixelContext::SDR, Highlights::Shoulder));
+                    let out = encode_pixel(tone_map(n, PixelContext::SDR, Highlights::Tonemap));
                     let want = pixel.map(|v| if v > 0.0 { code } else { 0 });
                     assert_eq!(out, want, "S={s} code={code} pixel={pixel:?}");
                 }
@@ -428,7 +583,7 @@ mod tests {
             encode_pixel(tone_map(
                 normalize(c, s),
                 PixelContext::SDR,
-                Highlights::Shoulder,
+                Highlights::Tonemap,
             ))
         };
         // SDR white at 240 nits.
@@ -452,7 +607,7 @@ mod tests {
         assert!(close(n[2], 0.473_000, 1e-5));
         assert!(close(luminance(n), 0.37244, 1e-5));
         assert_eq!(
-            encode_pixel(tone_map(n, PixelContext::SDR, Highlights::Shoulder)),
+            encode_pixel(tone_map(n, PixelContext::SDR, Highlights::Tonemap)),
             [0, 183, 183]
         );
         // No positive luminance: black.
@@ -466,74 +621,8 @@ mod tests {
         assert_eq!(normalize([f32::NAN, 0.5, 0.5], 1.0), [0.0, 0.5, 0.5]);
         let n = normalize([f32::INFINITY, 0.0, 0.0], 1.0);
         assert_eq!(
-            encode_pixel(tone_map(n, on(n[0]), Highlights::Shoulder)),
+            encode_pixel(tone_map(n, region(n[0]), Highlights::Tonemap)),
             [255, 0, 0]
-        );
-    }
-
-    #[test]
-    fn shoulder_matches_hand_derived_values() {
-        // h = 4: k = 1 − 0.25 × 0.75 = 0.8125, A = 17.
-        assert!(close(knee(4.0), 0.8125, 1e-7));
-        assert!(close(shoulder(0.5, 4.0), 0.5, 0.0));
-        assert!(close(shoulder(1.0, 4.0), 0.906_574, 1e-5));
-        assert!(close(shoulder(4.0, 4.0), 1.0, 1e-6));
-        assert_eq!(quantize(srgb_encode(shoulder(1.0, 4.0))), 244);
-        // Unbounded headroom: knee at 0.75, SDR white at 0.875.
-        assert!(close(shoulder(1.0, 1e6), 0.875, 1e-4));
-        // The codes docs/COLOR_PIPELINE.md quotes for SDR white.
-        let white = |p: f32| quantize(srgb_encode(shoulder(1.0, p)));
-        assert_eq!((white(2.0), white(4.0), white(1e6)), (248, 244, 240));
-    }
-
-    #[test]
-    fn shoulder_is_monotonic_and_bounded() {
-        for h in [1.01, 1.5, 2.0, 4.0, 10.0, 100.0] {
-            let mut last = 0.0;
-            for i in 0..=2000 {
-                let x = h * i as f32 / 2000.0;
-                let y = shoulder(x, h);
-                assert!(y >= last - 1e-7, "h={h} x={x}");
-                assert!(y <= 1.0 + 1e-6);
-                last = y;
-            }
-            assert!(close(shoulder(h, h), 1.0, 1e-5));
-        }
-    }
-
-    #[test]
-    fn shoulder_vanishes_as_headroom_disappears() {
-        let h = 1.0 + EXTENDED_EPSILON;
-        for i in 0..=100 {
-            let x = i as f32 / 100.0;
-            assert!(close(shoulder(x, h), x, EXTENDED_EPSILON));
-        }
-    }
-
-    #[test]
-    fn neutral_highlights_keep_texture_instead_of_going_flat() {
-        let codes = |mode| {
-            (0..=30)
-                .map(|i| {
-                    let v = 1.0 + 3.0 * i as f32 / 30.0;
-                    encode_pixel(tone_map([v; 3], on(4.0), mode))[0]
-                })
-                .collect::<std::collections::BTreeSet<_>>()
-        };
-        assert_eq!(codes(Highlights::Clip).len(), 1);
-        assert!(codes(Highlights::Shoulder).len() >= 10);
-    }
-
-    #[test]
-    fn colored_highlights_keep_their_channel_ratios() {
-        let out = tone_map([4.0, 2.0, 1.0], on(4.0), Highlights::Shoulder);
-        assert!(close(out[0], 1.0, 1e-6));
-        assert!(close(out[1] / out[0], 0.5, 1e-6));
-        assert!(close(out[2] / out[0], 0.25, 1e-6));
-        // Clip mode projects along the same ray.
-        assert_eq!(
-            tone_map([4.0, 2.0, 1.0], on(4.0), Highlights::Clip),
-            [1.0, 0.5, 0.25]
         );
     }
 
@@ -582,54 +671,132 @@ mod tests {
         }
     }
 
-    /// SDR white right next to HDR content stays exactly white: no halo.
+    /// Measured on the HDR test image in Edge (gate session 2026-09-27): the
+    /// values Edge placed its 100…500-nit steps at with HDR on at SDR white
+    /// 120 nits (frame peak 3.79), and the codes Edge itself rendered them
+    /// at with HDR off. The curve was fitted there, so it must stay close.
     #[test]
-    fn sdr_content_beside_highlights_is_exact() {
-        let s = 2.5;
-        let (w, h) = (64, 16);
-        let src = image(w, h, |x, _| {
-            if x < 16 {
-                s * (1.5 + 0.2 * x as f32)
-            } else {
-                s
-            }
-        });
-        let out = convert(&src, w, h, s, Highlights::Shoulder);
-        let at = |x: u32| out[(x * 4) as usize];
-        // The first white pixel borders HDR content, so it cannot be told
-        // apart; from the second on, it is SDR content.
-        for x in 17..w {
-            assert_eq!(at(x), 255, "x={x}");
+    fn hdr_curve_tracks_edges_own_hdr_off_rendering() {
+        let v = [
+            0.493_164, 0.738_281, 0.998_047, 1.220_703, 1.444_01, 1.647_135, 1.843_75, 2.222_656,
+        ];
+        let edge = [136u8, 164, 187, 201, 211, 218, 223, 232];
+        for (v, want) in v.iter().zip(edge) {
+            let got = quantize(srgb_encode(hdr_curve(*v, 3.79)));
+            assert!(got.abs_diff(want) <= 4, "v={v}: got {got}, Edge {want}");
         }
-        assert!(at(0) < at(15));
-        // A frame with no extended pixel is never touched.
-        let flat = image(w, h, |x, _| sdr(x as u8 * 3, s));
-        let analysis = FrameAnalysis::new(&flat, w, h, s);
-        assert!(!analysis.has_extended());
-        assert_eq!(convert(&flat, w, h, s, Highlights::Shoulder)[4 * 10], 30);
     }
 
-    /// Non-SDR content below SDR white goes through the same curve as the
-    /// highlights, so an HDR image keeps its tonal order.
     #[test]
-    fn the_shoulder_is_one_curve_for_the_frame() {
-        let (w, h) = (256, 8);
-        // Off-grid values, as HDR or video content has.
-        let src = image(w, h, |x, _| match x {
-            0..32 => 0.95 + 0.0011 * x as f32,
-            200..232 => 4.0,
-            _ => 0.2,
-        });
-        let analysis = FrameAnalysis::new(&src, w, h, 1.0);
-        assert!(analysis.shoulder_applies(16, 4));
-        let out = convert(&src, w, h, 1.0, Highlights::Shoulder);
-        assert!(out[16 * 4] < out[216 * 4]);
-        assert_eq!(out[216 * 4], 255);
-        // Values below the knee are untouched even in HDR content.
-        let knee_code = quantize(srgb_encode(0.2));
-        assert_eq!(out[100 * 4], knee_code);
+    fn hdr_curve_is_monotonic_and_reaches_white_at_the_peak() {
+        for p in [1.01f32, 1.06, 1.62, 3.79, 10.0, 100.0] {
+            let mut last = 0.0;
+            for i in 0..=2000 {
+                let m = p * i as f32 / 2000.0;
+                let y = hdr_curve(m, p);
+                assert!(y >= last - 1e-6 && y <= 1.0 + 1e-6, "p={p} m={m}");
+                last = y;
+            }
+            assert!(close(hdr_curve(p, p), 1.0, 1e-5), "p={p}");
+        }
+        // Distinct highlights stay distinct: the eight steps are eight codes.
+        let steps: std::collections::BTreeSet<u8> =
+            [1.22f32, 1.44, 1.65, 1.84, 2.22, 2.6, 3.0, 3.4]
+                .iter()
+                .map(|v| quantize(srgb_encode(hdr_curve(*v, 3.79))))
+                .collect();
+        assert_eq!(steps.len(), 8);
     }
 
+    #[test]
+    fn colored_highlights_keep_their_channel_ratios() {
+        let out = tone_map([4.0, 2.0, 1.0], region(4.0), Highlights::Tonemap);
+        assert!(close(out[0], 1.0, 1e-5));
+        assert!(close(out[1] / out[0], 0.5, 1e-5));
+        assert!(close(out[2] / out[0], 0.25, 1e-5));
+        assert_eq!(
+            tone_map([4.0, 2.0, 1.0], region(4.0), Highlights::Clip),
+            [1.0, 0.5, 0.25]
+        );
+    }
+
+    /// An HDR patch in a page of SDR codes, with a flat part that lands on
+    /// the code grid (as Edge's 203-nit step does).
+    fn page_with_hdr_patch(s: f32) -> (u32, u32, Vec<[f32; 4]>) {
+        let (w, h) = (256u32, 128u32);
+        let pixels = (0..w * h)
+            .map(|i| {
+                let (x, y) = (i % w, i / w);
+                let v = if (112..128).contains(&x) && (52..68).contains(&y) {
+                    s
+                } else if (100..160).contains(&x) && (40..80).contains(&y) {
+                    s * (0.2 + 0.041 * (x - 100) as f32 + 0.0013 * (y - 40) as f32)
+                } else {
+                    code_to_linear(((x * 3 + y) % 256) as u8) * s
+                };
+                [v, v, v, 1.0]
+            })
+            .collect();
+        (w, h, pixels)
+    }
+
+    #[test]
+    fn hdr_content_is_found_and_sdr_around_it_is_exact() {
+        let s = 2.0;
+        let (w, h, src) = page_with_hdr_patch(s);
+        let analysis = FrameAnalysis::new(&src, w, h, s);
+        assert_eq!(analysis.regions.len(), 1, "{:?}", analysis.regions);
+        let r = analysis.regions[0];
+        // Exactly the patch: its non-SDR box includes the 3×3 rule's ring,
+        // which the one-pixel trim removes.
+        assert_eq!((r.x0, r.y0, r.x1, r.y1), (100, 40, 159, 79), "{r:?}");
+        assert!(close(r.peak, 0.2 + 0.041 * 59.0 + 0.0013 * 39.0, 1e-3));
+        let out = convert(&src, w, h, s, Highlights::Tonemap);
+        for y in 0..h {
+            for x in 0..w {
+                if !(99..=160).contains(&x) || !(39..=80).contains(&y) {
+                    let want = ((x * 3 + y) % 256) as u8;
+                    assert_eq!(out[((y * w + x) * 4) as usize], want, "({x},{y})");
+                }
+            }
+        }
+        // The flat part at exactly SDR white is dimmed like the rest of the
+        // patch, so it is not whiter than brighter content beside it.
+        let flat = out[((60 * w + 120) * 4) as usize];
+        let brighter = out[((60 * w + 150) * 4) as usize];
+        assert!(flat < brighter, "flat {flat}, brighter {brighter}");
+    }
+
+    #[test]
+    fn content_without_highlights_is_never_tone_mapped() {
+        // Off-grid content that never exceeds SDR white: SDR video, blending.
+        let s = 3.0;
+        let (w, h) = (128, 64);
+        let src = image(w, h, |x, y| {
+            s * (0.1 + 0.0071 * x as f32 + 0.0013 * y as f32).min(1.0)
+        });
+        let analysis = FrameAnalysis::new(&src, w, h, s);
+        assert!(analysis.regions.is_empty());
+        let out = convert(&src, w, h, s, Highlights::Tonemap);
+        for (i, px) in out.as_chunks::<4>().0.iter().enumerate() {
+            let v = src[i][0] / s;
+            assert_eq!(px[0], quantize(srgb_encode(v)));
+        }
+    }
+
+    #[test]
+    fn separate_hdr_areas_get_their_own_peak() {
+        let s = 1.0;
+        let (w, h) = (320, 64);
+        let src = image(w, h, |x, _| match x {
+            20..60 => 1.5 + 0.001 * x as f32,
+            240..300 => 4.0 + 0.001 * x as f32,
+            _ => code_to_linear(255),
+        });
+        let analysis = FrameAnalysis::new(&src, w, h, s);
+        assert_eq!(analysis.regions.len(), 2, "{:?}", analysis.regions);
+        assert!(analysis.regions[0].peak < 1.6 && analysis.regions[1].peak > 4.0);
+    }
     #[test]
     fn chance_matches_inside_hdr_content_are_rare() {
         // Pseudo-random off-grid content: how often does the nine-pixel rule
@@ -661,7 +828,7 @@ mod tests {
 
     #[test]
     fn highlight_mode_names_round_trip() {
-        for mode in [Highlights::Shoulder, Highlights::Clip] {
+        for mode in [Highlights::Tonemap, Highlights::Clip] {
             assert_eq!(Highlights::parse(mode.name()).unwrap(), mode);
         }
         assert!(Highlights::parse("reinhard").is_err());

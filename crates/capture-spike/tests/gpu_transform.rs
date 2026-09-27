@@ -67,7 +67,7 @@ fn sdr_ramps_come_back_exactly_at_every_white_level() {
                     pixels.push(p);
                 }
             }
-            for mode in [Highlights::Shoulder, Highlights::Clip] {
+            for mode in [Highlights::Tonemap, Highlights::Clip] {
                 let (got, _) = run(&gpu, 256, 4, &pixels, s, mode);
                 for (i, px) in got.as_chunks::<4>().0.iter().enumerate() {
                     let (row, code) = (i / 256, (i % 256) as u8);
@@ -119,7 +119,7 @@ fn gpu_matches_cpu_reference_on_mixed_content() {
     for gpu in devices() {
         for s in [1.0f32, 2.5, 4.0] {
             let pixels = mixed_scene(width, height, s);
-            for mode in [Highlights::Shoulder, Highlights::Clip] {
+            for mode in [Highlights::Tonemap, Highlights::Clip] {
                 let (got, want) = run(&gpu, width, height, &pixels, s, mode);
                 let mut worst = 0u8;
                 let mut off_by_one = 0usize;
@@ -157,7 +157,8 @@ fn shoulder_keeps_highlight_texture_that_clip_flattens() {
     for gpu in devices() {
         let distinct = |mode| {
             let (got, _) = run(&gpu, 256, 16, &pixels, s, mode);
-            let row: std::collections::BTreeSet<u8> = got[..256 * 4]
+            // Row 8: the region excludes the frame's one-pixel edge.
+            let row: std::collections::BTreeSet<u8> = got[256 * 8 * 4..256 * 9 * 4]
                 .as_chunks::<4>()
                 .0
                 .iter()
@@ -166,7 +167,7 @@ fn shoulder_keeps_highlight_texture_that_clip_flattens() {
             row.len()
         };
         assert_eq!(distinct(Highlights::Clip), 1);
-        assert!(distinct(Highlights::Shoulder) >= 8, "{}", gpu.adapter_name);
+        assert!(distinct(Highlights::Tonemap) >= 8, "{}", gpu.adapter_name);
     }
 }
 
@@ -207,7 +208,7 @@ fn sdr_content_beside_hdr_content_stays_exact() {
         })
         .collect();
     for gpu in devices() {
-        let (got, want) = run(&gpu, width, height, &pixels, s, Highlights::Shoulder);
+        let (got, want) = run(&gpu, width, height, &pixels, s, Highlights::Tonemap);
         assert_eq!(got, want, "{}", gpu.adapter_name);
         // x = 64 borders the HDR ramp; from x = 65 on, every code is exact.
         for x in 65..width {
@@ -220,8 +221,10 @@ fn sdr_content_beside_hdr_content_stays_exact() {
                 gpu.adapter_name
             );
         }
-        // The HDR ramp keeps its gradation.
-        let ramp: std::collections::BTreeSet<u8> = (0..64).map(|x| got[x * 4]).collect();
+        // The HDR ramp keeps its gradation (row 4: the region leaves out the
+        // frame's one-pixel edge).
+        let row = (height / 2 * width) as usize * 4;
+        let ramp: std::collections::BTreeSet<u8> = (0..64).map(|x| got[row + x * 4]).collect();
         assert!(ramp.len() >= 8, "{}", gpu.adapter_name);
     }
 }

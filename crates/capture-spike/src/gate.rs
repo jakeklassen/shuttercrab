@@ -195,7 +195,7 @@ pub fn run(
                 if out.exists() {
                     std::fs::remove_dir_all(&out)?;
                 }
-                match snapshot::take(Some(&device), &out, Highlights::Shoulder) {
+                match snapshot::take(Some(&device), &out, Highlights::Tonemap) {
                     Ok(shot) => {
                         println!(
                             "\x07Captured {state}/{scene}: {}, S = {}, frame peak {:.2}",
@@ -244,7 +244,7 @@ fn load(dir: &Path, gpu: &Gpu, converter: &SdrConverter) -> Result<Capture> {
     let raw = RawFrame::read(&dir.join("source.fp16"))?;
     let report = serde_json::from_str(&std::fs::read_to_string(dir.join("report.json"))?)?;
     let texture = gpu.upload_rgba16f(raw.width, raw.height, &raw.data)?;
-    let sdr = converter.convert(gpu, &texture, raw.white_scale, Highlights::Shoulder)?;
+    let sdr = converter.convert(gpu, &texture, raw.white_scale, Highlights::Tonemap)?;
     let rgba = match raw.color_mode {
         // The SDR product path is the 8-bit capture, not a transform.
         ColorMode::Sdr => stored,
@@ -538,27 +538,64 @@ pub fn report(dir: &Path, scenes: Option<&[String]>) -> Result<String> {
         any_hdr = true;
         let texture = gpu.upload_rgba16f(c.raw.width, c.raw.height, &c.raw.data)?;
         let clipped = converter.convert(&gpu, &texture, c.raw.white_scale, Highlights::Clip)?;
-        let (mut shoulder, mut clip) = (BTreeSet::new(), BTreeSet::new());
-        let (mut extended, mut shouldered) = (0u64, 0u64);
+        let (mut mapped, mut clip) = (BTreeSet::new(), BTreeSet::new());
+        let (mut extended, mut in_regions) = (0u64, 0u64);
+        // How close the HDR content comes to the application's own rendering
+        // with HDR off, where the session has that reference.
+        let reference = captures.get(&(REFERENCE, scene));
+        let (mut de_sum, mut de_n) = (0.0f64, 0u64);
+        let mut cache = std::collections::HashMap::new();
         for (i, p) in c.raw.pixels().iter().enumerate() {
             let (x, y) = (i as u32 % c.raw.width, i as u32 / c.raw.width);
-            shouldered += u64::from(analysis.shoulder_applies(x, y));
+            if analysis.region_at(x, y).is_some() {
+                in_regions += 1;
+                if let Some(r) = reference {
+                    let a = [r.rgba[i * 4], r.rgba[i * 4 + 1], r.rgba[i * 4 + 2]];
+                    let b = [c.rgba[i * 4], c.rgba[i * 4 + 1], c.rgba[i * 4 + 2]];
+                    de_sum += *cache.entry((a, b)).or_insert_with(|| {
+                        analysis::delta_e2000(analysis::srgb8_to_lab(a), analysis::srgb8_to_lab(b))
+                    });
+                    de_n += 1;
+                }
+            }
             if color::peak(color::normalize([p[0], p[1], p[2]], c.raw.white_scale))
                 > 1.0 + color::EXTENDED_EPSILON
             {
                 extended += 1;
-                shoulder.insert(&c.rgba[i * 4..i * 4 + 3]);
+                mapped.insert(&c.rgba[i * 4..i * 4 + 3]);
                 clip.insert(&clipped.rgba[i * 4..i * 4 + 3]);
             }
         }
+        let regions: Vec<String> = analysis
+            .regions
+            .iter()
+            .map(|r| {
+                format!(
+                    "({}, {})–({}, {}) peak {:.2}",
+                    r.x0, r.y0, r.x1, r.y1, r.peak
+                )
+            })
+            .collect();
         writeln!(
             md,
-            "- {state}/{scene}: frame peak {:.2}× SDR white; {extended} px above SDR white, {shouldered} px \
-             through the shoulder. Distinct output colors on the extended pixels: {} with the shoulder, {} \
-             clipped.",
+            "- {state}/{scene}: frame peak {:.2}× SDR white; {extended} px above SDR white. HDR regions: {}. \
+             Distinct output colors on the extended pixels: {} tone mapped, {} clipped.{}",
             analysis.frame_peak,
-            shoulder.len(),
-            clip.len()
+            if regions.is_empty() {
+                "none".into()
+            } else {
+                regions.join(", ")
+            },
+            mapped.len(),
+            clip.len(),
+            if de_n > 0 {
+                format!(
+                    " Inside the regions vs the application's own HDR-off rendering: mean ΔE00 {:.2} over {in_regions} px.",
+                    de_sum / de_n as f64
+                )
+            } else {
+                String::new()
+            }
         )?;
     }
     if !any_hdr {
