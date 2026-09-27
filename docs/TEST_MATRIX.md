@@ -1,6 +1,7 @@
-# Test matrix: Milestone 0
+# Test matrix
 
-The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
+Milestone 1 (area screenshot) is ready for acceptance testing; see
+[Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
 captures](#retaking-captures)). The project owner confirmed the
 pass the same day, and Milestone 1 began. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
@@ -19,7 +20,55 @@ mise exec -- cargo test
 `cargo test` includes GPU golden tests. They run on WARP (software, so they
 work anywhere) and on the hardware adapter when there is one.
 
-## The HDR-off / HDR-on gate
+## Milestone 1: area screenshot
+
+Exit criterion (PRD §31): *hotkey → drag → release → paste into
+browser/chat, with visually correct SDR output.*
+
+### Automated
+
+| Suite | Covers |
+|---|---|
+| `framecut` unit tests | Logical → physical conversion: 100–200% scale, any drag direction, snapping to physical pixels, clamping to the monitor, empty clicks |
+| `framecut` `tests/ui.rs` | The real overlay in headless GPUI windows with native pointer and keyboard events: live physical dimensions at 100/125/175/200%, drags in any direction, Escape and right-click cancel, a click selects nothing, the overlay takes focus |
+| `framecut-capture` unit tests | Crop bounds, empty and out-of-bounds regions, PNG round trip |
+| `framecut-platform` unit and live tests | Hotkey parsing; registering a hotkey and reporting a conflict; the `CF_DIBV5` layout |
+
+Two live tests touch your machine and are opt-in:
+
+```powershell
+# Captures the screen in memory and times the freeze and the cut.
+mise exec -- cargo test --release -p framecut-capture --test service -- --ignored --nocapture
+# Replaces the clipboard with a test image.
+mise exec -- cargo test -p framecut-platform --test platform -- --ignored
+```
+
+Measured on 2026-09-27 (release build, 3840×2160 HDR, RTX 4090): the overlay is
+on screen **130 ms** after the hotkey (freeze 70 ms on the capture thread); a
+640×360 cut and its PNG take under 1 ms. A smoke test sent the hotkey,
+confirmed one window covering exactly (0,0)–(3840,2160) with keyboard focus,
+sent Escape, confirmed it closed, and quit with the quit hotkey.
+
+### Acceptance (manual)
+
+1. Start it: `mise exec -- cargo run --release -p framecut`. No window
+   appears; the terminal says which hotkeys are active.
+2. Put something recognisable on screen: a light-theme page in a browser, VS
+   Code, or `fixtures/sdr-reference.html`.
+3. Press **Ctrl+Alt+S**. The screen freezes and dims; the pointer is a
+   crosshair.
+4. Drag a rectangle. The area inside is undimmed, outlined, and its size is
+   shown in physical pixels. Release.
+5. Paste into a browser page that accepts images (e.g. a GitHub comment box),
+   Slack, Discord, or Paint. It should look exactly like the area you
+   selected: whites white, text crisp, no washed-out or grey cast.
+6. Press Ctrl+Alt+S again and press **Escape**: the overlay closes and the
+   clipboard is unchanged. Repeat with a right-click.
+7. With HDR on, repeat step 3–5 on a light-theme page. With HDR off, repeat
+   once more. Both should look the same.
+8. Quit with **Ctrl+Alt+Shift+Q**.
+
+## Milestone 0: the HDR-off / HDR-on gate
 
 About ten minutes. The `gate` command guides the session: it tells you what to
 set, checks with Windows that the setting took effect before capturing, and
@@ -236,3 +285,12 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | SDR monitor path (§9.5) | Passed | HDR off: FP16 path and 8-bit capture identical |
 | Advanced Color SDR (WCG) hardware | Not available | `S = 1` from the SDK's description |
 | 125/150/200% scaling, second monitor (§32.3) | Milestone 5 | |
+| **Milestone 1: hotkey → drag → release → paste (§31)** | **Pending: owner's acceptance test** | [Acceptance](#acceptance-manual) |
+| Background app, no window until invoked | Passed locally | Smoke test: no window before the hotkey |
+| Global screenshot hotkey; conflict reported | Passed locally | Live test; smoke test |
+| Frozen overlay on the monitor under the pointer, exact bounds, focused | Passed locally | Smoke test: (0,0)–(3840,2160), foreground |
+| Live physical-pixel dimensions (§7.2, §20) | Passed (headless) | UI tests at 100/125/175/200% |
+| Escape and right-click cancel | Passed (headless + smoke) | UI tests; smoke test (Escape) |
+| Crop and PNG from the frozen, converted frame | Passed locally | Live service test |
+| Clipboard as PNG + bitmap, retry on contention (§11) | Passed (unit); live test opt-in | Owner's paste test is the real check |
+| Overlay within ~150 ms (§22.2) | Passed locally | 130 ms, release build, 4K HDR |
