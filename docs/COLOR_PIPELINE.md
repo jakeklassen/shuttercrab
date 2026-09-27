@@ -1,9 +1,8 @@
 # Color pipeline
 
-Status: **model confirmed against HDR-off references at all three SDR
-brightness settings; the gate is undecided** because two captures of the first
-session showed the wrong browser tab (see [Evidence](#evidence)). Milestone 0 is
-open until [TEST_MATRIX.md](TEST_MATRIX.md)'s gate passes. Transform version:
+Status: **the Milestone 0 gate passed on 2026-09-27** (session
+`gate-20260927-112049`, 12 of 12 comparisons; see [Evidence](#evidence)),
+pending the project owner's confirmation. Transform version:
 `sdr-codes-exact-shoulder-v3`.
 
 This is the color decision record the PRD requires (§37, items 3 and 4): what
@@ -246,10 +245,9 @@ linearly to 80 + 4 × slider nits: 10, 50 and 100 read `SDRWhiteLevel` 1500,
 | Brightness invariance, all pairs | Pass |
 | Measured transfer at every `S`, against the reference | piecewise sRGB within 0.17 code at every grey code; measured white / `S` = 1.00000 (0.99935, one FP16 step, in Edge's HDR path); gamma 2.2 off by 8.5 codes |
 | v2 → v3 | v2 dimmed 748 px of saturated green in Edge (≤ 5 codes) when HDR content was on screen: red cross-talk from Edge's conversion failed the grid test. v3's cross-talk tolerance fixes it; the pixels are now regression tests |
-| Invalid captures | `hdr-low/mixed` showed the plain tab and `hdr-mid/fixture` the `?hdr` tab. The gate now detects both mistakes |
-
-Still to show: the mixed scene at `S` = 1.5, where the HDR image has the most
-headroom (≈ 3.8× SDR white on this panel), and the plain fixture at `S` = 3.5.
+| Retakes | `hdr-low/mixed` had shown the plain tab and `hdr-mid/fixture` the `?hdr` tab (the gate now detects both); a retake of `hdr-mid/fixture` then caught a notification. Final captures: all as labelled |
+| Final verdict | **PASS**: fixture identical to HDR off (0 codes, every pixel) at `S` = 1.5, 3.5 and 6; mixed scene ≤ 1 code outside the HDR image at all three; brightness invariance passes for every pair |
+| Highlights | At `S` = 1.5 the HDR image peaks at 3.79× SDR white: 29 distinct output colors on its extended pixels with the shoulder, 8 clipped (18 vs 8 at 1.62×, 3 vs 1 at 1.06×) |
 
 ## Known limits and expected differences
 

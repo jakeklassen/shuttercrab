@@ -1,9 +1,9 @@
 # Test matrix: Milestone 0
 
-The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) is **open**. The first
-session (2026-09-27) passed every valid comparison but two of its captures
-showed the wrong browser tab; see [Retaking captures](#retaking-captures).
-Milestone 1 starts only after the gate passes. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
+The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
+(session `gate-20260927-112049`, after the retakes described in [Retaking
+captures](#retaking-captures)). Milestone 1 starts once the project owner
+confirms. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
 what is being tested.
 
 ## Automated checks
@@ -187,13 +187,13 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Shader arithmetic (§33 golden tests) | Passed | WARP and RTX 4090 |
 | Windows stores SDR as `S × sRGB⁻¹(code)` | Passed | 100.00% on the code grid (terminal); against HDR-off references at `S` = 1.5, 3.5, 6: within 0.17 code, white / `S` = 1.00000 |
 | SDR content untouched beside HDR content (§9.6) | Passed locally | Mixed scene: only the HDR image changes |
-| Highlight texture kept (§9.6, §34.2) | Passed locally, needs your eyes | Mixed scene: steps and strips separate; clip flattens them |
-| **HDR off vs on, fixture (§32.1, §34.2)** | **Undecided: retake `hdr-mid` fixture** | Identical at `S` = 1.5 and 6; ≤ 1 code at 3.5 (from the `?hdr` capture) |
-| **SDR brightness 10 / 50 / 100 invariance (§32.2)** | **Passed in the first session; confirm on retake** | All pairs pass; slider = 80 + 4 × value nits |
-| Light-theme browser (§31) | Passed at `S` = 1.5, 6; pending retake at 3.5 | Fixture |
+| Highlight texture kept (§9.6, §34.2) | Measured; visual judgment pending | Mixed scene: steps and strips separate; clip flattens them |
+| **HDR off vs on, fixture (§32.1, §34.2)** | **Passed** | Identical, every pixel, at `S` = 1.5, 3.5 and 6 |
+| **SDR brightness 10 / 50 / 100 invariance (§32.2)** | **Passed** | All pairs pass; slider = 80 + 4 × value nits |
+| Light-theme browser (§31) | Passed | Fixture |
 | Light-theme IDE, dark-theme IDE (§31) | As the fixture (its code blocks); optionally add `--scenes fixture,mixed,vscode-light,vscode-dark` | |
-| Saturated colors (§31) | Passed at `S` = 1.5, 6; with HDR on screen after the v3 cross-talk fix | Fixture |
-| HDR content beside SDR UI (§31) | Passed at `S` = 3.5 and 6; pending retake at 1.5 | Mixed scene |
+| Saturated colors (§31) | Passed (with HDR on screen, since the v3 cross-talk fix) | Fixture |
+| HDR content beside SDR UI (§31) | Passed | Mixed scene: ≤ 1 code outside the HDR image at all three levels |
 | SDR monitor path (§9.5) | Passed | HDR off: FP16 path and 8-bit capture identical |
 | Advanced Color SDR (WCG) hardware | Not available | `S = 1` from the SDK's description |
 | 125/150/200% scaling, second monitor (§32.3) | Milestone 5 | |
