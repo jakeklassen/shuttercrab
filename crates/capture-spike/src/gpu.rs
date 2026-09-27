@@ -183,7 +183,7 @@ pub fn wide_to_string(s: &[u16]) -> String {
 pub struct SdrConverter {
     tile_peak: ID3D11ComputeShader,
     frame_peak: ID3D11ComputeShader,
-    proximity: ID3D11ComputeShader,
+    classify: ID3D11ComputeShader,
     convert: ID3D11ComputeShader,
 }
 
@@ -213,7 +213,7 @@ impl SdrConverter {
         Ok(Self {
             tile_peak: compile(gpu, s!("tile_peak"))?,
             frame_peak: compile(gpu, s!("frame_peak"))?,
-            proximity: compile(gpu, s!("proximity"))?,
+            classify: compile(gpu, s!("classify"))?,
             convert: compile(gpu, s!("convert"))?,
         })
     }
@@ -242,7 +242,7 @@ impl SdrConverter {
         let read_write = D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS;
         let peaks = gpu.texture(tiles_x, tiles_y, DXGI_FORMAT_R32_FLOAT, read_write, None)?;
         let peak = gpu.texture(1, 1, DXGI_FORMAT_R32_FLOAT, read_write, None)?;
-        let near = gpu.texture(tiles_x, tiles_y, DXGI_FORMAT_R32_FLOAT, read_write, None)?;
+        let classes = gpu.texture(width, height, DXGI_FORMAT_R8_UNORM, read_write, None)?;
         let output = gpu.texture(
             width,
             height,
@@ -308,16 +308,16 @@ impl SdrConverter {
             (1, 1),
         );
         pass(
-            &self.proximity,
-            [None, Some(srv(gpu, &peaks)?), None],
-            [Some(uav(gpu, &near)?), None],
-            (tiles_x.div_ceil(8), tiles_y.div_ceil(8)),
+            &self.classify,
+            [Some(source_srv.clone()), None, None],
+            [Some(uav(gpu, &classes)?), None],
+            (width.div_ceil(8), height.div_ceil(8)),
         );
         pass(
             &self.convert,
             [
                 Some(source_srv),
-                Some(srv(gpu, &near)?),
+                Some(srv(gpu, &classes)?),
                 Some(srv(gpu, &peak)?),
             ],
             [None, Some(uav(gpu, &output)?)],

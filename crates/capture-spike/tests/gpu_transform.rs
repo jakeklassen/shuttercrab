@@ -188,3 +188,40 @@ fn negative_and_extended_values_have_golden_outputs() {
         assert_eq!(&got[12..16], [0, 0, 0, 255], "{}", gpu.adapter_name);
     }
 }
+
+#[test]
+fn sdr_content_beside_hdr_content_stays_exact() {
+    // Left: an HDR ramp from 1× to 4× SDR white. Right, touching it: every
+    // grey code, as Windows composes SDR content.
+    let s = 3.0;
+    let (width, height) = (64 + 256, 8);
+    let pixels: Vec<[f32; 4]> = (0..width * height)
+        .map(|i| {
+            let x = i % width;
+            let v = if x < 64 {
+                s * (1.0 + 3.0 * x as f32 / 63.0)
+            } else {
+                color::code_to_linear((x - 64) as u8) * s
+            };
+            [v, v, v, 1.0]
+        })
+        .collect();
+    for gpu in devices() {
+        let (got, want) = run(&gpu, width, height, &pixels, s, Highlights::Shoulder);
+        assert_eq!(got, want, "{}", gpu.adapter_name);
+        // x = 64 borders the HDR ramp; from x = 65 on, every code is exact.
+        for x in 65..width {
+            let code = (x - 64) as u8;
+            let i = ((height / 2) * width + x) as usize * 4;
+            assert_eq!(
+                &got[i..i + 3],
+                [code; 3],
+                "{} code {code}",
+                gpu.adapter_name
+            );
+        }
+        // The HDR ramp keeps its gradation.
+        let ramp: std::collections::BTreeSet<u8> = (0..64).map(|x| got[x * 4]).collect();
+        assert!(ramp.len() >= 8, "{}", gpu.adapter_name);
+    }
+}

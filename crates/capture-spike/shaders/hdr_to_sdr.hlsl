@@ -2,8 +2,8 @@
 //
 //   tile_peak   source scRGB          -> peak of each 16x16 tile, normalized
 //   frame_peak  tile peaks            -> peak of the whole frame (1x1)
-//   proximity   tile peaks            -> 1 near extended tiles, else 0
-//   convert     source + both maps    -> packed RGBA8 sRGB
+//   classify    source scRGB          -> 1 where a pixel is an SDR code value
+//   convert     source, peak, classes -> packed RGBA8 sRGB
 //
 // Input is linear scRGB (BT.709 primaries, 1.0 = 80 nits in HDR mode), never PQ
 // and never sRGB-encoded. src/color.rs is the CPU reference for every function
@@ -21,13 +21,14 @@ cbuffer Params : register(b0)
 };
 
 Texture2D<float4> source : register(t0);
-Texture2D<float> tileMap : register(t1);    // peaks, or proximity for convert
+Texture2D<float> tileMap : register(t1);    // tile peaks, or SDR classes for convert
 Texture2D<float> framePeakIn : register(t2);
 RWTexture2D<float> tileOut : register(u0);
 RWTexture2D<uint> destination : register(u1);
 
 static const uint TILE = 16;
-static const int DILATE_TILES = 1;
+static const float CODE_TOLERANCE = 0.25;
+static const float NEGLIGIBLE = 0.005;
 static const float EXTENDED_EPSILON = 1.0 / 256.0;
 static const float SHOULDER_BETA = 0.25;
 static const float FP16_MAX = 65504.0;
@@ -117,35 +118,37 @@ void frame_peak(uint index : SV_GroupIndex)
         tileOut[uint2(0, 0)] = scratch[0];
 }
 
-[numthreads(8, 8, 1)]
-void proximity(uint3 id : SV_DispatchThreadID)
+// A channel is an SDR code value when it is negligible, or within SDR white and
+// S x decode(code) for some 8-bit code to within CODE_TOLERANCE codes.
+bool onCodeGrid(float3 c)
 {
-    if (id.x >= tilesX || id.y >= tilesY)
-        return;
-    int2 last = int2(tilesX - 1, tilesY - 1);
-    float near = 0.0;
-    for (int dy = -DILATE_TILES; dy <= DILATE_TILES; dy++)
-        for (int dx = -DILATE_TILES; dx <= DILATE_TILES; dx++)
-            if (tileMap.Load(int3(clamp(int2(id.xy) + int2(dx, dy), 0, last), 0)) > 1.0 + EXTENDED_EPSILON)
-                near = 1.0;
-    tileOut[id.xy] = near;
+    float3 n = c / whiteScale;
+    if (any(isnan(n)))
+        return false;
+    bool3 negligible = abs(n) < NEGLIGIBLE;
+    if (any(!negligible && (n < 0.0 || n > 1.0 + EXTENDED_EPSILON)))
+        return false;
+    float3 code = float3(srgbEncode(n.r), srgbEncode(n.g), srgbEncode(n.b)) * 255.0;
+    return all(negligible || abs(code - round(code)) <= CODE_TOLERANCE);
 }
 
-// Bilinear interpolation of the proximity map between tile centres.
-float weightAt(uint2 p)
+[numthreads(8, 8, 1)]
+void classify(uint3 id : SV_DispatchThreadID)
 {
-    float2 last = float2(tilesX - 1, tilesY - 1);
-    float2 u = clamp((float2(p) + 0.5) / TILE - 0.5, 0.0, last);
-    uint2 i0 = (uint2)floor(u);
-    uint2 i1 = min(i0 + 1, uint2(last));
-    float2 f = u - float2(i0);
-    float v00 = tileMap.Load(int3(i0.x, i0.y, 0));
-    float v10 = tileMap.Load(int3(i1.x, i0.y, 0));
-    float v01 = tileMap.Load(int3(i0.x, i1.y, 0));
-    float v11 = tileMap.Load(int3(i1.x, i1.y, 0));
-    float top = v00 + (v10 - v00) * f.x;
-    float bottom = v01 + (v11 - v01) * f.x;
-    return top + (bottom - top) * f.y;
+    if (id.x >= width || id.y >= height)
+        return;
+    tileOut[id.xy] = onCodeGrid(source.Load(int3(id.xy, 0)).rgb) ? 1.0 : 0.0;
+}
+
+// SDR content: the pixel and its four neighbours are all SDR code values.
+bool sdrContent(uint2 p)
+{
+    uint2 last = uint2(width - 1, height - 1);
+    return tileMap.Load(int3(p, 0)) > 0.5
+        && tileMap.Load(int3(uint2(p.x == 0 ? 0 : p.x - 1, p.y), 0)) > 0.5
+        && tileMap.Load(int3(uint2(min(p.x + 1, last.x), p.y), 0)) > 0.5
+        && tileMap.Load(int3(uint2(p.x, p.y == 0 ? 0 : p.y - 1), 0)) > 0.5
+        && tileMap.Load(int3(uint2(p.x, min(p.y + 1, last.y)), 0)) > 0.5;
 }
 
 [numthreads(8, 8, 1)]
@@ -157,10 +160,9 @@ void convert(uint3 id : SV_DispatchThreadID)
     if (highlightMode == 0)
     {
         float framePeak = framePeakIn.Load(int3(0, 0, 0));
-        float w = weightAt(id.xy);
         float m = peak(n);
-        if (framePeak > 1.0 + EXTENDED_EPSILON && w > 0.0 && m > 0.0)
-            n *= (m + w * (shoulder(m, framePeak) - m)) / m;
+        if (framePeak > 1.0 + EXTENDED_EPSILON && m > 0.0 && !sdrContent(id.xy))
+            n *= shoulder(m, framePeak) / m;
     }
     n /= max(1.0, peak(n));
     uint r = quantize(srgbEncode(n.r));

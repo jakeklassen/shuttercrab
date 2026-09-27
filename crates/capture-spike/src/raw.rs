@@ -92,9 +92,9 @@ impl RawFrame {
             .collect()
     }
 
-    /// The highlight analysis the shader does on this frame.
-    pub fn highlight_map(&self) -> color::HighlightMap {
-        color::HighlightMap::new(&self.pixels(), self.width, self.height, self.white_scale)
+    /// The per-frame analysis the shader does on this frame.
+    pub fn analysis(&self) -> color::FrameAnalysis {
+        color::FrameAnalysis::new(&self.pixels(), self.width, self.height, self.white_scale)
     }
 }
 

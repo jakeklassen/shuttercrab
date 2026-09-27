@@ -1,0 +1,122 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Framecut SDR reference</title>
+<!--
+  Framecut Milestone 0 test surface. Static and local: no animation, no caret,
+  no network. Show it full screen (F11) at 100% browser zoom and keep the pointer
+  off it. Add ?hdr to the URL for the mixed-content scene, which places an HDR
+  PNG (hdr-test.png, BT.2020 PQ) in the bottom-right corner, far from the SDR
+  patches. The page must look identical from run to run.
+-->
+<style>
+  :root { color-scheme: light; }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; background: #fff; color: #1f2328; overflow: hidden; }
+  body { font: 16px/1.5 "Segoe UI", sans-serif; padding: 24px 32px; }
+  h1 { font-size: 22px; font-weight: 600; margin: 0 0 12px; }
+  h2 { font-size: 13px; font-weight: 600; margin: 14px 0 6px; color: #59636e; text-transform: uppercase; letter-spacing: .04em; }
+  .row { display: flex; flex-wrap: wrap; gap: 0; }
+  .patch { width: 112px; height: 64px; padding: 6px; font: 12px Consolas, monospace; }
+  .on-dark { color: #fff; }
+  .ramp { display: flex; height: 36px; }
+  .ramp div { width: 8px; }
+  .grid { display: grid; grid-template-columns: 900px 900px; gap: 24px; }
+  pre { margin: 0; padding: 10px 0; font: 15px/1.55 Consolas, monospace; }
+  .ide-light { background: #fff; color: #000; border: 1px solid #e5e5e5; }
+  .ide-dark { background: #1e1e1e; color: #d4d4d4; }
+  .line { display: block; padding: 0 12px; }
+  .ln { display: inline-block; width: 32px; color: #237893; }
+  .ide-dark .ln { color: #858585; }
+  .current { background: #f3f3f3; }
+  .ide-dark .current { background: #282828; }
+  .sel { background: #add6ff; }
+  .ide-dark .sel { background: #264f78; }
+  .text p { margin: 4px 0; }
+  .gradient { height: 36px; width: 1824px; }
+  #hdr { position: fixed; right: 48px; bottom: 48px; width: 512px; height: 256px; display: none; }
+  body.hdr #hdr { display: block; }
+</style>
+<body>
+<h1>Framecut SDR reference v1</h1>
+
+<h2>Neutrals</h2>
+<div class="row">
+  <div class="patch" style="background:#ffffff">#FFFFFF</div>
+  <div class="patch" style="background:#fbfbfb">#FBFBFB</div>
+  <div class="patch" style="background:#f7f7f7">#F7F7F7</div>
+  <div class="patch" style="background:#f0f0f0">#F0F0F0</div>
+  <div class="patch" style="background:#e5e5e5">#E5E5E5</div>
+  <div class="patch" style="background:#cccccc">#CCCCCC</div>
+  <div class="patch" style="background:#999999">#999999</div>
+  <div class="patch" style="background:#808080">#808080</div>
+  <div class="patch on-dark" style="background:#555555">#555555</div>
+  <div class="patch on-dark" style="background:#333333">#333333</div>
+  <div class="patch on-dark" style="background:#1e1e1e">#1E1E1E</div>
+  <div class="patch on-dark" style="background:#0a0a0a">#0A0A0A</div>
+  <div class="patch on-dark" style="background:#000000">#000000</div>
+</div>
+
+<h2>Every code: grey, red, green, blue (0 to 255, left to right)</h2>
+<div class="ramp" data-ramp="grey"></div>
+<div class="ramp" data-ramp="red"></div>
+<div class="ramp" data-ramp="green"></div>
+<div class="ramp" data-ramp="blue"></div>
+
+<h2>Saturated and UI accent colors</h2>
+<div class="row">
+  <div class="patch" style="background:#ff0000">#FF0000</div>
+  <div class="patch" style="background:#00ff00">#00FF00</div>
+  <div class="patch on-dark" style="background:#0000ff">#0000FF</div>
+  <div class="patch" style="background:#00ffff">#00FFFF</div>
+  <div class="patch" style="background:#ff00ff">#FF00FF</div>
+  <div class="patch" style="background:#ffff00">#FFFF00</div>
+  <div class="patch" style="background:#ff8800">#FF8800</div>
+  <div class="patch on-dark" style="background:#660099">#660099</div>
+  <div class="patch on-dark" style="background:#0969da">#0969DA</div>
+  <div class="patch on-dark" style="background:#1a7f37">#1A7F37</div>
+  <div class="patch on-dark" style="background:#cf222e">#CF222E</div>
+  <div class="patch on-dark" style="background:#8250df">#8250DF</div>
+  <div class="patch" style="background:#bf8700">#BF8700</div>
+  <div class="patch" style="background:#ddf4ff">#DDF4FF</div>
+  <div class="patch" style="background:#fff8c5">#FFF8C5</div>
+</div>
+
+<h2>Gradients</h2>
+<div class="gradient" style="background:linear-gradient(to right,#000,#fff)"></div>
+<div class="gradient" style="background:linear-gradient(to right,#ddd,#fff)"></div>
+<div class="gradient" style="background:linear-gradient(to right,#f00,#ff0,#0f0,#0ff,#00f,#f0f,#f00)"></div>
+
+<h2>Code, light and dark themes</h2>
+<div class="grid">
+<pre class="ide-light"><span class="line"><span class="ln">1</span><span style="color:#0000ff">use</span> std::path::<span style="color:#267f99">PathBuf</span>;</span><span class="line"><span class="ln">2</span></span><span class="line current"><span class="ln">3</span><span style="color:#008000">// Whites, near-whites and syntax colors must survive HDR.</span></span><span class="line"><span class="ln">4</span><span style="color:#0000ff">pub fn</span> <span style="color:#795e26">capture</span>(<span style="color:#001080">white</span>: <span style="color:#267f99">f32</span>) -&gt; <span style="color:#267f99">Result</span>&lt;<span style="color:#267f99">PathBuf</span>&gt; {</span><span class="line"><span class="ln">5</span>    <span style="color:#af00db">let</span> <span style="color:#001080">nits</span> = <span style="color:#098658">80.0</span> * <span class="sel"><span style="color:#001080">white</span></span>;</span><span class="line"><span class="ln">6</span>    <span style="color:#795e26">save</span>(<span style="color:#a31515">"capture.png"</span>, <span style="color:#001080">nits</span>)</span><span class="line"><span class="ln">7</span>}</span></pre>
+<pre class="ide-dark"><span class="line"><span class="ln">1</span><span style="color:#569cd6">use</span> std::path::<span style="color:#4ec9b0">PathBuf</span>;</span><span class="line"><span class="ln">2</span></span><span class="line current"><span class="ln">3</span><span style="color:#6a9955">// Whites, near-whites and syntax colors must survive HDR.</span></span><span class="line"><span class="ln">4</span><span style="color:#569cd6">pub fn</span> <span style="color:#dcdcaa">capture</span>(<span style="color:#9cdcfe">white</span>: <span style="color:#4ec9b0">f32</span>) -&gt; <span style="color:#4ec9b0">Result</span>&lt;<span style="color:#4ec9b0">PathBuf</span>&gt; {</span><span class="line"><span class="ln">5</span>    <span style="color:#c586c0">let</span> <span style="color:#9cdcfe">nits</span> = <span style="color:#b5cea8">80.0</span> * <span class="sel"><span style="color:#9cdcfe">white</span></span>;</span><span class="line"><span class="ln">6</span>    <span style="color:#dcdcaa">save</span>(<span style="color:#ce9178">"capture.png"</span>, <span style="color:#9cdcfe">nits</span>)</span><span class="line"><span class="ln">7</span>}</span></pre>
+</div>
+
+<h2>Text</h2>
+<div class="text">
+  <p style="font-size:11px">11px: The quick brown fox jumps over the lazy dog. 0123456789 (){}[] &lt;&gt; =&gt; != ~</p>
+  <p style="font-size:13px">13px: The quick brown fox jumps over the lazy dog. <span style="color:#59636e">Muted #59636E.</span> <a href="#" style="color:#0969da">Link #0969DA</a></p>
+  <p style="font-size:16px">16px: Dark text on white, thin strokes and antialiased edges. <b>Bold</b> · <i>Italic</i></p>
+  <p style="font-size:24px;font-weight:300">24px light: Light-theme correctness is a release blocker.</p>
+</div>
+
+<img id="hdr" src="hdr-test.png" alt="HDR test image (BT.2020 PQ)">
+
+<script>
+  const code = i => i.toString(16).padStart(2, "0");
+  const colors = {
+    grey: i => `#${code(i)}${code(i)}${code(i)}`,
+    red: i => `#${code(i)}0000`,
+    green: i => `#00${code(i)}00`,
+    blue: i => `#0000${code(i)}`,
+  };
+  for (const ramp of document.querySelectorAll("[data-ramp]")) {
+    for (let i = 0; i < 256; i++) {
+      const stripe = document.createElement("div");
+      stripe.style.background = colors[ramp.dataset.ramp](i);
+      ramp.appendChild(stripe);
+    }
+  }
+  if (new URLSearchParams(location.search).has("hdr")) document.body.classList.add("hdr");
+</script>
+</body>

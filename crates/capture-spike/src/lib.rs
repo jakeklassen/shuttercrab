@@ -7,6 +7,8 @@ pub mod analysis;
 pub mod capture;
 pub mod color;
 pub mod display;
+pub mod fixture;
+pub mod gate;
 pub mod gpu;
 pub mod png_io;
 pub mod raw;

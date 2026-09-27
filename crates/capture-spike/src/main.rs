@@ -8,7 +8,7 @@ use anyhow::{Context, Result, bail, ensure};
 use capture_spike::{
     analysis::{self, Roi},
     color::{self, Highlights},
-    display,
+    display, fixture, gate,
     gpu::{Gpu, SdrConverter},
     png_io,
     raw::RawFrame,
@@ -50,6 +50,20 @@ USAGE
       Without a reference: how well piecewise sRGB and gamma 2.2 explain the
       FP16 values as 8-bit codes at the recorded SDR white level.
 
+  capture-spike probe SOURCE.fp16 X,Y,W,H
+      Mean, min and max FP16 values over a region, relative to SDR white.
+
+  capture-spike gate [--monitor M] [--scenes fixture,mixed] [--delay SECONDS] [--out DIR]
+      The Milestone 0 gate: a guided session that captures each scene with HDR
+      off and at three SDR content brightness settings, then writes summary.md.
+      Default delay 5 s, default directory captures/gate-TIMESTAMP.
+
+  capture-spike gate-report DIR [--scenes fixture,mixed]
+      Re-run the gate analysis on a finished session.
+
+  capture-spike hdr-fixture OUT.png
+      Write the HDR test image (BT.2020 PQ PNG) used by the mixed scene.
+
 Run `capture-spike help` for this text.";
 
 fn main() {
@@ -78,6 +92,10 @@ fn run() -> Result<()> {
         Some("compare") => compare(args),
         Some("transfer") => transfer(args),
         Some("fit") => fit(args),
+        Some("probe") => probe(args),
+        Some("gate") => gate(args),
+        Some("gate-report") => gate_report(args),
+        Some("hdr-fixture") => hdr_fixture(args),
         Some("help") | None => {
             println!("{USAGE}");
             Ok(())
@@ -138,7 +156,7 @@ pub fn print_snapshot(shot: &snapshot::Snapshot) {
     );
     if shot.frame_peak > 1.0 + color::EXTENDED_EPSILON {
         println!(
-            "HDR content present: frame peak {:.2}x SDR white; highlights compressed near it",
+            "HDR content present: frame peak {:.2}x SDR white; non-SDR content goes through the shoulder",
             shot.frame_peak
         );
     } else {
@@ -193,9 +211,9 @@ fn compare(mut args: Args) -> Result<()> {
                 (raw.width, raw.height) == (width, height),
                 "the FP16 source is a different size"
             );
-            let (mask, near) = analysis::near_hdr_mask(&raw);
+            let (mask, near) = analysis::shoulder_mask(&raw);
             if near > 0 {
-                println!("Leaving out {near} px near HDR content");
+                println!("Leaving out {near} px of HDR content");
             }
             Some(mask)
         }
@@ -266,6 +284,40 @@ fn fit(mut args: Args) -> Result<()> {
     Ok(())
 }
 
+fn probe(mut args: Args) -> Result<()> {
+    let source = PathBuf::from(args.positional("SOURCE.fp16")?);
+    let roi = Roi::parse(&args.positional("X,Y,W,H")?)?;
+    args.finish()?;
+    let raw = RawFrame::read(&source)?;
+    roi.check(raw.width, raw.height)?;
+    let s = raw.white_scale;
+    let (mut sum, mut lo, mut hi) = ([0.0f64; 3], [f32::MAX; 3], [f32::MIN; 3]);
+    for y in roi.y..roi.y + roi.height {
+        for x in roi.x..roi.x + roi.width {
+            let p = raw.pixel(x, y);
+            for c in 0..3 {
+                sum[c] += p[c] as f64;
+                lo[c] = lo[c].min(p[c]);
+                hi[c] = hi[c].max(p[c]);
+            }
+        }
+    }
+    let n = (roi.width * roi.height) as f64;
+    let curve = analysis::Curve::Srgb;
+    println!("S = {s}; values over S, and the code piecewise sRGB implies:");
+    for (c, name) in ["R", "G", "B"].iter().enumerate() {
+        let mean = sum[c] / n;
+        println!(
+            "  {name}: mean {:.6} (code {:.3}), min {:.6}, max {:.6}",
+            mean / s as f64,
+            curve.encode(mean / s as f64),
+            lo[c] / s,
+            hi[c] / s
+        );
+    }
+    Ok(())
+}
+
 fn highlights(args: &mut Args) -> Result<Highlights> {
     args.option("--highlights")?
         .map(|h| Highlights::parse(&h))
@@ -312,4 +364,54 @@ impl Args {
         );
         Ok(())
     }
+}
+
+fn scenes(args: &mut Args) -> Result<Vec<String>> {
+    let scenes: Vec<String> = args
+        .option("--scenes")?
+        .unwrap_or_else(|| "fixture,mixed".into())
+        .split(',')
+        .map(|s| s.trim().to_owned())
+        .filter(|s| !s.is_empty())
+        .collect();
+    ensure!(
+        scenes.iter().all(|s| s
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')),
+        "scene names may only contain letters, digits, '-' and '_'"
+    );
+    ensure!(!scenes.is_empty(), "--scenes needs at least one scene");
+    Ok(scenes)
+}
+
+fn gate(mut args: Args) -> Result<()> {
+    let monitor = args.option("--monitor")?;
+    let scenes = scenes(&mut args)?;
+    let delay: f64 = args
+        .option("--delay")?
+        .map(|d| d.parse())
+        .transpose()?
+        .unwrap_or(5.0);
+    let dir = args
+        .option("--out")?
+        .map(PathBuf::from)
+        .unwrap_or_else(gate::default_dir);
+    args.finish()?;
+    gate::run(monitor.as_deref(), &scenes, &dir, delay)
+}
+
+fn gate_report(mut args: Args) -> Result<()> {
+    let scenes = scenes(&mut args)?;
+    let dir = PathBuf::from(args.positional("DIR")?);
+    args.finish()?;
+    println!("{}", gate::report(&dir, &scenes)?);
+    Ok(())
+}
+
+fn hdr_fixture(mut args: Args) -> Result<()> {
+    let out = PathBuf::from(args.positional("OUT.png")?);
+    args.finish()?;
+    fixture::write_hdr_test_image(&out)?;
+    println!("Wrote {}", out.display());
+    Ok(())
 }

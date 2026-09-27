@@ -151,7 +151,7 @@ pub fn take(monitor: Option<&str>, dir: &Path, highlights: Highlights) -> Result
             "highlights": highlights.name(),
             "shoulder_beta": color::SHOULDER_BETA,
             "tile": color::TILE,
-            "dilate_tiles": color::DILATE_TILES,
+            "code_tolerance": color::CODE_TOLERANCE,
             "extended_epsilon": color::EXTENDED_EPSILON,
         },
         "frame": {

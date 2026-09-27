@@ -253,7 +253,13 @@ pub fn compare(
         for (bin, count) in histogram.iter().enumerate() {
             seen += count;
             if seen >= target.max(1) {
-                return (bin + 1) as f64 * HISTOGRAM_STEP;
+                // Upper bin edge, so the figure is never optimistic; the
+                // first bin reads 0 so identical images report 0.
+                return if bin == 0 {
+                    0.0
+                } else {
+                    (bin + 1) as f64 * HISTOGRAM_STEP
+                };
             }
         }
         0.0
@@ -303,18 +309,18 @@ pub fn heatmap(reference: &[u8], comparison: &Comparison, exclude: Option<&[bool
     out
 }
 
-/// Pixels the SDR comparison must skip in a frame with HDR content: every
-/// pixel the shoulder may touch (proximity weight above zero). There, the
-/// HDR-off reference shows the application's own tone mapping of its HDR
-/// content, which a desktop capture cannot reproduce.
-pub fn near_hdr_mask(raw: &RawFrame) -> (Vec<bool>, u64) {
-    let map = raw.highlight_map();
+/// Pixels the SDR comparison must skip: those the shoulder changes, which
+/// is HDR and other non-SDR content in a frame that holds values above SDR
+/// white. There the HDR-off reference shows the application's own tone
+/// mapping, which a desktop capture cannot reproduce. Empty otherwise.
+pub fn shoulder_mask(raw: &RawFrame) -> (Vec<bool>, u64) {
+    let map = raw.analysis();
     let mut mask = vec![false; (raw.width * raw.height) as usize];
     let mut count = 0;
     if map.has_extended() {
         for y in 0..raw.height {
             for x in 0..raw.width {
-                if map.at(x, y).weight > 0.0 {
+                if map.shoulder_applies(x, y) {
                     mask[(y * raw.width + x) as usize] = true;
                     count += 1;
                 }
