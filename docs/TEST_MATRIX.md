@@ -164,6 +164,45 @@ fixture`. The first session needed both: two captures showed the wrong tab,
 and the retake of `hdr-mid/fixture` caught a notification (a 480×120 block in
 the bottom-right corner; every other pixel matched the reference exactly).
 
+## HDR content benchmark
+
+The gate proves ordinary UI. How HDR content itself (HDR images, video,
+games) should look in an SDR screenshot has no single right answer: a PNG
+cannot be brighter than white, so highlights must be squeezed below it. This
+section records how the current choice was made, so it can be revisited.
+
+### What other tools do (research, 2026-09-27)
+
+| Tool | HDR → SDR | White UI |
+|---|---|---|
+| NVIDIA (Alt+F1) | Saves JXR; its PNG was reported not tone mapped (washed out) | — |
+| ShareX | None: washed out | — |
+| OBS | Reinhard per channel | greyed to ≈ 191 |
+| Snipping Tool, colour corrector off | Clips highlights; UI washed out on HDR (measured below) | 255 |
+| Snipping Tool, colour corrector on | Tone maps | greyed to 224 (measured below) |
+| Xbox Game Bar | JXR plus a tone-mapped PNG; method unpublished | — |
+| Chrome / Edge (HDR off) | Documented curve: HDR reference white (203 nits) → half brightness, ≈ code 188 | 255 |
+| ITU-R BT.2446 (broadcast) | HDR reference white → 86–96% of SDR | — |
+
+No established test method for HDR screenshots exists; objective metrics
+(TMQI, HDR-VDP, ΔE_ITP) are for media, not desktop UI.
+
+### Measured on the `?hdr` page, SDR brightness 50
+
+| Candidate | Page white | UI vs HDR-off | HDR image vs Edge's HDR-off rendering | Eight grey steps, 100–500 nits |
+|---|---|---|---|---|
+| Edge, HDR off (reference) | 255 | — | — | 136 164 187 201 211 218 223 232 |
+| Snipping Tool, corrector off | 255 | ΔE00 3.06 | 9.26 | all 255 |
+| Snipping Tool, corrector on | 224 | ΔE00 5.79 | 4.98 | 173 203 215 220 223 225 226 228 |
+| Framecut v3 | 255 | ΔE00 0.00 | 4.48 | 159 191 218 236 248 251 252 253 |
+| Framecut v4 (chosen) | 255 | ΔE00 0.00 | 0.90 | 143 171 195 207 216 222 227 235 |
+
+The owner compared these as images and chose v4. Still to do, in the owner's
+A/B style: real HDR video and photos (e.g. a paused YouTube HDR clip in Edge,
+HDR on and off), multiple HDR windows, subtitles and controls over video, and
+a steadier exposure anchor than the region's peak (see
+[COLOR_PIPELINE.md](COLOR_PIPELINE.md#known-limits-and-expected-differences)).
+
 ## Manual tools
 
 | Command | Use |
@@ -187,7 +226,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Shader arithmetic (§33 golden tests) | Passed | WARP and RTX 4090 |
 | Windows stores SDR as `S × sRGB⁻¹(code)` | Passed | 100.00% on the code grid (terminal); against HDR-off references at `S` = 1.5, 3.5, 6: within 0.17 code, white / `S` = 1.00000 |
 | SDR content untouched beside HDR content (§9.6) | Passed locally | Mixed scene: only the HDR image changes |
-| Highlight texture kept (§9.6, §34.2) | Passed: owner prefers the shoulder to clipping | Mixed scene at 3.79×: 29 distinct colors vs 8 clipped; known inversion at reference white (COLOR_PIPELINE.md) |
+| Highlight texture kept (§9.6, §34.2) | Passed on the test image; owner chose the v4 curve | 106 distinct colors vs 8 clipped at 3.79×; ΔE00 0.51–1.07 vs Edge's own rendering. Real HDR video still to test ([benchmark](#hdr-content-benchmark)) |
 | **HDR off vs on, fixture (§32.1, §34.2)** | **Passed** | Identical, every pixel, at `S` = 1.5, 3.5 and 6 |
 | **SDR brightness 10 / 50 / 100 invariance (§32.2)** | **Passed** | All pairs pass; slider = 80 + 4 × value nits |
 | Light-theme browser (§31) | Passed | Fixture |

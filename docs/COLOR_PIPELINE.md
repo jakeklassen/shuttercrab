@@ -3,7 +3,8 @@
 Status: **the Milestone 0 gate passed on 2026-09-27** (session
 `gate-20260927-112049`, 12 of 12 comparisons; see [Evidence](#evidence)),
 pending the project owner's confirmation. Transform version:
-`sdr-codes-exact-shoulder-v3`.
+`sdr-exact-hdr-regions-v4`, which re-passes the same session (see
+[Evidence](#evidence)).
 
 This is the color decision record the PRD requires (§37, items 3 and 4): what
 Framecut does to turn a Windows desktop capture into an SDR PNG, why, and the
@@ -106,25 +107,36 @@ For each pixel of scRGB `C`:
    **SDR content** when all channels of it and its eight neighbours are on
    the grid.
 
-4. **Frame peak.** `P = max over the frame of max(N.r, N.g, N.b)`, after step 2.
+4. **Where is HDR content?** Per 16×16 tile the GPU counts pixels that are
+   not SDR content, counts pixels above SDR white (`max(N) > 1 + ε`), keeps
+   the bounding box of the non-SDR pixels, and the tile's peak `max(N)`. A
+   tile *qualifies* when it holds a pixel above SDR white or when at least a
+   quarter of it is not SDR content. On the CPU, qualifying tiles are grown by
+   one tile and joined into 4-connected areas; an area with no pixel above
+   SDR white is dropped (SDR video, compositor effects). Each remaining area
+   becomes an **HDR region**: the bounding box of its non-SDR pixels, trimmed
+   by one pixel (the ring the 3×3 rule adds around any non-SDR content), with
+   `P` = the area's peak. At most 32 regions; more are merged into one.
 
-5. **Shoulder.** Only if `P > 1 + ε` (the frame holds something brighter than
-   SDR white) and the pixel is *not* SDR content. With `m = max(N)`:
+5. **Tone map HDR regions.** Inside a region, with `m = max(N)`:
 
    ```text
-   k    = 1 − β (1 − 1/P)                                  knee, β = 0.25
-   f(x) = x                                                x ≤ k
-   f(x) = k + (1 − k) · a (1 + a/A²) / (1 + a)              x > k,  a = (x − k)/(1 − k),  A = (P − k)/(1 − k)
+   g    = 1 / √P                                            gain: dims the content to leave room
+   x    = g · m
+   f(m) = x                                                 x ≤ 0.45
+   f(m) = 0.45 + 0.55 · a (1 + a/A²) / (1 + a)              x > 0.45,  a = (x − 0.45)/0.55,  A = (√P − 0.45)/0.55
    N    ← N · f(m) / m
    ```
 
-   `f` is identity up to the knee, leaves it with slope 1, rises monotonically,
-   and reaches exactly 1 at `P` (an extended-Reinhard curve on a shifted
-   axis). Scaling all three channels by the same factor keeps hue and channel
-   ratios.
+   `f` dims the region's content by `g`, stays linear up to 0.45, then rolls
+   off with an extended-Reinhard shoulder that reaches exactly 1 at the
+   region's peak (`g · P = √P`). Scaling all three channels by the same factor
+   keeps hue and channel ratios. Everything outside regions, SDR content or
+   not, is left as captured.
 
-6. **Into the cube.** `N ← N / max(1, max(N))`. This is a no-op except for
-   values within `ε` of white, and for everything in `--highlights clip` mode.
+6. **Into the cube.** `N ← N / max(1, max(N))`. A no-op except for values
+   within `ε` of white, stray extended pixels outside any region, and
+   everything in `--highlights clip` mode.
 
 7. **Encode.** `code = floor(255 · E(N) + 0.5)` per channel, alpha 255. The
    shader writes the packed bytes itself (into `R32_UINT`) rather than trust
@@ -138,47 +150,60 @@ and no HDR metadata.
 | Constant | Value | Why |
 |---|---|---|
 | `ε` (`EXTENDED_EPSILON`) | 1/256 | SDR white stored in FP16 can read a hair above 1 (FP16 step 2⁻¹¹ relative); it must not count as HDR |
-| `β` (`SHOULDER_BETA`) | 0.25 | Share of the SDR range the shoulder may borrow; the knee falls from 1 (no headroom) toward 0.75 |
 | `CODE_TOLERANCE` | 0.25 code | Near white one FP16 step is ≈ 0.073 code. Edge compositing SDR content in its own FP16 pipeline lands up to 2 steps off. This allows ≈ 3 |
-| `NEGLIGIBLE` | 0.005 | Edge leaks ≈ +0.0001 into channels that should be 0 (code 0.4 of red in pure green); channels this dark are far below any knee |
+| `NEGLIGIBLE` | 0.005 | Edge leaks ≈ +0.0001 into channels that should be 0 (code 0.4 of red in pure green); channels this dark never matter |
 | `CROSS_TALK` | 0.001 × peak | Edge's FP16 color conversion moves a dim channel beside a bright one by up to ≈ 0.0004 × the bright one: red codes 22–61 on a green gradient sat 0.27–0.37 code off the grid |
-| `TILE` | 16 px | Only the GPU reduction of `P` uses it |
+| `TILE` | 16 px | Grain of the HDR-region analysis |
+| `REGION_SHARE` | 1/4 | A tile a quarter non-SDR is HDR content even without highlights (the dark parts of an HDR image) |
+| `TONE_KNEE` | 0.45 | Where the curve leaves linear; fitted with `g = 1/√P` to Edge's own HDR-off rendering |
+| `MAX_REGIONS` | 32 | Constant-buffer size |
 
-What the shoulder does at a few peaks: SDR white (`m = 1`) in non-SDR content
-maps to 0.94 (code 248) at `P = 2`, 0.907 (244) at `P = 4`, and 0.875 (240)
-as `P → ∞`. Everything between 1 and `P` spreads over the codes above that.
+What the curve does: at `P` = 3.79 (SDR white 120 nits on this panel), HDR
+content at SDR white lands at code ≈ 190, and the 250–500-nit steps of the test
+image at 202–232, matching Edge's own rendering (201–232) within 4 codes. The
+peak is 255. At `P` = 1.06 (little headroom) the gain is 0.97 and the content
+is barely touched.
 
 ### Why it is built this way
 
 - **Exactness first.** Any per-pixel curve that leaves SDR white at 1 and has
   output bounded by 1 must send everything above 1 to 1. That is the prior
   spike's constraint, and why it turned neutral highlights flat white. Keeping
-  highlight detail therefore needs to know *which* pixels are SDR content.
-- **Classification beats proximity.** The first version of this transform
-  applied the shoulder near extended pixels, using a tile map. On a live
-  capture it dimmed the white page around an HDR image to 248, in visible
-  tile-shaped blocks. The grid test uses what Windows guarantees about SDR
-  content instead, and it spares SDR content right up to the edge of HDR
-  content.
-- **One curve per frame.** An earlier local-headroom design compressed each
-  region relative to its own peak. The GPU tests caught it flattening smooth HDR
-  gradients and reversing brightness order between regions. With one curve, a
-  brighter source pixel is never a darker output pixel within the non-SDR
-  content.
+  highlight detail therefore needs to know *which* pixels are HDR content.
+- **Classification beats proximity.** An early version applied a shoulder near
+  extended pixels, using a tile map. On a live capture it dimmed the white page
+  around an HDR image to 248, in tile-shaped blocks. The grid test uses what
+  Windows guarantees about SDR content instead.
+- **Regions, not pixels, get the curve.** v2 and v3 applied a shoulder to each
+  non-SDR pixel. HDR content that happens to sit on the grid (Edge puts the
+  203-nit reference white of an HDR image exactly at SDR white) then stayed at
+  255 while brighter content beside it was compressed below it: a visible
+  inversion. v4 finds each HDR area and maps all of it with one curve.
+- **Why this curve.** Capture tools disagree (see the research summary in
+  [TEST_MATRIX.md](TEST_MATRIX.md#hdr-content-benchmark)): Snipping Tool's
+  corrector greys all white UI to 224, OBS to ≈ 191, NVIDIA and ShareX do not
+  tone map. Broadcast practice (ITU-R BT.2446) puts HDR reference white at
+  86–96% of SDR; browsers (Chromium/Skia) at half brightness, leaving room for
+  highlights. The owner compared v3, three lighter log-spread curves, and
+  Edge-like curves side by side on real captures, and chose the Edge-like one:
+  every step of the test image stays distinguishable. v3 spread everything
+  above SDR white over ≈ 6 codes; v4 spreads it over ≈ 65.
+- **The gain from the peak is a first choice, not a settled one.** A second
+  review (Codex) and the research both flag that one bright pixel sets the
+  exposure of its whole region, so cropping or a spark can change it. It is
+  per region, which limits the reach. A steadier anchor is follow-up work,
+  to be judged on real HDR video in Milestone 1.
 - **Nine pixels, not one.** Non-SDR content lands on the grid by chance about
-  half the time per tested channel, and in a bright, saturated HDR pixel the
-  dim channels pass the cross-talk test anyway, leaving one channel really
-  tested. Requiring the 3×3 neighbourhood makes a chance match need nine
-  coincidences even then (≈ 0.2%), and ~27 for neutral content. The cost is
-  that the one-pixel rim of SDR content bordering HDR content goes through
-  the shoulder.
-- **Tolerances come from measurements.** Each one was widened only after a
-  real capture showed SDR content off the grid, and only as far as that
-  cause (FP16 rounding, zero-channel residue, cross-talk) explains. The
-  regression tests hold the measured pixel values.
-- **No scene-dependent exposure for SDR content.** Nothing about SDR content
-  depends on the rest of the frame: no histogram, no auto-exposure, no gamma
-  approximation. HDR content's curve depends on the frame's peak only.
+  half the time per tested channel. Requiring the 3×3 neighbourhood makes a
+  chance match need nine coincidences even for saturated content (≈ 0.2%), and
+  ~27 for neutral content; regions are built from tiles, so scattered chance
+  matches inside HDR content do not break a region.
+- **Tolerances come from measurements.** Each was widened only after a real
+  capture showed SDR content off the grid, and only as far as that cause
+  (FP16 rounding, zero-channel residue, cross-talk) explains. The regression
+  tests hold the measured pixel values.
+- **No scene-dependent exposure for SDR content.** Nothing outside HDR regions
+  depends on the rest of the frame.
 
 ### Ported from the prior spike, and changed
 
@@ -191,7 +216,7 @@ Changed:
 
 | Prior spike | Now | Why |
 |---|---|---|
-| Neutral highlights clip to flat white | Shoulder on non-SDR content | Highlight texture survives; SDR content still exact |
+| Neutral highlights clip to flat white | HDR regions tone mapped | Highlight texture survives; SDR content still exact |
 | Negative channels clipped to 0 | Luminance-preserving desaturation | Keeps luminance and hue of wide-gamut colors |
 | HDR = DXGI PQ color space | `ADVANCED_COLOR_INFO_2` active mode, DXGI as fallback and cross-check | Direct answer from Windows; distinguishes WCG |
 | FP16 path for SDR monitors too | 8-bit capture on SDR monitors | PRD §9.5; also makes the HDR-off reference the true desktop |
@@ -205,12 +230,13 @@ All passes are D3D11 compute (`cs_5_0`), compiled at start-up with
 
 | Pass | Reads | Writes |
 |---|---|---|
-| `tile_peak` | source | peak per 16×16 tile (`R32_FLOAT`) |
-| `frame_peak` | tile peaks | `P` (1×1 `R32_FLOAT`) |
 | `classify` | source | on-grid flag per pixel (`R8_UNORM`) |
-| `convert` | source, flags, `P` | packed RGBA8 (`R32_UINT`) |
+| `tile_stats` | source, flags | per tile: peak, counts, non-SDR bounding box (structured buffer) |
+| CPU: `find_regions` | tile stats (≈ 32 KB at 4K) | up to 32 HDR regions (constant buffer) |
+| `convert` | source, regions | packed RGBA8 (`R32_UINT`) |
 
-The frame stays on the GPU until the final readback of the RGBA8 result.
+The frame stays on the GPU; only the tile summary and the final RGBA8 result
+are read back.
 
 ## Evidence
 
@@ -220,14 +246,14 @@ DXGI peak 456 nits.
 
 | What | Result |
 |---|---|
-| Unit tests (CPU) | 38 pass: sRGB transfer, every code at seven white levels, hand-derived scRGB → code values, gamut mapping, shoulder values and monotonicity, grid classification (including pixels measured from Edge), CIEDE2000 against Sharma et al.'s published pairs, the gate's region and block checks |
+| Unit tests (CPU) | 37 pass: sRGB transfer, every code at seven white levels, hand-derived scRGB → code values, gamut mapping, grid classification (including pixels measured from Edge), HDR-region detection, the HDR curve against Edge's measured codes, CIEDE2000 against Sharma et al.'s published pairs, the gate's region and block checks |
 | GPU golden tests | Pass on WARP and the RTX 4090: every grey/R/G/B code comes back exactly at `S` ∈ {1, 1.25, 1.5, 2.4, 3, 3.5, 6}; mixed scenes match the CPU reference within one code; SDR codes touching an HDR ramp stay exact |
 | SDR white in a real capture | Frame peak exactly 1.000 × `S` on a desktop without HDR content |
 | Model fit, SDR app region (terminal) | piecewise sRGB: 100.00% of 9,475,648 channel values within 0.1 code, mean 0.008; gamma 2.2: 65.93%, mean 0.118 |
 | Model fit, playing SDR video | 20.44% vs 19.23%: chance, as expected for non-code content |
 | Model fit, Edge page with HDR content | page white is 1–2 FP16 steps below `S`; zero channels carry ±0.0001 residue; led to the tolerance and negligible-channel rule above |
-| Mixed scene (fixture `?hdr` in Edge) | Edge renders the PQ test image as HDR, limited to ≈ 1.9 × SDR white by the panel's peak; the shoulder applies to 262,414 px, all within the 294,912 px image; every other pixel is identical to the clip-mode output |
-| Timing (release, 4K) | FP16 capture 68 ms, all four passes + readback 9.5 ms |
+| Mixed scene (fixture `?hdr` in Edge) | Edge renders the PQ test image as HDR, limited by the panel's peak (≈ 456 nits); v4 finds exactly one HDR region, (3000, 1704)–(3767, 2087): the 768×384 image to the pixel |
+| Timing (release, 4K) | FP16 capture 68 ms; v3's passes + readback 9.5 ms. v4 adds a tile-stats pass and a ≈ 1 MB readback; re-measure on the next live capture |
 
 ### First gate session (2026-09-27, `gate-20260927-112049`)
 
@@ -247,8 +273,8 @@ linearly to 80 + 4 × slider nits: 10, 50 and 100 read `SDRWhiteLevel` 1500,
 | v2 → v3 | v2 dimmed 748 px of saturated green in Edge (≤ 5 codes) when HDR content was on screen: red cross-talk from Edge's conversion failed the grid test. v3's cross-talk tolerance fixes it; the pixels are now regression tests |
 | Retakes | `hdr-low/mixed` had shown the plain tab and `hdr-mid/fixture` the `?hdr` tab (the gate now detects both); a retake of `hdr-mid/fixture` then caught a notification. Final captures: all as labelled |
 | Final verdict | **PASS**: fixture identical to HDR off (0 codes, every pixel) at `S` = 1.5, 3.5 and 6; mixed scene ≤ 1 code outside the HDR image at all three; brightness invariance passes for every pair |
-| Highlights | At `S` = 1.5 the HDR image peaks at 3.79× SDR white: 29 distinct output colors on its extended pixels with the shoulder, 8 clipped (18 vs 8 at 1.62×, 3 vs 1 at 1.06×) |
-| Highlight policy (owner's review) | Shoulder kept over clipping: "neither beats the live ?hdr tab, but the shoulder is a little better". Matching a live HDR display is not possible in SDR; the decision is between the two |
+| Highlight policy (owner's review) | v3's shoulder was judged "a little better" than clipping but lost detail visible on the live HDR tab. After a benchmark against Snipping Tool and Edge's own HDR-off rendering, the owner chose the Edge-like curve (v4): "we can always refine" once real UI and content flow |
+| v4 re-analysis of the session | **PASS** again, 12 of 12: SDR content unchanged. HDR image vs Edge's own HDR-off rendering: mean ΔE00 0.51 / 1.07 / 0.21 at `S` = 1.5 / 3.5 / 6 (v3: 7.29 / 5.32 / 0.95). Distinct output colors on the extended pixels at 3.79× headroom: 106 (v3: 29; clipping: 8) |
 
 ## Known limits and expected differences
 
@@ -259,24 +285,25 @@ linearly to 80 + 4 × slider nits: 10, 50 and 100 read `SDRWhiteLevel` 1500,
   screen avoids them.
 - **Applications with their own SDR white.** An application that places SDR
   content at its own white level, not Windows', will be off the grid. Without
-  HDR content in the frame it is still reproduced by `C/S` (off by its own
-  error). With HDR content in the frame it goes through the shoulder.
-- **One-pixel rim.** SDR content directly bordering non-SDR content is shouldered
-  (the nine-pixel rule).
-- **Reference white inside HDR content.** Browsers place HDR content at 203
-  nits (BT.2408 reference white) exactly at SDR white, so it sits on the code
-  grid and stays at 255, while brighter HDR pixels are compressed to just
-  below 255. In the test image the 203-nit square is whiter than the 250–500
-  nit squares beside it. Applying one curve to the whole HDR region would
-  remove the inversion; decide on real HDR video in Milestone 1.
-- **Global `P`.** A single very bright highlight compresses all HDR content in
-  the frame more. In Milestone 1 the frame is the user's selection, so this is
-  local to what they capture.
+  HDR content in the frame it is reproduced by `C/S` (off by its own
+  error). If it adjoins HDR content, it can join that HDR region and be tone
+  mapped with it.
+- **Region edges.** The rectangle is trimmed by one pixel, so an anti-aliased
+  edge pixel where HDR content blends into the page is left as captured.
+- **Rectangles.** A region is a bounding box. Controls or subtitles drawn over
+  HDR video, rounded corners, or two HDR windows close together fall inside
+  one box and are tone mapped with it. Codex's review lists these as the
+  cases to test with real content.
+- **Peak-driven gain.** A single very bright highlight dims its whole region.
+  Cropping differently can change the exposure, and video could pump. A
+  steadier anchor (a percentile, or a fixed reference-white placement) is
+  follow-up work.
 - **The panel's peak.** Windows and applications limit HDR content to the
   display's peak luminance before composition, so detail above it is gone from
   the source. No transform can recover it.
-- **8 bits near white.** With 1.9× headroom the whole highlight range lands in
-  roughly the top 10–15 codes. Texture survives, but faintly.
+- **Little headroom, little room.** At high SDR brightness (`P` ≈ 1.06 on
+  this panel) HDR content is barely above SDR white and the curve barely
+  acts; there is nothing to separate.
 - **WCG hardware** has not been tested; `S = 1` rests on the SDK's
   "display-referred luminance" description.
 - **Out of scope for the capture:** ICC calibration, Night light and panel
