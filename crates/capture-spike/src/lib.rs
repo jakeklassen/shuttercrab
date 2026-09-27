@@ -4,3 +4,4 @@
 #![cfg(windows)]
 
 pub mod color;
+pub mod gpu;
