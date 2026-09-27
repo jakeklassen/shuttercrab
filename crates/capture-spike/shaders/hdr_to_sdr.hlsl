@@ -29,6 +29,7 @@ RWTexture2D<uint> destination : register(u1);
 static const uint TILE = 16;
 static const float CODE_TOLERANCE = 0.25;
 static const float NEGLIGIBLE = 0.005;
+static const float CROSS_TALK = 0.001;
 static const float EXTENDED_EPSILON = 1.0 / 256.0;
 static const float SHOULDER_BETA = 0.25;
 static const float FP16_MAX = 65504.0;
@@ -119,7 +120,13 @@ void frame_peak(uint index : SV_GroupIndex)
 }
 
 // A channel is an SDR code value when it is negligible, or within SDR white and
-// S x decode(code) for some 8-bit code to within CODE_TOLERANCE codes.
+// S x decode(code) for some 8-bit code to within CODE_TOLERANCE codes, or to
+// within CROSS_TALK x the pixel's peak in linear light.
+float srgbDecode(float e)
+{
+    return e <= 0.04045 ? e / 12.92 : pow((e + 0.055) / 1.055, 2.4);
+}
+
 bool onCodeGrid(float3 c)
 {
     float3 n = c / whiteScale;
@@ -128,8 +135,11 @@ bool onCodeGrid(float3 c)
     bool3 negligible = abs(n) < NEGLIGIBLE;
     if (any(!negligible && (n < 0.0 || n > 1.0 + EXTENDED_EPSILON)))
         return false;
+    float top = peak(n);
     float3 code = float3(srgbEncode(n.r), srgbEncode(n.g), srgbEncode(n.b)) * 255.0;
-    return all(negligible || abs(code - round(code)) <= CODE_TOLERANCE);
+    float3 nearest = round(code);
+    float3 decoded = float3(srgbDecode(nearest.r / 255.0), srgbDecode(nearest.g / 255.0), srgbDecode(nearest.b / 255.0));
+    return all(negligible || abs(code - nearest) <= CODE_TOLERANCE || abs(n - decoded) <= CROSS_TALK * top);
 }
 
 [numthreads(8, 8, 1)]
@@ -140,15 +150,15 @@ void classify(uint3 id : SV_DispatchThreadID)
     tileOut[id.xy] = onCodeGrid(source.Load(int3(id.xy, 0)).rgb) ? 1.0 : 0.0;
 }
 
-// SDR content: the pixel and its four neighbours are all SDR code values.
+// SDR content: the pixel and its eight neighbours are all SDR code values.
 bool sdrContent(uint2 p)
 {
-    uint2 last = uint2(width - 1, height - 1);
-    return tileMap.Load(int3(p, 0)) > 0.5
-        && tileMap.Load(int3(uint2(p.x == 0 ? 0 : p.x - 1, p.y), 0)) > 0.5
-        && tileMap.Load(int3(uint2(min(p.x + 1, last.x), p.y), 0)) > 0.5
-        && tileMap.Load(int3(uint2(p.x, p.y == 0 ? 0 : p.y - 1), 0)) > 0.5
-        && tileMap.Load(int3(uint2(p.x, min(p.y + 1, last.y)), 0)) > 0.5;
+    int2 last = int2(width - 1, height - 1);
+    for (int dy = -1; dy <= 1; dy++)
+        for (int dx = -1; dx <= 1; dx++)
+            if (tileMap.Load(int3(clamp(int2(p) + int2(dx, dy), 0, last), 0)) < 0.5)
+                return false;
+    return true;
 }
 
 [numthreads(8, 8, 1)]

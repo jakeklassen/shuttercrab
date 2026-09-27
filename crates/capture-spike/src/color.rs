@@ -12,7 +12,7 @@
 use anyhow::{Result, bail};
 
 /// Recorded in capture reports so a PNG can be traced to the math that made it.
-pub const TRANSFORM_VERSION: &str = "sdr-codes-exact-shoulder-v2";
+pub const TRANSFORM_VERSION: &str = "sdr-codes-exact-shoulder-v3";
 
 /// Side of the square tiles the GPU reduces the frame peak over, in pixels.
 pub const TILE: u32 = 16;
@@ -208,13 +208,20 @@ pub const CODE_TOLERANCE: f32 = 0.25;
 /// of red into pure green), and a channel this dark is far below the
 /// shoulder's knee, so whether it is SDR content never changes the result.
 pub const NEGLIGIBLE: f32 = 0.005;
+/// Cross-talk between channels, as a share of the pixel's peak, still read as
+/// an SDR code. Edge's FP16 color conversion moves a dim channel beside a
+/// bright one by up to about 0.0004 × the bright one (red codes 22–61 on a
+/// green gradient sit 0.27–0.37 code off the grid).
+pub const CROSS_TALK: f32 = 0.001;
 
 /// Whether every channel of a captured scRGB pixel is an SDR code value:
-/// within SDR white, and either negligible or `S × decode(code)` for some
-/// 8-bit code to within `CODE_TOLERANCE`.
+/// within SDR white, and either negligible, or `S × decode(code)` for some
+/// 8-bit code to within `CODE_TOLERANCE` codes or `CROSS_TALK` × the pixel's
+/// peak in linear light.
 pub fn on_code_grid(c: [f32; 3], white_scale: f32) -> bool {
-    c.iter().all(|&v| {
-        let n = v / white_scale;
+    let n = c.map(|v| v / white_scale);
+    let top = n[0].max(n[1]).max(n[2]);
+    n.iter().all(|&n| {
         if n.abs() < NEGLIGIBLE {
             return true;
         }
@@ -222,7 +229,9 @@ pub fn on_code_grid(c: [f32; 3], white_scale: f32) -> bool {
             return false;
         }
         let code = srgb_encode(n) * 255.0;
-        (code - code.round()).abs() <= CODE_TOLERANCE
+        let nearest = code.round();
+        (code - nearest).abs() <= CODE_TOLERANCE
+            || (n - srgb_decode(nearest / 255.0)).abs() <= CROSS_TALK * top
     })
 }
 
@@ -232,7 +241,7 @@ pub struct PixelContext {
     /// Peak of the whole frame over SDR white: the headroom the shoulder
     /// maps to 1.
     pub frame_peak: f32,
-    /// The pixel and its four neighbours are all SDR code values, so it is
+    /// The pixel and its eight neighbours are all SDR code values, so it is
     /// ordinary SDR content, which is reproduced exactly.
     pub sdr_content: bool,
 }
@@ -295,17 +304,15 @@ impl FrameAnalysis {
         }
     }
 
-    /// The pixel and its four neighbours (clamped at the edges) are all SDR
+    /// The pixel and its eight neighbours (clamped at the edges) are all SDR
     /// code values. Requiring the neighbours makes chance matches inside HDR
-    /// or video content vanishingly rare.
+    /// or video content rare: a bright, saturated HDR pixel has one channel
+    /// that is really tested, so nine pixels must all match by chance.
     pub fn sdr_content(&self, x: u32, y: u32) -> bool {
         let (w, h) = (self.width, self.height);
-        let at = |x: u32, y: u32| self.on_grid[(y * w + x) as usize];
-        at(x, y)
-            && at(x.saturating_sub(1), y)
-            && at((x + 1).min(w - 1), y)
-            && at(x, y.saturating_sub(1))
-            && at(x, (y + 1).min(h - 1))
+        let (x0, x1) = (x.saturating_sub(1), (x + 1).min(w - 1));
+        let (y0, y1) = (y.saturating_sub(1), (y + 1).min(h - 1));
+        (y0..=y1).all(|y| (x0..=x1).all(|x| self.on_grid[(y * w + x) as usize]))
     }
 
     pub fn at(&self, x: u32, y: u32) -> PixelContext {
@@ -560,6 +567,13 @@ mod tests {
             assert!(!on_code_grid([-0.01 * s, 0.0, 0.0], s));
             // FP16 conversion residue around zero does not count against it.
             assert!(on_code_grid([s, -0.000_005 * s, 0.000_12 * s], s));
+            // Nor does cross-talk beside a bright channel: pixels Edge
+            // rendered on a green gradient (gate session 2026-09-27, S = 3.5),
+            // whose red is 0.27 and 0.37 code off the grid.
+            assert!(on_code_grid([0.044_78 * s, 0.999_44 * s, 0.000_03 * s], s));
+            assert!(on_code_grid([0.008_42 * s, 1.0 * s, 0.000_04 * s], s));
+            // Without a bright channel beside it, the same offset does count.
+            assert!(!on_code_grid([0.044_78 * s, 0.044_78 * s, 0.044_78 * s], s));
         }
         // FP16 storage of an SDR code keeps it on the grid.
         for code in 0..=255u8 {
@@ -618,7 +632,7 @@ mod tests {
 
     #[test]
     fn chance_matches_inside_hdr_content_are_rare() {
-        // Pseudo-random off-grid content: how often does the five-pixel rule
+        // Pseudo-random off-grid content: how often does the nine-pixel rule
         // mistake it for SDR content?
         let (w, h) = (256, 256);
         let mut state = 0x9e37_79b9_u32;
