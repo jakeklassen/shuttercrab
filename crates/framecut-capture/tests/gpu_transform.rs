@@ -4,7 +4,7 @@
 //! there is one.
 #![cfg(windows)]
 
-use capture_spike::{
+use framecut_capture::{
     color::{self, Highlights},
     gpu::{Gpu, SdrConverter},
 };

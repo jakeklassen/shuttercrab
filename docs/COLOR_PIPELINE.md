@@ -9,9 +9,9 @@ pending the project owner's confirmation. Transform version:
 This is the color decision record the PRD requires (§37, items 3 and 4): what
 Framecut does to turn a Windows desktop capture into an SDR PNG, why, and the
 evidence behind it. The code that implements it is
-[`shaders/hdr_to_sdr.hlsl`](../crates/capture-spike/shaders/hdr_to_sdr.hlsl),
+[`shaders/hdr_to_sdr.hlsl`](../crates/framecut-capture/shaders/hdr_to_sdr.hlsl),
 mirrored step for step by the CPU reference in
-[`src/color.rs`](../crates/capture-spike/src/color.rs). Tests hold the two to
+[`src/color.rs`](../crates/framecut-capture/src/color.rs). Tests hold the two to
 each other and to known values.
 
 ## The contract
