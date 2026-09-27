@@ -1,0 +1,23 @@
+[package]
+name = "framecut"
+version = "0.1.0"
+description = "A Windows 11 screenshot tool whose SDR output looks right with HDR on"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+
+[dependencies]
+anyhow = "1"
+framecut-capture = { path = "../framecut-capture" }
+framecut-platform = { path = "../framecut-platform" }
+futures = "0.3"
+gpui-kit = "0.6.6"
+# The version GPUI uses, so its RenderImage takes our frames.
+image = { version = "0.25", default-features = false }
+raw-window-handle = "0.6"
+
+[dev-dependencies]
+gpui-kit = { version = "0.6.6", features = ["test-support"] }
+
+[lints]
+workspace = true

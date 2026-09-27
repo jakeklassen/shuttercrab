@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/capture-spike", "crates/framecut-capture", "crates/framecut-platform"]
+members = ["crates/capture-spike", "crates/framecut", "crates/framecut-capture", "crates/framecut-platform"]
 resolver = "3"
 
 [workspace.package]
@@ -9,3 +9,16 @@ publish = false
 
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
+
+# Debug builds of GPUI and the text stack render slowly. Optimize them while
+# the workspace's own crates stay quick, debuggable debug builds.
+[profile.dev.package]
+gpui-pre = { opt-level = 3 }
+gpui-component = { opt-level = 3 }
+gpui-kit = { opt-level = 3 }
+gpui-kit-assets = { opt-level = 3 }
+gpui-pre-macros = { opt-level = 3 }
+gpui-pre-platform = { opt-level = 3 }
+rustybuzz = { opt-level = 3 }
+taffy = { opt-level = 3 }
+ttf-parser = { opt-level = 3 }
