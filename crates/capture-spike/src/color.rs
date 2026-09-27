@@ -474,6 +474,9 @@ mod tests {
         assert_eq!(quantize(srgb_encode(shoulder(1.0, 4.0))), 244);
         // Unbounded headroom: knee at 0.75, SDR white at 0.875.
         assert!(close(shoulder(1.0, 1e6), 0.875, 1e-4));
+        // The codes docs/COLOR_PIPELINE.md quotes for SDR white.
+        let white = |p: f32| quantize(srgb_encode(shoulder(1.0, p)));
+        assert_eq!((white(2.0), white(4.0), white(1e6)), (248, 244, 240));
     }
 
     #[test]
