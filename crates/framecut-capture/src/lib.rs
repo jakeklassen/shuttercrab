@@ -10,3 +10,9 @@ pub mod display;
 pub mod gpu;
 pub mod png_io;
 pub mod raw;
+pub mod service;
+
+pub use service::{
+    Capture, CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect,
+    Screenshot, monitor_under_pointer,
+};

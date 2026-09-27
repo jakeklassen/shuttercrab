@@ -152,3 +152,25 @@ pub fn capture_monitor(gpu: &Gpu, monitor: HMONITOR, format: PixelFormat) -> Res
     closed?;
     Ok(frame)
 }
+
+/// Load and initialise Windows.Graphics.Capture without capturing anything:
+/// the first use in a process costs a few hundred milliseconds.
+pub fn warm_up(gpu: &Gpu) -> Result<()> {
+    ensure!(
+        GraphicsCaptureSession::IsSupported()?,
+        "Windows.Graphics.Capture is not available"
+    );
+    let _interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+    let size = windows::Graphics::SizeInt32 {
+        Width: 1,
+        Height: 1,
+    };
+    let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
+        &gpu.winrt_device()?,
+        PixelFormat::Fp16.winrt(),
+        1,
+        size,
+    )?;
+    pool.Close()?;
+    Ok(())
+}
