@@ -42,7 +42,8 @@ Framecut runs in the tray with no window. Only one copy runs at a time.
 | **Ctrl+Alt+S** | Straight to an area: freeze the monitor under the pointer, drag, release to copy. Edges snap to nearby windows |
 | **Space** while selecting | Switch to Window mode: click a window to capture it, or the desktop for the whole display. Space again returns to Area |
 | Escape or right-click | Cancel the selection |
-| Right-click the tray icon | Open the screenshots folder, turn saving on or off, quit |
+| Right-click the tray icon | Settings…, open the screenshots folder, turn saving on or off, quit |
+| Start Framecut again | Opens its settings window |
 | Ctrl+Alt+Shift+Q | Quit (for development) |
 
 The screenshot is on the clipboard as PNG and as a bitmap; paste it anywhere.
