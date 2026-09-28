@@ -3,31 +3,59 @@
 
 use anyhow::{Context, Result};
 use windows::Win32::{
-    Foundation::HWND,
+    Foundation::{HWND, POINT, RECT},
+    Graphics::Gdi::ClientToScreen,
     System::Threading::{AttachThreadInput, GetCurrentThreadId},
     UI::WindowsAndMessaging::{
-        BringWindowToTop, GetForegroundWindow, GetWindowThreadProcessId, HWND_TOPMOST,
-        SWP_NOACTIVATE, SWP_SHOWWINDOW, SetForegroundWindow, SetWindowPos,
+        BringWindowToTop, GWL_STYLE, GetClientRect, GetForegroundWindow, GetWindowLongPtrW,
+        GetWindowThreadProcessId, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW,
+        SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, WS_CAPTION, WS_MAXIMIZEBOX,
+        WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
     },
 };
 
-/// Cover exactly this physical rectangle (virtual-desktop pixels) and stay
-/// above other windows. GPUI positions windows in logical pixels, which can
-/// leave a one-pixel gap at fractional scale factors; this pins the overlay
-/// to the monitor's exact physical bounds.
+/// Make the window a borderless popup covering exactly this physical
+/// rectangle (virtual-desktop pixels), above other windows.
+///
+/// GPUI's popup windows carry `WS_CAPTION` (Windows adds it to windows
+/// created with style 0), so Windows reserves invisible resize borders and
+/// the drawable client area comes out about 11 px short on the left, right
+/// and bottom at 150%. Replacing the frame styles with `WS_POPUP` makes the
+/// client area the whole window. Positioning in physical pixels also avoids
+/// the one-pixel gaps logical bounds can leave at fractional scale factors.
 pub fn cover(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<()> {
+    let hwnd = HWND(hwnd as _);
     unsafe {
+        let frame =
+            (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX).0 as isize;
+        let style = GetWindowLongPtrW(hwnd, GWL_STYLE);
+        SetWindowLongPtrW(hwnd, GWL_STYLE, (style & !frame) | WS_POPUP.0 as isize);
+        // SWP_FRAMECHANGED makes Windows recompute the client area now.
         SetWindowPos(
-            HWND(hwnd as _),
+            hwnd,
             Some(HWND_TOPMOST),
             x,
             y,
             width as i32,
             height as i32,
-            SWP_SHOWWINDOW | SWP_NOACTIVATE,
+            SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         )
     }
     .context("SetWindowPos failed")
+}
+
+/// The window's client area in screen coordinates: `(x, y, width, height)`.
+pub fn client_bounds(hwnd: isize) -> Result<(i32, i32, u32, u32)> {
+    let hwnd = HWND(hwnd as _);
+    let mut rect = RECT::default();
+    let mut origin = POINT::default();
+    unsafe {
+        GetClientRect(hwnd, &mut rect).context("GetClientRect failed")?;
+        ClientToScreen(hwnd, &mut origin)
+            .ok()
+            .context("ClientToScreen failed")?;
+    }
+    Ok((origin.x, origin.y, rect.right as u32, rect.bottom as u32))
 }
 
 /// Make the window the foreground window so it receives the keyboard
