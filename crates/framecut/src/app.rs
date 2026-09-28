@@ -107,6 +107,35 @@ pub fn tray_menu(settings: &Settings) -> Vec<MenuItem> {
     ]
 }
 
+/// A failure to report: a message for the user, and the details for the log
+/// (PRD §24).
+#[derive(Debug)]
+pub struct Failure {
+    pub message: String,
+    pub detail: String,
+}
+
+impl Failure {
+    fn new(message: impl Into<String>, detail: impl Into<String>) -> Self {
+        Self {
+            message: message.into(),
+            detail: detail.into(),
+        }
+    }
+
+    /// A failure whose message says it all.
+    fn plain(message: &str) -> Self {
+        Self::new(message, message)
+    }
+}
+
+impl From<framecut_capture::CaptureError> for Failure {
+    fn from(e: framecut_capture::CaptureError) -> Self {
+        // The capture error's code and detail are for the log only.
+        Self::new(e.message.clone(), format!("{:?}: {e}", e.code))
+    }
+}
+
 /// Everything the running app shares between its tasks.
 pub struct Framecut {
     pub capture: Capture,
@@ -263,15 +292,15 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
         }
         let pressed = Instant::now();
         let result = match monitor_under_pointer() {
-            None => Err("No monitor is under the pointer.".to_string()),
+            None => Err(Failure::plain("No monitor is under the pointer.")),
             Some(monitor) => match what {
                 Start::CaptureBar => capture_bar(&state, monitor, pressed, cx).await,
                 Start::Target(target) => capture(&state, target, monitor, pressed, cx).await,
             },
         };
-        if let Err(message) = result {
-            log::error!("{message}");
-            state.notify("Screenshot failed", message, None);
+        if let Err(failure) = result {
+            log::error!("{}", failure.detail);
+            state.notify("Screenshot failed", failure.message, None);
         }
         state.busy.set(false);
     })
@@ -416,20 +445,17 @@ async fn capture_bar(
     monitor: MonitorId,
     pressed: Instant,
     cx: &mut AsyncApp,
-) -> Result<(), String> {
-    let monitors = state
-        .capture
-        .list_monitors()
-        .await
-        .map_err(|e| e.to_string())?;
+) -> Result<(), Failure> {
+    let monitors = state.capture.list_monitors().await?;
     let info = monitors
         .into_iter()
         .find(|m| m.id == monitor)
-        .ok_or("The monitor under the pointer is gone.")?;
+        .ok_or_else(|| Failure::plain("The monitor under the pointer is gone."))?;
     let last = state.settings.borrow().last_target;
     let (bar, outcome) = popup::open(&info, bar_rect(&info), true, cx, move |window, cx| {
         cx.new(|cx| CaptureBar::new(last, window, cx))
-    })?;
+    })
+    .map_err(|e| Failure::new("Could not open the Capture Bar.", e))?;
     if let Some(hwnd) = bar.hwnd() {
         platform_window::round_corners(hwnd);
         // Never part of a screenshot, even if the screen is frozen while
@@ -468,28 +494,19 @@ async fn capture(
     monitor: MonitorId,
     pressed: Instant,
     cx: &mut AsyncApp,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let taken_at = Local::now().naive_local();
     let include_cursor = state.settings.borrow().include_cursor;
     let frame = state
         .capture
         .freeze_monitor(monitor, include_cursor)
-        .await
-        .map_err(|e| e.to_string())?;
+        .await?;
     let (width, height) = frame.size();
     let whole = PhysicalRect::new(0, 0, width, height);
     let mode = match target {
         CaptureTarget::Display => {
             let shot = state.capture.screenshot(&frame, whole).await;
-            return deliver(
-                state,
-                shot.map_err(|e| e.to_string())?,
-                frame.monitor(),
-                pressed,
-                taken_at,
-                cx,
-            )
-            .await;
+            return deliver(state, shot?, frame.monitor(), pressed, taken_at, cx).await;
         }
         CaptureTarget::Area => Mode::Area,
         CaptureTarget::Window => Mode::Window,
@@ -510,7 +527,8 @@ async fn capture(
                 .with_windows(windows, snap_to_windows)
                 .with_mode(mode)
         })
-    })?;
+    })
+    .map_err(|e| Failure::new("Could not open the selection screen.", e))?;
     log::info!(
         "overlay up {} ms after the request (freeze {} ms)",
         pressed.elapsed().as_millis(),
@@ -541,15 +559,7 @@ async fn capture(
             }
         }
     };
-    deliver(
-        state,
-        shot.map_err(|e| e.to_string())?,
-        &info,
-        released,
-        taken_at,
-        cx,
-    )
-    .await
+    deliver(state, shot?, &info, released, taken_at, cx).await
 }
 
 /// Windows on the monitor at `bounds`, front to back, relative to it. The
@@ -586,7 +596,7 @@ async fn deliver(
     released: Instant,
     taken_at: NaiveDateTime,
     cx: &mut AsyncApp,
-) -> Result<(), String> {
+) -> Result<(), Failure> {
     let settings = state.settings.borrow().clone();
     let (width, height) = (shot.width, shot.height);
 
@@ -636,18 +646,34 @@ async fn deliver(
     }
 
     let saved_path = saved.as_ref().and_then(|r| r.as_ref().ok().cloned());
+    // PRD §24: say what happened and what to do; the causes go to the log.
+    let busy = "Another app is holding the clipboard; try again in a moment.";
+    let folder = settings.output_dir();
+    let unwritable = format!(
+        "Could not save to {}. Check the folder in Settings.",
+        folder.display()
+    );
     let result = match (copied, saved) {
-        (Some(Err(copy)), Some(Err(save))) => Err(format!(
-            "Could not copy or save the screenshot: {copy:#}; {save:#}"
+        (Some(Err(copy)), Some(Err(save))) => Err(Failure::new(
+            format!("Could not copy or save the screenshot. {unwritable}"),
+            format!("copy: {copy:#}; save: {save:#}"),
         )),
-        (Some(Err(copy)), Some(Ok(_))) => Err(format!(
-            "The screenshot was saved, but could not be copied: {copy:#}"
+        (Some(Err(copy)), Some(Ok(_))) => Err(Failure::new(
+            format!("The screenshot was saved, but not copied. {busy}"),
+            format!("copy: {copy:#}"),
         )),
-        (Some(Err(copy)), None) => Err(format!("Could not copy the screenshot: {copy:#}")),
-        (Some(Ok(())), Some(Err(save))) => Err(format!(
-            "The screenshot was copied, but could not be saved: {save:#}"
+        (Some(Err(copy)), None) => Err(Failure::new(
+            format!("The screenshot was not copied. {busy}"),
+            format!("copy: {copy:#}"),
         )),
-        (None, Some(Err(save))) => Err(format!("Could not save the screenshot: {save:#}")),
+        (Some(Ok(())), Some(Err(save))) => Err(Failure::new(
+            format!("The screenshot was copied, but not saved. {unwritable}"),
+            format!("save: {save:#}"),
+        )),
+        (None, Some(Err(save))) => Err(Failure::new(
+            format!("The screenshot was not saved. {unwritable}"),
+            format!("save: {save:#}"),
+        )),
         (None, None) => {
             log::warn!("screenshot discarded: copying and saving are both off");
             Ok(())
@@ -886,6 +912,18 @@ mod tests {
         let rect = thumbnail_rect(work, 1.5, (3840, 2160));
         assert_eq!((rect.width, rect.height), (378, 221));
         assert_eq!((rect.x, rect.y), (3840 - 378 - 24, 2088 - 221 - 24));
+    }
+
+    #[test]
+    fn capture_failures_tell_the_user_the_message_and_the_log_the_rest() {
+        let failure = Failure::from(framecut_capture::CaptureError {
+            code: framecut_capture::CaptureErrorCode::DeviceLost,
+            message: "The graphics device was reset; try again".into(),
+            detail: Some("CopySubresourceRegion failed: 0x887A0005".into()),
+        });
+        assert_eq!(failure.message, "The graphics device was reset; try again");
+        assert!(failure.detail.contains("DeviceLost"), "{}", failure.detail);
+        assert!(failure.detail.contains("0x887A0005"), "{}", failure.detail);
     }
 
     #[test]
