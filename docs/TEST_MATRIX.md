@@ -72,6 +72,62 @@ Acceptance (manual):
 8. The log is `%LOCALAPPDATA%\Framecut\logs\framecut.log` and settings are
    `%APPDATA%\Framecut\settings.json`.
 
+### Step 2: window and display capture, Space toggle, snapping
+
+Decisions:
+
+- **Window capture is direct** (PRD §7.3): `CreateForWindow`, so covered
+  parts of the window are included and nothing in front of it is. If a
+  window refuses, Framecut cuts its visible part from the frozen screen
+  and logs a warning.
+- **Window bounds come from DWM** (`DWMWA_EXTENDED_FRAME_BOUNDS`), not
+  `GetWindowRect`, which includes invisible resize borders (711×810 vs the
+  visible 693×801 for Calculator). Window capture frames are exactly the
+  DWM bounds (measured on Calculator and the About Windows dialog).
+- **Rounded corners are transparent.** Window frames carry premultiplied
+  alpha at the corners and the 1 px border; the shader un-premultiplies,
+  converts the colour, and keeps the coverage. The PNG keeps it; the
+  clipboard bitmap is composited over white, because many applications
+  ignore bitmap alpha. Monitor captures are forced opaque.
+- **Display capture** is Window mode over the desktop (no window under the
+  pointer). The Capture Bar (step 3) adds an explicit Display button.
+- **Snapping** pulls each axis of the drag to a window edge or monitor
+  edge within 6 logical pixels, but only edges visible at the pointer: an
+  edge hidden behind a window in front does not pull. On by default
+  (`snap_to_windows` in settings; PRD open question 6).
+
+Automated: hit-testing front to back; snapping (near, far, hidden edges,
+corners, monitor edges); overlay UI tests for Space, hover highlight with
+dimensions, clicking a window (including one hanging off the monitor),
+clicking the desktop, snapping on and off; GPU test for premultiplied
+corners; un-premultiplying 8-bit frames; bitmap compositing.
+
+Smoke test (release, scratch data folder), 2026-09-27: hotkey, Space, click
+on Calculator → 693×801 PNG with transparent corners (corner alpha 60,
+centre 255) on the clipboard and on disk 63 ms after the click (window
+capture 60 ms on the capture thread). A drag starting 4 px right and 3 px
+below Calculator's corner snapped to it. The direct capture and the frozen
+screen's cut of the same pixels are **identical** in all 30,471 opaque
+pixels compared (HDR on), so window capture uses the same colour transform.
+
+Acceptance (manual):
+
+1. Start Framecut. Open a few windows, overlapping.
+2. **Ctrl+Alt+S**, then **Space**. The hint at the top changes to Window
+   mode and the window under the pointer is outlined in blue with its size.
+   Move over other windows: the outline follows. Move over the desktop (or
+   a spot with no window): the whole display is outlined.
+3. Click a window that is **partly covered** by another. Paste: the whole
+   window, including the covered part, with rounded corners. Pasted into a
+   chat or browser, the corners are transparent; in Paint they are white.
+4. **Ctrl+Alt+S**, Space, click the desktop: the whole monitor is copied.
+5. **Ctrl+Alt+S**, and drag starting just inside a window's corner. The
+   selection jumps to the window's edge. Drag towards another window's edge:
+   it snaps there too.
+6. **Ctrl+Alt+S**, Space, Space: back in Area mode; drag works as before.
+7. Say whether the transparent corners are what you want, or whether you
+   would rather have square corners filled with what was behind the window.
+
 ## Milestone 1: area screenshot
 
 Exit criterion (PRD §31): *hotkey → drag → release → paste into
@@ -360,3 +416,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Settings on disk, survive a broken file | Passed (unit) | |
 | Log file (§28) | Passed locally | Version, Windows build, monitors, timings; no errors |
 | Single instance | Passed locally | Second launch exits 0; the first notifies |
+| Space toggles Area ↔ Window; window hover highlight (§7.3, §32.6) | Passed (headless + smoke); awaits the owner | UI tests; smoke test |
+| Window capture via `CreateForWindow`, same colour as the screen (§7.3) | Passed locally | 693×801 Calculator; identical to the frozen cut |
+| Display screenshot (§8.1) | Passed (headless); awaits the owner | UI test: desktop click |
+| Boundary snapping (§7.2) | Passed (unit + headless + smoke) | Drag snapped to Calculator's corner |
