@@ -222,6 +222,18 @@ Retest, 2026-09-28: both fixed. Two more, fixed in the next commit:
   The drag image is now capped at 256 pixels; the same wide capture drags
   sharp.
 
+The owner then preferred a softer look than sharp but a gentler one than
+Windows' fade, which measured as opacity falling in a straight line from
+the centre on each axis, at about 74% overall; the Shell's drag helper
+applies that 74% to every drag image and cannot be told otherwise. So
+Framecut now draws the drag image itself, in a click-through layered
+window that follows the pointer (`DoDragDrop` with its own `IDropSource`).
+Chosen from side-by-side drags, 2026-09-28: sharp, 90% opaque, a 20-pixel
+soft edge (half inside, half outside, so it reads as a blurred edge, not
+an inner shadow), squircle corners. Three comparison rounds: an inward
+edge fade read as an inset shadow; a copy of Windows' radial fade was
+too faint and banded.
+
 Decisions:
 
 - **The thumbnail never takes the keyboard** (`WS_EX_NOACTIVATE`, shown
