@@ -67,6 +67,81 @@ fn min_max(a: Pixels, b: Pixels) -> (Pixels, Pixels) {
     if a <= b { (a, b) } else { (b, a) }
 }
 
+/// A window on the frozen monitor: physical pixels relative to the
+/// monitor's top-left. It may extend past the monitor.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ScreenWindow {
+    pub hwnd: isize,
+    pub bounds: PhysicalRect,
+}
+
+fn contains(r: &PhysicalRect, x: i32, y: i32) -> bool {
+    x >= r.x && y >= r.y && x - r.x < r.width as i32 && y - r.y < r.height as i32
+}
+
+/// The front-most window at physical point (`x`, `y`); `windows` are front
+/// to back.
+pub fn window_at(windows: &[ScreenWindow], x: i32, y: i32) -> Option<&ScreenWindow> {
+    windows.iter().find(|w| contains(&w.bounds, x, y))
+}
+
+/// Move a pointer position (physical pixels, relative to the monitor) onto
+/// a nearby window edge or monitor edge, each axis separately, when one is
+/// within `threshold` pixels (PRD §7.2). Only edges the user can see count:
+/// an edge covered by a window in front, or far along from the pointer,
+/// does not pull.
+pub fn snap(
+    windows: &[ScreenWindow],
+    x: f32,
+    y: f32,
+    threshold: f32,
+    width: u32,
+    height: u32,
+) -> (f32, f32) {
+    let nearest = |value: f32, edges: &mut dyn Iterator<Item = i32>| {
+        edges
+            .map(|e| (e, (e as f32 - value).abs()))
+            .filter(|&(_, d)| d <= threshold)
+            .min_by(|a, b| a.1.total_cmp(&b.1))
+            .map_or(value, |(e, _)| e as f32)
+    };
+    // The window must be the front-most one on its own edge, level with the
+    // pointer (or as close as its extent allows, within the threshold).
+    let visible_edge = |w: &ScreenWindow, edge_x: i32, edge_y: i32| {
+        window_at(windows, edge_x, edge_y).is_some_and(|front| front.hwnd == w.hwnd)
+    };
+    let (px, py) = (x.round() as i32, y.round() as i32);
+    let mut vertical = windows.iter().flat_map(|w| {
+        let b = w.bounds;
+        let level = py.clamp(b.y, b.y + b.height as i32 - 1);
+        let near = (level - py).abs() as f32 <= threshold;
+        [(b.x, b.x), (b.x + b.width as i32, b.x + b.width as i32 - 1)]
+            .into_iter()
+            .filter(move |&(edge, _)| near && (0..=width as i32).contains(&edge))
+            .filter(move |&(_, inside)| visible_edge(w, inside, level))
+            .map(|(edge, _)| edge)
+    });
+    let mut horizontal = windows.iter().flat_map(|w| {
+        let b = w.bounds;
+        let level = px.clamp(b.x, b.x + b.width as i32 - 1);
+        let near = (level - px).abs() as f32 <= threshold;
+        [
+            (b.y, b.y),
+            (b.y + b.height as i32, b.y + b.height as i32 - 1),
+        ]
+        .into_iter()
+        .filter(move |&(edge, _)| near && (0..=height as i32).contains(&edge))
+        .filter(move |&(_, inside)| visible_edge(w, level, inside))
+        .map(|(edge, _)| edge)
+    });
+    let sx = nearest(x, &mut [0, width as i32].into_iter().chain(&mut vertical));
+    let sy = nearest(
+        y,
+        &mut [0, height as i32].into_iter().chain(&mut horizontal),
+    );
+    (sx, sy)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -143,5 +218,56 @@ mod tests {
             (f32::from(b.size.width), f32::from(b.size.height)),
             (100.0, 50.0)
         );
+    }
+
+    fn win(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> ScreenWindow {
+        ScreenWindow {
+            hwnd,
+            bounds: PhysicalRect::new(x, y, width, height),
+        }
+    }
+
+    #[test]
+    fn the_front_most_window_is_hit() {
+        let windows = [win(1, 50, 50, 100, 100), win(2, 0, 0, 400, 300)];
+        assert_eq!(window_at(&windows, 60, 60).map(|w| w.hwnd), Some(1));
+        assert_eq!(window_at(&windows, 10, 10).map(|w| w.hwnd), Some(2));
+        // Right and bottom edges are exclusive.
+        assert_eq!(window_at(&windows, 150, 60).map(|w| w.hwnd), Some(2));
+        assert_eq!(window_at(&windows, 500, 10), None);
+    }
+
+    #[test]
+    fn snaps_to_window_edges_near_the_pointer() {
+        let windows = [win(1, 100, 100, 200, 100)];
+        let snap = |x, y| snap(&windows, x, y, 8.0, 1000, 800);
+        assert_eq!(snap(104.0, 150.0), (100.0, 150.0));
+        assert_eq!(snap(295.5, 150.0), (300.0, 150.0));
+        assert_eq!(snap(150.0, 93.0), (150.0, 100.0));
+        assert_eq!(snap(150.0, 205.0), (150.0, 200.0));
+        // Both axes at a corner.
+        assert_eq!(snap(97.0, 203.0), (100.0, 200.0));
+        // Too far from any edge: unchanged.
+        assert_eq!(snap(120.0, 150.0), (120.0, 150.0));
+    }
+
+    #[test]
+    fn edges_far_along_or_hidden_do_not_snap() {
+        // The pointer is level with neither end of the window's left edge.
+        let windows = [win(1, 100, 100, 200, 100)];
+        assert_eq!(snap(&windows, 104.0, 400.0, 8.0, 1000, 800), (104.0, 400.0));
+        // Window 2 in front covers window 1's left edge at this height.
+        let windows = [win(2, 50, 120, 100, 50), win(1, 100, 100, 200, 100)];
+        assert_eq!(snap(&windows, 103.0, 140.0, 8.0, 1000, 800), (103.0, 140.0));
+        // Above window 2, window 1's left edge is visible again.
+        assert_eq!(snap(&windows, 103.0, 110.0, 8.0, 1000, 800), (100.0, 110.0));
+        // And window 2's own right edge pulls.
+        assert_eq!(snap(&windows, 146.0, 140.0, 8.0, 1000, 800), (150.0, 140.0));
+    }
+
+    #[test]
+    fn snaps_to_the_monitor_edges() {
+        assert_eq!(snap(&[], 5.0, 795.0, 8.0, 1000, 800), (0.0, 800.0));
+        assert_eq!(snap(&[], 500.0, 400.0, 8.0, 1000, 800), (500.0, 400.0));
     }
 }

@@ -11,7 +11,7 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Takes an area screenshot, e.g. `Ctrl+Alt+S`.
+    /// Starts a screenshot, e.g. `Ctrl+Alt+S`.
     pub screenshot_hotkey: String,
     /// Put screenshots on the clipboard.
     pub copy_to_clipboard: bool,
@@ -19,6 +19,8 @@ pub struct Settings {
     pub auto_save: bool,
     /// Where screenshots are saved; `None` means `Pictures\Framecut`.
     pub output_dir: Option<PathBuf>,
+    /// Area selections snap to nearby window edges.
+    pub snap_to_windows: bool,
 }
 
 impl Default for Settings {
@@ -28,6 +30,7 @@ impl Default for Settings {
             copy_to_clipboard: true,
             auto_save: true,
             output_dir: None,
+            snap_to_windows: true,
         }
     }
 }

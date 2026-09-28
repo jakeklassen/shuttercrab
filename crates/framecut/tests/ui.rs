@@ -5,11 +5,14 @@
 //!   cargo test -p framecut --test ui
 #![cfg(windows)]
 
-use framecut::overlay::{OverlayEvent, OverlayFrame, SelectionOverlay};
+use framecut::{
+    overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
+    selection::ScreenWindow,
+};
 use framecut_capture::PhysicalRect;
 use gpui_kit::{
-    App, AppContext as _, TestAppContext, Window, WindowHandle, point, px, size,
-    test::TestWindowExt as _,
+    App, AppContext as _, InputEvent as _, MouseMoveEvent, Pixels, Point, TestAppContext, Window,
+    WindowHandle, point, px, size, test::TestWindowExt as _,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -20,6 +23,17 @@ struct Opened {
 }
 
 fn open(cx: &mut TestAppContext, logical: (f32, f32), scale: f32) -> Opened {
+    open_with(cx, logical, scale, Vec::new(), false)
+}
+
+/// As [`open`], with windows on the frozen monitor (physical pixels).
+fn open_with(
+    cx: &mut TestAppContext,
+    logical: (f32, f32),
+    scale: f32,
+    windows: Vec<ScreenWindow>,
+    snap: bool,
+) -> Opened {
     cx.update(gpui_kit::init);
     let (w, h) = ((logical.0 * scale) as u32, (logical.1 * scale) as u32);
     // A mid-grey frame, as a monitor would deliver it.
@@ -29,7 +43,7 @@ fn open(cx: &mut TestAppContext, logical: (f32, f32), scale: f32) -> Opened {
     let handle = cx.open_window(size(px(logical.0), px(logical.1)), move |window, cx| {
         cx.subscribe_self(move |_, event: &OverlayEvent, _| sink.borrow_mut().push(*event))
             .detach();
-        SelectionOverlay::new(frame, window, cx)
+        SelectionOverlay::new(frame, window, cx).with_windows(windows, snap)
     });
     Opened { handle, events }
 }
@@ -142,4 +156,137 @@ fn the_overlay_takes_focus_so_escape_works_at_once(cx: &mut TestAppContext) {
     update(cx, &opened, |window, _| {
         assert_eq!(window.find("overlay").focused(), Some(true));
     });
+}
+
+fn win(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> ScreenWindow {
+    ScreenWindow {
+        hwnd,
+        bounds: PhysicalRect::new(x, y, width, height),
+    }
+}
+
+fn hover(window: &mut Window, position: Point<Pixels>, cx: &mut App) {
+    window.dispatch_event(
+        MouseMoveEvent {
+            position,
+            pressed_button: None,
+            modifiers: Default::default(),
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+fn mode(cx: &mut TestAppContext, opened: &Opened) -> Mode {
+    cx.update(|cx| opened.handle.read(cx).unwrap().mode())
+}
+
+#[gpui_kit::test]
+fn space_switches_between_area_and_window(cx: &mut TestAppContext) {
+    let opened = open(cx, (400.0, 300.0), 1.5);
+    update(cx, &opened, |window, _| {
+        assert!(label(window, "mode-hint").unwrap().starts_with("Drag"));
+    });
+    update(cx, &opened, |window, cx| window.press("space", cx));
+    assert_eq!(mode(cx, &opened), Mode::Window);
+    update(cx, &opened, |window, _| {
+        assert!(
+            label(window, "mode-hint")
+                .unwrap()
+                .starts_with("Click a window")
+        );
+    });
+    update(cx, &opened, |window, cx| window.press("space", cx));
+    assert_eq!(mode(cx, &opened), Mode::Area);
+    assert!(opened.events.borrow().is_empty());
+}
+
+#[gpui_kit::test]
+fn window_mode_highlights_the_window_under_the_pointer(cx: &mut TestAppContext) {
+    // At 150%: a 300×150 window at physical (150, 150), in front of a
+    // larger one; the monitor is 600×450.
+    let windows = vec![win(1, 150, 150, 300, 150), win(2, 30, 30, 540, 390)];
+    let opened = open_with(cx, (400.0, 300.0), 1.5, windows, false);
+    update(cx, &opened, |window, cx| {
+        window.press("space", cx);
+        hover(window, point(px(150.0), px(150.0)), cx);
+    });
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "window-target").as_deref(),
+            Some("Window  300 × 150")
+        );
+    });
+    update(cx, &opened, |window, cx| {
+        hover(window, point(px(30.0), px(30.0)), cx)
+    });
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "window-target").as_deref(),
+            Some("Window  540 × 390")
+        );
+    });
+    // Over the desktop: the whole display.
+    update(cx, &opened, |window, cx| {
+        hover(window, point(px(5.0), px(5.0)), cx)
+    });
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "window-target").as_deref(),
+            Some("Display  600 × 450")
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn clicking_a_window_captures_it_with_its_visible_part(cx: &mut TestAppContext) {
+    // A window hanging off the bottom-right of the 600×450 monitor.
+    let windows = vec![win(7, 500, 300, 300, 300)];
+    let opened = open_with(cx, (400.0, 300.0), 1.5, windows, false);
+    update(cx, &opened, |window, cx| {
+        window.press("space", cx);
+        window.click_at("overlay", point(px(350.0), px(210.0)), cx);
+    });
+    assert_eq!(
+        *opened.events.borrow(),
+        [OverlayEvent::Window {
+            hwnd: 7,
+            visible: PhysicalRect::new(500, 300, 100, 150)
+        }]
+    );
+}
+
+#[gpui_kit::test]
+fn clicking_the_desktop_captures_the_display(cx: &mut TestAppContext) {
+    let windows = vec![win(7, 300, 300, 100, 100)];
+    let opened = open_with(cx, (400.0, 300.0), 1.5, windows, false);
+    update(cx, &opened, |window, cx| {
+        window.press("space", cx);
+        window.click_at("overlay", point(px(20.0), px(20.0)), cx);
+    });
+    assert_eq!(*opened.events.borrow(), [OverlayEvent::Display]);
+}
+
+#[gpui_kit::test]
+fn area_selections_snap_to_window_edges(cx: &mut TestAppContext) {
+    // Window at physical (150, 150), 300×150: logical (100, 100) to (300, 200).
+    let windows = || vec![win(1, 150, 150, 300, 150)];
+    let near = (point(px(101.0), px(99.0)), point(px(298.0), px(198.0)));
+    let snapping = open_with(cx, (400.0, 300.0), 1.5, windows(), true);
+    update(cx, &snapping, |window, cx| window.drag(near.0, near.1, cx));
+    assert_eq!(
+        *snapping.events.borrow(),
+        [OverlayEvent::Selected(PhysicalRect::new(
+            150, 150, 300, 150
+        ))]
+    );
+    let free = open_with(cx, (400.0, 300.0), 1.5, windows(), false);
+    update(cx, &free, |window, cx| window.drag(near.0, near.1, cx));
+    assert_eq!(
+        *free.events.borrow(),
+        [OverlayEvent::Selected(PhysicalRect::new(
+            152, 149, 295, 148
+        ))]
+    );
 }

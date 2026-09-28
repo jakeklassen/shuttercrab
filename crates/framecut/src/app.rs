@@ -9,11 +9,12 @@
 use crate::{
     files,
     overlay::{OverlayEvent, OverlayFrame, SelectionOverlay},
+    selection::ScreenWindow,
     settings::{self, Settings},
 };
 use chrono::{Local, NaiveDateTime};
-use framecut_capture::{Capture, FrozenFrame, PhysicalRect, monitor_under_pointer};
-use framecut_platform::{MenuItem, Platform, PlatformEvent, window as platform_window};
+use framecut_capture::{Capture, PhysicalRect, Screenshot, monitor_under_pointer};
+use framecut_platform::{MenuItem, Platform, PlatformEvent, targets, window as platform_window};
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver, channel::oneshot};
 use gpui_kit::{
     App, AppContext as _, AsyncApp, Bounds, DisplayId, QuitMode, WindowBackgroundAppearance,
@@ -190,6 +191,8 @@ async fn screenshot(state: &State, cx: &mut AsyncApp) -> Result<(), String> {
     let frozen = pressed.elapsed();
     let (width, height) = frame.size();
     let info = frame.monitor().clone();
+    let windows = screen_windows(info.bounds);
+    let snap_to_windows = state.settings.borrow().snap_to_windows;
     let overlay_frame = OverlayFrame::from_bgra(
         width,
         height,
@@ -219,7 +222,10 @@ async fn screenshot(state: &State, cx: &mut AsyncApp) -> Result<(), String> {
     };
     let window = cx
         .open_window(options, |window, cx| {
-            let view = cx.new(|cx| SelectionOverlay::new(overlay_frame, window, cx));
+            let view = cx.new(|cx| {
+                SelectionOverlay::new(overlay_frame, window, cx)
+                    .with_windows(windows, snap_to_windows)
+            });
             cx.subscribe(&view, move |_, event: &OverlayEvent, _| {
                 if let Some(report) = report.take() {
                     let _ = report.send(*event);
@@ -284,25 +290,84 @@ async fn screenshot(state: &State, cx: &mut AsyncApp) -> Result<(), String> {
             log::info!("selection cancelled");
             Ok(())
         }
-        OverlayEvent::Selected(rect) => deliver(state, &frame, rect, taken_at, cx).await,
+        OverlayEvent::Selected(rect) => {
+            let released = Instant::now();
+            let shot = state.capture.screenshot(&frame, rect).await;
+            deliver(
+                state,
+                shot.map_err(|e| e.to_string())?,
+                released,
+                taken_at,
+                cx,
+            )
+            .await
+        }
+        OverlayEvent::Display => {
+            let released = Instant::now();
+            let whole = PhysicalRect::new(0, 0, width, height);
+            let shot = state.capture.screenshot(&frame, whole).await;
+            deliver(
+                state,
+                shot.map_err(|e| e.to_string())?,
+                released,
+                taken_at,
+                cx,
+            )
+            .await
+        }
+        OverlayEvent::Window { hwnd, visible } => {
+            let released = Instant::now();
+            let shot = match state.capture.capture_window(hwnd).await {
+                Ok(shot) => shot,
+                // Some windows refuse direct capture; what the user saw of
+                // the window is the next best thing.
+                Err(e) => {
+                    log::warn!("direct window capture failed, cutting it from the screen: {e}");
+                    state
+                        .capture
+                        .screenshot(&frame, visible)
+                        .await
+                        .map_err(|e| e.to_string())?
+                }
+            };
+            deliver(state, shot, released, taken_at, cx).await
+        }
     }
 }
 
-/// Encode the selection, then copy and save it as the settings say.
+/// Windows on the monitor at `bounds`, front to back, relative to it. The
+/// desktop is left out: over it, Window mode captures the whole display.
+fn screen_windows(bounds: PhysicalRect) -> Vec<ScreenWindow> {
+    let monitor = targets::Bounds {
+        x: bounds.x,
+        y: bounds.y,
+        width: bounds.width,
+        height: bounds.height,
+    };
+    targets::visible_windows()
+        .into_iter()
+        .filter(|w| !w.desktop && w.bounds.intersect(&monitor).is_some())
+        .map(|w| ScreenWindow {
+            hwnd: w.hwnd,
+            bounds: PhysicalRect::new(
+                w.bounds.x - bounds.x,
+                w.bounds.y - bounds.y,
+                w.bounds.width,
+                w.bounds.height,
+            ),
+        })
+        .collect()
+}
+
+/// Copy and save a finished screenshot as the settings say.
 async fn deliver(
     state: &State,
-    frame: &FrozenFrame,
-    rect: PhysicalRect,
+    shot: Screenshot,
+    released: Instant,
     taken_at: NaiveDateTime,
     cx: &mut AsyncApp,
 ) -> Result<(), String> {
-    let released = Instant::now();
     let settings = state.settings.borrow().clone();
-    let shot = state
-        .capture
-        .screenshot(frame, rect)
-        .await
-        .map_err(|e| e.to_string())?;
     let (width, height) = (shot.width, shot.height);
 
     // Start the file write first; it runs while the clipboard is written.

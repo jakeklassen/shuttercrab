@@ -1,18 +1,24 @@
-//! The selection overlay (PRD §7.2, §7.4): the frozen monitor, full screen,
-//! with a drag-to-select rectangle, live physical-pixel dimensions and the
-//! rest dimmed. It only reports what the user chose; the app closes it and
-//! takes the screenshot.
+//! The selection overlay (PRD §7.2–7.4): the frozen monitor, full screen.
+//! In Area mode the user drags a rectangle, with live physical-pixel
+//! dimensions, the rest dimmed, and edges snapping to nearby windows. Space
+//! switches to Window mode, which highlights the window under the pointer
+//! (or the whole display over the desktop) for a click to capture. The
+//! overlay only reports what the user chose; the app closes it and takes
+//! the screenshot.
 
-use crate::selection::{Drag, dimensions, to_logical};
+use crate::selection::{Drag, ScreenWindow, dimensions, snap, to_logical, window_at};
 use framecut_capture::PhysicalRect;
 use gpui_kit::{
     Bounds, Context, CursorStyle, EventEmitter, FocusHandle, Hsla, InteractiveElement as _,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, ParentElement as _, Pixels, Render, RenderImage, Role, SharedString,
+    ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, TestSupportExt as _, Window,
-    div, hsla, img, px,
+    div, hsla, img, point, px, rgb,
 };
 use std::sync::Arc;
+
+/// Edges within this many logical pixels of the pointer pull the selection.
+const SNAP_DISTANCE: f32 = 6.0;
 
 /// The frozen monitor as the overlay shows it.
 #[derive(Clone)]
@@ -44,13 +50,42 @@ impl OverlayFrame {
 pub enum OverlayEvent {
     /// A region of the frozen monitor, physical pixels relative to it.
     Selected(PhysicalRect),
+    /// A window, and the part of it visible on this monitor (physical
+    /// pixels relative to the monitor) in case it cannot be captured
+    /// directly.
+    Window {
+        hwnd: isize,
+        visible: PhysicalRect,
+    },
+    /// The whole monitor.
+    Display,
     Cancelled,
+}
+
+/// How the pointer picks what to capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Mode {
+    Area,
+    Window,
+}
+
+/// What a click in Window mode would capture.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Target {
+    Window(ScreenWindow),
+    Display,
 }
 
 pub struct SelectionOverlay {
     frame: OverlayFrame,
+    /// Windows on this monitor, front to back.
+    windows: Vec<ScreenWindow>,
+    snap: bool,
+    mode: Mode,
     drag: Option<Drag>,
     dragging: bool,
+    /// Where the pointer went down in Window mode.
+    pressed: bool,
     focus: FocusHandle,
 }
 
@@ -61,16 +96,37 @@ fn dim() -> Hsla {
     hsla(0.0, 0.0, 0.0, 0.4)
 }
 
+/// Framecut's accent, for the Window-mode highlight.
+fn accent() -> Hsla {
+    rgb(0x1F6FEB).into()
+}
+
 impl SelectionOverlay {
     pub fn new(frame: OverlayFrame, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
             frame,
+            windows: Vec::new(),
+            snap: false,
+            mode: Mode::Area,
             drag: None,
             dragging: false,
+            pressed: false,
             focus,
         }
+    }
+
+    /// The windows on this monitor, front to back, for Window mode and,
+    /// with `snap`, for snapping Area selections to their edges.
+    pub fn with_windows(mut self, windows: Vec<ScreenWindow>, snap: bool) -> Self {
+        self.windows = windows;
+        self.snap = snap;
+        self
+    }
+
+    pub fn mode(&self) -> Mode {
+        self.mode
     }
 
     /// The current selection in physical pixels, if there is one.
@@ -80,45 +136,134 @@ impl SelectionOverlay {
             .filter(|r| !r.is_empty())
     }
 
+    /// A pointer position, snapped to window and monitor edges if enabled.
+    fn snapped(&self, position: Point<Pixels>) -> Point<Pixels> {
+        if !self.snap {
+            return position;
+        }
+        let scale = self.frame.scale;
+        let (x, y) = snap(
+            &self.windows,
+            f32::from(position.x) * scale,
+            f32::from(position.y) * scale,
+            SNAP_DISTANCE * scale,
+            self.frame.width,
+            self.frame.height,
+        );
+        point(px(x / scale), px(y / scale))
+    }
+
+    /// What Window mode would capture at `position` (logical pixels).
+    fn target_at(&self, position: Point<Pixels>) -> Target {
+        let scale = self.frame.scale;
+        let (x, y) = (
+            (f32::from(position.x) * scale) as i32,
+            (f32::from(position.y) * scale) as i32,
+        );
+        match window_at(&self.windows, x, y) {
+            Some(w) => Target::Window(*w),
+            None => Target::Display,
+        }
+    }
+
+    /// The target's rectangle on this monitor, and its full size.
+    fn target_rects(&self, target: Target) -> (PhysicalRect, PhysicalRect) {
+        let full = PhysicalRect::new(0, 0, self.frame.width, self.frame.height);
+        match target {
+            Target::Window(w) => (
+                w.bounds.clamp_to(self.frame.width, self.frame.height),
+                w.bounds,
+            ),
+            Target::Display => (full, full),
+        }
+    }
+
     fn cancel(&mut self, cx: &mut Context<Self>) {
         self.drag = None;
         self.dragging = false;
         cx.emit(OverlayEvent::Cancelled);
     }
 
+    fn toggle_mode(&mut self, cx: &mut Context<Self>) {
+        if self.dragging {
+            return;
+        }
+        self.mode = match self.mode {
+            Mode::Area => Mode::Window,
+            Mode::Window => Mode::Area,
+        };
+        self.drag = None;
+        self.pressed = false;
+        cx.notify();
+    }
+
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if event.keystroke.key == "escape" {
-            self.cancel(cx);
+        match event.keystroke.key.as_str() {
+            "escape" => self.cancel(cx),
+            "space" => self.toggle_mode(cx),
+            _ => {}
         }
     }
 
     fn on_left_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        self.drag = Some(Drag::at(event.position));
-        self.dragging = true;
+        match self.mode {
+            Mode::Area => {
+                self.drag = Some(Drag::at(self.snapped(event.position)));
+                self.dragging = true;
+            }
+            Mode::Window => self.pressed = true,
+        }
         cx.notify();
     }
 
     fn on_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.dragging
-            && let Some(drag) = &mut self.drag
-        {
-            drag.end = event.position;
-            cx.notify();
+        match self.mode {
+            Mode::Area => {
+                if self.dragging {
+                    let end = self.snapped(event.position);
+                    if let Some(drag) = &mut self.drag {
+                        drag.end = end;
+                    }
+                    cx.notify();
+                }
+            }
+            // The highlight follows the pointer.
+            Mode::Window => cx.notify(),
         }
     }
 
     fn on_left_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if !self.dragging {
-            return;
-        }
-        self.dragging = false;
-        if let Some(drag) = &mut self.drag {
-            drag.end = event.position;
-        }
-        match self.selection() {
-            Some(rect) => cx.emit(OverlayEvent::Selected(rect)),
-            // A click without a drag selects nothing; keep waiting.
-            None => self.drag = None,
+        match self.mode {
+            Mode::Area => {
+                if !self.dragging {
+                    return;
+                }
+                self.dragging = false;
+                let end = self.snapped(event.position);
+                if let Some(drag) = &mut self.drag {
+                    drag.end = end;
+                }
+                match self.selection() {
+                    Some(rect) => cx.emit(OverlayEvent::Selected(rect)),
+                    // A click without a drag selects nothing; keep waiting.
+                    None => self.drag = None,
+                }
+            }
+            // Capture on release, so the button-up does not reach the
+            // window underneath once the overlay is gone.
+            Mode::Window => {
+                if !std::mem::take(&mut self.pressed) {
+                    return;
+                }
+                let target = self.target_at(event.position);
+                cx.emit(match target {
+                    Target::Window(w) => OverlayEvent::Window {
+                        hwnd: w.hwnd,
+                        visible: self.target_rects(target).0,
+                    },
+                    Target::Display => OverlayEvent::Display,
+                });
+            }
         }
         cx.notify();
     }
@@ -148,13 +293,81 @@ impl SelectionOverlay {
             }
         }
     }
+
+    /// The size readout, below `b` or above it when `b` reaches the bottom;
+    /// inside `b` when it fills the screen.
+    fn label(
+        id: &'static str,
+        text: SharedString,
+        b: Bounds<Pixels>,
+        window: &Window,
+    ) -> impl IntoElement {
+        let viewport = window.viewport_size();
+        let below = b.origin.y + b.size.height + px(6.);
+        let top = if below + px(26.) <= viewport.height {
+            below
+        } else if b.origin.y >= px(30.) {
+            b.origin.y - px(30.)
+        } else {
+            b.origin.y + px(6.)
+        };
+        let left = if b.origin.x + px(6.) >= viewport.width - px(120.) {
+            viewport.width - px(120.)
+        } else {
+            b.origin.x.max(px(6.))
+        };
+        div()
+            .id(id)
+            .role(Role::Label)
+            .aria_label(text.clone())
+            .test_support()
+            .absolute()
+            .left(left)
+            .top(top)
+            .px_1p5()
+            .py_0p5()
+            .rounded_sm()
+            .bg(hsla(0.0, 0.0, 0.0, 0.75))
+            .text_color(gpui_kit::white())
+            .text_xs()
+            .child(text)
+    }
+
+    /// A short hint at the top: what the mouse does and how to switch.
+    fn hint(&self, window: &Window) -> impl IntoElement {
+        let text: SharedString = match self.mode {
+            Mode::Area => "Drag to capture an area  ·  Space: window  ·  Esc: cancel",
+            Mode::Window => "Click a window, or the desktop for the whole display  ·  Space: area  ·  Esc: cancel",
+        }
+        .into();
+        let viewport = window.viewport_size();
+        div()
+            .id("mode-hint")
+            .role(Role::Status)
+            .aria_label(text.clone())
+            .test_support()
+            .absolute()
+            .top(px(12.))
+            .left(px(0.))
+            .w(viewport.width)
+            .flex()
+            .justify_center()
+            .child(
+                div()
+                    .px_3()
+                    .py_1()
+                    .rounded_md()
+                    .bg(hsla(0.0, 0.0, 0.0, 0.75))
+                    .text_color(gpui_kit::white())
+                    .text_xs()
+                    .child(text),
+            )
+    }
 }
 
 impl Render for SelectionOverlay {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let selection = self.selection();
-        let hole = selection.map(|r| to_logical(r, self.frame.scale));
-        let viewport = window.viewport_size();
+        let scale = self.frame.scale;
         let mut root = div()
             .id("overlay")
             .role(Role::Pane)
@@ -163,7 +376,10 @@ impl Render for SelectionOverlay {
             .track_focus(&self.focus)
             .size_full()
             .relative()
-            .cursor(CursorStyle::Crosshair)
+            .cursor(match self.mode {
+                Mode::Area => CursorStyle::Crosshair,
+                Mode::Window => CursorStyle::PointingHand,
+            })
             .on_key_down(cx.listener(Self::on_key_down))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_left_down))
             .on_mouse_move(cx.listener(Self::on_move))
@@ -179,50 +395,60 @@ impl Render for SelectionOverlay {
                     .top_0()
                     .size_full()
                     .object_fit(ObjectFit::Fill),
-            )
-            .children(self.dimming(hole, window));
-        if let (Some(rect), Some(b)) = (selection, hole) {
-            let label = SharedString::from(dimensions(rect));
-            // Below the selection, or above it when it reaches the bottom.
-            let below = b.origin.y + b.size.height + px(6.);
-            let top = if below + px(26.) > viewport.height {
-                (b.origin.y - px(30.)).max(px(0.))
-            } else {
-                below
-            };
-            root = root
-                .child(
-                    div()
-                        .id("selection")
-                        .role(Role::Group)
-                        .aria_label(label.clone())
-                        .test_support()
-                        .absolute()
-                        .left(b.origin.x)
-                        .top(b.origin.y)
-                        .w(b.size.width)
-                        .h(b.size.height)
-                        .border_1()
-                        .border_color(gpui_kit::white()),
-                )
-                .child(
-                    div()
-                        .id("dimensions")
-                        .role(Role::Label)
-                        .aria_label(label.clone())
-                        .test_support()
-                        .absolute()
-                        .left(b.origin.x)
-                        .top(top)
-                        .px_1p5()
-                        .py_0p5()
-                        .rounded_sm()
-                        .bg(hsla(0.0, 0.0, 0.0, 0.75))
-                        .text_color(gpui_kit::white())
-                        .text_xs()
-                        .child(label),
-                );
+            );
+        match self.mode {
+            Mode::Area => {
+                let selection = self.selection();
+                let hole = selection.map(|r| to_logical(r, scale));
+                root = root.children(self.dimming(hole, window));
+                if let (Some(rect), Some(b)) = (selection, hole) {
+                    let label = SharedString::from(dimensions(rect));
+                    root = root
+                        .child(
+                            div()
+                                .id("selection")
+                                .role(Role::Group)
+                                .aria_label(label.clone())
+                                .test_support()
+                                .absolute()
+                                .left(b.origin.x)
+                                .top(b.origin.y)
+                                .w(b.size.width)
+                                .h(b.size.height)
+                                .border_1()
+                                .border_color(gpui_kit::white()),
+                        )
+                        .child(Self::label("dimensions", label, b, window));
+                }
+            }
+            Mode::Window => {
+                let target = self.target_at(window.mouse_position());
+                let (shown, full) = self.target_rects(target);
+                let b = to_logical(shown, scale);
+                let what = match target {
+                    Target::Window(_) => "Window",
+                    Target::Display => "Display",
+                };
+                let label = SharedString::from(format!("{what}  {}", dimensions(full)));
+                root = root
+                    .children(self.dimming(Some(b), window))
+                    .child(
+                        div()
+                            .id("window-target")
+                            .role(Role::Group)
+                            .aria_label(label.clone())
+                            .test_support()
+                            .absolute()
+                            .left(b.origin.x)
+                            .top(b.origin.y)
+                            .w(b.size.width)
+                            .h(b.size.height)
+                            .border_2()
+                            .border_color(accent()),
+                    )
+                    .child(Self::label("dimensions", label, b, window));
+            }
         }
-        root
+        root.child(self.hint(window))
     }
 }
