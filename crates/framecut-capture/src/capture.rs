@@ -57,8 +57,13 @@ pub struct Frame {
 }
 
 /// Capture one frame of `monitor`. Blocks until the frame arrives (at most
-/// five seconds). The cursor is left out.
-pub fn capture_monitor(gpu: &Gpu, monitor: HMONITOR, format: PixelFormat) -> Result<Frame> {
+/// five seconds). The pointer is drawn only with `include_cursor`.
+pub fn capture_monitor(
+    gpu: &Gpu,
+    monitor: HMONITOR,
+    format: PixelFormat,
+    include_cursor: bool,
+) -> Result<Frame> {
     ensure!(
         GraphicsCaptureSession::IsSupported()?,
         "Windows.Graphics.Capture is not available"
@@ -66,14 +71,19 @@ pub fn capture_monitor(gpu: &Gpu, monitor: HMONITOR, format: PixelFormat) -> Res
     let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
     let item: GraphicsCaptureItem =
         unsafe { interop.CreateForMonitor(monitor) }.context("CreateForMonitor failed")?;
-    capture_item(gpu, &item, format, true)
+    capture_item(gpu, &item, format, true, include_cursor)
 }
 
 /// Capture one frame of the top-level window `window`, as the window itself
 /// draws it: parts covered by other windows are included. The frame has the
 /// size of the window's visual, which may include transparent margins and
 /// corners. Blocks until the frame arrives (at most five seconds).
-pub fn capture_window(gpu: &Gpu, window: HWND, format: PixelFormat) -> Result<Frame> {
+pub fn capture_window(
+    gpu: &Gpu,
+    window: HWND,
+    format: PixelFormat,
+    include_cursor: bool,
+) -> Result<Frame> {
     ensure!(
         GraphicsCaptureSession::IsSupported()?,
         "Windows.Graphics.Capture is not available"
@@ -81,7 +91,7 @@ pub fn capture_window(gpu: &Gpu, window: HWND, format: PixelFormat) -> Result<Fr
     let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
     let item: GraphicsCaptureItem =
         unsafe { interop.CreateForWindow(window) }.context("CreateForWindow failed")?;
-    capture_item(gpu, &item, format, false)
+    capture_item(gpu, &item, format, false, include_cursor)
 }
 
 /// `exact`: fail if the content is not the item's size (a monitor that
@@ -92,6 +102,7 @@ fn capture_item(
     item: &GraphicsCaptureItem,
     format: PixelFormat,
     exact: bool,
+    include_cursor: bool,
 ) -> Result<Frame> {
     let size = item.Size()?;
     ensure!(
@@ -112,7 +123,7 @@ fn capture_item(
         }
     };
     let result = (|| {
-        session.SetIsCursorCaptureEnabled(false)?;
+        session.SetIsCursorCaptureEnabled(include_cursor)?;
         // Cosmetic only; the border is not part of the captured image.
         let border_disabled = session.SetIsBorderRequired(false).is_ok();
         session.StartCapture().context("StartCapture failed")?;

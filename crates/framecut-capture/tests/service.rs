@@ -32,7 +32,7 @@ fn freezes_and_cuts_a_screenshot() {
     let monitor = monitor_under_pointer().unwrap();
     for attempt in 0..2 {
         let started = Instant::now();
-        let frame = block_on(capture.freeze_monitor(monitor)).unwrap();
+        let frame = block_on(capture.freeze_monitor(monitor, false)).unwrap();
         let froze = started.elapsed();
         let (w, h) = frame.size();
         assert_eq!(

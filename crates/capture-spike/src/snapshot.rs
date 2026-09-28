@@ -66,9 +66,9 @@ pub fn take(monitor: Option<&str>, dir: &Path, highlights: Highlights) -> Result
     let converter = SdrConverter::new(&gpu)?;
 
     let started = Instant::now();
-    let fp16 = capture::capture_monitor(&gpu, before.hmonitor, PixelFormat::Fp16)?;
+    let fp16 = capture::capture_monitor(&gpu, before.hmonitor, PixelFormat::Fp16, false)?;
     let fp16_ms = started.elapsed().as_secs_f64() * 1000.0;
-    let bgra = capture::capture_monitor(&gpu, before.hmonitor, PixelFormat::Bgra8)?;
+    let bgra = capture::capture_monitor(&gpu, before.hmonitor, PixelFormat::Bgra8, false)?;
 
     // The frame and the metadata used to convert it must describe the same
     // display state. A change (an HDR toggle, a brightness change, a mode

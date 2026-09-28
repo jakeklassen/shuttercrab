@@ -84,6 +84,8 @@ pub struct MonitorInfo {
     pub advanced_color_enabled: bool,
     pub hdr_enabled: bool,
     pub sdr_white_level_nits: Option<f32>,
+    /// The graphics adapter driving the monitor.
+    pub adapter: String,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -210,9 +212,9 @@ impl fmt::Debug for Screenshot {
 enum Request {
     WarmUp,
     Monitors(oneshot::Sender<Result<Vec<MonitorInfo>>>),
-    Freeze(MonitorId, oneshot::Sender<Result<FrozenFrame>>),
+    Freeze(MonitorId, bool, oneshot::Sender<Result<FrozenFrame>>),
     Screenshot(u64, PhysicalRect, oneshot::Sender<Result<Screenshot>>),
-    Window(isize, oneshot::Sender<Result<Screenshot>>),
+    Window(isize, bool, oneshot::Sender<Result<Screenshot>>),
     Release(u64),
 }
 
@@ -266,13 +268,15 @@ impl Capture {
         self.ask(Request::Monitors(reply), answer)
     }
 
-    /// Capture `monitor` now and convert it to SDR.
+    /// Capture `monitor` now and convert it to SDR. The pointer is in the
+    /// image only with `include_cursor` (PRD §15).
     pub fn freeze_monitor(
         &self,
         monitor: MonitorId,
+        include_cursor: bool,
     ) -> impl Future<Output = Result<FrozenFrame>> + use<> {
         let (reply, answer) = oneshot::channel();
-        self.ask(Request::Freeze(monitor, reply), answer)
+        self.ask(Request::Freeze(monitor, include_cursor, reply), answer)
     }
 
     /// Cut `region` (physical pixels relative to the frame's monitor) out of
@@ -289,9 +293,13 @@ impl Capture {
     /// Capture the top-level window `hwnd` directly (PRD §7.3): its own
     /// content, including parts covered by other windows, converted to SDR
     /// for the monitor it is mostly on. Rounded corners stay transparent.
-    pub fn capture_window(&self, hwnd: isize) -> impl Future<Output = Result<Screenshot>> + use<> {
+    pub fn capture_window(
+        &self,
+        hwnd: isize,
+        include_cursor: bool,
+    ) -> impl Future<Output = Result<Screenshot>> + use<> {
         let (reply, answer) = oneshot::channel();
-        self.ask(Request::Window(hwnd, reply), answer)
+        self.ask(Request::Window(hwnd, include_cursor, reply), answer)
     }
 }
 
@@ -352,14 +360,14 @@ impl Service {
                 Request::Monitors(reply) => {
                     let _ = reply.send(self.monitors());
                 }
-                Request::Freeze(monitor, reply) => {
-                    let _ = reply.send(self.freeze(monitor));
+                Request::Freeze(monitor, include_cursor, reply) => {
+                    let _ = reply.send(self.freeze(monitor, include_cursor));
                 }
                 Request::Screenshot(id, region, reply) => {
                     let _ = reply.send(self.screenshot(id, region));
                 }
-                Request::Window(hwnd, reply) => {
-                    let _ = reply.send(self.capture_window(hwnd));
+                Request::Window(hwnd, include_cursor, reply) => {
+                    let _ = reply.send(self.capture_window(hwnd, include_cursor));
                 }
                 Request::Release(id) => {
                     self.frames.remove(&id);
@@ -410,7 +418,7 @@ impl Service {
         Ok(monitors.iter().map(describe).collect())
     }
 
-    fn freeze(&mut self, id: MonitorId) -> Result<FrozenFrame> {
+    fn freeze(&mut self, id: MonitorId, include_cursor: bool) -> Result<FrozenFrame> {
         let started = Instant::now();
         let monitors = display::enumerate().map_err(|e| {
             CaptureError::new(
@@ -458,8 +466,13 @@ impl Service {
         // monitors go through the FP16 path and the transform.
         let (width, height, bgra, frame_peak, hdr_regions) = match monitor.color_mode {
             ColorMode::Sdr => {
-                let frame = capture::capture_monitor(gpu, monitor.hmonitor, PixelFormat::Bgra8)
-                    .map_err(unavailable)?;
+                let frame = capture::capture_monitor(
+                    gpu,
+                    monitor.hmonitor,
+                    PixelFormat::Bgra8,
+                    include_cursor,
+                )
+                .map_err(unavailable)?;
                 let mut bgra = gpu.read_back(&frame.texture).map_err(unavailable)?;
                 for px in bgra.as_chunks_mut::<4>().0 {
                     px[3] = 255;
@@ -467,8 +480,13 @@ impl Service {
                 (frame.width, frame.height, bgra, 1.0, 0)
             }
             ColorMode::Wcg | ColorMode::Hdr => {
-                let frame = capture::capture_monitor(gpu, monitor.hmonitor, PixelFormat::Fp16)
-                    .map_err(unavailable)?;
+                let frame = capture::capture_monitor(
+                    gpu,
+                    monitor.hmonitor,
+                    PixelFormat::Fp16,
+                    include_cursor,
+                )
+                .map_err(unavailable)?;
                 let sdr = converter
                     .convert(gpu, &frame.texture, white_scale, Highlights::Tonemap)
                     .map_err(unavailable)?;
@@ -572,7 +590,7 @@ impl Service {
         })
     }
 
-    fn capture_window(&mut self, hwnd: isize) -> Result<Screenshot> {
+    fn capture_window(&mut self, hwnd: isize, include_cursor: bool) -> Result<Screenshot> {
         let started = Instant::now();
         let window = HWND(hwnd as _);
         let nearest = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
@@ -611,13 +629,14 @@ impl Service {
         let (width, height, rgba) = match monitor.color_mode {
             ColorMode::Sdr => {
                 let frame =
-                    capture::capture_window(gpu, window, PixelFormat::Bgra8).map_err(failed)?;
+                    capture::capture_window(gpu, window, PixelFormat::Bgra8, include_cursor)
+                        .map_err(failed)?;
                 let bgra = gpu.read_back(&frame.texture).map_err(failed)?;
                 (frame.width, frame.height, unpremultiply_bgra(&bgra))
             }
             ColorMode::Wcg | ColorMode::Hdr => {
-                let frame =
-                    capture::capture_window(gpu, window, PixelFormat::Fp16).map_err(failed)?;
+                let frame = capture::capture_window(gpu, window, PixelFormat::Fp16, include_cursor)
+                    .map_err(failed)?;
                 let sdr = converter
                     .convert(gpu, &frame.texture, white_scale, Highlights::Tonemap)
                     .map_err(failed)?;
@@ -666,6 +685,7 @@ fn describe(monitor: &display::Monitor) -> MonitorInfo {
         advanced_color_enabled: monitor.advanced_color_enabled(),
         hdr_enabled: monitor.hdr_enabled(),
         sdr_white_level_nits: monitor.sdr_white_nits(),
+        adapter: monitor.adapter_name.clone(),
     }
 }
 
