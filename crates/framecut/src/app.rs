@@ -22,14 +22,15 @@ use chrono::{Local, NaiveDateTime};
 use framecut_capture::{
     Capture, MonitorId, MonitorInfo, PhysicalRect, Screenshot, monitor_under_pointer,
 };
-use framecut_platform::{MenuItem, Platform, PlatformEvent, targets, window as platform_window};
+use framecut_platform::{
+    MenuItem, Platform, PlatformEvent, drag::DragImage, targets, window as platform_window,
+};
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
-use gpui_kit::{App, AppContext as _, AsyncApp, QuitMode, RenderImage};
+use gpui_kit::{App, AppContext as _, AsyncApp, QuitMode};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
-    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -434,7 +435,7 @@ async fn deliver(
         let scale = monitor.scale_factor;
         let (max_w, max_h) = ((w * scale).ceil() as u32, (h * scale).ceil() as u32);
         cx.background_executor()
-            .spawn(async move { thumbnail::render_image(rgba, width, height, max_w, max_h) })
+            .spawn(async move { thumbnail::scale_down(rgba, width, height, max_w, max_h) })
     });
     // Without auto-save, the thumbnail writes a temporary file only if it
     // is opened or dragged.
@@ -508,7 +509,7 @@ async fn deliver(
             },
         };
         let thumbnail = PendingThumbnail {
-            image: preview.await,
+            small: preview.await,
             size: (width, height),
             file,
             monitor: monitor.clone(),
@@ -551,7 +552,8 @@ impl CaptureFile {
 
 /// A thumbnail about to be shown.
 struct PendingThumbnail {
-    image: Arc<RenderImage>,
+    /// The screenshot scaled down: the card's picture and the drag image.
+    small: thumbnail::Small,
     /// The screenshot's size, physical pixels.
     size: (u32, u32),
     file: CaptureFile,
@@ -579,7 +581,7 @@ pub fn thumbnail_rect(work: PhysicalRect, scale: f32, size: (u32, u32)) -> Physi
 fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp) {
     cx.spawn(async move |cx| {
         let PendingThumbnail {
-            image,
+            small,
             size,
             mut file,
             monitor,
@@ -589,8 +591,17 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             .map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h))
             .unwrap_or(monitor.bounds);
         let rect = thumbnail_rect(work, monitor.scale_factor, size);
+        let image = thumbnail::render_image(&small);
+        let over = move || {
+            platform_window::cursor_position().is_some_and(|(x, y)| {
+                x >= rect.x
+                    && y >= rect.y
+                    && x < rect.x + rect.width as i32
+                    && y < rect.y + rect.height as i32
+            })
+        };
         let opened = popup::open(&monitor, rect, false, cx, move |_, cx| {
-            cx.new(|cx| Thumbnail::new(image, seconds, cx))
+            cx.new(|cx| Thumbnail::new(image, seconds, cx).with_pointer_probe(Box::new(over)))
         });
         let (card, mut events) = match opened {
             Ok(opened) => opened,
@@ -628,7 +639,14 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
                 ThumbnailEvent::Drag => match file.path(cx).await {
                     // A modal loop until the drop; this task is outside any
                     // GPUI update, so the windows keep working meanwhile.
-                    Ok(path) => match framecut_platform::drag::drag_file(&path) {
+                    Ok(path) => match framecut_platform::drag::drag_file(
+                        &path,
+                        Some(DragImage {
+                            width: small.width,
+                            height: small.height,
+                            rgba: &small.rgba,
+                        }),
+                    ) {
                         Ok(true) => {
                             log::info!("thumbnail: dropped into another application");
                             break;

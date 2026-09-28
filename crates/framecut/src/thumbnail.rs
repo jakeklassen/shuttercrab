@@ -44,15 +44,22 @@ pub fn image_size(width: u32, height: u32) -> (f32, f32) {
     ((w * fit).max(MIN_SIDE), (h * fit).max(MIN_SIDE))
 }
 
+/// A screenshot scaled down for the thumbnail: straight-alpha RGBA8.
+pub struct Small {
+    pub width: u32,
+    pub height: u32,
+    pub rgba: Vec<u8>,
+}
+
 /// Tightly packed straight-alpha RGBA, scaled down to at most `max_width` ×
-/// `max_height` physical pixels, as an image GPUI can draw.
-pub fn render_image(
+/// `max_height` physical pixels.
+pub fn scale_down(
     rgba: Vec<u8>,
     width: u32,
     height: u32,
     max_width: u32,
     max_height: u32,
-) -> Arc<RenderImage> {
+) -> Small {
     let full =
         image::RgbaImage::from_raw(width, height, rgba).expect("the buffer matches its size");
     let fit = (max_width as f32 / width as f32)
@@ -62,21 +69,39 @@ pub fn render_image(
         ((width as f32 * fit).round() as u32).max(1),
         ((height as f32 * fit).round() as u32).max(1),
     );
-    let mut small = if (w, h) == (width, height) {
+    let small = if (w, h) == (width, height) {
         full
     } else {
         image::imageops::thumbnail(&full, w, h)
     };
-    // GPUI draws BGRA.
-    for px in small.pixels_mut() {
-        px.0.swap(0, 2);
+    Small {
+        width: w,
+        height: h,
+        rgba: small.into_raw(),
     }
-    Arc::new(RenderImage::new([image::Frame::new(small)]))
 }
+
+/// A scaled-down screenshot as an image GPUI can draw.
+pub fn render_image(small: &Small) -> Arc<RenderImage> {
+    let mut bgra = small.rgba.clone();
+    // GPUI draws BGRA.
+    for px in bgra.as_chunks_mut::<4>().0 {
+        px.swap(0, 2);
+    }
+    let buffer = image::RgbaImage::from_raw(small.width, small.height, bgra)
+        .expect("the buffer matches its size");
+    Arc::new(RenderImage::new([image::Frame::new(buffer)]))
+}
+
+/// Tells whether the pointer is over the card. GPUI updates an element's
+/// hover state only on mouse moves inside the window, so leaving the card
+/// goes unnoticed; the app asks Windows instead.
+pub type PointerProbe = Box<dyn Fn() -> bool>;
 
 pub struct Thumbnail {
     image: Arc<RenderImage>,
     hovered: bool,
+    probe: Option<PointerProbe>,
     /// Seconds left before the card closes itself.
     left: u32,
     /// Where the left button went down, while it may still become a click.
@@ -94,6 +119,13 @@ impl Thumbnail {
             loop {
                 cx.background_executor().timer(Duration::from_secs(1)).await;
                 let done = this.update(cx, |this, cx| {
+                    if let Some(probe) = &this.probe {
+                        let over = probe();
+                        if over != this.hovered {
+                            this.hovered = over;
+                            cx.notify();
+                        }
+                    }
                     if !this.hovered {
                         this.left = this.left.saturating_sub(1);
                     }
@@ -111,10 +143,17 @@ impl Thumbnail {
         Self {
             image,
             hovered: false,
+            probe: None,
             left: seconds.max(1),
             pressed_at: None,
             closed: false,
         }
+    }
+
+    /// Ask `probe`, once a second, whether the pointer is over the card.
+    pub fn with_pointer_probe(mut self, probe: PointerProbe) -> Self {
+        self.probe = Some(probe);
+        self
     }
 
     pub fn is_closed(&self) -> bool {

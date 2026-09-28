@@ -4,7 +4,7 @@
 //!   cargo test -p framecut --test thumbnail
 #![cfg(windows)]
 
-use framecut::thumbnail::{Thumbnail, ThumbnailEvent, render_image};
+use framecut::thumbnail::{Thumbnail, ThumbnailEvent, render_image, scale_down};
 use gpui_kit::{
     App, AppContext as _, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, TestAppContext, Window, WindowHandle, point, px, size,
@@ -19,7 +19,7 @@ struct Opened {
 
 fn open(cx: &mut TestAppContext, seconds: u32) -> Opened {
     cx.update(gpui_kit::init);
-    let image = render_image(vec![200; 64 * 36 * 4], 64, 36, 64, 36);
+    let image = render_image(&scale_down(vec![200; 64 * 36 * 4], 64, 36, 64, 36));
     let events = Rc::new(RefCell::new(Vec::new()));
     let sink = events.clone();
     let handle = cx.open_window(size(px(252.0), px(147.0)), move |_, cx| {
@@ -145,4 +145,26 @@ fn the_countdown_waits_while_the_pointer_is_over_it(cx: &mut TestAppContext) {
     });
     cx.executor().advance_clock(Duration::from_millis(2100));
     assert_eq!(*opened.events.borrow(), [ThumbnailEvent::Close]);
+}
+
+#[gpui_kit::test]
+fn leaving_the_card_restarts_the_countdown_without_a_mouse_event(cx: &mut TestAppContext) {
+    // The owner's case: hover, then leave. Windows sends the card no mouse
+    // move once the pointer is outside, so the probe tells it.
+    cx.update(gpui_kit::init);
+    let over = Rc::new(std::cell::Cell::new(true));
+    let probe = over.clone();
+    let image = render_image(&scale_down(vec![200; 64 * 36 * 4], 64, 36, 64, 36));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let sink = events.clone();
+    let _handle = cx.open_window(size(px(252.0), px(147.0)), move |_, cx| {
+        cx.subscribe_self(move |_, event: &ThumbnailEvent, _| sink.borrow_mut().push(*event))
+            .detach();
+        Thumbnail::new(image, 2, cx).with_pointer_probe(Box::new(move || probe.get()))
+    });
+    cx.executor().advance_clock(Duration::from_secs(10));
+    assert!(events.borrow().is_empty());
+    over.set(false);
+    cx.executor().advance_clock(Duration::from_millis(3100));
+    assert_eq!(*events.borrow(), [ThumbnailEvent::Close]);
 }

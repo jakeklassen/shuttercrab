@@ -154,3 +154,17 @@ pub fn work_area(hmonitor: u64) -> Option<(i32, i32, u32, u32)> {
         )
     })
 }
+
+/// Where the pointer is, physical virtual-desktop pixels.
+pub fn cursor_position() -> Option<(i32, i32)> {
+    use windows::Win32::{Foundation::POINT, UI::WindowsAndMessaging::GetCursorPos};
+    let previous = unsafe {
+        windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        )
+    };
+    let mut point = POINT::default();
+    let found = unsafe { GetCursorPos(&mut point) }.is_ok();
+    unsafe { windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(previous) };
+    found.then_some((point.x, point.y))
+}
