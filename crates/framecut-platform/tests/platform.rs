@@ -12,10 +12,10 @@ use futures::executor::block_on;
 fn registers_hotkeys_and_reports_conflicts() {
     // F24 exists on no ordinary keyboard, so nothing else should own it.
     let hotkey = Hotkey::parse("Ctrl+Alt+Shift+F24").unwrap();
-    let (first, _events, conflicts) = Platform::start(&[(1, hotkey)]).unwrap();
+    let (first, _events, conflicts) = Platform::start(&[(1, hotkey)], None).unwrap();
     assert!(conflicts.is_empty(), "{conflicts:?}");
     // A second registration of the same hotkey is refused and reported.
-    let (_second, _events, conflicts) = Platform::start(&[(7, hotkey)]).unwrap();
+    let (_second, _events, conflicts) = Platform::start(&[(7, hotkey)], None).unwrap();
     assert_eq!(conflicts.len(), 1);
     assert_eq!(conflicts[0].id, 7);
     drop(first);
@@ -30,7 +30,7 @@ fn puts_png_and_bitmap_on_the_clipboard() {
         },
         Ole::{CF_BITMAP, CF_DIB, CF_DIBV5},
     };
-    let (platform, _events, _) = Platform::start(&[]).unwrap();
+    let (platform, _events, _) = Platform::start(&[], None).unwrap();
     let rgba = vec![200u8; 4 * 3 * 2];
     block_on(platform.copy_image(vec![0x89, b'P', b'N', b'G'], rgba, 3, 2)).unwrap();
     unsafe {

@@ -8,9 +8,9 @@ use windows::Win32::{
     System::Threading::{AttachThreadInput, GetCurrentThreadId},
     UI::WindowsAndMessaging::{
         BringWindowToTop, GWL_STYLE, GetClientRect, GetForegroundWindow, GetWindowLongPtrW,
-        GetWindowThreadProcessId, HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_SHOWWINDOW,
-        SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, WS_CAPTION, WS_MAXIMIZEBOX,
-        WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
+        GetWindowThreadProcessId, HWND_TOPMOST, SW_HIDE, SWP_FRAMECHANGED, SWP_NOACTIVATE,
+        SWP_SHOWWINDOW, SetForegroundWindow, SetWindowLongPtrW, SetWindowPos, ShowWindow,
+        WS_CAPTION, WS_MAXIMIZEBOX, WS_MINIMIZEBOX, WS_POPUP, WS_SYSMENU, WS_THICKFRAME,
     },
 };
 
@@ -79,4 +79,12 @@ pub fn bring_to_front(hwnd: isize) {
             let _ = AttachThreadInput(ours, theirs, false);
         }
     }
+}
+
+/// Hide the window without destroying it. Hiding a GPUI window before
+/// removing it lets GPUI handle the deactivation while it still knows the
+/// window; otherwise the deactivation arrives during destruction and GPUI
+/// logs "window not found".
+pub fn hide(hwnd: isize) {
+    let _ = unsafe { ShowWindow(HWND(hwnd as _), SW_HIDE) };
 }
