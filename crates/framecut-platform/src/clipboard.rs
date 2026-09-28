@@ -27,8 +27,11 @@ use windows::{
 const ATTEMPTS: u32 = 20;
 const RETRY: Duration = Duration::from_millis(15);
 
-/// A `CF_DIBV5` block for opaque RGBA8 pixels: a `BITMAPV5HEADER` (sRGB,
-/// 32-bit BGRA with bit-field masks) followed by rows bottom to top.
+/// A `CF_DIBV5` block for straight-alpha RGBA8 pixels: a `BITMAPV5HEADER`
+/// (sRGB, 32-bit BGRA with bit-field masks) followed by rows bottom to top.
+/// Many applications ignore a bitmap's alpha, so the bitmap is opaque:
+/// partly transparent pixels (window corners) are composited over white.
+/// The PNG on the clipboard keeps the transparency.
 pub fn dibv5(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     if rgba.len() != (width * height * 4) as usize || width == 0 || height == 0 {
         bail!("image buffer does not match {width}x{height}");
@@ -60,7 +63,9 @@ pub fn dibv5(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
     let row = (width * 4) as usize;
     for y in (0..height as usize).rev() {
         for px in rgba[y * row..(y + 1) * row].as_chunks::<4>().0 {
-            out.extend_from_slice(&[px[2], px[1], px[0], 255]);
+            let a = px[3] as u32;
+            let over_white = |c: u8| ((c as u32 * a + 255 * (255 - a) + 127) / 255) as u8;
+            out.extend_from_slice(&[over_white(px[2]), over_white(px[1]), over_white(px[0]), 255]);
         }
     }
     Ok(out)
@@ -123,7 +128,9 @@ mod tests {
     #[test]
     fn dib_is_bottom_up_bgra_with_an_srgb_v5_header() {
         // 2x2: top row red, green; bottom row blue, white.
-        let rgba = [255, 0, 0, 7, 0, 255, 0, 7, 0, 0, 255, 7, 255, 255, 255, 7];
+        let rgba = [
+            255, 0, 0, 255, 0, 255, 0, 255, 0, 0, 255, 255, 255, 255, 255, 255,
+        ];
         let dib = dibv5(&rgba, 2, 2).unwrap();
         let header = size_of::<BITMAPV5HEADER>();
         assert_eq!(header, 124);
@@ -138,6 +145,14 @@ mod tests {
             [255, 0, 0, 255, 255, 255, 255, 255]
         );
         assert_eq!(&dib[header + 8..], [0, 0, 255, 255, 0, 255, 0, 255]);
+    }
+
+    #[test]
+    fn transparent_pixels_are_composited_over_white() {
+        // Black at half coverage, then fully transparent black.
+        let dib = dibv5(&[0, 0, 0, 128, 0, 0, 0, 0], 2, 1).unwrap();
+        let pixels = &dib[size_of::<BITMAPV5HEADER>()..];
+        assert_eq!(pixels, [127, 127, 127, 255, 255, 255, 255, 255]);
     }
 
     #[test]

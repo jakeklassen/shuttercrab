@@ -9,6 +9,7 @@ mod console;
 mod hotkey;
 pub mod icon;
 mod instance;
+pub mod targets;
 pub mod window;
 
 pub use clipboard::dibv5;
