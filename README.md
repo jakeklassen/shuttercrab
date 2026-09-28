@@ -15,8 +15,8 @@ The specification is [docs/PRD.md](docs/PRD.md).
   (tray icon, settings, log file, auto-save, single instance) passed its
   acceptance test on 2026-09-27. Step 2 (window and display capture, Space
   toggle, snapping) passed on 2026-09-28. Step 3 (the Capture Bar) passed on
-  2026-09-28. Step 4 (thumbnail, notifications, capture exclusion) is built
-  and awaiting its test.
+  2026-09-28. Step 4 (thumbnail, notifications, capture exclusion)
+  passed on 2026-09-28.
 
 Documentation:
 

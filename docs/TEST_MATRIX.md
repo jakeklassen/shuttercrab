@@ -1,6 +1,6 @@
 # Test matrix
 
-Milestone 2 (screenshot workflow) is in progress, steps 1–3 of 6 accepted; see [Milestone
+Milestone 2 (screenshot workflow) is in progress, steps 1–4 of 6 accepted; see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
 2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
@@ -194,6 +194,9 @@ Acceptance (manual):
 8. Say what you think of the bar's look and placement.
 
 ### Step 4: thumbnail, notifications, capture exclusion
+
+**Passed**: the owner accepted it on 2026-09-28 ("good enough to move on")
+after the retests and the drag-image look below.
 
 Owner's results, 2026-09-28: items 1, 3, 4, 5, 6 pass ("feels pretty good
 overall"; dragging into Claude Code worked). Two bugs, both fixed in
@@ -581,5 +584,5 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Boundary snapping (§7.2) | **Passed: owner, 2026-09-28** | Catch 10, release 24 logical px; blue side markers |
 | Capture Bar: master hotkey, Area / Window / Display, keyboard, remembers the last target, closes on start (§7.5, §32.6) | **Passed: owner, 2026-09-28** | UI tests; smoke test; all eight acceptance steps |
 | App UI excluded from capture (§7.6) | Capture Bar and thumbnail: passed locally | Display affinity 0x11 |
-| Post-capture thumbnail: after the clipboard, auto-dismiss, click opens, drag into apps, excluded, never blocks the next capture (§7.6, §32.6) | Passed (headless + smoke); awaits the owner | UI tests; drag into Explorer delivered the file |
+| Post-capture thumbnail: after the clipboard, auto-dismiss, click opens, drag into apps, excluded, never blocks the next capture (§7.6, §32.6) | **Passed: owner, 2026-09-28** | UI tests; drags into Explorer, Telegram, Claude Code |
 | Optional notification after capture (§8, settings) | Built, off by default | `notify_after_capture` |
