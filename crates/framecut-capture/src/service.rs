@@ -356,18 +356,33 @@ impl Service {
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
         for request in inbox {
             match request {
-                Request::WarmUp => self.warm_up(),
+                Request::WarmUp => {
+                    self.warm_up();
+                    self.trim();
+                }
                 Request::Monitors(reply) => {
                     let _ = reply.send(self.monitors());
                 }
                 Request::Freeze(monitor, include_cursor, reply) => {
-                    let _ = reply.send(self.freeze(monitor, include_cursor));
+                    let frozen = retry_once(
+                        &mut self,
+                        |s| s.freeze(monitor, include_cursor),
+                        Service::recover,
+                    );
+                    self.trim();
+                    let _ = reply.send(frozen);
                 }
                 Request::Screenshot(id, region, reply) => {
                     let _ = reply.send(self.screenshot(id, region));
                 }
                 Request::Window(hwnd, include_cursor, reply) => {
-                    let _ = reply.send(self.capture_window(hwnd, include_cursor));
+                    let captured = retry_once(
+                        &mut self,
+                        |s| s.capture_window(hwnd, include_cursor),
+                        Service::recover,
+                    );
+                    self.trim();
+                    let _ = reply.send(captured);
                 }
                 Request::Release(id) => {
                     self.frames.remove(&id);
@@ -446,20 +461,11 @@ impl Service {
         })?;
         let (gpu, converter) = self.gpu_for(monitor)?;
         let unavailable = |e: anyhow::Error| {
-            let lost = format!("{e:#}").contains("0x887A0005");
-            if lost {
-                CaptureError::new(
-                    CaptureErrorCode::DeviceLost,
-                    "The graphics device was reset; try again",
-                    e,
-                )
-            } else {
-                CaptureError::new(
-                    CaptureErrorCode::CaptureUnavailable,
-                    "Could not capture the screen",
-                    e,
-                )
-            }
+            classify(
+                e,
+                CaptureErrorCode::CaptureUnavailable,
+                "Could not capture the screen",
+            )
         };
 
         // SDR monitors take the desktop as it is (PRD §9.5); Advanced Color
@@ -550,6 +556,24 @@ impl Service {
         })
     }
 
+    /// Get ready to try again after a failure `retry_once` retries.
+    /// Return pooled graphics memory after a capture.
+    fn trim(&self) {
+        for (gpu, _) in self.gpus.values() {
+            gpu.trim();
+        }
+    }
+
+    fn recover(&mut self, code: CaptureErrorCode) {
+        if code == CaptureErrorCode::DeviceLost {
+            // A reset or removed device stays unusable; start afresh.
+            log::warn!("the graphics device was lost; creating a new one");
+            self.gpus.clear();
+        } else {
+            log::info!("the display changed during capture; capturing again");
+        }
+    }
+
     fn gpu_for(&mut self, monitor: &display::Monitor) -> Result<&(Gpu, SdrConverter)> {
         let key = monitor.adapter_name.clone();
         if !self.gpus.contains_key(&key) {
@@ -620,10 +644,10 @@ impl Service {
         })?;
         let (gpu, converter) = self.gpu_for(monitor)?;
         let failed = |e: anyhow::Error| {
-            CaptureError::new(
+            classify(
+                e,
                 CaptureErrorCode::WindowGone,
                 "Could not capture the window",
-                e,
             )
         };
         let (width, height, rgba) = match monitor.color_mode {
@@ -656,6 +680,58 @@ impl Service {
             rgba,
             png,
         })
+    }
+}
+
+/// Run `attempt`; after a lost device or a display change, `recover` and
+/// run it once more (PRD §25). Other failures, and a second failure, are
+/// returned as they are.
+fn retry_once<S, T>(
+    state: &mut S,
+    mut attempt: impl FnMut(&mut S) -> Result<T>,
+    mut recover: impl FnMut(&mut S, CaptureErrorCode),
+) -> Result<T> {
+    match attempt(state) {
+        Err(e)
+            if matches!(
+                e.code,
+                CaptureErrorCode::DeviceLost | CaptureErrorCode::DisplayChanged
+            ) =>
+        {
+            log::debug!("retrying after: {e}");
+            recover(state, e.code);
+            attempt(state)
+        }
+        result => result,
+    }
+}
+
+/// HRESULTs meaning the Direct3D device is gone: removed, hung, reset, or
+/// an internal driver error. Sleep and wake or a driver update can cause
+/// them; the device never works again.
+const DEVICE_LOST: [u32; 4] = [0x887A_0005, 0x887A_0006, 0x887A_0007, 0x887A_0020];
+
+/// A failure as the user should hear it: a lost device, or `code` with
+/// `message`.
+fn classify(e: anyhow::Error, code: CaptureErrorCode, message: &str) -> CaptureError {
+    let lost = e.chain().any(|cause| {
+        cause
+            .downcast_ref::<windows::core::Error>()
+            .is_some_and(|e| DEVICE_LOST.contains(&(e.code().0 as u32)))
+    }) || {
+        let text = format!("{e:#}").to_ascii_uppercase();
+        DEVICE_LOST
+            .iter()
+            .any(|hr| text.contains(&format!("0X{hr:08X}")))
+    };
+    if lost {
+        CaptureError::new(
+            CaptureErrorCode::DeviceLost,
+            "The graphics device was reset; try again",
+            e,
+        )
+    } else {
+        CaptureError::new(code, message, e)
     }
 }
 
@@ -790,6 +866,88 @@ mod tests {
             PhysicalRect::new(3, 1, 1, 1)
         );
         assert!(PhysicalRect::new(9, 9, 3, 3).clamp_to(4, 2).is_empty());
+    }
+
+    fn failure(code: CaptureErrorCode) -> CaptureError {
+        CaptureError {
+            code,
+            message: String::new(),
+            detail: None,
+        }
+    }
+
+    #[test]
+    fn a_lost_device_or_display_change_is_retried_once() {
+        for code in [
+            CaptureErrorCode::DeviceLost,
+            CaptureErrorCode::DisplayChanged,
+        ] {
+            // (attempts, recoveries)
+            let mut seen = (0, Vec::new());
+            let result = retry_once(
+                &mut seen,
+                |s| {
+                    s.0 += 1;
+                    if s.0 == 1 {
+                        Err(failure(code))
+                    } else {
+                        Ok(s.0)
+                    }
+                },
+                |s, code| s.1.push(code),
+            );
+            assert_eq!(result.unwrap(), 2);
+            assert_eq!(seen.1, [code]);
+        }
+    }
+
+    #[test]
+    fn other_failures_and_second_failures_are_returned() {
+        let mut attempts = 0;
+        let result: Result<()> = retry_once(
+            &mut attempts,
+            |n| {
+                *n += 1;
+                Err(failure(CaptureErrorCode::InvalidRegion))
+            },
+            |_, _| panic!("nothing to recover from"),
+        );
+        assert_eq!(result.unwrap_err().code, CaptureErrorCode::InvalidRegion);
+        assert_eq!(attempts, 1);
+        let mut attempts = 0;
+        let result: Result<()> = retry_once(
+            &mut attempts,
+            |n| {
+                *n += 1;
+                Err(failure(CaptureErrorCode::DeviceLost))
+            },
+            |_, _| {},
+        );
+        assert_eq!(result.unwrap_err().code, CaptureErrorCode::DeviceLost);
+        assert_eq!(attempts, 2);
+    }
+
+    #[test]
+    fn device_removal_and_resets_are_recognised() {
+        for hr in DEVICE_LOST {
+            let e = anyhow::Error::from(windows::core::Error::from_hresult(
+                windows::core::HRESULT(hr as i32),
+            ))
+            .context("CopySubresourceRegion failed");
+            let error = classify(
+                e,
+                CaptureErrorCode::CaptureUnavailable,
+                "Could not capture the screen",
+            );
+            assert_eq!(error.code, CaptureErrorCode::DeviceLost, "{hr:#x}");
+        }
+        let other = classify(
+            anyhow::anyhow!("no frame arrived within five seconds"),
+            CaptureErrorCode::CaptureUnavailable,
+            "Could not capture the screen",
+        );
+        assert_eq!(other.code, CaptureErrorCode::CaptureUnavailable);
+        assert_eq!(other.message, "Could not capture the screen");
     }
 
     #[test]

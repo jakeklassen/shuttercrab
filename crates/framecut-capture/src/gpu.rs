@@ -135,6 +135,19 @@ impl Gpu {
         )
     }
 
+    /// Give the driver's pooled memory back to the system once a capture is
+    /// done (PRD §23). Released textures otherwise stay allocated for
+    /// reuse: about 400 MB after one 4K capture, kept while Framecut idles.
+    pub fn trim(&self) {
+        unsafe {
+            self.context.ClearState();
+            self.context.Flush();
+        }
+        if let Ok(dxgi) = self.device.cast::<IDXGIDevice3>() {
+            unsafe { dxgi.Trim() };
+        }
+    }
+
     /// Copy a texture to system memory, tightly packed.
     pub fn read_back(&self, texture: &ID3D11Texture2D) -> Result<Vec<u8>> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
