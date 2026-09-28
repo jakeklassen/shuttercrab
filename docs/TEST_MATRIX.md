@@ -313,7 +313,15 @@ no icon or version information when Windows first saw it, and Windows
 caches both per path: the icon cache (refreshed once the file changed)
 and `MuiCache` (`<path>.FriendlyAppName`, which stays until removed).
 The executable now carries both; the stale `MuiCache` value on the dev
-machine was removed. A released build has them from the start.
+machine was removed.
+
+Known issue (open): Task Manager's Startup apps still lists the entry as
+"framecut.exe", even for fresh copies at new paths and with a company
+name added, although the executable's version information, the Shell's
+properties (`System.FileDescription`) and `MuiCache` all say "Framecut".
+The name Task Manager uses is not one of these; to look at again with
+the installer (install location, Start menu shortcut), not with more
+experiments on the owner's machine.
 
 Decisions:
 
