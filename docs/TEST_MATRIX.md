@@ -315,13 +315,18 @@ and `MuiCache` (`<path>.FriendlyAppName`, which stays until removed).
 The executable now carries both; the stale `MuiCache` value on the dev
 machine was removed.
 
-Known issue (open): Task Manager's Startup apps still lists the entry as
+Not a Framecut defect: Task Manager's Startup apps lists the entry as
 "framecut.exe", even for fresh copies at new paths and with a company
 name added, although the executable's version information, the Shell's
 properties (`System.FileDescription`) and `MuiCache` all say "Framecut".
-The name Task Manager uses is not one of these; to look at again with
-the installer (install location, Start menu shortcut), not with more
-experiments on the owner's machine.
+A control settled it: a temporary entry for Windows' own signed
+`notepad.exe` (description "Notepad") also showed as "notepad.exe". On
+this machine Task Manager shows new startup entries by file name,
+whatever the executable; the entries are also "Not measured", so
+Windows' startup scan (`StartupAppTask`) has not processed them yet and
+may fill the name in later. Every test entry was removed. To check once
+more with the installed build (GPUI Kit's packaging guide: do not test
+only `targetelease`).
 
 Decisions:
 
