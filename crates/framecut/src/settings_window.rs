@@ -382,7 +382,7 @@ impl SettingsWindow {
         SettingPage::new("General")
             .default_open(true)
             .group(
-                SettingGroup::new().title("Startup").item(
+                SettingGroup::new().item(heading("Startup", None)).item(
                     SettingItem::new(
                         "Start Framecut when you sign in",
                         SettingField::switch(
@@ -395,10 +395,10 @@ impl SettingsWindow {
             )
             .group(
                 SettingGroup::new()
-                    .title("Hotkeys")
-                    .description(
-                        "Select a shortcut and press Enter (or click it), then press the new keys.",
-                    )
+                    .item(heading(
+                        "Hotkeys",
+                        Some("Select a shortcut and press Enter (or click it), then press the new keys."),
+                    ))
                     .item(SettingItem::new(
                         "Open the Capture Bar",
                         SettingField::render(move |_, _, _| capture_bar.clone()),
@@ -410,7 +410,7 @@ impl SettingsWindow {
             )
             .group(
                 SettingGroup::new()
-                    .title("Where screenshots go")
+                    .item(heading("Where screenshots go", None))
                     .item(SettingItem::new(
                         "Copy to the clipboard",
                         self.switch(|s| s.copy_to_clipboard, |s, v| s.copy_to_clipboard = v),
@@ -439,7 +439,7 @@ impl SettingsWindow {
         SettingPage::new("Screenshot")
             .group(
                 SettingGroup::new()
-                    .title("Capture")
+                    .item(heading("Capture", None))
                     .item(
                         SettingItem::new(
                             "Include the pointer",
@@ -457,7 +457,7 @@ impl SettingsWindow {
             )
             .group(
                 SettingGroup::new()
-                    .title("After a capture")
+                    .item(heading("After a capture", None))
                     .item(SettingItem::new(
                         "Show a thumbnail",
                         self.switch(|s| s.show_thumbnail, |s, v| s.show_thumbnail = v),
@@ -530,28 +530,33 @@ impl SettingsWindow {
             };
             let white = m
                 .sdr_white_level_nits
-                .map(|n| format!(", SDR content at {n:.0} nits"))
+                .map(|n| format!(" · SDR content at {n:.0} nits"))
                 .unwrap_or_default();
-            let name = if m.name.is_empty() {
-                &m.device_name
-            } else {
-                &m.name
+            // Windows' number for it (Settings → Display), since two
+            // monitors often share a model name.
+            let number = m
+                .device_name
+                .rsplit("DISPLAY")
+                .next()
+                .filter(|n| n.chars().all(|c| c.is_ascii_digit()) && !n.is_empty());
+            let name = match (m.name.is_empty(), number) {
+                (false, Some(n)) => format!("{} (display {n})", m.name),
+                (false, None) => m.name.clone(),
+                (true, Some(n)) => format!("Display {n}"),
+                (true, None) => m.device_name.clone(),
             };
-            info(
-                name,
-                format!(
-                    "{} × {} at {:.0}%, {mode}{white}, {}",
-                    m.bounds.width,
-                    m.bounds.height,
-                    m.scale_factor * 100.0,
-                    m.adapter
-                ),
-            )
+            info(&name, mode.to_string()).description(format!(
+                "{} × {} at {:.0}%{white} · {}",
+                m.bounds.width,
+                m.bounds.height,
+                m.scale_factor * 100.0,
+                m.adapter
+            ))
         });
         SettingPage::new("Diagnostics")
             .group(
                 SettingGroup::new()
-                    .title("Framecut")
+                    .item(heading("Framecut", None))
                     .item(info("Version", d.version.clone()))
                     .item(info("Windows build", d.windows_build.to_string()))
                     .item(open("Log folder", "open-logs", d.log_dir.clone()))
@@ -561,8 +566,34 @@ impl SettingsWindow {
                         d.settings_path.clone(),
                     )),
             )
-            .group(SettingGroup::new().title("Displays").items(displays))
+            .group(
+                SettingGroup::new()
+                    .item(heading("Displays", None))
+                    .items(displays),
+            )
     }
+}
+
+/// A section heading inside a page. Sections are untitled groups, so the
+/// sidebar lists only the three pages (the owner found per-section entries
+/// that merely scroll the page confusing).
+fn heading(title: &'static str, description: Option<&'static str>) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        div()
+            .flex()
+            .flex_col()
+            .gap_1()
+            .pt_2()
+            .child(div().text_color(cx.theme().muted_foreground).child(title))
+            .when_some(description, |d, text| {
+                d.child(
+                    div()
+                        .text_sm()
+                        .text_color(cx.theme().muted_foreground)
+                        .child(text),
+                )
+            })
+    })
 }
 
 /// The output folder, with buttons to change and open it.
