@@ -2,7 +2,7 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use framecut::{
-    app::{self, Framecut, QUIT_HOTKEY, SCREENSHOT_HOTKEY},
+    app::{self, CAPTURE_BAR_HOTKEY, Framecut, QUIT_HOTKEY, SCREENSHOT_HOTKEY},
     logging,
     settings::{self, Loaded, Settings},
 };
@@ -82,26 +82,28 @@ fn main() {
         log::info!("settings in {}", path.display());
     }
 
-    let screenshot = match Hotkey::parse(&settings.screenshot_hotkey) {
-        Ok(hotkey) => hotkey,
+    let defaults = Settings::default();
+    let mut hotkey = |value: &mut String, fallback: &str| match Hotkey::parse(value) {
+        Ok(hotkey) => {
+            // Show the hotkey as Framecut writes it, whatever the file's spelling.
+            *value = hotkey.to_string();
+            hotkey
+        }
         Err(e) => {
-            let fallback = Settings::default().screenshot_hotkey;
-            log::error!(
-                "screenshot hotkey {:?} is not valid ({e:#}); using {fallback}",
-                settings.screenshot_hotkey
-            );
+            log::error!("hotkey {value:?} is not valid ({e:#}); using {fallback}");
             notices.push((
                 "Hotkey not recognised".to_string(),
-                format!(
-                    "\"{}\" is not a valid hotkey, so {fallback} is used instead.",
-                    settings.screenshot_hotkey
-                ),
+                format!("\"{value}\" is not a valid hotkey, so {fallback} is used instead."),
             ));
-            Hotkey::parse(&fallback).expect("the default hotkey is valid")
+            *value = fallback.to_string();
+            Hotkey::parse(fallback).expect("the default hotkeys are valid")
         }
     };
-    // Show the hotkey as Framecut writes it, whatever the file's spelling.
-    settings.screenshot_hotkey = screenshot.to_string();
+    let capture_bar = hotkey(
+        &mut settings.capture_bar_hotkey,
+        &defaults.capture_bar_hotkey,
+    );
+    let screenshot = hotkey(&mut settings.screenshot_hotkey, &defaults.screenshot_hotkey);
 
     let capture = match Capture::start() {
         Ok(capture) => capture,
@@ -113,6 +115,7 @@ fn main() {
     capture.warm_up();
 
     let hotkeys = [
+        (CAPTURE_BAR_HOTKEY, capture_bar),
         (SCREENSHOT_HOTKEY, screenshot),
         (
             QUIT_HOTKEY,
@@ -136,10 +139,10 @@ fn main() {
             conflict.hotkey,
             conflict.reason
         );
-        if conflict.id == SCREENSHOT_HOTKEY {
+        if conflict.id != QUIT_HOTKEY {
             notices.push((
                 format!("{} is in use", conflict.hotkey),
-                "Another app owns this hotkey. Take screenshots from the Framecut tray icon."
+                "Another app owns this hotkey. Click the Framecut tray icon to capture instead."
                     .to_string(),
             ));
         }
@@ -148,8 +151,8 @@ fn main() {
         notices.push((
             "Framecut is running".to_string(),
             format!(
-                "Press {} to take a screenshot. Framecut lives in the tray.",
-                settings.screenshot_hotkey
+                "Press {} to capture, or {} for an area. Framecut lives in the tray.",
+                settings.capture_bar_hotkey, settings.screenshot_hotkey
             ),
         ));
     }
@@ -158,21 +161,24 @@ fn main() {
         platform.notify(title, message);
     }
     log::info!(
-        "ready: {} takes a screenshot, {QUIT} quits",
+        "ready: {} opens the Capture Bar, {} takes an area screenshot, {QUIT} quits",
+        settings.capture_bar_hotkey,
         settings.screenshot_hotkey
     );
 
-    gpui_kit::application().run(move |cx| {
-        gpui_kit::init(cx);
-        app::run(
-            Framecut {
-                capture,
-                platform,
-                settings,
-                settings_path,
-            },
-            events,
-            cx,
-        );
-    });
+    gpui_kit::application()
+        .with_assets(framecut::icons::Icons)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            app::run(
+                Framecut {
+                    capture,
+                    platform,
+                    settings,
+                    settings_path,
+                },
+                events,
+                cx,
+            );
+        });
 }

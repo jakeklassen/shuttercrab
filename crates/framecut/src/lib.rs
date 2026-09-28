@@ -6,8 +6,11 @@
 #![cfg(windows)]
 
 pub mod app;
+pub mod capture_bar;
 pub mod files;
+pub mod icons;
 pub mod logging;
 pub mod overlay;
+pub mod popup;
 pub mod selection;
 pub mod settings;

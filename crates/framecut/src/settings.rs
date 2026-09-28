@@ -4,6 +4,7 @@
 //! fields removed by hand) still loads. A file that cannot be parsed is kept
 //! as `settings.json.bad` rather than overwritten.
 
+use crate::capture_bar::CaptureTarget;
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -11,7 +12,9 @@ use std::path::{Path, PathBuf};
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Settings {
-    /// Starts a screenshot, e.g. `Ctrl+Alt+S`.
+    /// Opens the Capture Bar, e.g. `Ctrl+Alt+C`.
+    pub capture_bar_hotkey: String,
+    /// Starts an area screenshot directly, e.g. `Ctrl+Alt+S`.
     pub screenshot_hotkey: String,
     /// Put screenshots on the clipboard.
     pub copy_to_clipboard: bool,
@@ -21,16 +24,20 @@ pub struct Settings {
     pub output_dir: Option<PathBuf>,
     /// Area selections snap to nearby window edges.
     pub snap_to_windows: bool,
+    /// What the Capture Bar offers first: the last target used.
+    pub last_target: CaptureTarget,
 }
 
 impl Default for Settings {
     fn default() -> Self {
         Self {
+            capture_bar_hotkey: "Ctrl+Alt+C".into(),
             screenshot_hotkey: "Ctrl+Alt+S".into(),
             copy_to_clipboard: true,
             auto_save: true,
             output_dir: None,
             snap_to_windows: true,
+            last_target: CaptureTarget::Area,
         }
     }
 }

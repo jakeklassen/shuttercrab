@@ -134,6 +134,12 @@ impl SelectionOverlay {
         self
     }
 
+    /// Start in `mode` rather than Area.
+    pub fn with_mode(mut self, mode: Mode) -> Self {
+        self.mode = mode;
+        self
+    }
+
     pub fn mode(&self) -> Mode {
         self.mode
     }
