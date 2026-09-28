@@ -592,19 +592,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             .unwrap_or(monitor.bounds);
         let rect = thumbnail_rect(work, monitor.scale_factor, size);
         let image = thumbnail::render_image(&small);
-        // FRAMECUT_DRAG_LOOK="softness,opacity" (temporary, for comparing
-        // looks) overrides the chosen look.
-        let look = std::env::var("FRAMECUT_DRAG_LOOK")
-            .ok()
-            .and_then(|v| {
-                let mut parts = v.split(',').map(|p| p.trim().parse::<f32>().ok());
-                Some(thumbnail::Soft {
-                    softness: parts.next()??,
-                    opacity: parts.next()??,
-                })
-            })
-            .unwrap_or(thumbnail::DRAG_LOOK);
-        let drag_picture = thumbnail::soften(&small, look);
+        let drag_picture = thumbnail::soften(&small, thumbnail::DRAG_LOOK);
         let over = move || {
             platform_window::cursor_position().is_some_and(|(x, y)| {
                 x >= rect.x

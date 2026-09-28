@@ -84,23 +84,48 @@ pub fn scale_down(
     }
 }
 
-/// The drag image's look: a sharp picture whose outline is softened over
-/// `softness` physical pixels, half inside and half outside the picture
-/// (like a blurred edge, not an inner shadow), at `opacity` overall.
+/// The drag image's look: a sharp picture with squircle corners (a
+/// superellipse, which flows into the straight sides more smoothly than a
+/// circular arc), its outline softened over `softness` physical pixels,
+/// half inside and half outside (a blurred edge, not an inner shadow), at
+/// `opacity` overall.
 #[derive(Clone, Copy, Debug, PartialEq)]
 pub struct Soft {
     pub softness: f32,
     pub opacity: f32,
+    /// How far along each side the corner curve reaches, physical pixels.
+    pub corner: f32,
 }
 
-/// The owner's choice (2026-09-28): sharp, a gently blurred edge, 90%.
+/// The superellipse exponent of the corners: 2 is a circle, 4 the classic
+/// squircle.
+const SQUIRCLE: f32 = 4.0;
+
+/// The owner's choice (2026-09-28): sharp, 90% opaque, a 20-pixel soft
+/// edge, squircle corners.
 pub const DRAG_LOOK: Soft = Soft {
-    softness: 6.0,
+    softness: 20.0,
     opacity: 0.9,
+    corner: 32.0,
 };
 
-/// `small` with a soft outline, on a canvas grown by the outer half of the
-/// softness; edge pixels continue outward as they fade.
+/// Signed distance from a point to the outline of a `w` × `h` rectangle
+/// with squircle corners reaching `corner` pixels: negative inside.
+fn outline_distance(px: f32, py: f32, w: f32, h: f32, corner: f32) -> f32 {
+    let r = corner.clamp(0.0, w.min(h) / 2.0);
+    // Distance beyond the corner curves' centres, per axis.
+    let ax = (px - w / 2.0).abs() - (w / 2.0 - r);
+    let ay = (py - h / 2.0).abs() - (h / 2.0 - r);
+    if r > 0.0 && ax > 0.0 && ay > 0.0 {
+        let norm = ((ax / r).powf(SQUIRCLE) + (ay / r).powf(SQUIRCLE)).powf(1.0 / SQUIRCLE);
+        r * (norm - 1.0)
+    } else {
+        ax.max(ay) - r
+    }
+}
+
+/// `small` with a soft squircle outline, on a canvas grown by the outer
+/// half of the softness; edge pixels continue outward as they fade.
 pub fn soften(small: &Small, soft: Soft) -> Small {
     let r = soft.softness.max(0.0) / 2.0;
     let pad = r.ceil() as u32;
@@ -113,10 +138,7 @@ pub fn soften(small: &Small, soft: Soft) -> Small {
             // Position relative to the picture, pixel centres.
             let px = x as f32 - pad as f32 + 0.5;
             let py = y as f32 - pad as f32 + 0.5;
-            // Signed distance to the picture's outline: negative inside.
-            let dx = (-px).max(px - w as f32);
-            let dy = (-py).max(py - h as f32);
-            let outside = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0);
+            let outside = outline_distance(px, py, w as f32, h as f32, soft.corner);
             let cover = if r > 0.0 {
                 let t = ((r - outside) / (2.0 * r)).clamp(0.0, 1.0);
                 t * t * (3.0 - 2.0 * t)
@@ -333,6 +355,7 @@ mod tests {
             Soft {
                 softness: 6.0,
                 opacity: 0.9,
+                corner: 0.0,
             },
         );
         // Grown by half the softness on each side.
@@ -350,6 +373,21 @@ mod tests {
         assert!(alpha(0, 0) <= alpha(0, 13));
         // Colour continues outward unchanged.
         assert_eq!(soft.rgba[(13 * 46) * 4], 255);
+    }
+
+    #[test]
+    fn squircle_corners_are_fuller_than_circles_and_sides_stay_straight() {
+        let (w, h, r) = (200.0, 100.0, 32.0);
+        // The middle of a side is on the outline.
+        assert!(outline_distance(100.0, 0.0, w, h, r).abs() < 1e-3);
+        // The box's own corner is cut off.
+        assert!(outline_distance(0.0, 0.0, w, h, r) > 5.0);
+        // Where a circular corner would be, at 45°, the squircle is still
+        // inside: it hugs the corner more.
+        let c = r - r / 2f32.sqrt();
+        assert!(outline_distance(c, c, w, h, r) < -1.0);
+        // No corner: a plain rectangle.
+        assert!(outline_distance(0.0, 0.0, w, h, 0.0).abs() < 1e-3);
     }
 
     #[test]
