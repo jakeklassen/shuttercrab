@@ -212,6 +212,16 @@ overall"; dragging into Claude Code worked). Two bugs, both fixed in
   the first drag after a fresh start shows the capture, upright, centred
   on the pointer.
 
+Retest, 2026-09-28: both fixed. Two more, fixed in the next commit:
+
+- **The × lagged** behind the pointer by up to a second: the pointer was
+  checked once a second. Now every 100 ms.
+- **Two drag styles** in the same target (Telegram): sharp, or faded with
+  blurred edges. Reproduced by capture shape: Windows fades drag images
+  larger than about 256 pixels (a wide capture gave a 360-pixel image).
+  The drag image is now capped at 256 pixels; the same wide capture drags
+  sharp.
+
 Decisions:
 
 - **The thumbnail never takes the keyboard** (`WS_EX_NOACTIVATE`, shown
