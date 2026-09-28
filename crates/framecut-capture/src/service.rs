@@ -357,20 +357,31 @@ impl Service {
         let started = Instant::now();
         if let Ok(monitors) = display::enumerate() {
             for monitor in &monitors {
+                log::info!(
+                    "monitor {}: {}x{} at ({}, {}), {} DPI, {}, SDR white {}, adapter {}",
+                    monitor.device_name,
+                    monitor.bounds.width,
+                    monitor.bounds.height,
+                    monitor.bounds.x,
+                    monitor.bounds.y,
+                    monitor.dpi,
+                    monitor.color_mode.name(),
+                    monitor
+                        .sdr_white_nits()
+                        .map_or("n/a".into(), |n| format!("{n:.0} nits")),
+                    monitor.adapter_name
+                );
                 match self.gpu_for(monitor) {
                     Ok((gpu, _)) => {
                         if let Err(e) = capture::warm_up(gpu) {
-                            eprintln!("framecut-capture: warm-up failed: {e:#}");
+                            log::warn!("warm-up failed on {}: {e:#}", monitor.device_name);
                         }
                     }
-                    Err(e) => eprintln!("framecut-capture: warm-up failed: {e}"),
+                    Err(e) => log::warn!("warm-up failed on {}: {e}", monitor.device_name),
                 }
             }
         }
-        eprintln!(
-            "framecut-capture: warmed up in {} ms",
-            started.elapsed().as_millis()
-        );
+        log::info!("warmed up in {} ms", started.elapsed().as_millis());
     }
 
     fn monitors(&self) -> Result<Vec<MonitorInfo>> {
@@ -485,8 +496,8 @@ impl Service {
                 bgra: preview.clone(),
             },
         );
-        eprintln!(
-            "framecut-capture: froze {} ({}x{}, {}) in {} ms",
+        log::debug!(
+            "froze {} ({}x{}, {}) in {} ms",
             monitor.device_name,
             width,
             height,

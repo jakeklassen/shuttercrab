@@ -478,6 +478,22 @@ pub fn find<'a>(monitors: &'a [Monitor], device_name: &str) -> Result<&'a Monito
         .with_context(|| format!("{device_name} is no longer attached"))
 }
 
+/// Windows build number, from the kernel rather than the manifest-shimmed API.
+pub fn windows_build() -> u32 {
+    use windows::{
+        Wdk::System::SystemServices::RtlGetVersion,
+        Win32::System::SystemInformation::OSVERSIONINFOW,
+    };
+    let mut info = OSVERSIONINFOW {
+        dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
+        ..Default::default()
+    };
+    match unsafe { RtlGetVersion(&mut info) }.ok() {
+        Ok(()) => info.dwBuildNumber,
+        Err(_) => 0,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

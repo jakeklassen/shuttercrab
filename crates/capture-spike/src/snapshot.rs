@@ -171,21 +171,7 @@ pub fn take(monitor: Option<&str>, dir: &Path, highlights: Highlights) -> Result
     Ok(snapshot)
 }
 
-/// Windows build number, from the kernel rather than the manifest-shimmed API.
-pub fn windows_build() -> u32 {
-    use windows::{
-        Wdk::System::SystemServices::RtlGetVersion,
-        Win32::System::SystemInformation::OSVERSIONINFOW,
-    };
-    let mut info = OSVERSIONINFOW {
-        dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
-        ..Default::default()
-    };
-    match unsafe { RtlGetVersion(&mut info) }.ok() {
-        Ok(()) => info.dwBuildNumber,
-        Err(_) => 0,
-    }
-}
+pub use framecut_capture::display::windows_build;
 
 /// Local time as `YYYYMMDD-HHMMSS`, for directory names.
 pub fn timestamp() -> String {
