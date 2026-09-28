@@ -45,9 +45,17 @@ mise exec -- cargo test -p framecut-platform --test platform -- --ignored
 
 Measured on 2026-09-27 (release build, 3840×2160 HDR, RTX 4090): the overlay is
 on screen **130 ms** after the hotkey (freeze 70 ms on the capture thread); a
-640×360 cut and its PNG take under 1 ms. A smoke test sent the hotkey,
-confirmed one window covering exactly (0,0)–(3840,2160) with keyboard focus,
-sent Escape, confirmed it closed, and quit with the quit hotkey.
+640×360 cut and its PNG take under 1 ms.
+
+The first smoke test checked the overlay *window* rectangle and that the app
+had exited *after* the quit hotkey, and so missed two bugs the owner found
+at once: the app quit whenever the overlay closed (GPUI's default quit mode),
+sometimes before the clipboard was written, and the overlay's drawable area
+was 11 px short of three screen edges (Windows frame borders). Both are fixed
+(`e49126f`, `d020336`). The smoke test now checks the **client** area is
+(0,0) 3840×2160, that the process is alive 0.1, 0.5 and 2 s after the overlay
+closes (on Escape and on release), that the clipboard changed after a drag,
+and that only the quit hotkey ends the app.
 
 ### Acceptance (manual)
 
@@ -288,7 +296,8 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | **Milestone 1: hotkey → drag → release → paste (§31)** | **Pending: owner's acceptance test** | [Acceptance](#acceptance-manual) |
 | Background app, no window until invoked | Passed locally | Smoke test: no window before the hotkey |
 | Global screenshot hotkey; conflict reported | Passed locally | Live test; smoke test |
-| Frozen overlay on the monitor under the pointer, exact bounds, focused | Passed locally | Smoke test: (0,0)–(3840,2160), foreground |
+| Frozen overlay on the monitor under the pointer, exact bounds, focused | Passed locally | Client area (0,0) 3840×2160, foreground; regression test in `framecut-platform` |
+| App keeps running after a capture or cancel | Passed locally | Alive 0.1–2 s after the overlay closes; quit hotkey ends it |
 | Live physical-pixel dimensions (§7.2, §20) | Passed (headless) | UI tests at 100/125/175/200% |
 | Escape and right-click cancel | Passed (headless + smoke) | UI tests; smoke test (Escape) |
 | Crop and PNG from the frozen, converted frame | Passed locally | Live service test |
