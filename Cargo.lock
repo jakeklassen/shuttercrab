@@ -1947,12 +1947,17 @@ name = "framecut"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "chrono",
+ "dirs 6.0.0",
  "framecut-capture",
  "framecut-platform",
  "futures",
  "gpui-kit",
  "image",
+ "log",
  "raw-window-handle",
+ "serde",
+ "serde_json",
 ]
 
 [[package]]
@@ -1962,6 +1967,7 @@ dependencies = [
  "anyhow",
  "futures",
  "half",
+ "log",
  "png 0.18.1",
  "serde_json",
  "windows 0.62.2",
@@ -1973,6 +1979,7 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "futures",
+ "log",
  "windows 0.62.2",
 ]
 
