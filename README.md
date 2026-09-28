@@ -15,7 +15,8 @@ The specification is [docs/PRD.md](docs/PRD.md).
   (tray icon, settings, log file, auto-save, single instance) passed its
   acceptance test on 2026-09-27. Step 2 (window and display capture, Space
   toggle, snapping) passed on 2026-09-28. Step 3 (the Capture Bar) passed on
-  2026-09-28.
+  2026-09-28. Step 4 (thumbnail, notifications, capture exclusion) is built
+  and awaiting its test.
 
 Documentation:
 
@@ -47,6 +48,9 @@ The screenshot is on the clipboard as PNG and as a bitmap; paste it anywhere.
 Window captures keep the window's rounded corners transparent in the PNG
 (the bitmap has them on white).
 It is also saved to `Pictures\Framecut` as `Capture YYYY-MM-DD HH-MM-SS.png`.
+A thumbnail appears in the corner for a few seconds: click it to open the
+image, or drag it into a chat, browser or folder. It never takes the
+keyboard, so Ctrl+V still pastes where you were.
 
 | File | Where |
 |---|---|

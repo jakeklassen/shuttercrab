@@ -193,6 +193,61 @@ Acceptance (manual):
 7. **Ctrl+Alt+S** still goes straight to an area selection.
 8. Say what you think of the bar's look and placement.
 
+### Step 4: thumbnail, notifications, capture exclusion
+
+Decisions:
+
+- **The thumbnail never takes the keyboard** (`WS_EX_NOACTIVATE`, shown
+  without activation). Ctrl+V straight after a capture must paste into the
+  application in front; a focused thumbnail would swallow it. So the
+  thumbnail is mouse-only: click opens, drag shares, × closes, and it
+  closes itself. This is the one surface not driven by keyboard.
+- **Placement and size.** Bottom-right of the monitor's work area (above
+  the taskbar), 16 logical pixels in. The image fits 240×150 logical
+  pixels, never enlarged, at least 64 on a side, with 6 pixels of padding.
+- **Countdown.** `thumbnail_seconds` (6, PRD open question 5), paused
+  while the pointer is over it. A new screenshot replaces the old
+  thumbnail; it never blocks the next capture.
+- **Click** opens the file in the default image viewer. **Drag** hands the
+  Shell's own data object for the file to `SHDoDragDrop`, so Explorer,
+  browsers and chat applications receive a normal file drag, with the
+  standard drag image. The card closes after a drop.
+- **Without auto-save**, the file is written to `%TEMP%\Framecut` only when
+  the thumbnail is opened or dragged; those files are deleted after a day.
+- **Notification** after each capture is available but off
+  (`notify_after_capture`): the thumbnail already confirms the capture.
+- **Capture exclusion.** The Capture Bar and the thumbnail are excluded
+  from every capture (`WDA_EXCLUDEFROMCAPTURE`). The selection overlay is
+  not: it shows a frozen image, so it can never contaminate Framecut's own
+  output, and a screen recorder may want to show it.
+
+Automated: UI tests for click → open, press-and-move → one drag (jitter
+still a click), hover shows ×, × closes, the countdown closes once, the
+countdown pauses while hovered; image sizing; card placement; temporary
+file cleanup.
+
+Smoke test (release, scratch data folder), 2026-09-28: after an area
+capture the card is 318×243 physical at (3498, 1821), display affinity
+`WDA_EXCLUDEFROMCAPTURE`, `WS_EX_NOACTIVATE`, and the foreground window is
+unchanged. It closed itself after the countdown. Dragged into an Explorer
+window on an empty folder, the PNG arrived there and the card closed. The
+card, imaged with `FRAMECUT_CAPTURABLE_UI`, shows the capture with rounded
+corners and the × on hover.
+
+Acceptance (manual):
+
+1. Take an area screenshot (**Ctrl+Alt+S**). A thumbnail appears
+   bottom-right. Press **Ctrl+V** in the app you were in: it pastes (the
+   thumbnail did not take the keyboard).
+2. Leave it: it disappears after about 6 seconds. Take another and hold the
+   pointer over it: it stays until you move away.
+3. Take another and **click** it: the image opens in your image viewer.
+4. Take another and **drag** it into a chat (Discord, Slack, a browser
+   upload box) or an Explorer folder: the file arrives.
+5. Take another and click the **×** that appears on hover.
+6. Take two screenshots quickly: the second thumbnail replaces the first.
+7. Say whether the thumbnail's size, position and 6 seconds feel right.
+
 ## Milestone 1: area screenshot
 
 Exit criterion (PRD §31): *hotkey → drag → release → paste into
@@ -486,4 +541,6 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Display screenshot (§8.1) | **Passed: owner, 2026-09-28** | Desktop click in Window mode |
 | Boundary snapping (§7.2) | **Passed: owner, 2026-09-28** | Catch 10, release 24 logical px; blue side markers |
 | Capture Bar: master hotkey, Area / Window / Display, keyboard, remembers the last target, closes on start (§7.5, §32.6) | **Passed: owner, 2026-09-28** | UI tests; smoke test; all eight acceptance steps |
-| App UI excluded from capture (§7.6) | Capture Bar: passed locally | Display affinity 0x11 |
+| App UI excluded from capture (§7.6) | Capture Bar and thumbnail: passed locally | Display affinity 0x11 |
+| Post-capture thumbnail: after the clipboard, auto-dismiss, click opens, drag into apps, excluded, never blocks the next capture (§7.6, §32.6) | Passed (headless + smoke); awaits the owner | UI tests; drag into Explorer delivered the file |
+| Optional notification after capture (§8, settings) | Built, off by default | `notify_after_capture` |
