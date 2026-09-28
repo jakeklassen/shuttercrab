@@ -27,9 +27,6 @@ const DRAG_DISTANCE: f32 = 4.0;
 /// How often the card checks the pointer and counts down: often enough that
 /// the close button follows the pointer without a visible lag.
 const TICK: Duration = Duration::from_millis(100);
-/// Windows fades the edges of drag images larger than this (physical
-/// pixels), so the drag image is kept within it.
-pub const DRAG_IMAGE_MAX: u32 = 256;
 
 /// What the user did with the thumbnail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -84,6 +81,61 @@ pub fn scale_down(
         width: w,
         height: h,
         rgba: small.into_raw(),
+    }
+}
+
+/// The drag image's look: a sharp picture whose outline is softened over
+/// `softness` physical pixels, half inside and half outside the picture
+/// (like a blurred edge, not an inner shadow), at `opacity` overall.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Soft {
+    pub softness: f32,
+    pub opacity: f32,
+}
+
+/// The owner's choice (2026-09-28): sharp, a gently blurred edge, 90%.
+pub const DRAG_LOOK: Soft = Soft {
+    softness: 6.0,
+    opacity: 0.9,
+};
+
+/// `small` with a soft outline, on a canvas grown by the outer half of the
+/// softness; edge pixels continue outward as they fade.
+pub fn soften(small: &Small, soft: Soft) -> Small {
+    let r = soft.softness.max(0.0) / 2.0;
+    let pad = r.ceil() as u32;
+    let (w, h) = (small.width, small.height);
+    let (width, height) = (w + 2 * pad, h + 2 * pad);
+    let opacity = soft.opacity.clamp(0.0, 1.0);
+    let mut rgba = Vec::with_capacity((width * height * 4) as usize);
+    for y in 0..height {
+        for x in 0..width {
+            // Position relative to the picture, pixel centres.
+            let px = x as f32 - pad as f32 + 0.5;
+            let py = y as f32 - pad as f32 + 0.5;
+            // Signed distance to the picture's outline: negative inside.
+            let dx = (-px).max(px - w as f32);
+            let dy = (-py).max(py - h as f32);
+            let outside = dx.max(0.0).hypot(dy.max(0.0)) + dx.max(dy).min(0.0);
+            let cover = if r > 0.0 {
+                let t = ((r - outside) / (2.0 * r)).clamp(0.0, 1.0);
+                t * t * (3.0 - 2.0 * t)
+            } else if outside <= 0.0 {
+                1.0
+            } else {
+                0.0
+            };
+            let sx = (px.floor() as i64).clamp(0, w as i64 - 1) as u32;
+            let sy = (py.floor() as i64).clamp(0, h as i64 - 1) as u32;
+            let src = &small.rgba[((sy * w + sx) * 4) as usize..][..4];
+            let a = (src[3] as f32 * cover * opacity).round() as u8;
+            rgba.extend_from_slice(&[src[0], src[1], src[2], a]);
+        }
+    }
+    Small {
+        width,
+        height,
+        rgba,
     }
 }
 
@@ -268,6 +320,37 @@ impl Render for Thumbnail {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn softening_blurs_the_outline_but_keeps_the_picture_sharp() {
+        let small = Small {
+            width: 40,
+            height: 20,
+            rgba: vec![255; 40 * 20 * 4],
+        };
+        let soft = soften(
+            &small,
+            Soft {
+                softness: 6.0,
+                opacity: 0.9,
+            },
+        );
+        // Grown by half the softness on each side.
+        assert_eq!((soft.width, soft.height), (46, 26));
+        let alpha = |x: u32, y: u32| soft.rgba[((y * 46 + x) * 4 + 3) as usize];
+        // Inside, away from the outline: sharp, at 90%.
+        assert_eq!(alpha(23, 13), 230);
+        assert_eq!(alpha(10, 13), 230);
+        // Either side of the outline, symmetric about half; beyond the
+        // softness, nothing.
+        let (inner, outer) = (alpha(3, 13) as i32, alpha(2, 13) as i32);
+        assert!((130..=155).contains(&inner), "{inner}");
+        assert!((inner + outer - 230).abs() <= 2, "{inner} + {outer}");
+        assert!(alpha(0, 13) < 25, "{}", alpha(0, 13));
+        assert!(alpha(0, 0) <= alpha(0, 13));
+        // Colour continues outward unchanged.
+        assert_eq!(soft.rgba[(13 * 46) * 4], 255);
+    }
 
     #[test]
     fn images_fit_the_card_without_growing() {

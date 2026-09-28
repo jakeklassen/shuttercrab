@@ -592,14 +592,19 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             .unwrap_or(monitor.bounds);
         let rect = thumbnail_rect(work, monitor.scale_factor, size);
         let image = thumbnail::render_image(&small);
-        // Small enough that Windows shows it sharp rather than fading it.
-        let drag_picture = thumbnail::scale_down(
-            small.rgba.clone(),
-            small.width,
-            small.height,
-            thumbnail::DRAG_IMAGE_MAX,
-            thumbnail::DRAG_IMAGE_MAX,
-        );
+        // FRAMECUT_DRAG_LOOK="softness,opacity" (temporary, for comparing
+        // looks) overrides the chosen look.
+        let look = std::env::var("FRAMECUT_DRAG_LOOK")
+            .ok()
+            .and_then(|v| {
+                let mut parts = v.split(',').map(|p| p.trim().parse::<f32>().ok());
+                Some(thumbnail::Soft {
+                    softness: parts.next()??,
+                    opacity: parts.next()??,
+                })
+            })
+            .unwrap_or(thumbnail::DRAG_LOOK);
+        let drag_picture = thumbnail::soften(&small, look);
         let over = move || {
             platform_window::cursor_position().is_some_and(|(x, y)| {
                 x >= rect.x
@@ -620,6 +625,10 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
         };
         if let Some(hwnd) = card.hwnd() {
             platform_window::round_corners(hwnd);
+            // Drags start here; it is never where they end.
+            if let Err(e) = framecut_platform::drag::refuse_drops(hwnd) {
+                log::warn!("the thumbnail still accepts drops: {e:#}");
+            }
             if std::env::var_os("FRAMECUT_CAPTURABLE_UI").is_none()
                 && let Err(e) = platform_window::exclude_from_capture(hwnd)
             {
