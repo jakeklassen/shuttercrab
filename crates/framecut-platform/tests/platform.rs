@@ -91,3 +91,42 @@ fn cover_makes_the_client_area_the_whole_rectangle() {
         DestroyWindow(hwnd).unwrap();
     }
 }
+
+#[test]
+fn framecuts_own_windows_are_targets_unless_excluded_from_capture() {
+    use framecut_platform::{
+        targets::visible_windows,
+        window::{cover, exclude_from_capture},
+    };
+    use windows::{
+        Win32::UI::WindowsAndMessaging::{
+            CreateWindowExW, DestroyWindow, WINDOW_EX_STYLE, WS_POPUP,
+        },
+        core::w,
+    };
+    unsafe {
+        let hwnd = CreateWindowExW(
+            WINDOW_EX_STYLE(0),
+            w!("STATIC"),
+            w!("framecut target test"),
+            WS_POPUP,
+            0,
+            0,
+            100,
+            100,
+            None,
+            None,
+            None,
+            None,
+        )
+        .unwrap();
+        let handle = hwnd.0 as isize;
+        // Shown far off-screen, so nothing flashes on the desktop.
+        cover(handle, -30000, -30000, 320, 200).unwrap();
+        let listed = || visible_windows().iter().any(|w| w.hwnd == handle);
+        assert!(listed(), "an ordinary window of this process is a target");
+        exclude_from_capture(handle).unwrap();
+        assert!(!listed(), "a window excluded from capture is not");
+        DestroyWindow(hwnd).unwrap();
+    }
+}

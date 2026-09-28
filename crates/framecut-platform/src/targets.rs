@@ -9,8 +9,9 @@ use windows::{
         UI::{
             HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
             WindowsAndMessaging::{
-                EnumWindows, GWL_EXSTYLE, GetClassNameW, GetWindowLongPtrW,
-                GetWindowThreadProcessId, IsIconic, IsWindowVisible, WS_EX_TRANSPARENT,
+                EnumWindows, GWL_EXSTYLE, GetClassNameW, GetWindowDisplayAffinity,
+                GetWindowLongPtrW, GetWindowThreadProcessId, IsIconic, IsWindowVisible,
+                WDA_EXCLUDEFROMCAPTURE, WS_EX_TRANSPARENT,
             },
         },
     },
@@ -71,9 +72,10 @@ pub struct WindowTarget {
     pub class: String,
 }
 
-/// Visible top-level windows of other processes, front to back. Minimised,
-/// cloaked (other virtual desktops, suspended apps) and click-through
-/// windows (overlays that draw over everything) are left out.
+/// Visible top-level windows, front to back. Minimised, cloaked (other
+/// virtual desktops, suspended apps) and click-through windows (overlays
+/// that draw over everything) are left out, and so is Framecut's own
+/// capture UI (excluded from capture).
 pub fn visible_windows() -> Vec<WindowTarget> {
     let mut found: Vec<WindowTarget> = Vec::new();
     // Physical coordinates, whatever the calling thread's DPI awareness.
@@ -104,10 +106,18 @@ fn describe(hwnd: HWND) -> Option<WindowTarget> {
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
             return None;
         }
+        // Framecut's own capture UI (thumbnail, Capture Bar, drag image) is
+        // excluded from capture and never a target; its ordinary windows,
+        // such as Settings, are targets like any other application's.
         let mut process = 0;
         GetWindowThreadProcessId(hwnd, Some(&mut process));
         if process == GetCurrentProcessId() {
-            return None;
+            let mut affinity = 0u32;
+            if GetWindowDisplayAffinity(hwnd, &mut affinity).is_ok()
+                && affinity == WDA_EXCLUDEFROMCAPTURE.0
+            {
+                return None;
+            }
         }
         let ex_style = GetWindowLongPtrW(hwnd, GWL_EXSTYLE) as u32;
         if ex_style & WS_EX_TRANSPARENT.0 != 0 {
