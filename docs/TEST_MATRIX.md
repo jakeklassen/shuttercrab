@@ -292,6 +292,21 @@ Acceptance (manual):
 
 ### Step 5: the settings window
 
+Owner's results, 2026-09-28: items 1–9 pass. Findings, all fixed and
+checked live, to retest:
+
+- **Window mode could not target the settings window**: it skipped every
+  Framecut window. It now skips only Framecut's capture UI, the windows
+  excluded from capture (test with an in-process window).
+- **Clicking a notification did nothing**: it now opens the screenshot,
+  like the thumbnail.
+- **No application icon** (Task Manager's Startup apps, taskbar, title
+  bar): the tray drawing is now embedded as the executable's icon.
+- **Display details were cut off**: the mode is on the right, the details
+  wrap below, and each display shows Windows' number.
+- **The sidebar's section entries only scrolled the page**: sections are
+  now headings, and the sidebar lists the three pages.
+
 Decisions:
 
 - **Built on GPUI Kit's settings component**: a searchable sidebar, pages
