@@ -16,6 +16,7 @@ use crate::{
     popup,
     selection::ScreenWindow,
     settings::{self, Settings},
+    settings_window::{Diagnostics, Hooks, SettingsWindow},
     thumbnail::{self, Thumbnail, ThumbnailEvent},
 };
 use chrono::{Local, NaiveDateTime};
@@ -23,10 +24,15 @@ use framecut_capture::{
     Capture, MonitorId, MonitorInfo, PhysicalRect, Screenshot, monitor_under_pointer,
 };
 use framecut_platform::{
-    MenuItem, Platform, PlatformEvent, drag::DragImage, targets, window as platform_window,
+    Hotkey, MenuItem, Platform, PlatformEvent, drag::DragImage, targets, window as platform_window,
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
-use gpui_kit::{App, AppContext as _, AsyncApp, QuitMode};
+use gpui_kit::{
+    AnyWindowHandle, App, AppContext as _, AsyncApp, BackgroundExecutor, Bounds, QuitMode,
+    TitlebarOptions, WindowBounds, WindowKind, WindowOptions,
+    component::{Root, Theme},
+    px, size,
+};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -45,6 +51,24 @@ pub const MENU_OPEN_FOLDER: u32 = 2;
 pub const MENU_AUTO_SAVE: u32 = 3;
 pub const MENU_QUIT: u32 = 4;
 pub const MENU_CAPTURE_BAR: u32 = 5;
+pub const MENU_SETTINGS: u32 = 6;
+
+/// Quits without the tray menu; kept for development.
+pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
+
+/// The global hotkeys for `settings`: the Capture Bar, area screenshots, and
+/// quit. A hotkey the settings spell wrongly is left out (main checks them
+/// at startup; the settings window only stores valid ones).
+pub fn hotkeys(settings: &Settings) -> Vec<(u32, Hotkey)> {
+    [
+        (CAPTURE_BAR_HOTKEY, settings.capture_bar_hotkey.as_str()),
+        (SCREENSHOT_HOTKEY, settings.screenshot_hotkey.as_str()),
+        (QUIT_HOTKEY, QUIT_KEYS),
+    ]
+    .into_iter()
+    .filter_map(|(id, text)| Some((id, Hotkey::parse(text).ok()?)))
+    .collect()
+}
 
 /// A capture started from the tray menu waits this long, so the menu has
 /// closed before the screen is frozen.
@@ -77,6 +101,8 @@ pub fn tray_menu(settings: &Settings) -> Vec<MenuItem> {
             checked: settings.auto_save,
         },
         MenuItem::Separator,
+        MenuItem::item(MENU_SETTINGS, "Settings…"),
+        MenuItem::Separator,
         MenuItem::item(MENU_QUIT, "Quit Framecut"),
     ]
 }
@@ -88,12 +114,17 @@ pub struct Framecut {
     pub settings: Settings,
     /// Where settings are saved; `None` if there is no config folder.
     pub settings_path: Option<PathBuf>,
+    /// Where the log is written, for the Diagnostics page.
+    pub log_dir: Option<PathBuf>,
 }
 
 struct State {
     capture: Capture,
     platform: Platform,
-    settings: RefCell<Settings>,
+    settings: Rc<RefCell<Settings>>,
+    log_dir: Option<PathBuf>,
+    /// The settings window, while it is open.
+    settings_window: RefCell<Option<AnyWindowHandle>>,
     settings_path: Option<PathBuf>,
     /// One capture at a time: a second request while the Capture Bar or
     /// the overlay is up is ignored.
@@ -112,9 +143,15 @@ impl State {
             change(&mut settings);
             settings.clone()
         };
+        self.save(&settings, cx.background_executor());
+        settings
+    }
+
+    /// Save `settings` in the background.
+    fn save(&self, settings: &Settings, executor: &BackgroundExecutor) {
         if let Some(path) = self.settings_path.clone() {
             let saved = settings.clone();
-            cx.background_executor()
+            executor
                 .spawn(async move {
                     if let Err(e) = settings::save(&path, &saved) {
                         log::error!("could not save settings: {e:#}");
@@ -122,7 +159,11 @@ impl State {
                 })
                 .detach();
         }
-        settings
+    }
+
+    /// The global hotkeys the settings name.
+    fn hotkeys(&self) -> Vec<(u32, Hotkey)> {
+        hotkeys(&self.settings.borrow())
     }
 }
 
@@ -142,8 +183,10 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
     let state = Rc::new(State {
         capture: framecut.capture,
         platform: framecut.platform,
-        settings: RefCell::new(framecut.settings),
+        settings: Rc::new(RefCell::new(framecut.settings)),
         settings_path: framecut.settings_path,
+        log_dir: framecut.log_dir,
+        settings_window: RefCell::new(None),
         busy: Cell::new(false),
         thumbnail: RefCell::new(None),
         thumbnail_generation: Cell::new(0),
@@ -167,6 +210,7 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                     cx,
                 ),
                 PlatformEvent::TrayCommand(MENU_OPEN_FOLDER) => open_folder(&state, cx),
+                PlatformEvent::TrayCommand(MENU_SETTINGS) => open_settings(&state, cx),
                 PlatformEvent::TrayCommand(MENU_AUTO_SAVE) => {
                     let settings = state.update_settings(|s| s.auto_save = !s.auto_save, cx);
                     log::info!(
@@ -179,13 +223,11 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                     log::info!("quitting");
                     cx.update(|cx| cx.quit());
                 }
+                // Starting Framecut again (say, from the Start menu) shows its
+                // settings: something visible, and the way to change it.
                 PlatformEvent::AnotherInstance => {
-                    log::info!("Framecut was started again; this instance keeps running");
-                    let hotkey = state.settings.borrow().capture_bar_hotkey.clone();
-                    state.platform.notify(
-                        "Framecut is already running",
-                        format!("Press {hotkey} or click the tray icon to capture."),
-                    );
+                    log::info!("Framecut was started again; showing its settings");
+                    open_settings(&state, cx);
                 }
                 PlatformEvent::Hotkey(_) | PlatformEvent::TrayCommand(_) => {}
             }
@@ -230,6 +272,116 @@ fn open_folder(state: &State, cx: &mut AsyncApp) {
         return;
     }
     cx.update(|cx| cx.open_with_system(&dir));
+}
+
+/// Open the settings window, or bring it forward if it is open.
+fn open_settings(state: &Rc<State>, cx: &mut AsyncApp) {
+    let open = *state.settings_window.borrow();
+    if let Some(window) = open
+        && window
+            .update(cx, |_, window, _| window.activate_window())
+            .is_ok()
+    {
+        return;
+    }
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        let monitors = state.capture.list_monitors().await.unwrap_or_default();
+        let hooks = Rc::new(settings_hooks(&state, monitors));
+        let resume = hooks.apply_hotkeys.clone();
+        let opened = cx.update(|cx| {
+            let options = WindowOptions {
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
+                    None,
+                    size(px(880.), px(640.)),
+                    cx,
+                ))),
+                titlebar: Some(TitlebarOptions {
+                    title: Some("Framecut Settings".into()),
+                    ..Default::default()
+                }),
+                focus: true,
+                show: true,
+                kind: WindowKind::Normal,
+                ..Default::default()
+            };
+            cx.open_window(options, move |window, cx| {
+                Theme::sync_system_appearance(Some(window), cx);
+                // The title bar's close button: re-register the hotkeys (closing
+                // mid-recording must not leave them paused), and close the way
+                // Escape does. GPUI's own close logs errors as the window goes.
+                window.on_window_should_close(cx, move |window, cx| {
+                    drop(resume());
+                    popup::close_window(window, cx);
+                    false
+                });
+                let view = cx.new(|cx| {
+                    SettingsWindow::new(hooks, (CAPTURE_BAR_HOTKEY, SCREENSHOT_HOTKEY), window, cx)
+                });
+                cx.new(|cx| Root::new(view, window, cx))
+            })
+        });
+        match opened {
+            Ok(window) => {
+                log::info!("settings window opened");
+                let hwnd = window
+                    .update(cx, |_, window, _| popup::raw_hwnd(window))
+                    .ok()
+                    .flatten();
+                if let Some(hwnd) = hwnd {
+                    platform_window::show_normal(hwnd);
+                }
+                state.settings_window.replace(Some(window.into()));
+            }
+            Err(e) => log::error!("could not open the settings window: {e:#}"),
+        }
+    })
+    .detach();
+}
+
+/// How the settings window reaches the rest of Framecut.
+fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
+    let (changed, pause, apply) = (state.clone(), state.clone(), state.clone());
+    Hooks {
+        settings: state.settings.clone(),
+        changed: Rc::new(move |cx: &mut App| {
+            let settings = changed.settings.borrow().clone();
+            changed.save(&settings, cx.background_executor());
+            changed.platform.set_tray_menu(tray_menu(&settings));
+            log::info!("settings changed");
+        }),
+        pause_hotkeys: Rc::new(move || {
+            // The request is sent at once; nothing waits for the answer.
+            drop(pause.platform.set_hotkeys(Vec::new()));
+        }),
+        apply_hotkeys: Rc::new(move || {
+            let registering = apply.platform.set_hotkeys(apply.hotkeys());
+            Box::pin(async move {
+                registering
+                    .await
+                    .into_iter()
+                    .map(|conflict| {
+                        log::warn!("{} is taken by another application", conflict.hotkey);
+                        conflict.id
+                    })
+                    .collect()
+            })
+        }),
+        launch_at_startup: Rc::new(framecut_platform::startup::launch_at_startup),
+        set_launch_at_startup: Rc::new(|enabled| {
+            match framecut_platform::startup::set_launch_at_startup(enabled) {
+                Ok(()) => log::info!("launch at startup {}", if enabled { "on" } else { "off" }),
+                Err(e) => log::error!("{e:#}"),
+            }
+        }),
+        diagnostics: Diagnostics {
+            version: env!("CARGO_PKG_VERSION").to_string(),
+            windows_build: framecut_capture::display::windows_build(),
+            monitors,
+            log_dir: state.log_dir.clone(),
+            settings_path: state.settings_path.clone(),
+        },
+    }
 }
 
 /// Where the Capture Bar goes: centred near the top of `monitor`.
@@ -304,9 +456,10 @@ async fn capture(
     cx: &mut AsyncApp,
 ) -> Result<(), String> {
     let taken_at = Local::now().naive_local();
+    let include_cursor = state.settings.borrow().include_cursor;
     let frame = state
         .capture
-        .freeze_monitor(monitor)
+        .freeze_monitor(monitor, include_cursor)
         .await
         .map_err(|e| e.to_string())?;
     let (width, height) = frame.size();
@@ -362,7 +515,8 @@ async fn capture(
         OverlayEvent::Selected(rect) => state.capture.screenshot(&frame, rect).await,
         OverlayEvent::Display => state.capture.screenshot(&frame, whole).await,
         OverlayEvent::Window { hwnd, visible } => {
-            match state.capture.capture_window(hwnd).await {
+            let include_cursor = state.settings.borrow().include_cursor;
+            match state.capture.capture_window(hwnd, include_cursor).await {
                 Ok(shot) => Ok(shot),
                 // Some windows refuse direct capture; what the user saw of
                 // the window is the next best thing.
@@ -729,6 +883,7 @@ mod tests {
             advanced_color_enabled: true,
             hdr_enabled: true,
             sdr_white_level_nits: Some(240.0),
+            adapter: String::new(),
         };
         let rect = bar_rect(&monitor);
         assert_eq!((rect.width, rect.height), (468, 198));

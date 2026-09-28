@@ -13,7 +13,7 @@ use gpui_kit::{
     AnyWindowHandle, App, AsyncApp, Bounds, DisplayId, Entity, EventEmitter, Render, Window,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, point, px, size,
 };
-use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use std::time::Duration;
 
 /// How long a hidden popup lingers before it is removed.
@@ -97,13 +97,7 @@ where
     // which fails ("RefCell already borrowed") while the app is borrowed,
     // and GPUI would miss the new bounds.
     let hwnd = window
-        .update(cx, |_, window, _| match window.window_handle() {
-            Ok(handle) => match handle.as_raw() {
-                RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
-                _ => None,
-            },
-            Err(_) => None,
-        })
+        .update(cx, |_, window, _| raw_hwnd(window))
         .ok()
         .flatten();
     match hwnd {
@@ -136,4 +130,26 @@ where
         },
         outcome,
     ))
+}
+
+/// A GPUI window's `HWND`, for platform calls (PRD §17).
+pub fn raw_hwnd(window: &Window) -> Option<isize> {
+    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
+        RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
+        _ => None,
+    }
+}
+
+/// Close a window from inside its own view: hide it at once, remove it a
+/// moment later (see [`Popup::close`] for why).
+pub fn close_window(window: &mut Window, cx: &mut App) {
+    if let Some(hwnd) = raw_hwnd(window) {
+        platform_window::hide(hwnd);
+    }
+    let handle = Window::window_handle(window);
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(REMOVE_DELAY).await;
+        let _ = handle.update(cx, |_, window, _| window.remove_window());
+    })
+    .detach();
 }

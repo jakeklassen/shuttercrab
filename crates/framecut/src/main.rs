@@ -2,16 +2,13 @@
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
 use framecut::{
-    app::{self, CAPTURE_BAR_HOTKEY, Framecut, QUIT_HOTKEY, SCREENSHOT_HOTKEY},
+    app::{self, Framecut, QUIT_HOTKEY},
     logging,
     settings::{self, Loaded, Settings},
 };
 use framecut_capture::{Capture, display::windows_build};
 use framecut_platform::{Hotkey, Platform, Tray};
 use std::path::PathBuf;
-
-/// Quits without the tray menu; kept for development.
-const QUIT: &str = "Ctrl+Alt+Shift+Q";
 
 /// Keeps settings and logs in this folder instead of the user's, for tests.
 const DATA_DIR_VARIABLE: &str = "FRAMECUT_DATA_DIR";
@@ -91,12 +88,9 @@ fn main() {
     }
 
     let defaults = Settings::default();
-    let mut hotkey = |value: &mut String, fallback: &str| match Hotkey::parse(value) {
-        Ok(hotkey) => {
-            // Show the hotkey as Framecut writes it, whatever the file's spelling.
-            *value = hotkey.to_string();
-            hotkey
-        }
+    // Keep valid hotkeys in Framecut's spelling; replace invalid ones.
+    let mut normalize = |value: &mut String, fallback: &str| match Hotkey::parse(value) {
+        Ok(hotkey) => *value = hotkey.to_string(),
         Err(e) => {
             log::error!("hotkey {value:?} is not valid ({e:#}); using {fallback}");
             notices.push((
@@ -104,14 +98,13 @@ fn main() {
                 format!("\"{value}\" is not a valid hotkey, so {fallback} is used instead."),
             ));
             *value = fallback.to_string();
-            Hotkey::parse(fallback).expect("the default hotkeys are valid")
         }
     };
-    let capture_bar = hotkey(
+    normalize(
         &mut settings.capture_bar_hotkey,
         &defaults.capture_bar_hotkey,
     );
-    let screenshot = hotkey(&mut settings.screenshot_hotkey, &defaults.screenshot_hotkey);
+    normalize(&mut settings.screenshot_hotkey, &defaults.screenshot_hotkey);
 
     let capture = match Capture::start() {
         Ok(capture) => capture,
@@ -122,14 +115,8 @@ fn main() {
     };
     capture.warm_up();
 
-    let hotkeys = [
-        (CAPTURE_BAR_HOTKEY, capture_bar),
-        (SCREENSHOT_HOTKEY, screenshot),
-        (
-            QUIT_HOTKEY,
-            Hotkey::parse(QUIT).expect("the quit hotkey is valid"),
-        ),
-    ];
+    // Every hotkey in the settings is valid now.
+    let hotkeys = app::hotkeys(&settings);
     let tray = Tray {
         tooltip: "Framecut".into(),
         menu: app::tray_menu(&settings),
@@ -169,9 +156,10 @@ fn main() {
         platform.notify(title, message);
     }
     log::info!(
-        "ready: {} opens the Capture Bar, {} takes an area screenshot, {QUIT} quits",
+        "ready: {} opens the Capture Bar, {} takes an area screenshot, {} quits",
         settings.capture_bar_hotkey,
-        settings.screenshot_hotkey
+        settings.screenshot_hotkey,
+        app::QUIT_KEYS
     );
 
     gpui_kit::application()
@@ -184,6 +172,7 @@ fn main() {
                     platform,
                     settings,
                     settings_path,
+                    log_dir: log_file.as_ref().and_then(|f| f.parent().map(Into::into)),
                 },
                 events,
                 cx,

@@ -24,6 +24,8 @@ pub struct Settings {
     pub output_dir: Option<PathBuf>,
     /// Area selections snap to nearby window edges.
     pub snap_to_windows: bool,
+    /// Draw the pointer into screenshots (PRD §15: off by default).
+    pub include_cursor: bool,
     /// What the Capture Bar offers first: the last target used.
     pub last_target: CaptureTarget,
     /// Show a thumbnail in the corner after each screenshot.
@@ -43,6 +45,7 @@ impl Default for Settings {
             auto_save: true,
             output_dir: None,
             snap_to_windows: true,
+            include_cursor: false,
             last_target: CaptureTarget::Area,
             show_thumbnail: true,
             thumbnail_seconds: 6,
