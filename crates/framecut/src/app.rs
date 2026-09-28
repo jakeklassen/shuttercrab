@@ -592,6 +592,14 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             .unwrap_or(monitor.bounds);
         let rect = thumbnail_rect(work, monitor.scale_factor, size);
         let image = thumbnail::render_image(&small);
+        // Small enough that Windows shows it sharp rather than fading it.
+        let drag_picture = thumbnail::scale_down(
+            small.rgba.clone(),
+            small.width,
+            small.height,
+            thumbnail::DRAG_IMAGE_MAX,
+            thumbnail::DRAG_IMAGE_MAX,
+        );
         let over = move || {
             platform_window::cursor_position().is_some_and(|(x, y)| {
                 x >= rect.x
@@ -642,9 +650,9 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
                     Ok(path) => match framecut_platform::drag::drag_file(
                         &path,
                         Some(DragImage {
-                            width: small.width,
-                            height: small.height,
-                            rgba: &small.rgba,
+                            width: drag_picture.width,
+                            height: drag_picture.height,
+                            rgba: &drag_picture.rgba,
                         }),
                     ) {
                         Ok(true) => {

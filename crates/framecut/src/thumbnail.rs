@@ -24,6 +24,12 @@ pub const MIN_SIDE: f32 = 64.0;
 pub const PADDING: f32 = 6.0;
 /// A press that moves further than this, logical pixels, is a drag.
 const DRAG_DISTANCE: f32 = 4.0;
+/// How often the card checks the pointer and counts down: often enough that
+/// the close button follows the pointer without a visible lag.
+const TICK: Duration = Duration::from_millis(100);
+/// Windows fades the edges of drag images larger than this (physical
+/// pixels), so the drag image is kept within it.
+pub const DRAG_IMAGE_MAX: u32 = 256;
 
 /// What the user did with the thumbnail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,8 +108,8 @@ pub struct Thumbnail {
     image: Arc<RenderImage>,
     hovered: bool,
     probe: Option<PointerProbe>,
-    /// Seconds left before the card closes itself.
-    left: u32,
+    /// Time left before the card closes itself.
+    left: Duration,
     /// Where the left button went down, while it may still become a click.
     pressed_at: Option<Point<Pixels>>,
     closed: bool,
@@ -117,7 +123,7 @@ impl Thumbnail {
     pub fn new(image: Arc<RenderImage>, seconds: u32, cx: &mut Context<Self>) -> Self {
         cx.spawn(async move |this, cx| {
             loop {
-                cx.background_executor().timer(Duration::from_secs(1)).await;
+                cx.background_executor().timer(TICK).await;
                 let done = this.update(cx, |this, cx| {
                     if let Some(probe) = &this.probe {
                         let over = probe();
@@ -127,9 +133,9 @@ impl Thumbnail {
                         }
                     }
                     if !this.hovered {
-                        this.left = this.left.saturating_sub(1);
+                        this.left = this.left.saturating_sub(TICK);
                     }
-                    if this.left == 0 {
+                    if this.left.is_zero() {
                         this.close(cx);
                     }
                     this.closed
@@ -144,13 +150,13 @@ impl Thumbnail {
             image,
             hovered: false,
             probe: None,
-            left: seconds.max(1),
+            left: Duration::from_secs(seconds.max(1).into()),
             pressed_at: None,
             closed: false,
         }
     }
 
-    /// Ask `probe`, once a second, whether the pointer is over the card.
+    /// Ask `probe`, every tick, whether the pointer is over the card.
     pub fn with_pointer_probe(mut self, probe: PointerProbe) -> Self {
         self.probe = Some(probe);
         self
