@@ -88,3 +88,31 @@ pub fn bring_to_front(hwnd: isize) {
 pub fn hide(hwnd: isize) {
     let _ = unsafe { ShowWindow(HWND(hwnd as _), SW_HIDE) };
 }
+
+/// Leave the window out of every screen capture, Framecut's own and other
+/// applications' (PRD §7.6): it is simply not there in the captured image.
+pub fn exclude_from_capture(hwnd: isize) -> Result<()> {
+    unsafe {
+        windows::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(
+            HWND(hwnd as _),
+            windows::Win32::UI::WindowsAndMessaging::WDA_EXCLUDEFROMCAPTURE,
+        )
+    }
+    .context("SetWindowDisplayAffinity failed")
+}
+
+/// Give a borderless window Windows 11's rounded corners.
+pub fn round_corners(hwnd: isize) {
+    use windows::Win32::Graphics::Dwm::{
+        DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
+    };
+    let preference = DWMWCP_ROUND;
+    let _ = unsafe {
+        DwmSetWindowAttribute(
+            HWND(hwnd as _),
+            DWMWA_WINDOW_CORNER_PREFERENCE,
+            &preference as *const _ as _,
+            size_of_val(&preference) as u32,
+        )
+    };
+}
