@@ -1,6 +1,6 @@
 # Test matrix
 
-Milestone 2 (screenshot workflow) is in progress, steps 1–4 of 6 accepted; see [Milestone
+Milestone 2 (screenshot workflow) is in progress, steps 1–5 of 6 accepted; see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
 2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
@@ -291,6 +291,9 @@ Acceptance (manual):
 7. Say whether the thumbnail's size, position and 6 seconds feel right.
 
 ### Step 5: the settings window
+
+**Passed**: the owner accepted it on 2026-09-28 after the retest (items
+1–4) and the Task Manager control test below.
 
 Owner's results, 2026-09-28: items 1–9 pass. Findings, all fixed and
 checked live, to retest:
@@ -695,7 +698,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | App UI excluded from capture (§7.6) | Capture Bar and thumbnail: passed locally | Display affinity 0x11 |
 | Post-capture thumbnail: after the clipboard, auto-dismiss, click opens, drag into apps, excluded, never blocks the next capture (§7.6, §32.6) | **Passed: owner, 2026-09-28** | UI tests; drags into Explorer, Telegram, Claude Code |
 | Optional notification after capture (§8, settings) | Built, off by default | `notify_after_capture` |
-| Settings window: General / Screenshot / Diagnostics, keyboard, applies at once (§26) | Passed (headless + smoke); awaits the owner | UI tests; smoke test |
-| Include cursor (§15) | Built, off by default; awaits the owner | `include_cursor` |
-| Launch at sign-in (§26) | Passed (unit, under a test name); awaits the owner | Run key |
-| Diagnostics: monitors, HDR, SDR white, GPU (§26) | Built; awaits the owner | |
+| Settings window: General / Screenshot / Diagnostics, keyboard, applies at once (§26) | **Passed: owner, 2026-09-28** | UI tests; smoke test |
+| Include cursor (§15) | **Passed: owner, 2026-09-28** | `include_cursor` |
+| Launch at sign-in (§26) | **Passed: owner, 2026-09-28** | Run key |
+| Diagnostics: monitors, HDR, SDR white, GPU (§26) | **Passed: owner, 2026-09-28** | |
