@@ -1,6 +1,6 @@
 # Test matrix
 
-Milestone 2 (screenshot workflow) is in progress; see [Milestone
+Milestone 2 (screenshot workflow) is in progress, step 1 of 6 accepted; see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
 2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
@@ -30,6 +30,8 @@ notifications, capture exclusion; (5) the settings window; (6) hardening and
 an HDR video test of the highlight curve.
 
 ### Step 1: tray, settings, log file, auto-save, single instance
+
+**Passed**: the owner ran all seven acceptance steps below on 2026-09-27.
 
 Automated: settings round trip, defaults for missing fields, a broken file
 kept as `settings.json.bad`; file names and ` (2)` suffixes; the tray icon
@@ -353,7 +355,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Crop and PNG from the frozen, converted frame | Passed locally | Live service test |
 | Clipboard as PNG + bitmap, retry on contention (§11) | Passed (unit); live test opt-in | Owner's paste test is the real check |
 | Overlay within ~150 ms (§22.2) | Passed locally | 130 ms, release build, 4K HDR |
-| Tray icon and menu; left click takes a screenshot (§7.1) | Passed locally; menu awaits the owner | Smoke test (tray click) |
+| Tray icon and menu; left click takes a screenshot (§7.1) | **Passed: owner, 2026-09-27** | Smoke test (tray click); owner ran all 7 acceptance steps |
 | Auto-save to `Pictures/Framecut`, unique names (§12) | Passed locally | Unit tests; smoke test: two files |
 | Settings on disk, survive a broken file | Passed (unit) | |
 | Log file (§28) | Passed locally | Version, Windows build, monitors, timings; no errors |

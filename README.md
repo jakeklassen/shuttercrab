@@ -11,8 +11,9 @@ The specification is [docs/PRD.md](docs/PRD.md).
 - **Milestone 0** (prove HDR-to-SDR color correctness) passed on 2026-09-27.
 - **Milestone 1** (area screenshot MVP) passed its acceptance test on 2026-09-27:
   hotkey → drag → release → paste.
-- **Milestone 2** (screenshot workflow) is in progress. Step 1 of 6 is built:
-  tray icon, settings, log file, auto-save, single instance.
+- **Milestone 2** (screenshot workflow) is in progress. Step 1 of 6
+  (tray icon, settings, log file, auto-save, single instance) passed its
+  acceptance test on 2026-09-27.
 
 Documentation:
 
