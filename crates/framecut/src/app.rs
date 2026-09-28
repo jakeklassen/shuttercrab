@@ -125,6 +125,8 @@ struct State {
     log_dir: Option<PathBuf>,
     /// The settings window, while it is open.
     settings_window: RefCell<Option<AnyWindowHandle>>,
+    /// What clicking the latest notification opens, if anything.
+    notified: RefCell<Option<PathBuf>>,
     settings_path: Option<PathBuf>,
     /// One capture at a time: a second request while the Capture Bar or
     /// the overlay is up is ignored.
@@ -145,6 +147,12 @@ impl State {
         };
         self.save(&settings, cx.background_executor());
         settings
+    }
+
+    /// Show a notification; clicking it opens `opens`, if given.
+    fn notify(&self, title: impl Into<String>, message: impl Into<String>, opens: Option<PathBuf>) {
+        self.notified.replace(opens);
+        self.platform.notify(title, message);
     }
 
     /// Save `settings` in the background.
@@ -187,6 +195,7 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
         settings_path: framecut.settings_path,
         log_dir: framecut.log_dir,
         settings_window: RefCell::new(None),
+        notified: RefCell::new(None),
         busy: Cell::new(false),
         thumbnail: RefCell::new(None),
         thumbnail_generation: Cell::new(0),
@@ -229,6 +238,13 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                     log::info!("Framecut was started again; showing its settings");
                     open_settings(&state, cx);
                 }
+                // Like clicking the thumbnail: open the screenshot.
+                PlatformEvent::NotificationClicked => {
+                    let opens = state.notified.borrow().clone();
+                    if let Some(path) = opens {
+                        cx.update(|cx| cx.open_with_system(&path));
+                    }
+                }
                 PlatformEvent::Hotkey(_) | PlatformEvent::TrayCommand(_) => {}
             }
         }
@@ -255,7 +271,7 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
         };
         if let Err(message) = result {
             log::error!("{message}");
-            state.platform.notify("Screenshot failed", message);
+            state.notify("Screenshot failed", message, None);
         }
         state.busy.set(false);
     })
@@ -266,9 +282,7 @@ fn open_folder(state: &State, cx: &mut AsyncApp) {
     let dir = state.settings.borrow().output_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
         log::error!("could not create {}: {e}", dir.display());
-        state
-            .platform
-            .notify("Could not open the folder", e.to_string());
+        state.notify("Could not open the folder", e.to_string(), None);
         return;
     }
     cx.update(|cx| cx.open_with_system(&dir));
@@ -650,9 +664,11 @@ async fn deliver(
             ),
             None => "On the clipboard".to_string(),
         };
-        state
-            .platform
-            .notify(format!("Screenshot {width} × {height}"), message);
+        state.notify(
+            format!("Screenshot {width} × {height}"),
+            message,
+            saved_path.clone(),
+        );
     }
     if let Some(preview) = preview {
         let file = match saved_path {

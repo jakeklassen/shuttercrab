@@ -34,8 +34,8 @@ use windows::{
             Input::KeyboardAndMouse::{RegisterHotKey, UnregisterHotKey},
             Shell::{
                 NIF_ICON, NIF_INFO, NIF_MESSAGE, NIF_SHOWTIP, NIF_TIP, NIIF_NOSOUND, NIM_ADD,
-                NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_SELECT, NOTIFY_ICON_DATA_FLAGS,
-                NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
+                NIM_DELETE, NIM_MODIFY, NIM_SETVERSION, NIN_BALLOONUSERCLICK, NIN_SELECT,
+                NOTIFY_ICON_DATA_FLAGS, NOTIFYICON_VERSION_4, NOTIFYICONDATAW, Shell_NotifyIconW,
             },
             WindowsAndMessaging::{
                 AppendMenuW, CreatePopupMenu, CreateWindowExW, DefWindowProcW, DestroyIcon,
@@ -62,6 +62,8 @@ pub enum PlatformEvent {
     TrayCommand(u32),
     /// Framecut was started again while this instance was running.
     AnotherInstance,
+    /// The user clicked the latest notification.
+    NotificationClicked,
 }
 
 /// A hotkey that could not be registered, usually because another
@@ -282,6 +284,9 @@ extern "system" fn window_proc(
                 with_state(|s| s.events.unbounded_send(PlatformEvent::TrayActivated));
             }
             WM_CONTEXTMENU => show_menu(hwnd),
+            NIN_BALLOONUSERCLICK => {
+                with_state(|s| s.events.unbounded_send(PlatformEvent::NotificationClicked));
+            }
             _ => {}
         }
         return LRESULT(0);
