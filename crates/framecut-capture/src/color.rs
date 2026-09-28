@@ -361,6 +361,61 @@ pub fn find_regions(stats: &[TileStats], tiles_x: u32, tiles_y: u32) -> Vec<HdrR
 /// Output level up to which HDR content stays linear after its gain.
 pub const TONE_KNEE: f32 = 0.45;
 
+/// What sets the exposure of an HDR region: the brightness the curve maps
+/// to white (PRD §9.6; COLOR_PIPELINE.md, "Peak-driven gain").
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
+pub enum Anchor {
+    /// The brightest pixel in the region: nothing clips, but one spark
+    /// dims the whole region, and a different crop can change it.
+    #[default]
+    RegionPeak,
+    /// This quantile (0 to 1) of the region's tile peaks: rare sparks are
+    /// ignored (and clip to white), so the exposure follows most of the
+    /// content.
+    Percentile(f32),
+    /// A fixed brightness over SDR white, such as the display's peak: the
+    /// same exposure whatever the content or the crop.
+    Fixed(f32),
+}
+
+/// Set each region's `peak` to the brightness `anchor` maps to white.
+/// `stats` and `tiles_x` are what [`find_regions`] used.
+pub fn anchor_regions(
+    regions: &mut [HdrRegion],
+    stats: &[TileStats],
+    tiles_x: u32,
+    anchor: Anchor,
+) {
+    for region in regions {
+        region.peak = match anchor {
+            Anchor::RegionPeak => region.peak,
+            Anchor::Fixed(peak) => peak,
+            Anchor::Percentile(q) => {
+                // Tiles of the region that hold HDR content (as in
+                // find_regions), by their centre.
+                let mut peaks: Vec<f32> = stats
+                    .iter()
+                    .enumerate()
+                    .filter(|(i, s)| {
+                        let (tx, ty) = (*i as u32 % tiles_x, *i as u32 / tiles_x);
+                        let (cx, cy) = (tx * TILE + TILE / 2, ty * TILE + TILE / 2);
+                        region.contains(cx, cy)
+                            && (s.extended > 0 || s.non_sdr * REGION_SHARE >= TILE * TILE)
+                    })
+                    .map(|(_, s)| s.peak)
+                    .collect();
+                if peaks.is_empty() {
+                    region.peak
+                } else {
+                    peaks.sort_by(f32::total_cmp);
+                    let at = ((peaks.len() - 1) as f32 * q.clamp(0.0, 1.0)).round() as usize;
+                    peaks[at].min(region.peak)
+                }
+            }
+        };
+    }
+}
+
 /// The curve for HDR content with peak `p` (over SDR white): dim by
 /// `g = 1/√p`, keep linear up to `TONE_KNEE`, then roll off with an
 /// extended-Reinhard shoulder that reaches 1 exactly at the peak. Fitted to
@@ -832,5 +887,58 @@ mod tests {
             assert_eq!(Highlights::parse(mode.name()).unwrap(), mode);
         }
         assert!(Highlights::parse("reinhard").is_err());
+    }
+}
+
+#[cfg(test)]
+mod anchor_tests {
+    use super::*;
+
+    /// A 4×1 row of HDR tiles whose peaks are `peaks`, in one region.
+    fn row(peaks: [f32; 4]) -> (Vec<TileStats>, Vec<HdrRegion>) {
+        let stats: Vec<TileStats> = peaks
+            .iter()
+            .enumerate()
+            .map(|(i, &peak)| TileStats {
+                peak,
+                non_sdr: TILE * TILE,
+                extended: 1,
+                min_x: i as u32 * TILE,
+                min_y: 0,
+                max_x: i as u32 * TILE + TILE - 1,
+                max_y: TILE - 1,
+            })
+            .collect();
+        let regions = find_regions(&stats, 4, 1);
+        (stats, regions)
+    }
+
+    #[test]
+    fn the_region_peak_follows_its_brightest_tile() {
+        let (stats, mut regions) = row([2.0, 2.2, 2.4, 9.0]);
+        assert_eq!(regions.len(), 1);
+        anchor_regions(&mut regions, &stats, 4, Anchor::RegionPeak);
+        assert_eq!(regions[0].peak, 9.0);
+    }
+
+    #[test]
+    fn a_percentile_ignores_one_spark() {
+        let (stats, mut regions) = row([2.0, 2.2, 2.4, 9.0]);
+        anchor_regions(&mut regions, &stats, 4, Anchor::Percentile(0.5));
+        // Median of four by rounding: the third value.
+        assert_eq!(regions[0].peak, 2.4);
+        // Never above the real peak.
+        let (stats, mut regions) = row([2.0, 2.2, 2.4, 9.0]);
+        anchor_regions(&mut regions, &stats, 4, Anchor::Percentile(1.0));
+        assert_eq!(regions[0].peak, 9.0);
+    }
+
+    #[test]
+    fn a_fixed_anchor_ignores_the_content() {
+        for peaks in [[2.0, 2.2, 2.4, 9.0], [1.5, 1.5, 1.5, 1.5]] {
+            let (stats, mut regions) = row(peaks);
+            anchor_regions(&mut regions, &stats, 4, Anchor::Fixed(4.0));
+            assert_eq!(regions[0].peak, 4.0);
+        }
     }
 }

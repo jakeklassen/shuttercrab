@@ -1,6 +1,8 @@
 //! Direct3D 11 device, texture helpers, and the GPU color transform.
 
-use crate::color::{HdrRegion, Highlights, MAX_REGIONS, TILE, TileStats, find_regions};
+use crate::color::{
+    Anchor, HdrRegion, Highlights, MAX_REGIONS, TILE, TileStats, anchor_regions, find_regions,
+};
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use windows::{
     Graphics::DirectX::Direct3D11::IDirect3DDevice,
@@ -263,6 +265,18 @@ impl SdrConverter {
         white_scale: f32,
         mode: Highlights,
     ) -> Result<SdrFrame> {
+        self.convert_anchored(gpu, source, white_scale, mode, Anchor::RegionPeak)
+    }
+
+    /// As [`convert`](Self::convert), with HDR regions exposed by `anchor`.
+    pub fn convert_anchored(
+        &self,
+        gpu: &Gpu,
+        source: &ID3D11Texture2D,
+        white_scale: f32,
+        mode: Highlights,
+        anchor: Anchor,
+    ) -> Result<SdrFrame> {
         ensure!(
             white_scale.is_finite() && white_scale > 0.0,
             "invalid SDR white scale {white_scale}"
@@ -355,7 +369,8 @@ impl SdrConverter {
             })
             .collect();
         let frame_peak = tiles.iter().fold(0.0f32, |a, t| a.max(t.peak));
-        let regions = find_regions(&tiles, tiles_x, tiles_y);
+        let mut regions = find_regions(&tiles, tiles_x, tiles_y);
+        anchor_regions(&mut regions, &tiles, tiles_x, anchor);
         let mut region_params = RegionParams {
             count: regions.len() as u32,
             unused: [0; 3],

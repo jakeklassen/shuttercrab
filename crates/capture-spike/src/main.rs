@@ -7,7 +7,7 @@ compile_error!("capture-spike targets Windows 11 only");
 use anyhow::{Context, Result, bail, ensure};
 use capture_spike::{
     analysis::{self, Roi},
-    color::{self, Highlights},
+    color::{self, Anchor, Highlights},
     display, fixture, gate,
     gpu::{Gpu, SdrConverter},
     png_io,
@@ -34,7 +34,10 @@ USAGE
       monitor under the pointer when the capture starts.
 
   capture-spike convert SOURCE.fp16 OUT.png [--highlights tonemap|clip]
-      Re-run the transform on a saved FP16 frame.
+                        [--anchor peak|pNN|BRIGHTNESS]
+      Re-run the transform on a saved FP16 frame. --anchor picks what sets an
+      HDR region's exposure: its peak (default), a percentile of its tile
+      peaks (p90), or a fixed brightness over SDR white (4.2).
 
   capture-spike compare REFERENCE.png TEST.png [--roi X,Y,W,H] [--source TEST.fp16]
                         [--heatmap OUT.png]
@@ -169,21 +172,32 @@ pub fn print_snapshot(shot: &snapshot::Snapshot) {
 
 fn convert(mut args: Args) -> Result<()> {
     let highlights = highlights(&mut args)?;
+    let anchor = anchor(&mut args)?;
     let source = PathBuf::from(args.positional("SOURCE.fp16")?);
     let out = PathBuf::from(args.positional("OUT.png")?);
     args.finish()?;
     let raw = RawFrame::read(&source)?;
     let gpu = Gpu::hardware(None)?;
     let texture = gpu.upload_rgba16f(raw.width, raw.height, &raw.data)?;
-    let sdr = SdrConverter::new(&gpu)?.convert(&gpu, &texture, raw.white_scale, highlights)?;
+    let sdr = SdrConverter::new(&gpu)?.convert_anchored(
+        &gpu,
+        &texture,
+        raw.white_scale,
+        highlights,
+        anchor,
+    )?;
     png_io::write_srgb(&out, sdr.width, sdr.height, &sdr.rgba)?;
     println!(
-        "{}x{}, S = {}, frame peak {:.2}x SDR white, highlights {} -> {}",
+        "{}x{}, S = {}, frame peak {:.2}x SDR white, highlights {}, anchor {anchor:?}, regions {:?} -> {}",
         sdr.width,
         sdr.height,
         raw.white_scale,
         sdr.frame_peak,
         highlights.name(),
+        sdr.regions
+            .iter()
+            .map(|r| format!("{:.2}", r.peak))
+            .collect::<Vec<_>>(),
         out.display()
     );
     Ok(())
@@ -325,6 +339,26 @@ fn probe(mut args: Args) -> Result<()> {
         );
     }
     Ok(())
+}
+
+/// `--anchor peak` (default), `--anchor p90` (a percentile of the region's
+/// tile peaks) or `--anchor 4.2` (a fixed brightness over SDR white, such as
+/// the display's peak).
+fn anchor(args: &mut Args) -> Result<Anchor> {
+    let Some(text) = args.option("--anchor")? else {
+        return Ok(Anchor::RegionPeak);
+    };
+    if text == "peak" {
+        return Ok(Anchor::RegionPeak);
+    }
+    if let Some(q) = text.strip_prefix('p') {
+        let q: f32 = q.parse().context("--anchor pNN: NN is a percentage")?;
+        return Ok(Anchor::Percentile(q / 100.0));
+    }
+    let fixed: f32 = text
+        .parse()
+        .context("--anchor takes peak, pNN or a brightness over SDR white")?;
+    Ok(Anchor::Fixed(fixed))
 }
 
 fn highlights(args: &mut Args) -> Result<Highlights> {
