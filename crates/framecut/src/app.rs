@@ -16,6 +16,7 @@ use crate::{
     popup,
     selection::ScreenWindow,
     settings::{self, Settings},
+    thumbnail::{self, Thumbnail, ThumbnailEvent},
 };
 use chrono::{Local, NaiveDateTime};
 use framecut_capture::{
@@ -23,11 +24,12 @@ use framecut_capture::{
 };
 use framecut_platform::{MenuItem, Platform, PlatformEvent, targets, window as platform_window};
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
-use gpui_kit::{App, AppContext as _, AsyncApp, QuitMode};
+use gpui_kit::{App, AppContext as _, AsyncApp, QuitMode, RenderImage};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -49,6 +51,9 @@ const TRAY_DELAY: Duration = Duration::from_millis(250);
 
 /// The Capture Bar's distance from the top of the monitor, logical pixels.
 const BAR_TOP: f32 = 24.0;
+
+/// The thumbnail's distance from the work area's edges, logical pixels.
+const THUMBNAIL_MARGIN: f32 = 16.0;
 
 /// The tray icon's context menu for the current settings.
 pub fn tray_menu(settings: &Settings) -> Vec<MenuItem> {
@@ -92,6 +97,10 @@ struct State {
     /// One capture at a time: a second request while the Capture Bar or
     /// the overlay is up is ignored.
     busy: Cell<bool>,
+    /// The thumbnail on screen, and a count that tells its handler whether
+    /// a newer one has replaced it.
+    thumbnail: RefCell<Option<popup::Popup>>,
+    thumbnail_generation: Cell<u64>,
 }
 
 impl State {
@@ -135,6 +144,8 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
         settings: RefCell::new(framecut.settings),
         settings_path: framecut.settings_path,
         busy: Cell::new(false),
+        thumbnail: RefCell::new(None),
+        thumbnail_generation: Cell::new(0),
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -234,7 +245,7 @@ pub fn bar_rect(monitor: &MonitorInfo) -> PhysicalRect {
 }
 
 async fn capture_bar(
-    state: &State,
+    state: &Rc<State>,
     monitor: MonitorId,
     pressed: Instant,
     cx: &mut AsyncApp,
@@ -249,7 +260,7 @@ async fn capture_bar(
         .find(|m| m.id == monitor)
         .ok_or("The monitor under the pointer is gone.")?;
     let last = state.settings.borrow().last_target;
-    let (bar, outcome) = popup::open(&info, bar_rect(&info), cx, move |window, cx| {
+    let (bar, outcome) = popup::open(&info, bar_rect(&info), true, cx, move |window, cx| {
         cx.new(|cx| CaptureBar::new(last, window, cx))
     })?;
     if let Some(hwnd) = bar.hwnd() {
@@ -267,7 +278,8 @@ async fn capture_bar(
         "Capture Bar up {} ms after the request",
         pressed.elapsed().as_millis()
     );
-    let event = outcome.await.unwrap_or(CaptureBarEvent::Dismissed);
+    let mut outcome = outcome;
+    let event = outcome.next().await.unwrap_or(CaptureBarEvent::Dismissed);
     bar.close(cx);
     match event {
         CaptureBarEvent::Dismissed => {
@@ -284,7 +296,7 @@ async fn capture_bar(
 
 /// Capture `target` on `monitor`.
 async fn capture(
-    state: &State,
+    state: &Rc<State>,
     target: CaptureTarget,
     monitor: MonitorId,
     pressed: Instant,
@@ -304,6 +316,7 @@ async fn capture(
             return deliver(
                 state,
                 shot.map_err(|e| e.to_string())?,
+                frame.monitor(),
                 pressed,
                 taken_at,
                 cx,
@@ -323,7 +336,7 @@ async fn capture(
         info.scale_factor,
         frame.preview_bgra().to_vec(),
     );
-    let (overlay, outcome) = popup::open(&info, info.bounds, cx, move |window, cx| {
+    let (overlay, outcome) = popup::open(&info, info.bounds, true, cx, move |window, cx| {
         cx.new(|cx| {
             SelectionOverlay::new(overlay_frame, window, cx)
                 .with_windows(windows, snap_to_windows)
@@ -336,7 +349,8 @@ async fn capture(
         frozen.as_millis()
     );
 
-    let event = outcome.await.unwrap_or(OverlayEvent::Cancelled);
+    let mut outcome = outcome;
+    let event = outcome.next().await.unwrap_or(OverlayEvent::Cancelled);
     overlay.close(cx);
     let released = Instant::now();
     let shot = match event {
@@ -361,6 +375,7 @@ async fn capture(
     deliver(
         state,
         shot.map_err(|e| e.to_string())?,
+        &info,
         released,
         taken_at,
         cx,
@@ -392,11 +407,13 @@ fn screen_windows(bounds: PhysicalRect) -> Vec<ScreenWindow> {
         .collect()
 }
 
-/// Copy and save a finished screenshot as the settings say. `released` is
-/// when the user finished choosing, for the log.
+/// Copy and save a finished screenshot as the settings say, then show the
+/// thumbnail and the notification. `released` is when the user finished
+/// choosing, for the log.
 async fn deliver(
-    state: &State,
+    state: &Rc<State>,
     shot: Screenshot,
+    monitor: &MonitorInfo,
     released: Instant,
     taken_at: NaiveDateTime,
     cx: &mut AsyncApp,
@@ -404,12 +421,24 @@ async fn deliver(
     let settings = state.settings.borrow().clone();
     let (width, height) = (shot.width, shot.height);
 
-    // Start the file write first; it runs while the clipboard is written.
+    // Start the file write and the thumbnail image first; they run while
+    // the clipboard is written.
     let saved = settings.auto_save.then(|| {
         let (dir, png) = (settings.output_dir(), shot.png.clone());
         cx.background_executor()
             .spawn(async move { files::save_screenshot(&dir, taken_at, &png) })
     });
+    let preview = settings.show_thumbnail.then(|| {
+        let rgba = shot.rgba.clone();
+        let (w, h) = thumbnail::image_size(width, height);
+        let scale = monitor.scale_factor;
+        let (max_w, max_h) = ((w * scale).ceil() as u32, (h * scale).ceil() as u32);
+        cx.background_executor()
+            .spawn(async move { thumbnail::render_image(rgba, width, height, max_w, max_h) })
+    });
+    // Without auto-save, the thumbnail writes a temporary file only if it
+    // is opened or dragged.
+    let unsaved = (settings.show_thumbnail && !settings.auto_save).then(|| shot.png.clone());
     let copied = if settings.copy_to_clipboard {
         let result = state
             .platform
@@ -437,7 +466,8 @@ async fn deliver(
         );
     }
 
-    match (copied, saved) {
+    let saved_path = saved.as_ref().and_then(|r| r.as_ref().ok().cloned());
+    let result = match (copied, saved) {
         (Some(Err(copy)), Some(Err(save))) => Err(format!(
             "Could not copy or save the screenshot: {copy:#}; {save:#}"
         )),
@@ -454,7 +484,171 @@ async fn deliver(
             Ok(())
         }
         _ => Ok(()),
+    };
+    result?;
+
+    if settings.notify_after_capture {
+        let message = match &saved_path {
+            Some(path) => format!(
+                "Saved as {}",
+                path.file_name().unwrap_or_default().to_string_lossy()
+            ),
+            None => "On the clipboard".to_string(),
+        };
+        state
+            .platform
+            .notify(format!("Screenshot {width} × {height}"), message);
     }
+    if let Some(preview) = preview {
+        let file = match saved_path {
+            Some(path) => CaptureFile::Saved(path),
+            None => CaptureFile::Unsaved {
+                png: unsaved.unwrap_or_default(),
+                taken_at,
+            },
+        };
+        let thumbnail = PendingThumbnail {
+            image: preview.await,
+            size: (width, height),
+            file,
+            monitor: monitor.clone(),
+            seconds: settings.thumbnail_seconds,
+        };
+        show_thumbnail(state.clone(), thumbnail, cx);
+    }
+    Ok(())
+}
+
+/// The file behind a thumbnail: saved already, or written to the temporary
+/// folder the first time it is opened or dragged.
+enum CaptureFile {
+    Saved(PathBuf),
+    Unsaved {
+        png: Vec<u8>,
+        taken_at: NaiveDateTime,
+    },
+}
+
+impl CaptureFile {
+    async fn path(&mut self, cx: &mut AsyncApp) -> Result<PathBuf, String> {
+        match self {
+            CaptureFile::Saved(path) => Ok(path.clone()),
+            CaptureFile::Unsaved { png, taken_at } => {
+                let (png, taken_at) = (std::mem::take(png), *taken_at);
+                let path = cx
+                    .background_executor()
+                    .spawn(
+                        async move { files::save_screenshot(&files::temp_dir(), taken_at, &png) },
+                    )
+                    .await
+                    .map_err(|e| format!("Could not write the screenshot: {e:#}"))?;
+                *self = CaptureFile::Saved(path.clone());
+                Ok(path)
+            }
+        }
+    }
+}
+
+/// A thumbnail about to be shown.
+struct PendingThumbnail {
+    image: Arc<RenderImage>,
+    /// The screenshot's size, physical pixels.
+    size: (u32, u32),
+    file: CaptureFile,
+    monitor: MonitorInfo,
+    seconds: u32,
+}
+
+/// Where the thumbnail card goes: the bottom-right corner of the monitor's
+/// work area (above the taskbar), physical pixels.
+pub fn thumbnail_rect(work: PhysicalRect, scale: f32, size: (u32, u32)) -> PhysicalRect {
+    let (w, h) = thumbnail::image_size(size.0, size.1);
+    let card = |side: f32| ((side + 2.0 * thumbnail::PADDING) * scale).round() as u32;
+    let (width, height) = (card(w), card(h));
+    let margin = (THUMBNAIL_MARGIN * scale).round() as i32;
+    PhysicalRect::new(
+        work.x + work.width as i32 - width as i32 - margin,
+        work.y + work.height as i32 - height as i32 - margin,
+        width,
+        height,
+    )
+}
+
+/// Show the thumbnail, replacing any previous one, and handle it until it
+/// closes. Runs on its own: the next capture does not wait for it.
+fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp) {
+    cx.spawn(async move |cx| {
+        let PendingThumbnail {
+            image,
+            size,
+            mut file,
+            monitor,
+            seconds,
+        } = pending;
+        let work = platform_window::work_area(monitor.id.0)
+            .map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h))
+            .unwrap_or(monitor.bounds);
+        let rect = thumbnail_rect(work, monitor.scale_factor, size);
+        let opened = popup::open(&monitor, rect, false, cx, move |_, cx| {
+            cx.new(|cx| Thumbnail::new(image, seconds, cx))
+        });
+        let (card, mut events) = match opened {
+            Ok(opened) => opened,
+            Err(e) => {
+                log::warn!("could not show the thumbnail: {e}");
+                return;
+            }
+        };
+        if let Some(hwnd) = card.hwnd() {
+            platform_window::round_corners(hwnd);
+            if std::env::var_os("FRAMECUT_CAPTURABLE_UI").is_none()
+                && let Err(e) = platform_window::exclude_from_capture(hwnd)
+            {
+                log::warn!("could not exclude the thumbnail from capture: {e:#}");
+            }
+        }
+        let generation = state.thumbnail_generation.get() + 1;
+        state.thumbnail_generation.set(generation);
+        if let Some(previous) = state.thumbnail.replace(Some(card)) {
+            previous.close(cx);
+        }
+
+        while let Some(event) = events.next().await {
+            match event {
+                ThumbnailEvent::Open => {
+                    match file.path(cx).await {
+                        Ok(path) => {
+                            log::info!("thumbnail: opening the screenshot");
+                            cx.update(|cx| cx.open_with_system(&path));
+                        }
+                        Err(e) => log::error!("{e}"),
+                    }
+                    break;
+                }
+                ThumbnailEvent::Drag => match file.path(cx).await {
+                    // A modal loop until the drop; this task is outside any
+                    // GPUI update, so the windows keep working meanwhile.
+                    Ok(path) => match framecut_platform::drag::drag_file(&path) {
+                        Ok(true) => {
+                            log::info!("thumbnail: dropped into another application");
+                            break;
+                        }
+                        Ok(false) => log::info!("thumbnail: drag cancelled"),
+                        Err(e) => log::warn!("thumbnail drag failed: {e:#}"),
+                    },
+                    Err(e) => log::error!("{e}"),
+                },
+                ThumbnailEvent::Close => break,
+            }
+        }
+        // Close it unless a newer thumbnail has replaced it.
+        if state.thumbnail_generation.get() == generation
+            && let Some(card) = state.thumbnail.take()
+        {
+            card.close(cx);
+        }
+    })
+    .detach();
 }
 
 #[cfg(test)]
@@ -489,6 +683,16 @@ mod tests {
             ..settings
         };
         assert!(!auto_save_checked(&tray_menu(&off)));
+    }
+
+    #[test]
+    fn the_thumbnail_sits_above_the_taskbar_at_the_right() {
+        // 150%, work area 3840×2088 (a 72-pixel taskbar), a 16:9 screenshot:
+        // a 240×135 image plus 6 pixels of padding, 16 from the edges.
+        let work = PhysicalRect::new(0, 0, 3840, 2088);
+        let rect = thumbnail_rect(work, 1.5, (3840, 2160));
+        assert_eq!((rect.width, rect.height), (378, 221));
+        assert_eq!((rect.x, rect.y), (3840 - 378 - 24, 2088 - 221 - 24));
     }
 
     #[test]

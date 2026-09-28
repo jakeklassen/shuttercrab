@@ -4,7 +4,7 @@
 use gpui_kit::{AssetSource, SharedString, assets::icon_assets};
 use std::borrow::Cow;
 
-icon_assets!(Extra, [SquareDashed, AppWindow, Monitor, Camera, Video]);
+icon_assets!(Extra, [SquareDashed, AppWindow, Monitor, Camera, Video, X]);
 
 /// Framecut's asset source.
 pub struct Icons;
@@ -39,6 +39,7 @@ mod tests {
             IconName::Monitor,
             IconName::Camera,
             IconName::Video,
+            IconName::X,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

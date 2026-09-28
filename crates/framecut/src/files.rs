@@ -32,6 +32,32 @@ pub fn save_screenshot(dir: &Path, at: NaiveDateTime, png: &[u8]) -> Result<Path
     Ok(path)
 }
 
+/// Where screenshots that were not auto-saved go when the thumbnail needs a
+/// file to open or drag: `%TEMP%\Framecut`.
+pub fn temp_dir() -> PathBuf {
+    std::env::temp_dir().join("Framecut")
+}
+
+/// Delete PNG files in `dir` last written more than `age` ago. Returns how
+/// many were deleted.
+pub fn remove_old(dir: &Path, age: std::time::Duration) -> usize {
+    let Ok(entries) = std::fs::read_dir(dir) else {
+        return 0;
+    };
+    entries
+        .flatten()
+        .filter(|e| e.path().extension().is_some_and(|x| x == "png"))
+        .filter(|e| {
+            e.metadata()
+                .and_then(|m| m.modified())
+                .ok()
+                .and_then(|t| t.elapsed().ok())
+                .is_some_and(|elapsed| elapsed > age)
+        })
+        .filter(|e| std::fs::remove_file(e.path()).is_ok())
+        .count()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -69,6 +95,19 @@ mod tests {
             "Capture 2026-09-22 13-42-18 (3).png"
         );
         assert_eq!(std::fs::read(second).unwrap(), b"two");
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn old_files_are_removed_and_new_ones_kept() {
+        let dir = std::env::temp_dir().join(format!("framecut-old-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let png = save_screenshot(&dir, at(), b"png").unwrap();
+        std::fs::write(dir.join("notes.txt"), b"keep").unwrap();
+        assert_eq!(remove_old(&dir, std::time::Duration::from_secs(3600)), 0);
+        assert!(png.exists());
+        assert_eq!(remove_old(&dir, std::time::Duration::ZERO), 1);
+        assert!(!png.exists() && dir.join("notes.txt").exists());
         std::fs::remove_dir_all(&dir).unwrap();
     }
 }

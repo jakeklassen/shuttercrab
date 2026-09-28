@@ -81,6 +81,14 @@ fn main() {
     if let Some(path) = &settings_path {
         log::info!("settings in {}", path.display());
     }
+    // Screenshots written only for the thumbnail to open or drag.
+    let removed = framecut::files::remove_old(
+        &framecut::files::temp_dir(),
+        std::time::Duration::from_secs(24 * 60 * 60),
+    );
+    if removed > 0 {
+        log::info!("removed {removed} temporary screenshots older than a day");
+    }
 
     let defaults = Settings::default();
     let mut hotkey = |value: &mut String, fallback: &str| match Hotkey::parse(value) {

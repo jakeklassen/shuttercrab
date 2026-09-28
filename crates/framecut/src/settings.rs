@@ -26,6 +26,12 @@ pub struct Settings {
     pub snap_to_windows: bool,
     /// What the Capture Bar offers first: the last target used.
     pub last_target: CaptureTarget,
+    /// Show a thumbnail in the corner after each screenshot.
+    pub show_thumbnail: bool,
+    /// How long the thumbnail stays without the pointer over it.
+    pub thumbnail_seconds: u32,
+    /// Also show a Windows notification after each screenshot.
+    pub notify_after_capture: bool,
 }
 
 impl Default for Settings {
@@ -38,6 +44,9 @@ impl Default for Settings {
             output_dir: None,
             snap_to_windows: true,
             last_target: CaptureTarget::Area,
+            show_thumbnail: true,
+            thumbnail_seconds: 6,
+            notify_after_capture: false,
         }
     }
 }

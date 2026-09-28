@@ -14,3 +14,4 @@ pub mod overlay;
 pub mod popup;
 pub mod selection;
 pub mod settings;
+pub mod thumbnail;

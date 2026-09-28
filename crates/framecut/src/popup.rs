@@ -8,13 +8,13 @@
 
 use framecut_capture::{MonitorInfo, PhysicalRect};
 use framecut_platform::window as platform_window;
-use futures::channel::oneshot;
+use futures::channel::mpsc;
 use gpui_kit::{
     AnyWindowHandle, App, AsyncApp, Bounds, DisplayId, Entity, EventEmitter, Render, Window,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, point, px, size,
 };
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
-use std::{cell::Cell, time::Duration};
+use std::time::Duration;
 
 /// How long a hidden popup lingers before it is removed.
 const REMOVE_DELAY: Duration = Duration::from_millis(100);
@@ -48,20 +48,21 @@ impl Popup {
 }
 
 /// Open a popup covering `rect` (physical, virtual-desktop pixels) on
-/// `monitor`, with the view `build` makes. Returns the popup and the first
-/// event the view emits.
+/// `monitor`, with the view `build` makes. With `activate`, it takes the
+/// keyboard; without, it never does, even when clicked. Returns the popup
+/// and the events the view emits.
 pub fn open<V, E>(
     monitor: &MonitorInfo,
     rect: PhysicalRect,
+    activate: bool,
     cx: &mut AsyncApp,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
-) -> Result<(Popup, oneshot::Receiver<E>), String>
+) -> Result<(Popup, mpsc::UnboundedReceiver<E>), String>
 where
     V: Render + EventEmitter<E>,
     E: Clone + 'static,
 {
-    let (report, outcome) = oneshot::channel::<E>();
-    let report = Cell::new(Some(report));
+    let (report, outcome) = mpsc::unbounded::<E>();
     let scale = monitor.scale_factor;
     let options = WindowOptions {
         window_bounds: Some(WindowBounds::Windowed(Bounds {
@@ -72,7 +73,7 @@ where
             ),
         })),
         titlebar: None,
-        focus: true,
+        focus: activate,
         show: true,
         kind: WindowKind::PopUp,
         is_movable: false,
@@ -86,9 +87,7 @@ where
         .open_window(options, move |window, cx| {
             let view = build(window, cx);
             cx.subscribe(&view, move |_, event: &E, _| {
-                if let Some(report) = report.take() {
-                    let _ = report.send(event.clone());
-                }
+                let _ = report.unbounded_send(event.clone());
             })
             .detach();
             view
@@ -122,7 +121,11 @@ where
                 Ok(_) => {}
                 Err(e) => log::error!("could not read a popup's area: {e:#}"),
             }
-            platform_window::bring_to_front(hwnd);
+            if activate {
+                platform_window::bring_to_front(hwnd);
+            } else {
+                platform_window::never_activate(hwnd);
+            }
         }
         None => log::error!("a popup has no window handle to place"),
     }
