@@ -116,3 +116,41 @@ pub fn round_corners(hwnd: isize) {
         )
     };
 }
+
+/// Keep the window from ever becoming the active window, even when
+/// clicked, so the keyboard stays with the user's application.
+pub fn never_activate(hwnd: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, WS_EX_NOACTIVATE};
+    let hwnd = HWND(hwnd as _);
+    unsafe {
+        let style = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
+        SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize);
+    }
+}
+
+/// The part of monitor `hmonitor` not covered by the taskbar (physical
+/// pixels, virtual-desktop coordinates): x, y, width, height.
+pub fn work_area(hmonitor: u64) -> Option<(i32, i32, u32, u32)> {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    // Physical coordinates, whatever the calling thread's DPI awareness.
+    let previous = unsafe {
+        windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
+            windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+        )
+    };
+    let found = unsafe { GetMonitorInfoW(HMONITOR(hmonitor as _), &mut info) }.as_bool();
+    unsafe { windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(previous) };
+    let r = info.rcWork;
+    (found && r.right > r.left && r.bottom > r.top).then(|| {
+        (
+            r.left,
+            r.top,
+            (r.right - r.left) as u32,
+            (r.bottom - r.top) as u32,
+        )
+    })
+}

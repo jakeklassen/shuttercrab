@@ -6,6 +6,7 @@
 
 mod clipboard;
 mod console;
+pub mod drag;
 mod hotkey;
 pub mod icon;
 mod instance;
