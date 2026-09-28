@@ -1,0 +1,3 @@
+// Framecut's application icon. GPUI loads icon resource 1 for its windows'
+// title bars and taskbar buttons; Explorer and Task Manager use it too.
+1 ICON "assets/framecut.ico"

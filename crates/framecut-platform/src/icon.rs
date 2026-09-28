@@ -69,6 +69,46 @@ pub fn rgba(size: u32) -> Vec<u8> {
     out
 }
 
+/// The sizes Windows asks an application icon for, from the small title-bar
+/// icon to the large Start menu tile.
+pub const ICON_SIZES: [u32; 8] = [16, 20, 24, 32, 40, 48, 64, 256];
+
+/// The icon as a Windows `.ico` file: one PNG-compressed image per size.
+pub fn ico(sizes: &[u32]) -> Vec<u8> {
+    let images: Vec<Vec<u8>> = sizes.iter().map(|&size| png(size)).collect();
+    let mut out = Vec::new();
+    // ICONDIR: reserved, type 1 (icon), count.
+    out.extend_from_slice(&[0, 0, 1, 0]);
+    out.extend_from_slice(&(sizes.len() as u16).to_le_bytes());
+    let mut offset = 6 + 16 * sizes.len() as u32;
+    for (&size, image) in sizes.iter().zip(&images) {
+        // ICONDIRENTRY: width and height (0 means 256), colours, reserved,
+        // planes, bits per pixel, size, offset.
+        let side = if size >= 256 { 0 } else { size as u8 };
+        out.extend_from_slice(&[side, side, 0, 0]);
+        out.extend_from_slice(&1u16.to_le_bytes());
+        out.extend_from_slice(&32u16.to_le_bytes());
+        out.extend_from_slice(&(image.len() as u32).to_le_bytes());
+        out.extend_from_slice(&offset.to_le_bytes());
+        offset += image.len() as u32;
+    }
+    for image in images {
+        out.extend_from_slice(&image);
+    }
+    out
+}
+
+fn png(size: u32) -> Vec<u8> {
+    let mut bytes = Vec::new();
+    let mut encoder = ::png::Encoder::new(&mut bytes, size, size);
+    encoder.set_color(::png::ColorType::Rgba);
+    encoder.set_depth(::png::BitDepth::Eight);
+    let mut writer = encoder.write_header().expect("PNG header");
+    writer.write_image_data(&rgba(size)).expect("PNG data");
+    writer.finish().expect("PNG end");
+    bytes
+}
+
 /// The icon as a Windows `HICON` of `size` × `size`.
 pub(crate) fn hicon(size: u32) -> Result<HICON> {
     if size == 0 {
@@ -128,6 +168,27 @@ mod tests {
         assert_eq!(at(16, 16), [0x1F, 0x6F, 0xEB, 255]);
         // A viewfinder arm near the top-left corner is white.
         assert_eq!(at(9, 7), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn the_committed_app_icon_matches_the_drawing() {
+        // The executable embeds this file (crates/framecut/build.rs). Run
+        // with FRAMECUT_WRITE_ICON=1 to regenerate it after changing the
+        // drawing.
+        let path = std::path::Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../framecut/assets/framecut.ico");
+        let drawn = ico(&ICON_SIZES);
+        if std::env::var_os("FRAMECUT_WRITE_ICON").is_some() {
+            std::fs::write(&path, &drawn).unwrap();
+        }
+        let committed = std::fs::read(&path).expect("crates/framecut/assets/framecut.ico exists");
+        assert!(
+            committed == drawn,
+            "the app icon is out of date; see this test"
+        );
+        // A valid icon directory: type 1, one entry per size, 256 written as 0.
+        assert_eq!(&committed[2..6], [1, 0, 8, 0]);
+        assert_eq!(committed[6 + 16 * 7], 0);
     }
 
     #[test]

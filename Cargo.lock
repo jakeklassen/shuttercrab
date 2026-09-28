@@ -1949,6 +1949,7 @@ dependencies = [
  "anyhow",
  "chrono",
  "dirs 6.0.0",
+ "embed-resource",
  "framecut-capture",
  "framecut-platform",
  "futures",
@@ -1980,6 +1981,7 @@ dependencies = [
  "anyhow",
  "futures",
  "log",
+ "png 0.18.1",
  "windows 0.62.2",
  "windows-core 0.62.2",
 ]
