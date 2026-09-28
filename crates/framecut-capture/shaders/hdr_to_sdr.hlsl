@@ -113,12 +113,26 @@ bool onCodeGrid(float3 c)
     return all(negligible || abs(code - nearest) <= CODE_TOLERANCE || abs(n - decoded) <= CROSS_TALK * top);
 }
 
+// Coverage of a pixel: window captures carry premultiplied alpha at
+// rounded corners and borders. Monitor captures are opaque everywhere.
+float coverage(float4 s)
+{
+    return isnan(s.a) ? 1.0 : saturate(s.a);
+}
+
+// The colour itself, without the coverage.
+float3 straight(float4 s)
+{
+    float a = coverage(s);
+    return a > 0.0 ? s.rgb / a : float3(0.0, 0.0, 0.0);
+}
+
 [numthreads(8, 8, 1)]
 void classify(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= width || id.y >= height)
         return;
-    classesOut[id.xy] = onCodeGrid(source.Load(int3(id.xy, 0)).rgb) ? 1.0 : 0.0;
+    classesOut[id.xy] = onCodeGrid(straight(source.Load(int3(id.xy, 0)))) ? 1.0 : 0.0;
 }
 
 // SDR content: the pixel and its eight neighbours are all SDR code values.
@@ -157,7 +171,7 @@ void tile_stats(uint3 group : SV_GroupID, uint3 thread : SV_GroupThreadID, uint 
     float m = 0.0;
     if (p.x < width && p.y < height)
     {
-        m = peak(normalizeScRgb(source.Load(int3(p, 0)).rgb));
+        m = peak(normalizeScRgb(straight(source.Load(int3(p, 0)))));
         uint ignored;
         if (m > 1.0 + EXTENDED_EPSILON)
             InterlockedAdd(gsExtended, 1, ignored);
@@ -214,7 +228,10 @@ void convert(uint3 id : SV_DispatchThreadID)
 {
     if (id.x >= width || id.y >= height)
         return;
-    float3 n = normalizeScRgb(source.Load(int3(id.xy, 0)).rgb);
+    // Convert the colour itself and keep the coverage.
+    float4 s = source.Load(int3(id.xy, 0));
+    float alpha = coverage(s);
+    float3 n = normalizeScRgb(straight(s));
     if (highlightMode == 0)
     {
         for (uint i = 0; i < regionCount; i++)
@@ -233,5 +250,6 @@ void convert(uint3 id : SV_DispatchThreadID)
     uint r = quantize(srgbEncode(n.r));
     uint g = quantize(srgbEncode(n.g));
     uint b = quantize(srgbEncode(n.b));
-    destination[id.xy] = r | (g << 8) | (b << 16) | (255u << 24);
+    uint a = (uint)round(alpha * 255.0);
+    destination[id.xy] = r | (g << 8) | (b << 16) | (a << 24);
 }

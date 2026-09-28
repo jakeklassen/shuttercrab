@@ -24,8 +24,8 @@ use std::{
     time::Instant,
 };
 use windows::Win32::{
-    Foundation::POINT,
-    Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint},
+    Foundation::{HWND, POINT},
+    Graphics::Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromPoint, MonitorFromWindow},
     System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
     UI::{
         HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
@@ -94,6 +94,8 @@ pub enum CaptureErrorCode {
     DeviceLost,
     InvalidRegion,
     EncodeFailed,
+    /// The window closed, was minimised, or cannot be captured.
+    WindowGone,
 }
 
 /// A capture failure: a stable code, a message for the user, and detail for
@@ -189,7 +191,8 @@ impl Drop for FrozenFrame {
 pub struct Screenshot {
     pub width: u32,
     pub height: u32,
-    /// Tightly packed RGBA8 sRGB, opaque, top row first.
+    /// Tightly packed RGBA8 sRGB, top row first, straight alpha. Opaque,
+    /// except for window captures' rounded corners and borders.
     pub rgba: Vec<u8>,
     /// The same image as an sRGB PNG file.
     pub png: Vec<u8>,
@@ -209,6 +212,7 @@ enum Request {
     Monitors(oneshot::Sender<Result<Vec<MonitorInfo>>>),
     Freeze(MonitorId, oneshot::Sender<Result<FrozenFrame>>),
     Screenshot(u64, PhysicalRect, oneshot::Sender<Result<Screenshot>>),
+    Window(isize, oneshot::Sender<Result<Screenshot>>),
     Release(u64),
 }
 
@@ -281,6 +285,14 @@ impl Capture {
         let (reply, answer) = oneshot::channel();
         self.ask(Request::Screenshot(frame.id, region, reply), answer)
     }
+
+    /// Capture the top-level window `hwnd` directly (PRD §7.3): its own
+    /// content, including parts covered by other windows, converted to SDR
+    /// for the monitor it is mostly on. Rounded corners stay transparent.
+    pub fn capture_window(&self, hwnd: isize) -> impl Future<Output = Result<Screenshot>> + use<> {
+        let (reply, answer) = oneshot::channel();
+        self.ask(Request::Window(hwnd, reply), answer)
+    }
 }
 
 /// The monitor under the pointer. Cheap; no service round trip.
@@ -345,6 +357,9 @@ impl Service {
                 }
                 Request::Screenshot(id, region, reply) => {
                     let _ = reply.send(self.screenshot(id, region));
+                }
+                Request::Window(hwnd, reply) => {
+                    let _ = reply.send(self.capture_window(hwnd));
                 }
                 Request::Release(id) => {
                     self.frames.remove(&id);
@@ -460,6 +475,7 @@ impl Service {
                 let mut bgra = sdr.rgba;
                 for px in bgra.as_chunks_mut::<4>().0 {
                     px.swap(0, 2);
+                    px[3] = 255;
                 }
                 (
                     sdr.width,
@@ -555,6 +571,88 @@ impl Service {
             png,
         })
     }
+
+    fn capture_window(&mut self, hwnd: isize) -> Result<Screenshot> {
+        let started = Instant::now();
+        let window = HWND(hwnd as _);
+        let nearest = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
+        let monitors = display::enumerate().map_err(|e| {
+            CaptureError::new(
+                CaptureErrorCode::CaptureUnavailable,
+                "Could not list monitors",
+                e,
+            )
+        })?;
+        let monitor = monitors
+            .iter()
+            .find(|m| m.hmonitor == nearest)
+            .ok_or_else(|| {
+                CaptureError::new(
+                    CaptureErrorCode::WindowGone,
+                    "The window is not on a monitor",
+                    format!("{hwnd:#x}"),
+                )
+            })?;
+        let white_scale = monitor.white_scale().map_err(|e| {
+            CaptureError::new(
+                CaptureErrorCode::CaptureUnavailable,
+                "Could not read the display's SDR white level",
+                e,
+            )
+        })?;
+        let (gpu, converter) = self.gpu_for(monitor)?;
+        let failed = |e: anyhow::Error| {
+            CaptureError::new(
+                CaptureErrorCode::WindowGone,
+                "Could not capture the window",
+                e,
+            )
+        };
+        let (width, height, rgba) = match monitor.color_mode {
+            ColorMode::Sdr => {
+                let frame =
+                    capture::capture_window(gpu, window, PixelFormat::Bgra8).map_err(failed)?;
+                let bgra = gpu.read_back(&frame.texture).map_err(failed)?;
+                (frame.width, frame.height, unpremultiply_bgra(&bgra))
+            }
+            ColorMode::Wcg | ColorMode::Hdr => {
+                let frame =
+                    capture::capture_window(gpu, window, PixelFormat::Fp16).map_err(failed)?;
+                let sdr = converter
+                    .convert(gpu, &frame.texture, white_scale, Highlights::Tonemap)
+                    .map_err(failed)?;
+                (sdr.width, sdr.height, sdr.rgba)
+            }
+        };
+        let png = encode_png(width, height, &rgba)?;
+        log::debug!(
+            "captured a {width}x{height} window on {} ({}) in {} ms",
+            monitor.device_name,
+            monitor.color_mode.name(),
+            started.elapsed().as_millis()
+        );
+        Ok(Screenshot {
+            width,
+            height,
+            rgba,
+            png,
+        })
+    }
+}
+
+/// Premultiplied BGRA8 (what the compositor delivers) to straight RGBA8.
+pub fn unpremultiply_bgra(bgra: &[u8]) -> Vec<u8> {
+    let mut rgba = Vec::with_capacity(bgra.len());
+    for px in bgra.as_chunks::<4>().0 {
+        let [b, g, r, a] = *px;
+        let straight = |c: u8| match a {
+            0 => 0,
+            255 => c,
+            _ => ((c as u32 * 255 + a as u32 / 2) / a as u32).min(255) as u8,
+        };
+        rgba.extend_from_slice(&[straight(r), straight(g), straight(b), a]);
+    }
+    rgba
 }
 
 fn describe(monitor: &display::Monitor) -> MonitorInfo {
@@ -672,6 +770,16 @@ mod tests {
             PhysicalRect::new(3, 1, 1, 1)
         );
         assert!(PhysicalRect::new(9, 9, 3, 3).clamp_to(4, 2).is_empty());
+    }
+
+    #[test]
+    fn unpremultiplies_window_pixels() {
+        // BGRA: opaque, half-covered 100 (premultiplied to 50), transparent.
+        let bgra = [10, 20, 30, 255, 50, 50, 50, 128, 7, 7, 7, 0];
+        assert_eq!(
+            unpremultiply_bgra(&bgra),
+            [30, 20, 10, 255, 100, 100, 100, 128, 0, 0, 0, 0]
+        );
     }
 
     #[test]

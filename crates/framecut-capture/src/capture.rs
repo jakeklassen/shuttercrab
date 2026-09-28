@@ -1,4 +1,4 @@
-//! One frame of one monitor through Windows.Graphics.Capture.
+//! One frame of a monitor or a window through Windows.Graphics.Capture.
 
 use crate::gpu::Gpu;
 use anyhow::{Context, Result, bail, ensure};
@@ -9,6 +9,7 @@ use windows::{
         DirectX::DirectXPixelFormat,
     },
     Win32::{
+        Foundation::HWND,
         Graphics::{Direct3D11::*, Dxgi::Common::*, Gdi::HMONITOR},
         System::WinRT::{
             Direct3D11::IDirect3DDxgiInterfaceAccess,
@@ -65,15 +66,45 @@ pub fn capture_monitor(gpu: &Gpu, monitor: HMONITOR, format: PixelFormat) -> Res
     let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
     let item: GraphicsCaptureItem =
         unsafe { interop.CreateForMonitor(monitor) }.context("CreateForMonitor failed")?;
+    capture_item(gpu, &item, format, true)
+}
+
+/// Capture one frame of the top-level window `window`, as the window itself
+/// draws it: parts covered by other windows are included. The frame has the
+/// size of the window's visual, which may include transparent margins and
+/// corners. Blocks until the frame arrives (at most five seconds).
+pub fn capture_window(gpu: &Gpu, window: HWND, format: PixelFormat) -> Result<Frame> {
+    ensure!(
+        GraphicsCaptureSession::IsSupported()?,
+        "Windows.Graphics.Capture is not available"
+    );
+    let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+    let item: GraphicsCaptureItem =
+        unsafe { interop.CreateForWindow(window) }.context("CreateForWindow failed")?;
+    capture_item(gpu, &item, format, false)
+}
+
+/// `exact`: fail if the content is not the item's size (a monitor that
+/// changed mode). A window may be resizing; its frame is then cut to the
+/// content that arrived.
+fn capture_item(
+    gpu: &Gpu,
+    item: &GraphicsCaptureItem,
+    format: PixelFormat,
+    exact: bool,
+) -> Result<Frame> {
     let size = item.Size()?;
-    ensure!(size.Width > 0 && size.Height > 0, "the monitor has no area");
+    ensure!(
+        size.Width > 0 && size.Height > 0,
+        "the capture target has no area"
+    );
     let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
         &gpu.winrt_device()?,
         format.winrt(),
         1,
         size,
     )?;
-    let session = match pool.CreateCaptureSession(&item) {
+    let session = match pool.CreateCaptureSession(item) {
         Ok(session) => session,
         Err(e) => {
             let _ = pool.Close();
@@ -101,10 +132,15 @@ pub fn capture_monitor(gpu: &Gpu, monitor: HMONITOR, format: PixelFormat) -> Res
         };
         let copy = (|| {
             let content = frame.ContentSize()?;
-            ensure!(
-                content.Width == size.Width && content.Height == size.Height,
-                "the monitor changed size during capture; try again"
-            );
+            if exact {
+                ensure!(
+                    content.Width == size.Width && content.Height == size.Height,
+                    "the monitor changed size during capture; try again"
+                );
+            }
+            let width = content.Width.min(size.Width) as u32;
+            let height = content.Height.min(size.Height) as u32;
+            ensure!(width > 0 && height > 0, "the frame is empty");
             let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
             let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
             let mut desc = D3D11_TEXTURE2D_DESC::default();
@@ -116,33 +152,29 @@ pub fn capture_monitor(gpu: &Gpu, monitor: HMONITOR, format: PixelFormat) -> Res
                 desc.Format
             );
             // The frame's texture may be larger than the content; keep only
-            // the monitor's area.
-            let texture = gpu.texture(
-                size.Width as u32,
-                size.Height as u32,
-                desc.Format,
-                D3D11_BIND_SHADER_RESOURCE,
-                None,
-            )?;
+            // the content.
+            let texture =
+                gpu.texture(width, height, desc.Format, D3D11_BIND_SHADER_RESOURCE, None)?;
             let region = D3D11_BOX {
                 left: 0,
                 top: 0,
                 front: 0,
-                right: size.Width as u32,
-                bottom: size.Height as u32,
+                right: width,
+                bottom: height,
                 back: 1,
             };
             unsafe {
                 gpu.context
                     .CopySubresourceRegion(&texture, 0, 0, 0, 0, &source, 0, Some(&region))
             };
-            Ok(texture)
+            Ok((texture, width, height))
         })();
         frame.Close()?;
+        let (texture, width, height) = copy?;
         Ok(Frame {
-            texture: copy?,
-            width: size.Width as u32,
-            height: size.Height as u32,
+            texture,
+            width,
+            height,
             border_disabled,
         })
     })();

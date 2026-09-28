@@ -14,5 +14,5 @@ pub mod service;
 
 pub use service::{
     Capture, CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect,
-    Screenshot, monitor_under_pointer,
+    Screenshot, monitor_under_pointer, unpremultiply_bgra,
 };

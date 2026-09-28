@@ -228,3 +228,24 @@ fn sdr_content_beside_hdr_content_stays_exact() {
         assert!(ramp.len() >= 8, "{}", gpu.adapter_name);
     }
 }
+
+#[test]
+fn window_corners_keep_their_coverage() {
+    // Window captures are premultiplied: a half-covered pixel of SDR code
+    // 200 arrives as half its linear value with alpha 0.5. It comes back as
+    // code 200 at alpha 128; a fully transparent pixel stays transparent.
+    let s = 2.5;
+    let v = color::code_to_linear(200) * s;
+    let pixels = [
+        [v * 0.5, v * 0.5, v * 0.5, 0.5],
+        [0.0, 0.0, 0.0, 0.0],
+        [v, v, v, 1.0],
+    ];
+    let row: Vec<[f32; 4]> = pixels.iter().cycle().take(48).copied().collect();
+    for gpu in devices() {
+        let (got, _) = run(&gpu, 48, 1, &row, s, Highlights::Tonemap);
+        assert_eq!(&got[0..4], [200, 200, 200, 128], "{}", gpu.adapter_name);
+        assert_eq!(got[7], 0, "{}", gpu.adapter_name);
+        assert_eq!(&got[8..12], [200, 200, 200, 255], "{}", gpu.adapter_name);
+    }
+}

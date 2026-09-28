@@ -190,7 +190,8 @@ pub struct SdrConverter {
 pub struct SdrFrame {
     pub width: u32,
     pub height: u32,
-    /// Tightly packed RGBA8 sRGB, opaque.
+    /// Tightly packed RGBA8 sRGB with straight alpha: opaque for monitors;
+    /// window captures keep their transparent corners.
     pub rgba: Vec<u8>,
     /// Peak of the frame relative to SDR white. Above 1 means HDR content.
     pub frame_peak: f32,
