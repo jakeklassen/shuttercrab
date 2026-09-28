@@ -9,8 +9,8 @@ use framecut_capture::{Capture, FrozenFrame, monitor_under_pointer};
 use framecut_platform::{Platform, PlatformEvent, window as platform_window};
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver, channel::oneshot};
 use gpui_kit::{
-    App, AppContext as _, AsyncApp, Bounds, DisplayId, WindowBackgroundAppearance, WindowBounds,
-    WindowKind, WindowOptions, point, px, size,
+    App, AppContext as _, AsyncApp, Bounds, DisplayId, QuitMode, WindowBackgroundAppearance,
+    WindowBounds, WindowKind, WindowOptions, point, px, size,
 };
 use raw_window_handle::{HasWindowHandle as _, RawWindowHandle};
 use std::{cell::Cell, rc::Rc, time::Instant};
@@ -26,6 +26,10 @@ pub fn run(
     events: UnboundedReceiver<PlatformEvent>,
     cx: &mut App,
 ) {
+    // The overlay is Framecut's only window. GPUI's default on Windows quits
+    // when the last window closes, which would end the app the moment a
+    // selection finishes, before the clipboard is written.
+    cx.set_quit_mode(QuitMode::Explicit);
     let platform = Rc::new(platform);
     let busy = Rc::new(Cell::new(false));
     cx.spawn(async move |cx| {
@@ -116,6 +120,17 @@ async fn screenshot(
                 let hwnd = win32.hwnd.get();
                 if let Err(e) = platform_window::cover(hwnd, b.x, b.y, b.width, b.height) {
                     eprintln!("framecut: could not place the overlay: {e:#}");
+                }
+                // The selection maps pointer positions onto the frozen frame
+                // assuming the drawable area is exactly the monitor.
+                match platform_window::client_bounds(hwnd) {
+                    Ok(client) if client != (b.x, b.y, b.width, b.height) => {
+                        eprintln!(
+                            "framecut: overlay area {client:?} does not match the monitor {b:?}"
+                        )
+                    }
+                    Ok(_) => {}
+                    Err(e) => eprintln!("framecut: could not read the overlay area: {e:#}"),
                 }
                 platform_window::bring_to_front(hwnd);
             }
