@@ -195,6 +195,23 @@ Acceptance (manual):
 
 ### Step 4: thumbnail, notifications, capture exclusion
 
+Owner's results, 2026-09-28: items 1, 3, 4, 5, 6 pass ("feels pretty good
+overall"; dragging into Claude Code worked). Two bugs, both fixed in
+`ff28e31` and verified live, to retest:
+
+- **2: after hovering, the thumbnail never closed.** GPUI updates an
+  element's hover state only on mouse moves inside the window; once the
+  pointer left, no move arrived and the card stayed "hovered". The
+  countdown now asks Windows where the pointer is (a probe; the headless
+  test reproduces the case with no mouse event). Live: kept while hovered,
+  closed about 5 s after the pointer left.
+- **4: the drag image was sometimes a white square**, the first drag after
+  starting. The Shell drew the file's thumbnail from its cache, not ready
+  for a file written a moment earlier. Framecut now sets the drag image
+  from the screenshot (`IDragSourceHelper::InitializeFromBitmap`). Live:
+  the first drag after a fresh start shows the capture, upright, centred
+  on the pointer.
+
 Decisions:
 
 - **The thumbnail never takes the keyboard** (`WS_EX_NOACTIVATE`, shown
