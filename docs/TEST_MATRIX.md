@@ -307,6 +307,14 @@ checked live, to retest:
 - **The sidebar's section entries only scrolled the page**: sections are
   now headings, and the sidebar lists the three pages.
 
+Retest, 2026-09-28: all pass except Task Manager's Startup apps entry,
+which had a generic icon and the name "framecut.exe". The executable had
+no icon or version information when Windows first saw it, and Windows
+caches both per path: the icon cache (refreshed once the file changed)
+and `MuiCache` (`<path>.FriendlyAppName`, which stays until removed).
+The executable now carries both; the stale `MuiCache` value on the dev
+machine was removed. A released build has them from the start.
+
 Decisions:
 
 - **Built on GPUI Kit's settings component**: a searchable sidebar, pages
