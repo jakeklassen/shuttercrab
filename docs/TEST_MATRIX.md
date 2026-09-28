@@ -290,6 +290,79 @@ Acceptance (manual):
 6. Take two screenshots quickly: the second thumbnail replaces the first.
 7. Say whether the thumbnail's size, position and 6 seconds feel right.
 
+### Step 5: the settings window
+
+Decisions:
+
+- **Built on GPUI Kit's settings component**: a searchable sidebar, pages
+  (General, Screenshot, Diagnostics, as PRD §26 groups them) and groups.
+  It follows the Windows light/dark setting. Every change applies and is
+  saved at once; there is no Save button.
+- **General**: start at sign-in (the per-user `Run` key, which Task
+  Manager's Startup apps page shows too; not stored in `settings.json`),
+  the Capture Bar and area-screenshot hotkeys, copy to the clipboard, save
+  to the folder, and the folder (Change… picks one, Open shows it).
+- **Screenshot**: include the pointer (PRD §15, off by default: the
+  pointer as it was when the hotkey was pressed), snap to window edges,
+  show a thumbnail, how long it stays (3, 6, 10 or 20 seconds), show a
+  notification.
+- **Diagnostics**: version, Windows build, each display (size, scale,
+  HDR / Advanced Color / SDR, SDR white level, GPU), and buttons to open
+  the log folder and the settings file. No tone-mapping controls (§26).
+- **Hotkeys are recorded**, not typed: select the field and press Enter
+  (or click it), then press the new keys; Escape cancels. The global
+  hotkeys are paused meanwhile, so pressing the current one does not start
+  a capture. A hotkey without Ctrl, Alt or Win, the other hotkey, or one
+  another application owns is refused with a message, and the old one is
+  kept. Recording hotkeys arrive with recording.
+- **Opening it**: the tray menu's **Settings…**, and starting Framecut
+  again (from the Start menu, say), which now shows the settings instead
+  of the step 1 "already running" notification.
+- **Keyboard**: Tab and Shift+Tab move between controls, Space and Enter
+  use them, Escape closes the window.
+
+Automated: UI tests (fake hooks) for the hotkeys shown, recording a new
+one (pause, apply, save), a hotkey another application owns (refused,
+old one restored), the other hotkey and a Shift-only one (refused),
+Escape cancelling a recording and then closing the window; key presses to
+hotkeys; the startup entry round trip (under a test name, never
+Framecut's own).
+
+Smoke test (release, scratch data folder), 2026-09-28: starting Framecut
+again opened the window, in front and focused; Escape and the title bar's
+close button both closed it with no errors in the log and Framecut still
+running. Recording Ctrl+Alt+X for the Capture Bar saved it; afterwards
+Ctrl+Alt+C did nothing and Ctrl+Alt+X opened the Capture Bar.
+
+Two problems found on the way, both fixed: the window stayed hidden when
+Framecut was started with a "start hidden" request (the smoke test's);
+it is now shown explicitly. And GPUI's own close path logged errors as
+the window went; Escape and the close button now hide it first and remove
+it a moment later, as the overlay does.
+
+Acceptance (manual):
+
+1. Right-click the tray icon → **Settings…**. The window opens in front.
+2. Press **Tab** a few times: focus moves through the controls. Press
+   **Escape**: the window closes.
+3. Start Framecut again from a second terminal: the settings window
+   opens.
+4. **Hotkeys**: select "Open the Capture Bar", press Enter, press a new
+   shortcut (say Ctrl+Alt+X). Close the window; the new shortcut opens the
+   Capture Bar and the old one does nothing. Try Shift+X, and the other
+   hotkey's keys: both are refused with a message. Set it back.
+5. **Screenshot → Include the pointer**: on. Take a screenshot: the
+   pointer is in it. Turn it off again.
+6. **Thumbnail stays for**: 3 seconds. Take a screenshot: the thumbnail
+   leaves sooner. **Show a notification**: on, take one, see it; off.
+7. **Folder → Change…**: pick another folder; the next screenshot is saved
+   there. Change it back.
+8. **Start Framecut when you sign in**: on. Task Manager → Startup apps
+   lists Framecut. (Turn it off unless you want it.)
+9. **Diagnostics**: your two displays, HDR on, their SDR white levels and
+   the GPU. **Open** next to the log folder opens it.
+10. Say what you think of the window's layout and wording.
+
 ## Milestone 1: area screenshot
 
 Exit criterion (PRD §31): *hotkey → drag → release → paste into
@@ -586,3 +659,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | App UI excluded from capture (§7.6) | Capture Bar and thumbnail: passed locally | Display affinity 0x11 |
 | Post-capture thumbnail: after the clipboard, auto-dismiss, click opens, drag into apps, excluded, never blocks the next capture (§7.6, §32.6) | **Passed: owner, 2026-09-28** | UI tests; drags into Explorer, Telegram, Claude Code |
 | Optional notification after capture (§8, settings) | Built, off by default | `notify_after_capture` |
+| Settings window: General / Screenshot / Diagnostics, keyboard, applies at once (§26) | Passed (headless + smoke); awaits the owner | UI tests; smoke test |
+| Include cursor (§15) | Built, off by default; awaits the owner | `include_cursor` |
+| Launch at sign-in (§26) | Passed (unit, under a test name); awaits the owner | Run key |
+| Diagnostics: monitors, HDR, SDR white, GPU (§26) | Built; awaits the owner | |
