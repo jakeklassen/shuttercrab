@@ -91,10 +91,13 @@ Decisions:
   ignore bitmap alpha. Monitor captures are forced opaque.
 - **Display capture** is Window mode over the desktop (no window under the
   pointer). The Capture Bar (step 3) adds an explicit Display button.
-- **Snapping** pulls each axis of the drag to a window edge or monitor
-  edge within 6 logical pixels, but only edges visible at the pointer: an
-  edge hidden behind a window in front does not pull. On by default
-  (`snap_to_windows` in settings; PRD open question 6).
+- **Snapping** holds each axis of the drag to a window edge or monitor
+  edge: it catches within 10 logical pixels and lets go only beyond 24, and
+  each held side of the selection shows a 3 px blue line. Only edges
+  visible at the pointer count: an edge hidden behind a window in front
+  does not pull. On by default (`snap_to_windows` in settings; PRD open
+  question 6). The first version caught within 6 pixels with no hold; the
+  owner found it too subtle ("a touch stickier"), 2026-09-28.
 
 Automated: hit-testing front to back; snapping (near, far, hidden edges,
 corners, monitor edges); overlay UI tests for Space, hover highlight with
@@ -109,6 +112,13 @@ capture 60 ms on the capture thread). A drag starting 4 px right and 3 px
 below Calculator's corner snapped to it. The direct capture and the frozen
 screen's cut of the same pixels are **identical** in all 30,471 opaque
 pixels compared (HDR on), so window capture uses the same colour transform.
+
+Owner's results, 2026-09-28: items 2, 3 (a partly covered terminal came
+out whole, without the windows in front), 6 pass; 7: keep transparent
+corners (the terminal paste showed white corners because it reads the
+bitmap; the saved PNGs have them transparent); 4: there was no desktop to
+click with windows covering the screen, so Display waits for the Capture
+Bar; 5: works but too subtle, now stickier and visible, to retest.
 
 Acceptance (manual):
 

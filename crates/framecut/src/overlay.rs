@@ -6,7 +6,9 @@
 //! overlay only reports what the user chose; the app closes it and takes
 //! the screenshot.
 
-use crate::selection::{Drag, ScreenWindow, dimensions, snap, to_logical, window_at};
+use crate::selection::{
+    Drag, ScreenWindow, Snapping, Stuck, dimensions, snap, to_logical, window_at,
+};
 use framecut_capture::PhysicalRect;
 use gpui_kit::{
     Bounds, Context, CursorStyle, EventEmitter, FocusHandle, Hsla, InteractiveElement as _,
@@ -17,8 +19,10 @@ use gpui_kit::{
 };
 use std::sync::Arc;
 
-/// Edges within this many logical pixels of the pointer pull the selection.
-const SNAP_DISTANCE: f32 = 6.0;
+/// An edge catches the pointer within this many logical pixels…
+const SNAP_CATCH: f32 = 10.0;
+/// …and holds it until the pointer is this far away.
+const SNAP_RELEASE: f32 = 24.0;
 
 /// The frozen monitor as the overlay shows it.
 #[derive(Clone)]
@@ -83,6 +87,9 @@ pub struct SelectionOverlay {
     snap: bool,
     mode: Mode,
     drag: Option<Drag>,
+    /// The edges the drag's start and end are held to.
+    start_stuck: Stuck,
+    end_stuck: Stuck,
     dragging: bool,
     /// Where the pointer went down in Window mode.
     pressed: bool,
@@ -111,6 +118,8 @@ impl SelectionOverlay {
             snap: false,
             mode: Mode::Area,
             drag: None,
+            start_stuck: Stuck::default(),
+            end_stuck: Stuck::default(),
             dragging: false,
             pressed: false,
             focus,
@@ -136,21 +145,49 @@ impl SelectionOverlay {
             .filter(|r| !r.is_empty())
     }
 
-    /// A pointer position, snapped to window and monitor edges if enabled.
-    fn snapped(&self, position: Point<Pixels>) -> Point<Pixels> {
+    /// A pointer position held to window and monitor edges, if snapping is
+    /// on, and the edges it is held to. `held` is what held it before.
+    fn snapped(&self, position: Point<Pixels>, held: Stuck) -> (Point<Pixels>, Stuck) {
         if !self.snap {
-            return position;
+            return (position, Stuck::default());
         }
         let scale = self.frame.scale;
-        let (x, y) = snap(
+        let (x, y) = (f32::from(position.x) * scale, f32::from(position.y) * scale);
+        let snapping = Snapping {
+            catch: SNAP_CATCH * scale,
+            release: SNAP_RELEASE * scale,
+        };
+        let stuck = snap(
             &self.windows,
-            f32::from(position.x) * scale,
-            f32::from(position.y) * scale,
-            SNAP_DISTANCE * scale,
+            x,
+            y,
+            held,
+            snapping,
             self.frame.width,
             self.frame.height,
         );
-        point(px(x / scale), px(y / scale))
+        let (x, y) = stuck.apply(x, y);
+        (point(px(x / scale), px(y / scale)), stuck)
+    }
+
+    /// Which sides of the selection are held to an edge: left, top, right,
+    /// bottom.
+    fn snapped_sides(&self) -> [bool; 4] {
+        let Some(d) = self.drag else {
+            return [false; 4];
+        };
+        let (s, e) = (self.start_stuck, self.end_stuck);
+        let (left, right) = if d.start.x <= d.end.x {
+            (s.x, e.x)
+        } else {
+            (e.x, s.x)
+        };
+        let (top, bottom) = if d.start.y <= d.end.y {
+            (s.y, e.y)
+        } else {
+            (e.y, s.y)
+        };
+        [left, top, right, bottom].map(|side| side.is_some())
     }
 
     /// What Window mode would capture at `position` (logical pixels).
@@ -208,7 +245,10 @@ impl SelectionOverlay {
     fn on_left_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         match self.mode {
             Mode::Area => {
-                self.drag = Some(Drag::at(self.snapped(event.position)));
+                let (start, stuck) = self.snapped(event.position, Stuck::default());
+                self.drag = Some(Drag::at(start));
+                self.start_stuck = stuck;
+                self.end_stuck = Stuck::default();
                 self.dragging = true;
             }
             Mode::Window => self.pressed = true,
@@ -220,7 +260,8 @@ impl SelectionOverlay {
         match self.mode {
             Mode::Area => {
                 if self.dragging {
-                    let end = self.snapped(event.position);
+                    let (end, stuck) = self.snapped(event.position, self.end_stuck);
+                    self.end_stuck = stuck;
                     if let Some(drag) = &mut self.drag {
                         drag.end = end;
                     }
@@ -239,7 +280,8 @@ impl SelectionOverlay {
                     return;
                 }
                 self.dragging = false;
-                let end = self.snapped(event.position);
+                let (end, stuck) = self.snapped(event.position, self.end_stuck);
+                self.end_stuck = stuck;
                 if let Some(drag) = &mut self.drag {
                     drag.end = end;
                 }
@@ -333,6 +375,35 @@ impl SelectionOverlay {
             .child(text)
     }
 
+    /// A 3-pixel accent line on each side of the selection `b` that is held
+    /// to an edge, so the user can see snapping take hold.
+    fn snap_markers(&self, b: Bounds<Pixels>) -> Vec<impl IntoElement> {
+        let thick = px(3.);
+        let (x, y, w, h) = (b.origin.x, b.origin.y, b.size.width, b.size.height);
+        let sides = [
+            ("snapped-left", x - px(1.), y, thick, h),
+            ("snapped-top", x, y - px(1.), w, thick),
+            ("snapped-right", x + w - px(2.), y, thick, h),
+            ("snapped-bottom", x, y + h - px(2.), w, thick),
+        ];
+        sides
+            .into_iter()
+            .zip(self.snapped_sides())
+            .filter(|(_, held)| *held)
+            .map(|((id, left, top, width, height), _)| {
+                div()
+                    .id(id)
+                    .test_support()
+                    .absolute()
+                    .left(left)
+                    .top(top)
+                    .w(width)
+                    .h(height)
+                    .bg(accent())
+            })
+            .collect()
+    }
+
     /// A short hint at the top: what the mouse does and how to switch.
     fn hint(&self, window: &Window) -> impl IntoElement {
         let text: SharedString = match self.mode {
@@ -418,6 +489,7 @@ impl Render for SelectionOverlay {
                                 .border_1()
                                 .border_color(gpui_kit::white()),
                         )
+                        .children(self.snap_markers(b))
                         .child(Self::label("dimensions", label, b, window));
                 }
             }

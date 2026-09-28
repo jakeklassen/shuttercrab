@@ -11,8 +11,8 @@ use framecut::{
 };
 use framecut_capture::PhysicalRect;
 use gpui_kit::{
-    App, AppContext as _, InputEvent as _, MouseMoveEvent, Pixels, Point, TestAppContext, Window,
-    WindowHandle, point, px, size, test::TestWindowExt as _,
+    App, AppContext as _, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
+    Point, TestAppContext, Window, WindowHandle, point, px, size, test::TestWindowExt as _,
 };
 use std::{cell::RefCell, rc::Rc};
 
@@ -289,4 +289,72 @@ fn area_selections_snap_to_window_edges(cx: &mut TestAppContext) {
             152, 149, 295, 148
         ))]
     );
+}
+
+fn press_at(window: &mut Window, position: Point<Pixels>, cx: &mut App) {
+    window.dispatch_event(
+        MouseDownEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Default::default(),
+            click_count: 1,
+            first_mouse: false,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+fn drag_to(window: &mut Window, position: Point<Pixels>, cx: &mut App) {
+    window.dispatch_event(
+        MouseMoveEvent {
+            position,
+            pressed_button: Some(MouseButton::Left),
+            modifiers: Default::default(),
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+#[gpui_kit::test]
+fn a_snapped_edge_holds_until_dragged_well_away_and_shows_it(cx: &mut TestAppContext) {
+    // At 150%, the window's right edge is at logical 300 (physical 450).
+    // The drag starts free at logical (20, 20), physical (30, 30).
+    let windows = vec![win(1, 150, 150, 300, 150)];
+    let opened = open_with(cx, (400.0, 300.0), 1.5, windows, true);
+    update(cx, &opened, |window, cx| {
+        press_at(window, point(px(20.0), px(20.0)), cx);
+        drag_to(window, point(px(250.0), px(150.0)), cx);
+    });
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "dimensions").as_deref(), Some("345 × 195"));
+        assert!(window.try_find("snapped-right").is_none());
+    });
+    // Within 10 logical pixels, the edge catches the selection…
+    update(cx, &opened, |window, cx| {
+        drag_to(window, point(px(292.0), px(150.0)), cx)
+    });
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "dimensions").as_deref(), Some("420 × 195"));
+        assert!(window.try_find("snapped-right").is_some());
+        assert!(window.try_find("snapped-bottom").is_none());
+    });
+    // …holds it 20 logical pixels away…
+    update(cx, &opened, |window, cx| {
+        drag_to(window, point(px(280.0), px(150.0)), cx)
+    });
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "dimensions").as_deref(), Some("420 × 195"));
+    });
+    // …and lets go beyond 24.
+    update(cx, &opened, |window, cx| {
+        drag_to(window, point(px(270.0), px(150.0)), cx)
+    });
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "dimensions").as_deref(), Some("375 × 195"));
+        assert!(window.try_find("snapped-right").is_none());
+    });
 }
