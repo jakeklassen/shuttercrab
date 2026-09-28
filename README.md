@@ -14,7 +14,8 @@ The specification is [docs/PRD.md](docs/PRD.md).
 - **Milestone 2** (screenshot workflow) is in progress. Step 1 of 6
   (tray icon, settings, log file, auto-save, single instance) passed its
   acceptance test on 2026-09-27. Step 2 (window and display capture, Space
-  toggle, snapping) passed on 2026-09-28.
+  toggle, snapping) passed on 2026-09-28. Step 3 (the Capture Bar) is
+  built and awaiting its test.
 
 Documentation:
 
@@ -35,7 +36,8 @@ Framecut runs in the tray with no window. Only one copy runs at a time.
 
 | Keys | Does |
 |---|---|
-| **Ctrl+Alt+S** or click the tray icon | Freeze the monitor under the pointer; drag an area; release to copy it. Edges snap to nearby windows |
+| **Ctrl+Alt+C** or click the tray icon | Open the Capture Bar: **A**rea, **W**indow or **D**isplay (click, arrow keys and Enter, or the letter). It starts on your last choice |
+| **Ctrl+Alt+S** | Straight to an area: freeze the monitor under the pointer, drag, release to copy. Edges snap to nearby windows |
 | **Space** while selecting | Switch to Window mode: click a window to capture it, or the desktop for the whole display. Space again returns to Area |
 | Escape or right-click | Cancel the selection |
 | Right-click the tray icon | Open the screenshots folder, turn saving on or off, quit |

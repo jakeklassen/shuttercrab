@@ -143,6 +143,53 @@ Acceptance (manual):
 7. Say whether the transparent corners are what you want, or whether you
    would rather have square corners filled with what was behind the window.
 
+### Step 3: the Capture Bar
+
+Decisions:
+
+- **Hotkeys.** The Capture Bar has its own hotkey, **Ctrl+Alt+C**
+  (`capture_bar_hotkey`); **Ctrl+Alt+S** stays the direct area screenshot
+  the owner already uses (PRD §7.1: one master hotkey plus optional direct
+  ones). A tray click now opens the Capture Bar, the primary entry point;
+  the tray menu has both.
+- **Placement.** 312×132 logical pixels, centred 24 pixels below the top of
+  the monitor under the pointer, like Snipping Tool's toolbar. Rounded
+  corners (DWM), and excluded from capture (`WDA_EXCLUDEFROMCAPTURE`), so it
+  can never appear in a screenshot. `FRAMECUT_CAPTURABLE_UI=1` keeps it
+  capturable, for screenshots of Framecut itself.
+- **Keyboard.** Arrows and Tab move, Enter or Space takes the selection,
+  A / W / D choose directly, Escape closes. Losing focus closes it too.
+- **Memory.** It opens on the last target used (`last_target`), so Enter
+  repeats the last kind of capture (PRD §7.5).
+- **Display** captures the monitor at once, with no overlay.
+- **Record** is shown, disabled and marked "soon", until Milestone 3.
+
+Automated: UI tests for opening on the last target, arrows/Tab wrapping,
+letters, clicking a target, Escape (and nothing after it), losing focus;
+the bar's physical rectangle; the tray menu; the embedded icons.
+
+Smoke test (release, scratch data folder), 2026-09-28: Ctrl+Alt+C shows
+the bar 20–33 ms after the hotkey, 468×198 physical at (1686, 36) on the
+150% monitor, focused, display affinity `WDA_EXCLUDEFROMCAPTURE`. D gave a
+3840×2160 PNG 145 ms later, `last_target` became `display`, and Enter
+repeated it. Escape closed the bar with nothing captured. A tray click
+opened it; W went to the overlay in Window mode.
+
+Acceptance (manual):
+
+1. Press **Ctrl+Alt+C**. The Capture Bar appears at the top of the monitor
+   your pointer is on.
+2. Click **Display**. The whole monitor is copied (and saved).
+3. Press **Ctrl+Alt+C** again: Display is highlighted (remembered). Press
+   **←** to Window, **Enter**: Window mode, click a window.
+4. Press **Ctrl+Alt+C**, then **A**: straight into an area selection.
+5. Press **Ctrl+Alt+C**, then click somewhere else on the screen: the bar
+   closes. Again with **Escape**.
+6. Click the tray icon: the bar opens. Right-click it: the menu lists
+   **Capture Bar** and **Screenshot an area** with their hotkeys.
+7. **Ctrl+Alt+S** still goes straight to an area selection.
+8. Say what you think of the bar's look and placement.
+
 ## Milestone 1: area screenshot
 
 Exit criterion (PRD §31): *hotkey → drag → release → paste into
@@ -435,3 +482,5 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Window capture via `CreateForWindow`, same colour as the screen (§7.3) | Passed locally | 693×801 Calculator; identical to the frozen cut |
 | Display screenshot (§8.1) | **Passed: owner, 2026-09-28** | Desktop click in Window mode |
 | Boundary snapping (§7.2) | **Passed: owner, 2026-09-28** | Catch 10, release 24 logical px; blue side markers |
+| Capture Bar: master hotkey, Area / Window / Display, keyboard, remembers the last target, closes on start (§7.5, §32.6) | Passed (headless + smoke); awaits the owner | UI tests; smoke test |
+| App UI excluded from capture (§7.6) | Capture Bar: passed locally | Display affinity 0x11 |
