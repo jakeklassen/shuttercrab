@@ -10,6 +10,7 @@ pub mod drag;
 mod hotkey;
 pub mod icon;
 mod instance;
+pub mod startup;
 pub mod targets;
 pub mod window;
 

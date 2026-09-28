@@ -168,3 +168,12 @@ pub fn cursor_position() -> Option<(i32, i32)> {
     unsafe { windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(previous) };
     found.then_some((point.x, point.y))
 }
+
+/// Show the window normally and bring it to the front. A launcher's "start
+/// hidden" or "start minimised" applies to a process's first window shown
+/// the usual way; this overrides it.
+pub fn show_normal(hwnd: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    let _ = unsafe { ShowWindow(HWND(hwnd as _), SW_SHOWNORMAL) };
+    bring_to_front(hwnd);
+}
