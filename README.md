@@ -9,7 +9,7 @@ The specification is [docs/PRD.md](docs/PRD.md).
 ## Status
 
 - **Milestone 0** (prove HDR-to-SDR color correctness) passed on 2026-09-27.
-- **Milestone 1** (area screenshot MVP) is ready for acceptance testing:
+- **Milestone 1** (area screenshot MVP) passed its acceptance test on 2026-09-27:
   hotkey → drag → release → paste.
 
 Documentation:

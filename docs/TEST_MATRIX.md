@@ -1,7 +1,7 @@
 # Test matrix
 
-Milestone 1 (area screenshot) is ready for acceptance testing; see
-[Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
+Milestone 1 (area screenshot) **passed** the owner's acceptance test on
+2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
 captures](#retaking-captures)). The project owner confirmed the
 pass the same day, and Milestone 1 began. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
@@ -293,7 +293,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | SDR monitor path (§9.5) | Passed | HDR off: FP16 path and 8-bit capture identical |
 | Advanced Color SDR (WCG) hardware | Not available | `S = 1` from the SDK's description |
 | 125/150/200% scaling, second monitor (§32.3) | Milestone 5 | |
-| **Milestone 1: hotkey → drag → release → paste (§31)** | **Pending: owner's acceptance test** | [Acceptance](#acceptance-manual) |
+| **Milestone 1: hotkey → drag → release → paste (§31)** | **Passed: owner's acceptance, 2026-09-27** | Three screenshots in one session; clipboard 18–34 ms after release; overlay 90–171 ms after the hotkey; both monitors; Escape and right-click cancel; quit; HDR on vs off pastes match (VS Code, mean ΔE00 0.022 on downscaled copies) |
 | Background app, no window until invoked | Passed locally | Smoke test: no window before the hotkey |
 | Global screenshot hotkey; conflict reported | Passed locally | Live test; smoke test |
 | Frozen overlay on the monitor under the pointer, exact bounds, focused | Passed locally | Client area (0,0) 3840×2160, foreground; regression test in `framecut-platform` |
