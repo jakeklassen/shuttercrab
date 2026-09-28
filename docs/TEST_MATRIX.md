@@ -1,6 +1,6 @@
 # Test matrix
 
-Milestone 2 (screenshot workflow) is in progress, steps 1 and 2 of 6 accepted; see [Milestone
+Milestone 2 (screenshot workflow) is in progress, steps 1–3 of 6 accepted; see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
 2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
@@ -144,6 +144,9 @@ Acceptance (manual):
    would rather have square corners filled with what was behind the window.
 
 ### Step 3: the Capture Bar
+
+**Passed**: the owner ran all eight acceptance steps on 2026-09-28 ("I
+really like being able to drive it all via keyboard").
 
 Decisions:
 
@@ -482,5 +485,5 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Window capture via `CreateForWindow`, same colour as the screen (§7.3) | Passed locally | 693×801 Calculator; identical to the frozen cut |
 | Display screenshot (§8.1) | **Passed: owner, 2026-09-28** | Desktop click in Window mode |
 | Boundary snapping (§7.2) | **Passed: owner, 2026-09-28** | Catch 10, release 24 logical px; blue side markers |
-| Capture Bar: master hotkey, Area / Window / Display, keyboard, remembers the last target, closes on start (§7.5, §32.6) | Passed (headless + smoke); awaits the owner | UI tests; smoke test |
+| Capture Bar: master hotkey, Area / Window / Display, keyboard, remembers the last target, closes on start (§7.5, §32.6) | **Passed: owner, 2026-09-28** | UI tests; smoke test; all eight acceptance steps |
 | App UI excluded from capture (§7.6) | Capture Bar: passed locally | Display affinity 0x11 |

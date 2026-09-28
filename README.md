@@ -14,8 +14,8 @@ The specification is [docs/PRD.md](docs/PRD.md).
 - **Milestone 2** (screenshot workflow) is in progress. Step 1 of 6
   (tray icon, settings, log file, auto-save, single instance) passed its
   acceptance test on 2026-09-27. Step 2 (window and display capture, Space
-  toggle, snapping) passed on 2026-09-28. Step 3 (the Capture Bar) is
-  built and awaiting its test.
+  toggle, snapping) passed on 2026-09-28. Step 3 (the Capture Bar) passed on
+  2026-09-28.
 
 Documentation:
 
