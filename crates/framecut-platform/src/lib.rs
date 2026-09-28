@@ -5,10 +5,12 @@
 #![cfg(windows)]
 
 mod clipboard;
+mod console;
 mod hotkey;
 pub mod window;
 
 pub use clipboard::dibv5;
+pub use console::attach_to_parent_terminal;
 pub use hotkey::Hotkey;
 
 use anyhow::{Context, Result, anyhow};

@@ -11,6 +11,10 @@ const SCREENSHOT: &str = "Ctrl+Alt+S";
 const QUIT: &str = "Ctrl+Alt+Shift+Q";
 
 fn main() {
+    // Release builds have no console; print to the terminal that started us.
+    #[cfg(not(debug_assertions))]
+    framecut_platform::attach_to_parent_terminal();
+
     let capture = match Capture::start() {
         Ok(capture) => capture,
         Err(e) => {
