@@ -1,6 +1,6 @@
 # Test matrix
 
-Milestone 2 (screenshot workflow) is in progress, step 1 of 6 accepted; see [Milestone
+Milestone 2 (screenshot workflow) is in progress, steps 1 and 2 of 6 accepted; see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
 2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
@@ -74,6 +74,9 @@ Acceptance (manual):
 
 ### Step 2: window and display capture, Space toggle, snapping
 
+**Passed**: the owner accepted it on 2026-09-28 after retesting the
+stickier snapping ("good for now, we can always tweak it later").
+
 Decisions:
 
 - **Window capture is direct** (PRD §7.3): `CreateForWindow`, so covered
@@ -118,7 +121,9 @@ out whole, without the windows in front), 6 pass; 7: keep transparent
 corners (the terminal paste showed white corners because it reads the
 bitmap; the saved PNGs have them transparent); 4: there was no desktop to
 click with windows covering the screen, so Display waits for the Capture
-Bar; 5: works but too subtle, now stickier and visible, to retest.
+Bar; 5: works but too subtle, now stickier and visible. Retest passed; a
+desktop click captured the whole monitor with its windows, as intended
+(a Display screenshot).
 
 Acceptance (manual):
 
@@ -426,7 +431,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Settings on disk, survive a broken file | Passed (unit) | |
 | Log file (§28) | Passed locally | Version, Windows build, monitors, timings; no errors |
 | Single instance | Passed locally | Second launch exits 0; the first notifies |
-| Space toggles Area ↔ Window; window hover highlight (§7.3, §32.6) | Passed (headless + smoke); awaits the owner | UI tests; smoke test |
+| Space toggles Area ↔ Window; window hover highlight (§7.3, §32.6) | **Passed: owner, 2026-09-28** | UI tests; smoke test |
 | Window capture via `CreateForWindow`, same colour as the screen (§7.3) | Passed locally | 693×801 Calculator; identical to the frozen cut |
-| Display screenshot (§8.1) | Passed (headless); awaits the owner | UI test: desktop click |
-| Boundary snapping (§7.2) | Passed (unit + headless + smoke) | Drag snapped to Calculator's corner |
+| Display screenshot (§8.1) | **Passed: owner, 2026-09-28** | Desktop click in Window mode |
+| Boundary snapping (§7.2) | **Passed: owner, 2026-09-28** | Catch 10, release 24 logical px; blue side markers |
