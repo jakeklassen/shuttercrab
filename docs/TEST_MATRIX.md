@@ -1,6 +1,7 @@
 # Test matrix
 
-Milestone 1 (area screenshot) **passed** the owner's acceptance test on
+Milestone 2 (screenshot workflow) is in progress; see [Milestone
+2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
 2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
 captures](#retaking-captures)). The project owner confirmed the
@@ -19,6 +20,55 @@ mise exec -- cargo test
 
 `cargo test` includes GPU golden tests. They run on WARP (software, so they
 work anywhere) and on the hardware adapter when there is one.
+
+## Milestone 2: screenshot workflow
+
+Milestone 2 is built in six steps, each tried and approved by the owner: (1)
+tray, settings, log file, auto-save, single instance; (2) window and display
+capture, Space toggle, snapping; (3) the Capture Bar; (4) thumbnail,
+notifications, capture exclusion; (5) the settings window; (6) hardening and
+an HDR video test of the highlight curve.
+
+### Step 1: tray, settings, log file, auto-save, single instance
+
+Automated: settings round trip, defaults for missing fields, a broken file
+kept as `settings.json.bad`; file names and ` (2)` suffixes; the tray icon
+drawing and `HICON` at tray sizes; the tray menu following the settings;
+the single-instance mutex; a second instance reaching the first.
+
+Smoke test (release build, `FRAMECUT_DATA_DIR` pointing at a scratch
+folder so the owner's settings are untouched), 2026-09-27: the tray window
+exists; the hotkey and a tray click each put a screenshot on the clipboard
+and a file in the folder (clipboard 2–3 ms, file 11 ms after release); a
+second launch exits with code 0 and the first logs the signal and keeps
+running; Escape cancels; the quit hotkey ends the app; the log has no
+errors.
+
+The new log file showed two errors GPUI had been logging unseen since
+Milestone 1: moving the overlay inside GPUI's `open_window` callback
+(`RefCell already borrowed`, so GPUI missed the new bounds), and destroying
+the overlay before GPUI handled its deactivation (`window not found`). The
+overlay is now placed after `open_window` returns and hidden before it is
+removed.
+
+Acceptance (manual):
+
+1. Start it: `mise exec -- cargo run --release -p framecut`. The Framecut
+   icon (blue square, white corners) appears in the tray, possibly under the
+   `^` overflow; drag it onto the taskbar to keep it visible. On the first
+   run a notification says Framecut is running.
+2. Press **Ctrl+Alt+S**, drag, release. Paste: the screenshot is there.
+3. Right-click the tray icon → **Open screenshots folder**. Explorer opens
+   `Pictures\Framecut` with `Capture <date> <time>.png`.
+4. Left-click the tray icon: the overlay appears (after a short pause so the
+   tray closes first). Drag; a second file appears.
+5. Right-click the tray icon → uncheck **Save screenshots to the folder**.
+   Take a screenshot: it pastes, but no new file appears. Check it again.
+6. Start Framecut a second time from another terminal. It exits at once and
+   the running one shows "Framecut is already running".
+7. Right-click the tray icon → **Quit Framecut**. The icon disappears.
+8. The log is `%LOCALAPPDATA%\Framecut\logs\framecut.log` and settings are
+   `%APPDATA%\Framecut\settings.json`.
 
 ## Milestone 1: area screenshot
 
@@ -303,3 +353,8 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Crop and PNG from the frozen, converted frame | Passed locally | Live service test |
 | Clipboard as PNG + bitmap, retry on contention (§11) | Passed (unit); live test opt-in | Owner's paste test is the real check |
 | Overlay within ~150 ms (§22.2) | Passed locally | 130 ms, release build, 4K HDR |
+| Tray icon and menu; left click takes a screenshot (§7.1) | Passed locally; menu awaits the owner | Smoke test (tray click) |
+| Auto-save to `Pictures/Framecut`, unique names (§12) | Passed locally | Unit tests; smoke test: two files |
+| Settings on disk, survive a broken file | Passed (unit) | |
+| Log file (§28) | Passed locally | Version, Windows build, monitors, timings; no errors |
+| Single instance | Passed locally | Second launch exits 0; the first notifies |

@@ -11,6 +11,8 @@ The specification is [docs/PRD.md](docs/PRD.md).
 - **Milestone 0** (prove HDR-to-SDR color correctness) passed on 2026-09-27.
 - **Milestone 1** (area screenshot MVP) passed its acceptance test on 2026-09-27:
   hotkey → drag → release → paste.
+- **Milestone 2** (screenshot workflow) is in progress. Step 1 of 6 is built:
+  tray icon, settings, log file, auto-save, single instance.
 
 Documentation:
 
@@ -27,15 +29,25 @@ Documentation:
 mise exec -- cargo run --release -p framecut
 ```
 
-Framecut runs in the background with no window.
+Framecut runs in the tray with no window. Only one copy runs at a time.
 
 | Keys | Does |
 |---|---|
-| **Ctrl+Alt+S** | Freeze the monitor under the pointer; drag an area; release to copy it |
+| **Ctrl+Alt+S** or click the tray icon | Freeze the monitor under the pointer; drag an area; release to copy it |
 | Escape or right-click | Cancel the selection |
-| **Ctrl+Alt+Shift+Q** | Quit (until the tray icon arrives in Milestone 2) |
+| Right-click the tray icon | Open the screenshots folder, turn saving on or off, quit |
+| Ctrl+Alt+Shift+Q | Quit (for development) |
 
 The screenshot is on the clipboard as PNG and as a bitmap; paste it anywhere.
+It is also saved to `Pictures\Framecut` as `Capture YYYY-MM-DD HH-MM-SS.png`.
+
+| File | Where |
+|---|---|
+| Settings | `%APPDATA%\Framecut\settings.json` |
+| Log (this run, and the previous one) | `%LOCALAPPDATA%\Framecut\logs` |
+
+Setting `FRAMECUT_DATA_DIR` keeps settings and logs in that folder instead,
+for testing.
 
 ## Setup
 
