@@ -1,6 +1,7 @@
 # Test matrix
 
-Milestone 2 (screenshot workflow) is in progress, steps 1–5 of 6 accepted; see [Milestone
+Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
+steps by 2026-09-28 (sleep and wake left for the owner to try later); see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
 2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
