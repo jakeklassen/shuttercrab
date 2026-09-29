@@ -19,7 +19,7 @@ The specification is [docs/PRD.md](docs/PRD.md).
   passed on 2026-09-28. Step 5 (the settings window) passed on
   2026-09-28. Step 6 (hardening, HDR video) passed on 2026-09-28; sleep and
   wake is left for the owner to try.
-- **Milestone 3** (video technical spike) is built and awaiting its test:
+- **Milestone 3** (video technical spike) passed on 2026-09-29:
   `capture-spike record` writes H.264 MP4 through the GPU pipeline.
 
 Documentation:

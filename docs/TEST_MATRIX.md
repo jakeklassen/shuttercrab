@@ -1,5 +1,6 @@
 # Test matrix
 
+Milestone 3 (video technical spike) is **complete** (2026-09-29).
 Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
 steps by 2026-09-28 (sleep and wake left for the owner to try later); see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
@@ -23,6 +24,12 @@ mise exec -- cargo test
 work anywhere) and on the hardware adapter when there is one.
 
 ## Milestone 3: video technical spike
+
+**Passed**: the owner watched the 60-second test recording (plays
+smoothly, colours right, no stall at the pause) and recorded their own
+screen, 2026-09-29. Their recording: 20.0 s, 30 fps once the screen
+moved, largest frame-to-frame change in mean brightness 2.4 of 255 (no
+pumping).
 
 Exit criterion (PRD Milestone 3): a 60-second recording that plays
 correctly, has the correct duration, has stable colours, shows no
