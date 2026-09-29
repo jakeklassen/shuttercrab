@@ -1,7 +1,7 @@
 # Test matrix
 
-Milestone 4 (area recording MVP) is in progress: step 1 is ready for the
-owner to try. Milestone 3 (video technical spike) is **complete** (2026-09-29).
+Milestone 4 (area recording MVP) is in progress: step 1 passed on
+2026-09-29. Milestone 3 (video technical spike) is **complete** (2026-09-29).
 Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
 steps by 2026-09-28 (sleep and wake left for the owner to try later); see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
@@ -34,6 +34,10 @@ Recording settings (pointer, 30/60 fps, countdown, folder); (4) hardening:
 30 minutes without memory growth, no Framecut UI in the output.
 
 ### Step 1: start and stop
+
+**Passed**: the owner ran all seven acceptance steps on 2026-09-29. Their
+three recordings (an area and two displays): 28.7–29.5 fps on average, the
+most 30, 0 dropped, hardware encoder, no `.partial` files left.
 
 Automated: the Capture Bar's Record mode (R and S switch modes, Window is
 passed over and cannot be chosen, the last mode is remembered, clicking
