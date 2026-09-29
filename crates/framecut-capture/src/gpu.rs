@@ -277,6 +277,42 @@ impl SdrConverter {
         mode: Highlights,
         anchor: Anchor,
     ) -> Result<SdrFrame> {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { source.GetDesc(&mut desc) };
+        let output = gpu.texture(
+            desc.Width,
+            desc.Height,
+            DXGI_FORMAT_R32_UINT,
+            D3D11_BIND_UNORDERED_ACCESS,
+            None,
+        )?;
+        let analysis = self.convert_into(gpu, source, white_scale, mode, &output, |a| {
+            anchor_regions(&mut a.regions, &a.tiles, a.tiles_x, anchor)
+        })?;
+        // R32_UINT packs r | g << 8 | b << 16 | a << 24, so the little-endian
+        // bytes are already RGBA.
+        Ok(SdrFrame {
+            width: desc.Width,
+            height: desc.Height,
+            rgba: gpu.read_back(&output)?,
+            frame_peak: analysis.frame_peak,
+            regions: analysis.regions,
+        })
+    }
+
+    /// Convert `source` into `output`, a texture of the same size with a
+    /// 32-bit format (`R32_UINT`, or `R8G8B8A8_TYPELESS` to keep the frame on
+    /// the GPU for video), without reading it back. `anchor` sets each
+    /// region's `peak` after the analysis passes, before the conversion.
+    pub fn convert_into(
+        &self,
+        gpu: &Gpu,
+        source: &ID3D11Texture2D,
+        white_scale: f32,
+        mode: Highlights,
+        output: &ID3D11Texture2D,
+        anchor: impl FnOnce(&mut Analysis),
+    ) -> Result<Analysis> {
         ensure!(
             white_scale.is_finite() && white_scale > 0.0,
             "invalid SDR white scale {white_scale}"
@@ -297,13 +333,14 @@ impl SdrConverter {
             D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
             None,
         )?;
-        let output = gpu.texture(
-            width,
-            height,
-            DXGI_FORMAT_R32_UINT,
-            D3D11_BIND_UNORDERED_ACCESS,
-            None,
-        )?;
+        let mut out_desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { output.GetDesc(&mut out_desc) };
+        ensure!(
+            (out_desc.Width, out_desc.Height) == (width, height),
+            "the output is {}x{}, the source {width}x{height}",
+            out_desc.Width,
+            out_desc.Height
+        );
         let tile_count = tiles_x * tiles_y;
         let stats = structured_buffer(gpu, tile_count, size_of::<GpuTileStat>() as u32)?;
         let stats_uav = buffer_uav(gpu, &stats, tile_count)?;
@@ -369,8 +406,15 @@ impl SdrConverter {
             })
             .collect();
         let frame_peak = tiles.iter().fold(0.0f32, |a, t| a.max(t.peak));
-        let mut regions = find_regions(&tiles, tiles_x, tiles_y);
-        anchor_regions(&mut regions, &tiles, tiles_x, anchor);
+        let regions = find_regions(&tiles, tiles_x, tiles_y);
+        let mut analysis = Analysis {
+            tiles,
+            tiles_x,
+            regions,
+            frame_peak,
+        };
+        anchor(&mut analysis);
+        let regions = &analysis.regions;
         let mut region_params = RegionParams {
             count: regions.len() as u32,
             unused: [0; 3],
@@ -386,7 +430,7 @@ impl SdrConverter {
         pass(
             &self.convert,
             [Some(source_srv), None],
-            [None, Some(uav(gpu, &output)?), None],
+            [None, Some(packed_uav(gpu, output)?), None],
             [Some(params), Some(region_buffer)],
             (width.div_ceil(8), height.div_ceil(8)),
         );
@@ -395,16 +439,36 @@ impl SdrConverter {
             ctx.CSSetShaderResources(0, Some(&[None, None]));
             ctx.CSSetShader(None, None);
         }
-        // R32_UINT packs r | g << 8 | b << 16 | a << 24, so the little-endian
-        // bytes are already RGBA.
-        Ok(SdrFrame {
-            width,
-            height,
-            rgba: gpu.read_back(&output)?,
-            frame_peak,
-            regions,
-        })
+        Ok(analysis)
     }
+}
+
+/// What the analysis passes found in a frame: the per-tile summary and the
+/// HDR regions built from it.
+pub struct Analysis {
+    pub tiles: Vec<TileStats>,
+    pub tiles_x: u32,
+    pub regions: Vec<HdrRegion>,
+    /// Peak of the frame relative to SDR white. Above 1 means HDR content.
+    pub frame_peak: f32,
+}
+
+/// An `R32_UINT` view of a 32-bit texture, for the packed RGBA the convert
+/// pass writes. D3D11 allows it on `R8G8B8A8_TYPELESS` too.
+fn packed_uav(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11UnorderedAccessView> {
+    let desc = D3D11_UNORDERED_ACCESS_VIEW_DESC {
+        Format: DXGI_FORMAT_R32_UINT,
+        ViewDimension: D3D11_UAV_DIMENSION_TEXTURE2D,
+        Anonymous: D3D11_UNORDERED_ACCESS_VIEW_DESC_0 {
+            Texture2D: D3D11_TEX2D_UAV { MipSlice: 0 },
+        },
+    };
+    let mut view = None;
+    unsafe {
+        gpu.device
+            .CreateUnorderedAccessView(texture, Some(&desc), Some(&mut view))?
+    };
+    view.context("no R32_UINT view of the output")
 }
 
 fn constant_buffer<T>(gpu: &Gpu, value: &T) -> Result<ID3D11Buffer> {
