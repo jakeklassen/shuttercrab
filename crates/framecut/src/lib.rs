@@ -13,6 +13,7 @@ pub mod icons;
 pub mod logging;
 pub mod overlay;
 pub mod popup;
+pub mod record_bar;
 pub mod recording;
 pub mod selection;
 pub mod settings;

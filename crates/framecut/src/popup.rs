@@ -1,6 +1,6 @@
-//! Framecut's borderless popup windows (the selection overlay and the
-//! Capture Bar): opened at an exact physical rectangle, topmost and
-//! focused, and reporting one event from their view.
+//! Framecut's borderless popup windows (the selection overlay, the Capture
+//! Bar, the thumbnail and the recording controls): opened at an exact
+//! physical rectangle, topmost, and reporting the events of their view.
 //!
 //! GPUI places windows in logical pixels and gives popups a frame; the
 //! platform layer then makes the window a true borderless popup at the
@@ -18,6 +18,18 @@ use std::time::Duration;
 
 /// How long a hidden popup lingers before it is removed.
 const REMOVE_DELAY: Duration = Duration::from_millis(100);
+
+/// When a popup takes the keyboard.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Activation {
+    /// At once, in front of everything (the overlay, the Capture Bar).
+    Take,
+    /// Not when it appears, but when it is clicked (the recording
+    /// controls: the app being recorded keeps the keyboard until then).
+    OnClick,
+    /// Never, even when clicked (the thumbnail).
+    Never,
+}
 
 /// An open popup.
 pub struct Popup {
@@ -48,13 +60,13 @@ impl Popup {
 }
 
 /// Open a popup covering `rect` (physical, virtual-desktop pixels) on
-/// `monitor`, with the view `build` makes. With `activate`, it takes the
-/// keyboard; without, it never does, even when clicked. Returns the popup
+/// `monitor`, with the view `build` makes, taking the keyboard as
+/// `activation` says. Returns the popup
 /// and the events the view emits.
 pub fn open<V, E>(
     monitor: &MonitorInfo,
     rect: PhysicalRect,
-    activate: bool,
+    activation: Activation,
     cx: &mut AsyncApp,
     build: impl FnOnce(&mut Window, &mut App) -> Entity<V> + 'static,
 ) -> Result<(Popup, mpsc::UnboundedReceiver<E>), String>
@@ -73,7 +85,7 @@ where
             ),
         })),
         titlebar: None,
-        focus: activate,
+        focus: activation == Activation::Take,
         show: true,
         kind: WindowKind::PopUp,
         is_movable: false,
@@ -115,10 +127,10 @@ where
                 Ok(_) => {}
                 Err(e) => log::error!("could not read a popup's area: {e:#}"),
             }
-            if activate {
-                platform_window::bring_to_front(hwnd);
-            } else {
-                platform_window::never_activate(hwnd);
+            match activation {
+                Activation::Take => platform_window::bring_to_front(hwnd),
+                Activation::OnClick => {}
+                Activation::Never => platform_window::never_activate(hwnd),
             }
         }
         None => log::error!("a popup has no window handle to place"),

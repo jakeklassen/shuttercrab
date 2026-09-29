@@ -126,19 +126,19 @@ pub struct CaptureBar {
 
 impl EventEmitter<CaptureBarEvent> for CaptureBar {}
 
-fn surface() -> Hsla {
+pub(crate) fn surface() -> Hsla {
     rgb(0x202020).into()
 }
 
-fn tile() -> Hsla {
+pub(crate) fn tile() -> Hsla {
     rgb(0x2B2B2B).into()
 }
 
-fn muted() -> Hsla {
+pub(crate) fn muted() -> Hsla {
     rgb(0x9D9D9D).into()
 }
 
-fn accent() -> Hsla {
+pub(crate) fn accent() -> Hsla {
     rgb(0x1F6FEB).into()
 }
 
@@ -334,7 +334,7 @@ impl CaptureBar {
 }
 
 /// The red of a recording in progress.
-fn recording() -> Hsla {
+pub(crate) fn recording() -> Hsla {
     rgb(0xE5484D).into()
 }
 

@@ -18,7 +18,9 @@ use crate::{
     capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent, CaptureMode, CaptureTarget},
     files,
     overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
-    popup, recording,
+    popup::{self, Activation},
+    record_bar::{RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent},
+    recording::{self, Clock},
     selection::ScreenWindow,
     settings::{self, Settings},
     settings_window::{Diagnostics, Hooks, SettingsWindow},
@@ -34,7 +36,7 @@ use framecut_platform::{
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, AsyncApp, BackgroundExecutor, Bounds, QuitMode,
+    AnyWindowHandle, App, AppContext as _, AsyncApp, BackgroundExecutor, Bounds, Entity, QuitMode,
     TitlebarOptions, WindowBounds, WindowKind, WindowOptions,
     component::{Root, Theme},
     px, size,
@@ -207,10 +209,38 @@ struct State {
 
 /// A recording in progress.
 struct Recording {
-    recorder: Recorder,
+    /// `None` only while Restart swaps in a new one.
+    recorder: Option<Recorder>,
     /// Where the finished file goes; until then it is written to
     /// [`files::partial_path`] of it.
     path: PathBuf,
+    /// What is recorded, for Restart.
+    options: RecordOptions,
+    /// The output length so far, shared with the controls.
+    clock: Rc<Cell<Clock>>,
+    /// The recording controls, if they are on screen.
+    controls: Option<Controls>,
+}
+
+/// The recording controls' window and view.
+struct Controls {
+    popup: popup::Popup,
+    view: Entity<RecordBar>,
+}
+
+impl Recording {
+    /// Redraw the controls after the clock changed.
+    fn refresh_controls(&self, cx: &mut AsyncApp) {
+        if let Some(controls) = &self.controls {
+            controls.view.update(cx, |_, cx| cx.notify());
+        }
+    }
+
+    fn close_controls(&mut self, cx: &mut AsyncApp) {
+        if let Some(controls) = self.controls.take() {
+            controls.popup.close(cx);
+        }
+    }
 }
 
 impl State {
@@ -326,9 +356,15 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                     // A recording running at quit is kept, finished as if
                     // stopped.
                     let recording = state.recording.take();
-                    if let Some(recording) = recording {
+                    if let Some(Recording {
+                        recorder: Some(recorder),
+                        path,
+                        ..
+                    }) = recording
+                    {
                         log::info!("finishing the recording before quitting");
-                        report_recording(&state, finish_recording(recording, cx).await);
+                        let finished = finish_recording(recorder, path, cx).await;
+                        report_recording(&state, finished);
                     }
                     log::info!("quitting");
                     cx.update(|cx| cx.quit());
@@ -519,18 +555,18 @@ async fn capture_bar(
     pressed: Instant,
     cx: &mut AsyncApp,
 ) -> Result<(), Failure> {
-    let monitors = state.capture.list_monitors().await?;
-    let info = monitors
-        .into_iter()
-        .find(|m| m.id == monitor)
-        .ok_or_else(|| Failure::plain("The monitor under the pointer is gone."))?;
+    let info = monitor_info(state, monitor).await?;
     let (mode, target) = {
         let settings = state.settings.borrow();
         (settings.last_mode, settings.last_target)
     };
-    let (bar, outcome) = popup::open(&info, bar_rect(&info), true, cx, move |window, cx| {
-        cx.new(|cx| CaptureBar::new(target, window, cx).with_mode(mode))
-    })
+    let (bar, outcome) = popup::open(
+        &info,
+        bar_rect(&info),
+        Activation::Take,
+        cx,
+        move |window, cx| cx.new(|cx| CaptureBar::new(target, window, cx).with_mode(mode)),
+    )
     .map_err(|e| Failure::new("Could not open the Capture Bar.", e))?;
     if let Some(hwnd) = bar.hwnd() {
         platform_window::round_corners(hwnd);
@@ -571,13 +607,30 @@ async fn capture_bar(
 
 /// Keep one of Framecut's windows out of screenshots and recordings (PRD
 /// §13.6). FRAMECUT_CAPTURABLE_UI leaves them capturable, for screenshots
-/// of Framecut itself.
-fn exclude_from_capture(hwnd: isize, what: &str) {
-    if std::env::var_os("FRAMECUT_CAPTURABLE_UI").is_none()
-        && let Err(e) = platform_window::exclude_from_capture(hwnd)
-    {
-        log::warn!("could not exclude the {what} from capture: {e:#}");
+/// of Framecut itself. Returns whether Windows confirmed the exclusion (or
+/// it was left out on purpose).
+fn exclude_from_capture(hwnd: isize, what: &str) -> bool {
+    if std::env::var_os("FRAMECUT_CAPTURABLE_UI").is_some() {
+        return true;
     }
+    match platform_window::exclude_from_capture(hwnd) {
+        Ok(()) => true,
+        Err(e) => {
+            log::warn!("could not exclude the {what} from capture: {e:#}");
+            false
+        }
+    }
+}
+
+/// What Framecut knows of `monitor`.
+async fn monitor_info(state: &State, monitor: MonitorId) -> Result<MonitorInfo, Failure> {
+    state
+        .capture
+        .list_monitors()
+        .await?
+        .into_iter()
+        .find(|m| m.id == monitor)
+        .ok_or_else(|| Failure::plain("The monitor under the pointer is gone."))
 }
 
 /// Capture `target` on `monitor`.
@@ -651,18 +704,24 @@ async fn select(
         info.scale_factor,
         frame.preview_bgra().to_vec(),
     );
-    let (overlay, outcome) = popup::open(&info, info.bounds, true, cx, move |window, cx| {
-        cx.new(|cx| {
-            let overlay = SelectionOverlay::new(overlay_frame, window, cx)
-                .with_windows(windows, snap_to_windows)
-                .with_mode(mode);
-            if recording {
-                overlay.for_recording()
-            } else {
-                overlay
-            }
-        })
-    })
+    let (overlay, outcome) = popup::open(
+        &info,
+        info.bounds,
+        Activation::Take,
+        cx,
+        move |window, cx| {
+            cx.new(|cx| {
+                let overlay = SelectionOverlay::new(overlay_frame, window, cx)
+                    .with_windows(windows, snap_to_windows)
+                    .with_mode(mode);
+                if recording {
+                    overlay.for_recording()
+                } else {
+                    overlay
+                }
+            })
+        },
+    )
     .map_err(|e| Failure::new("Could not open the selection screen.", e))?;
     // A screenshot's own screen is frozen before the overlay appears, but a
     // recording may be running (PRD §13.5), or about to start as it goes.
@@ -680,8 +739,12 @@ async fn select(
     Ok(event)
 }
 
+/// The recording controls' distance from the recorded area, logical pixels.
+const CONTROLS_GAP: f32 = 12.0;
+
 /// Record `target` on `monitor`: choose the area on a frozen frame of it,
-/// then start the recorder. It runs until [`stop_recording`].
+/// show the controls, then start the recorder. It runs until
+/// [`stop_recording`] or [`discard_recording`].
 async fn record(
     state: &Rc<State>,
     target: CaptureTarget,
@@ -693,11 +756,11 @@ async fn record(
         log::info!("already recording; the new request is ignored");
         return Ok(());
     }
-    let region = match target {
-        CaptureTarget::Display => None,
+    let (region, info) = match target {
+        CaptureTarget::Display => (None, monitor_info(state, monitor).await?),
         CaptureTarget::Area | CaptureTarget::Window => {
             let frame = state.capture.freeze_monitor(monitor, false).await?;
-            match select(state, &frame, Mode::Area, true, pressed, cx).await? {
+            let region = match select(state, &frame, Mode::Area, true, pressed, cx).await? {
                 OverlayEvent::Selected(rect) => Some(rect),
                 OverlayEvent::Display => None,
                 OverlayEvent::Window { visible, .. } => Some(visible),
@@ -705,10 +768,18 @@ async fn record(
                     log::info!("recording cancelled");
                     return Ok(());
                 }
-            }
+            };
+            (region, frame.monitor().clone())
         }
     };
     let chosen = Instant::now();
+    let clock = Rc::new(Cell::new(Clock::new(chosen)));
+    // The controls come first, so they are excluded before the first frame.
+    let (controls, requests) = match open_controls(&info, region, clock.clone(), cx) {
+        Some((controls, requests)) => (Some(controls), Some(requests)),
+        None => (None, None),
+    };
+
     let settings = state.settings.borrow().clone();
     let dir = settings.recording_dir();
     let (fps, include_cursor) = (settings.record_fps(), settings.record_cursor);
@@ -732,13 +803,22 @@ async fn record(
                 include_cursor,
                 path: files::partial_path(&path),
             };
-            let recorder = Recorder::start(options).map_err(|e| {
+            let recorder = Recorder::start(options.clone()).map_err(|e| {
                 Failure::new("Could not start recording.", format!("recorder: {e:#}"))
             })?;
-            Ok::<_, Failure>(Recording { recorder, path })
+            Ok::<_, Failure>((recorder, path, options))
         })
         .await
-        .map_err(Failure::of_recording)?;
+        .map_err(Failure::of_recording);
+    let (recorder, path, options) = match started {
+        Ok(started) => started,
+        Err(failure) => {
+            if let Some(controls) = controls {
+                controls.popup.close(cx);
+            }
+            return Err(failure);
+        }
+    };
     log::info!(
         "recording {} at {fps} fps, {} ms after the choice",
         match region {
@@ -747,34 +827,256 @@ async fn record(
         },
         chosen.elapsed().as_millis()
     );
-    state.recording.replace(Some(started));
+    clock.set(Clock::new(Instant::now()));
+    let recording = Recording {
+        recorder: Some(recorder),
+        path,
+        options,
+        clock,
+        controls,
+    };
+    recording.refresh_controls(cx);
+    state.recording.replace(Some(recording));
     state.refresh_tray_menu();
+    if let Some(requests) = requests {
+        handle_controls(state.clone(), requests, cx);
+    }
     Ok(())
+}
+
+/// Show the recording controls next to `region` (physical pixels relative
+/// to the monitor; `None` for all of it), excluded from capture. If
+/// Windows cannot exclude them and they would cover the region, they are
+/// not shown (PRD §16); the hotkey and the tray still stop the recording.
+fn open_controls(
+    info: &MonitorInfo,
+    region: Option<PhysicalRect>,
+    clock: Rc<Cell<Clock>>,
+    cx: &mut AsyncApp,
+) -> Option<(Controls, UnboundedReceiver<RecordBarEvent>)> {
+    let (b, scale) = (info.bounds, info.scale_factor);
+    let recorded = framecut_capture::record::recordable(region, b.width, b.height);
+    let recorded = PhysicalRect::new(
+        b.x + recorded.x,
+        b.y + recorded.y,
+        recorded.width,
+        recorded.height,
+    );
+    let work = platform_window::work_area(info.id.0)
+        .map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h))
+        .unwrap_or(b);
+    let size = (
+        (RECORD_BAR_WIDTH * scale).round() as u32,
+        (RECORD_BAR_HEIGHT * scale).round() as u32,
+    );
+    let gap = (CONTROLS_GAP * scale).round() as u32;
+    let (rect, covers) = recording::controls_rect(work, recorded, size, gap);
+
+    let view = Rc::new(RefCell::new(None));
+    let slot = view.clone();
+    let opened = popup::open(info, rect, Activation::OnClick, cx, move |window, cx| {
+        let bar = cx.new(|cx| RecordBar::new(clock, window, cx));
+        slot.replace(Some(bar.clone()));
+        bar
+    });
+    let (popup, requests) = match opened {
+        Ok(opened) => opened,
+        Err(e) => {
+            log::error!("could not show the recording controls: {e}");
+            return None;
+        }
+    };
+    let view = view.take()?;
+    let excluded = match popup.hwnd() {
+        Some(hwnd) => {
+            platform_window::round_corners(hwnd);
+            exclude_from_capture(hwnd, "recording controls")
+        }
+        None => false,
+    };
+    if !excluded && covers {
+        log::warn!("the recording controls would be recorded; recording without them");
+        popup.close(cx);
+        return None;
+    }
+    log::info!(
+        "recording controls at {},{} ({}, {})",
+        rect.x,
+        rect.y,
+        if covers {
+            "over the area"
+        } else {
+            "outside the area"
+        },
+        if excluded {
+            "excluded from capture"
+        } else {
+            "not excluded"
+        }
+    );
+    Some((Controls { popup, view }, requests))
+}
+
+/// Do what the recording controls ask until they close.
+fn handle_controls(
+    state: Rc<State>,
+    mut requests: UnboundedReceiver<RecordBarEvent>,
+    cx: &mut AsyncApp,
+) {
+    cx.spawn(async move |cx| {
+        while let Some(request) = requests.next().await {
+            match request {
+                RecordBarEvent::TogglePause => toggle_pause(&state, cx),
+                RecordBarEvent::Stop => stop_recording(&state, cx),
+                RecordBarEvent::Restart => restart_recording(&state, cx).await,
+                RecordBarEvent::Discard => discard_recording(&state, cx),
+            }
+            if state.recording.borrow().is_none() {
+                break;
+            }
+        }
+    })
+    .detach();
+}
+
+/// Pause the recording, or resume it if it is paused.
+fn toggle_pause(state: &State, cx: &mut AsyncApp) {
+    let recording = state.recording.borrow();
+    let Some(recording) = recording.as_ref() else {
+        return;
+    };
+    let Some(recorder) = &recording.recorder else {
+        return;
+    };
+    let (mut clock, now) = (recording.clock.get(), Instant::now());
+    if clock.is_paused() {
+        recorder.resume();
+        clock.resume(now);
+        log::info!("recording resumed");
+    } else {
+        recorder.pause();
+        clock.pause(now);
+        log::info!(
+            "recording paused at {}",
+            recording::clock(clock.elapsed(now))
+        );
+    }
+    recording.clock.set(clock);
+    recording.refresh_controls(cx);
+}
+
+/// Take the recording in progress and its recorder, closing the controls.
+/// `None` if there is none, or while a restart is swapping recorders.
+fn end_recording(state: &State, cx: &mut AsyncApp) -> Option<(Recorder, PathBuf)> {
+    let mut slot = state.recording.borrow_mut();
+    if slot.as_ref()?.recorder.is_none() {
+        log::info!("the recording is restarting; the request is ignored");
+        return None;
+    }
+    let mut recording = slot.take()?;
+    drop(slot);
+    recording.close_controls(cx);
+    state.refresh_tray_menu();
+    Some((recording.recorder?, recording.path))
 }
 
 /// Stop the recording in progress, finish its file, and say where it is.
 fn stop_recording(state: &Rc<State>, cx: &mut AsyncApp) {
-    let Some(recording) = state.recording.take() else {
+    let Some((recorder, path)) = end_recording(state, cx) else {
         return;
     };
-    state.refresh_tray_menu();
     let state = state.clone();
     cx.spawn(async move |cx| {
-        let result = finish_recording(recording, cx).await;
+        let result = finish_recording(recorder, path, cx).await;
         report_recording(&state, result);
     })
     .detach();
 }
 
-/// Stop `recording` and move the file to its final name, off the main
-/// thread. On failure, the unfinished file is deleted: it cannot be played.
+/// Stop the recording in progress and delete it: no file is left (PRD
+/// §7.7).
+fn discard_recording(state: &Rc<State>, cx: &mut AsyncApp) {
+    let Some((recorder, path)) = end_recording(state, cx) else {
+        return;
+    };
+    cx.background_executor()
+        .spawn(async move {
+            let partial = files::partial_path(&path);
+            if let Err(e) = recorder.stop() {
+                log::warn!("the discarded recording did not stop cleanly: {e:#}");
+            }
+            match std::fs::remove_file(&partial) {
+                Ok(()) => log::info!("recording discarded"),
+                Err(e) => log::error!("could not delete {}: {e}", partial.display()),
+            }
+        })
+        .detach();
+}
+
+/// Throw away what has been recorded and start again with the same area
+/// and settings (PRD §7.7).
+async fn restart_recording(state: &Rc<State>, cx: &mut AsyncApp) {
+    let taken = state.recording.borrow_mut().as_mut().and_then(|recording| {
+        let recorder = recording.recorder.take()?;
+        Some((recorder, recording.options.clone()))
+    });
+    let Some((recorder, options)) = taken else {
+        return;
+    };
+    let restarted = cx
+        .background_executor()
+        .spawn(async move {
+            if let Err(e) = recorder.stop() {
+                log::warn!("the restarted recording did not stop cleanly: {e:#}");
+            }
+            let _ = std::fs::remove_file(&options.path);
+            Recorder::start(options)
+        })
+        .await;
+    let mut slot = state.recording.borrow_mut();
+    match (restarted, slot.as_mut()) {
+        (Ok(recorder), Some(recording)) => {
+            recording.recorder = Some(recorder);
+            recording.clock.set(Clock::new(Instant::now()));
+            recording.refresh_controls(cx);
+            log::info!("recording restarted");
+        }
+        // Framecut quit while restarting: the new recording is not wanted.
+        (Ok(recorder), None) => {
+            drop(slot);
+            cx.background_executor()
+                .spawn(async move {
+                    if let Ok(summary) = recorder.stop() {
+                        let _ = std::fs::remove_file(summary.path);
+                    }
+                })
+                .detach();
+        }
+        (Err(e), _) => {
+            let recording = slot.take();
+            drop(slot);
+            if let Some(mut recording) = recording {
+                recording.close_controls(cx);
+            }
+            state.refresh_tray_menu();
+            let failure = Failure::new("Could not restart recording.", format!("restart: {e:#}"))
+                .of_recording();
+            log::error!("{}", failure.detail);
+            state.notify(failure.title(), failure.message, None);
+        }
+    }
+}
+
+/// Stop `recorder` and move the file to `path`, its final name, off the
+/// main thread. On failure, the unfinished file is deleted: it cannot be
+/// played.
 async fn finish_recording(
-    recording: Recording,
+    recorder: Recorder,
+    path: PathBuf,
     cx: &mut AsyncApp,
 ) -> Result<RecordingSummary, Failure> {
     cx.background_executor()
         .spawn(async move {
-            let Recording { recorder, path } = recording;
             let partial = files::partial_path(&path);
             let summary = recorder.stop().and_then(|summary| {
                 std::fs::rename(&partial, &path)?;
@@ -1067,7 +1369,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
                     && y < rect.y + rect.height as i32
             })
         };
-        let opened = popup::open(&monitor, rect, false, cx, move |_, cx| {
+        let opened = popup::open(&monitor, rect, Activation::Never, cx, move |_, cx| {
             cx.new(|cx| Thumbnail::new(image, seconds, cx).with_pointer_probe(Box::new(over)))
         });
         let (card, mut events) = match opened {

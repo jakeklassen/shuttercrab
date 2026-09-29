@@ -1,10 +1,23 @@
 //! The icons Framecut draws, embedded: GPUI Kit's component icons plus the
-//! few Lucide icons the Capture Bar uses.
+//! few Lucide icons the Capture Bar and the recording controls use.
 
 use gpui_kit::{AssetSource, SharedString, assets::icon_assets};
 use std::borrow::Cow;
 
-icon_assets!(Extra, [SquareDashed, AppWindow, Monitor, Camera, Video, X]);
+icon_assets!(
+    Extra,
+    [
+        SquareDashed,
+        AppWindow,
+        Monitor,
+        Camera,
+        Video,
+        X,
+        Square,
+        RotateCcw,
+        Trash
+    ]
+);
 
 /// Framecut's asset source.
 pub struct Icons;
@@ -32,7 +45,7 @@ mod tests {
     use gpui_kit::assets::IconName;
 
     #[test]
-    fn the_capture_bar_icons_are_embedded() {
+    fn the_icons_framecut_draws_are_embedded() {
         for icon in [
             IconName::SquareDashed,
             IconName::AppWindow,
@@ -40,6 +53,12 @@ mod tests {
             IconName::Camera,
             IconName::Video,
             IconName::X,
+            IconName::Square,
+            IconName::RotateCcw,
+            IconName::Trash,
+            IconName::Pause,
+            IconName::Play,
+            IconName::Ellipsis,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

@@ -92,13 +92,21 @@ pub fn hide(hwnd: isize) {
 /// Leave the window out of every screen capture, Framecut's own and other
 /// applications' (PRD §7.6): it is simply not there in the captured image.
 pub fn exclude_from_capture(hwnd: isize) -> Result<()> {
-    unsafe {
-        windows::Win32::UI::WindowsAndMessaging::SetWindowDisplayAffinity(
-            HWND(hwnd as _),
-            windows::Win32::UI::WindowsAndMessaging::WDA_EXCLUDEFROMCAPTURE,
-        )
-    }
-    .context("SetWindowDisplayAffinity failed")
+    use windows::Win32::UI::WindowsAndMessaging::{
+        GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
+    };
+    unsafe { SetWindowDisplayAffinity(HWND(hwnd as _), WDA_EXCLUDEFROMCAPTURE) }
+        .context("SetWindowDisplayAffinity failed")?;
+    // PRD §13.6: check what Windows applied. Before Windows 10 2004 the
+    // call succeeds with WDA_MONITOR instead, which shows a black box.
+    let mut applied = 0;
+    unsafe { GetWindowDisplayAffinity(HWND(hwnd as _), &mut applied) }
+        .context("GetWindowDisplayAffinity failed")?;
+    anyhow::ensure!(
+        applied == WDA_EXCLUDEFROMCAPTURE.0,
+        "display affinity is {applied:#x}, not WDA_EXCLUDEFROMCAPTURE"
+    );
+    Ok(())
 }
 
 /// Give a borderless window Windows 11's rounded corners.
