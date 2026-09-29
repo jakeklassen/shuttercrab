@@ -1,9 +1,15 @@
 //! The recording controls (PRD §16): a small bar near the recorded area
 //! with the elapsed time, Pause/Resume, Stop, and a ⋯ menu with Restart
-//! and Discard. It never takes the keyboard when it appears; once clicked,
-//! P or Space pauses, S stops, and M opens the menu, where R restarts, D
-//! discards and Escape goes back. The two destructive actions always take
-//! two steps. The bar only reports what was asked; the app does it.
+//! and Discard.
+//!
+//! The bar never takes the keyboard by itself: the app being recorded
+//! keeps it, so typing is never mistaken for a command. Its hints show the
+//! global chords, which work from anywhere while recording. Once the bar
+//! is clicked it has the keyboard, and its hints switch to letters: P or
+//! Space pauses, S stops, and M opens the menu, where R restarts, D
+//! discards and Escape goes back; clicking elsewhere hands the keyboard
+//! back. The two destructive actions always take two steps. The bar only
+//! reports what was asked; the app does it.
 
 use crate::{
     capture_bar::{muted, recording, surface, tile},
@@ -30,8 +36,16 @@ pub enum RecordBarEvent {
     Discard,
 }
 
+/// The global chords that work while recording, as the settings spell
+/// them (`Ctrl+Alt+P`).
+#[derive(Clone, Debug)]
+pub struct RecordKeys {
+    pub pause: String,
+    pub stop: String,
+}
+
 /// The bar's size in logical pixels.
-pub const RECORD_BAR_WIDTH: f32 = 360.0;
+pub const RECORD_BAR_WIDTH: f32 = 440.0;
 pub const RECORD_BAR_HEIGHT: f32 = 48.0;
 
 /// How often the time is redrawn.
@@ -47,16 +61,33 @@ pub struct RecordBar {
     clock: Rc<Cell<Clock>>,
     /// Showing Restart and Discard instead of Pause and Stop.
     menu: bool,
+    /// Whether the bar has the keyboard, so the letters work.
+    active: bool,
+    keys: RecordKeys,
     focus: FocusHandle,
 }
 
 impl EventEmitter<RecordBarEvent> for RecordBar {}
 
 impl RecordBar {
-    pub fn new(clock: Rc<Cell<Clock>>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+    pub fn new(
+        clock: Rc<Cell<Clock>>,
+        keys: RecordKeys,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let focus = cx.focus_handle();
         // Keys arrive once the bar is clicked; it never takes them itself.
         window.focus(&focus, cx);
+        cx.observe_window_activation(window, |this, window, cx| {
+            this.active = window.is_window_active();
+            // Handing the keyboard back closes the menu, whose keys it had.
+            if !this.active {
+                this.menu = false;
+            }
+            cx.notify();
+        })
+        .detach();
         cx.spawn(async move |this, cx| {
             loop {
                 cx.background_executor().timer(TICK).await;
@@ -69,12 +100,24 @@ impl RecordBar {
         Self {
             clock,
             menu: false,
+            active: window.is_window_active(),
+            keys,
             focus,
         }
     }
 
     pub fn menu_open(&self) -> bool {
         self.menu
+    }
+
+    /// The key hint for a button: its letter while the bar has the
+    /// keyboard, otherwise its global chord, if it has one.
+    fn hint(&self, letter: &'static str, chord: Option<&str>) -> SharedString {
+        match (self.active, chord) {
+            (true, _) => letter.into(),
+            (false, Some(chord)) => chord.to_string().into(),
+            (false, None) => SharedString::default(),
+        }
     }
 
     /// The elapsed time as shown.
@@ -111,11 +154,12 @@ impl RecordBar {
         id: &'static str,
         icon: IconName,
         label: &'static str,
-        key: &'static str,
+        key: SharedString,
         cx: &mut Context<Self>,
         action: impl Fn(&mut Self, &mut Context<Self>) + 'static,
     ) -> AnyElement {
         let name: SharedString = if label.is_empty() { "More" } else { label }.into();
+        let key_id = SharedString::from(format!("{id}-key"));
         div()
             .id(id)
             .role(Role::Button)
@@ -138,7 +182,18 @@ impl RecordBar {
             )
             .child(Icon::new(icon).size(px(14.)))
             .when(!label.is_empty(), |d| d.child(label))
-            .child(div().text_xs().text_color(muted()).child(key))
+            .when(!key.is_empty(), |d| {
+                d.child(
+                    div()
+                        .id(key_id)
+                        .role(Role::Status)
+                        .aria_label(key.clone())
+                        .test_support()
+                        .text_xs()
+                        .text_color(muted())
+                        .child(key),
+                )
+            })
             .into_any_element()
     }
 }
@@ -158,7 +213,7 @@ impl Render for RecordBar {
                     "record-restart",
                     IconName::RotateCcw,
                     "Restart",
-                    "R",
+                    self.hint("R", None),
                     cx,
                     |this, cx| this.ask(RecordBarEvent::Restart, cx),
                 ),
@@ -166,13 +221,18 @@ impl Render for RecordBar {
                     "record-discard",
                     IconName::Trash,
                     "Discard",
-                    "D",
+                    self.hint("D", None),
                     cx,
                     |this, cx| this.ask(RecordBarEvent::Discard, cx),
                 ),
-                self.button("record-back", IconName::X, "", "Esc", cx, |this, cx| {
-                    this.set_menu(false, cx)
-                }),
+                self.button(
+                    "record-back",
+                    IconName::X,
+                    "",
+                    self.hint("Esc", None),
+                    cx,
+                    |this, cx| this.set_menu(false, cx),
+                ),
             ]
         } else {
             let (icon, label) = if is_paused {
@@ -180,15 +240,18 @@ impl Render for RecordBar {
             } else {
                 (IconName::Pause, "Pause")
             };
+            let pause = self.hint("P", Some(&self.keys.pause));
+            let stop = self.hint("S", Some(&self.keys.stop));
+            let more = self.hint("M", None);
             vec![
-                self.button("record-pause", icon, label, "P", cx, |this, cx| {
+                self.button("record-pause", icon, label, pause, cx, |this, cx| {
                     this.ask(RecordBarEvent::TogglePause, cx)
                 }),
                 self.button(
                     "record-stop",
                     IconName::Square,
                     "Stop",
-                    "S",
+                    stop,
                     cx,
                     |this, cx| this.ask(RecordBarEvent::Stop, cx),
                 ),
@@ -196,7 +259,7 @@ impl Render for RecordBar {
                     "record-more",
                     IconName::Ellipsis,
                     "",
-                    "M",
+                    more,
                     cx,
                     |this, cx| this.set_menu(true, cx),
                 ),

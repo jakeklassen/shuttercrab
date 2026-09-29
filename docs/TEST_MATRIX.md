@@ -84,15 +84,26 @@ Acceptance (manual):
 
 ### Step 2: the recording controls
 
+The owner's first run (2026-09-29): steps 1–5 confirmed, but P did
+nothing until the bar was clicked. Decided with the owner: the bar never
+takes the keyboard (typing into the app being recorded must never become
+a command), its hints show the global chords, which work at once from
+anywhere (Ctrl+Alt+P pause/resume, registered only while recording;
+Ctrl+Alt+R stop), and once the bar is clicked its hints switch to the
+letters, which then work.
+
 Automated: the controls show the recorded time ("Recording 1:24", "Paused
-at 0:05") and Pause or Resume; P, Space and S ask to pause and stop;
-Restart and Discard take two steps (M, then R or D) and nothing else opens
-them; Escape closes the menu; clicking each button. The clock leaves
-paused time out. The controls go below the area, above it when there is
-no room, and inside a display recording along the bottom, above the
-taskbar, always on the monitor. The icons are embedded. Excluding a window
-from capture now reads the affinity back and fails unless it is
-`WDA_EXCLUDEFROMCAPTURE`.
+at 0:05") and Pause or Resume; the hints are the chords while the bar
+does not have the keyboard and the letters once it does, and clicking
+elsewhere closes the menu; P, Space and S ask to pause and stop; Restart
+and Discard take two steps (M, then R or D) and nothing else opens them;
+Escape closes the menu; clicking each button. The pause chord is
+registered only while recording; the tray offers Pause/Resume recording
+then. The clock leaves paused time out. The controls go below the area,
+above it when there is no room, and inside a display recording along the
+bottom, above the taskbar, always on the monitor. The icons are embedded.
+Excluding a window from capture now reads the affinity back and fails
+unless it is `WDA_EXCLUDEFROMCAPTURE`.
 
 Live check (release build, scratch settings and folder, the test page on
 display 2, the owner hands-off), 2026-09-29:
@@ -108,25 +119,32 @@ display 2, the owner hands-off), 2026-09-29:
 
 Acceptance (manual):
 
-1. Start it: `mise exec -- cargo run --release -p framecut`. Press
-   **Ctrl+Alt+R** and drag an area over something that moves. A small dark
-   bar appears just below the area (above it if there is no room): a red
-   dot, the time counting up, **Pause P**, **Stop S** and **⋯ M**. The
-   window you were using keeps the keyboard.
-2. Click **Pause**: the dot and time turn amber, the time stops, the
-   button reads **Resume**. Wait a few seconds, click **Resume**.
-3. Click the bar's time, then press **P** twice (pause, resume) and **S**:
-   the recording stops and the bar goes. Play it: the pause left no gap,
-   no frozen stretch, and the bar is nowhere in the video.
-4. Record the whole display (Ctrl+Alt+C, R, D): the bar sits along the
+1. Start it: `mise exec -- cargo run --release -p framecut`. Open an
+   editor, press **Ctrl+Alt+R** and drag an area over it. A small dark bar
+   appears just below the area (above it if there is no room): a red dot,
+   the time counting up, **Pause Ctrl+Alt+P**, **Stop Ctrl+Alt+R** and
+   **⋯**. Click into the editor and type, including p, s and m: it all
+   types normally and the recording carries on.
+2. Without touching the bar, press **Ctrl+Alt+P**: the dot and time turn
+   amber, the time stops, the button reads **Resume**. **Ctrl+Alt+P**
+   again resumes.
+3. Right-click the tray icon: **Pause recording Ctrl+Alt+P** (or Resume)
+   and **Stop recording Ctrl+Alt+R** are there. Pause and resume from it.
+4. Click the bar's time: the hints change to **P**, **S** and **M**.
+   Press **P** twice (pause, resume). Click back into the editor: the
+   hints go back to the chords, and typing goes to the editor.
+5. Click the bar, press **M** (or click ⋯): the row becomes **Restart R**,
+   **Discard D**, **✕ Esc**; Escape goes back. **M** then **R**: the time
+   starts again from 0:00.
+6. Press **Ctrl+Alt+R** to stop. Play the video: it holds only what came
+   after the restart, the pauses left no gap or frozen stretch, and the
+   bar is nowhere in it.
+7. Record the whole display (Ctrl+Alt+C, R, D): the bar sits along the
    bottom, over the recording, yet is not in the video.
-5. Start a recording; press **M** (or click ⋯): the row becomes **Restart
-   R**, **Discard D**, **✕ Esc**. Escape goes back. **M** then **R**:
-   the time starts again from 0:00 and the video, once stopped, holds only
-   what came after.
-6. Start a recording; **M** then **D**: the bar goes and no file appears
-   in `Videos\Framecut`.
-7. Ctrl+Alt+R still stops a recording, bar and all.
+8. Start a recording, click the bar, **M** then **D**: the bar goes and no
+   file appears in `Videos\Framecut`.
+9. With nothing recording, Ctrl+Alt+P does nothing in Framecut: other apps
+   have it back.
 
 ## Milestone 3: video technical spike
 

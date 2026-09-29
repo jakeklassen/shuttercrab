@@ -5,11 +5,12 @@
 #![cfg(windows)]
 
 use framecut::{
-    record_bar::{RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent},
+    record_bar::{RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent, RecordKeys},
     recording::Clock,
 };
 use gpui_kit::{
-    App, AppContext as _, TestAppContext, Window, WindowHandle, px, size, test::TestWindowExt as _,
+    App, AppContext as _, TestAppContext, VisualTestContext, Window, WindowHandle, px, size,
+    test::TestWindowExt as _,
 };
 use std::{
     cell::{Cell, RefCell},
@@ -34,7 +35,11 @@ fn open(cx: &mut TestAppContext, running: Duration) -> Opened {
         move |window, cx| {
             cx.subscribe_self(move |_, event: &RecordBarEvent, _| sink.borrow_mut().push(*event))
                 .detach();
-            RecordBar::new(shared, window, cx)
+            let keys = RecordKeys {
+                pause: "Ctrl+Alt+P".into(),
+                stop: "Ctrl+Alt+R".into(),
+            };
+            RecordBar::new(shared, keys, window, cx)
         },
     );
     Opened {
@@ -153,4 +158,31 @@ fn clicking_the_buttons(cx: &mut TestAppContext) {
             RecordBarEvent::Stop
         ]
     );
+}
+
+#[gpui_kit::test]
+fn hints_show_the_chords_until_the_bar_has_the_keyboard(cx: &mut TestAppContext) {
+    let opened = open(cx, Duration::ZERO);
+    // As it appears: the app being recorded keeps the keyboard.
+    VisualTestContext::from_window(opened.handle.into(), cx).deactivate_window();
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-pause-key").unwrap(), "Ctrl+Alt+P");
+        assert_eq!(label(window, "record-stop-key").unwrap(), "Ctrl+Alt+R");
+        assert_eq!(label(window, "record-more-key"), None);
+    });
+    // Clicked: the letters work, and say so.
+    update(cx, &opened, |window, _| window.activate_window());
+    cx.run_until_parked();
+    update(cx, &opened, |window, cx| {
+        assert_eq!(label(window, "record-pause-key").unwrap(), "P");
+        assert_eq!(label(window, "record-stop-key").unwrap(), "S");
+        assert_eq!(label(window, "record-more-key").unwrap(), "M");
+        window.press("m", cx);
+    });
+    // Clicking elsewhere hands the keyboard back and closes the menu.
+    VisualTestContext::from_window(opened.handle.into(), cx).deactivate_window();
+    assert!(!cx.update(|cx| opened.handle.read(cx).unwrap().menu_open()));
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-pause-key").unwrap(), "Ctrl+Alt+P");
+    });
 }

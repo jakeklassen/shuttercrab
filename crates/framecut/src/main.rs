@@ -106,6 +106,7 @@ fn main() {
     );
     normalize(&mut settings.screenshot_hotkey, &defaults.screenshot_hotkey);
     normalize(&mut settings.record_hotkey, &defaults.record_hotkey);
+    normalize(&mut settings.pause_hotkey, &defaults.pause_hotkey);
 
     let capture = match Capture::start() {
         Ok(capture) => capture,
@@ -117,10 +118,10 @@ fn main() {
     capture.warm_up();
 
     // Every hotkey in the settings is valid now.
-    let hotkeys = app::hotkeys(&settings);
+    let hotkeys = app::hotkeys(&settings, false);
     let tray = Tray {
         tooltip: "Framecut".into(),
-        menu: app::tray_menu(&settings, false),
+        menu: app::tray_menu(&settings, app::TrayRecording::Idle),
     };
     let (platform, events, conflicts) = match Platform::start(&hotkeys, Some(tray)) {
         Ok(started) => started,

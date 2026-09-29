@@ -19,7 +19,7 @@ use crate::{
     files,
     overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     popup::{self, Activation},
-    record_bar::{RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent},
+    record_bar::{RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent, RecordKeys},
     recording::{self, Clock},
     selection::ScreenWindow,
     settings::{self, Settings},
@@ -53,6 +53,7 @@ pub const SCREENSHOT_HOTKEY: u32 = 1;
 pub const QUIT_HOTKEY: u32 = 2;
 pub const CAPTURE_BAR_HOTKEY: u32 = 3;
 pub const RECORD_HOTKEY: u32 = 4;
+pub const PAUSE_HOTKEY: u32 = 5;
 
 /// Ids for the tray menu's items.
 pub const MENU_SCREENSHOT: u32 = 1;
@@ -62,15 +63,18 @@ pub const MENU_QUIT: u32 = 4;
 pub const MENU_CAPTURE_BAR: u32 = 5;
 pub const MENU_SETTINGS: u32 = 6;
 pub const MENU_RECORD: u32 = 7;
+pub const MENU_PAUSE: u32 = 8;
 
 /// Quits without the tray menu; kept for development.
 pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
 
 /// The global hotkeys for `settings`: the Capture Bar, area screenshots,
-/// recording, and quit. A hotkey the settings spell wrongly is left out
-/// (main checks them at startup; the settings window only stores valid
-/// ones).
-pub fn hotkeys(settings: &Settings) -> Vec<(u32, Hotkey)> {
+/// recording, and quit, plus pausing while `recording` (other apps keep
+/// that chord the rest of the time). A hotkey the settings spell wrongly
+/// is left out (main checks them at startup; the settings window only
+/// stores valid ones).
+pub fn hotkeys(settings: &Settings, recording: bool) -> Vec<(u32, Hotkey)> {
+    let pause = recording.then_some((PAUSE_HOTKEY, settings.pause_hotkey.as_str()));
     [
         (CAPTURE_BAR_HOTKEY, settings.capture_bar_hotkey.as_str()),
         (SCREENSHOT_HOTKEY, settings.screenshot_hotkey.as_str()),
@@ -78,8 +82,17 @@ pub fn hotkeys(settings: &Settings) -> Vec<(u32, Hotkey)> {
         (QUIT_HOTKEY, QUIT_KEYS),
     ]
     .into_iter()
+    .chain(pause)
     .filter_map(|(id, text)| Some((id, Hotkey::parse(text).ok()?)))
     .collect()
+}
+
+/// A recording, as the tray menu shows it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum TrayRecording {
+    Idle,
+    Running,
+    Paused,
 }
 
 /// A capture started from the tray menu waits this long, so the menu has
@@ -92,15 +105,20 @@ const BAR_TOP: f32 = 24.0;
 /// The thumbnail's distance from the work area's edges, logical pixels.
 const THUMBNAIL_MARGIN: f32 = 16.0;
 
-/// The tray icon's context menu for the current settings, and whether a
-/// recording is running.
-pub fn tray_menu(settings: &Settings, recording: bool) -> Vec<MenuItem> {
-    let record = if recording {
-        "Stop recording"
-    } else {
-        "Record an area"
+/// The tray icon's context menu for the current settings and recording.
+pub fn tray_menu(settings: &Settings, recording: TrayRecording) -> Vec<MenuItem> {
+    let record = match recording {
+        TrayRecording::Idle => "Record an area",
+        TrayRecording::Running | TrayRecording::Paused => "Stop recording",
     };
-    vec![
+    let pause = match recording {
+        TrayRecording::Idle => None,
+        TrayRecording::Running => Some("Pause recording"),
+        TrayRecording::Paused => Some("Resume recording"),
+    };
+    let pause = pause
+        .map(|label| MenuItem::item(MENU_PAUSE, format!("{label}\t{}", settings.pause_hotkey)));
+    [
         // A tab right-aligns the rest of the label, like a menu accelerator.
         MenuItem::item(
             MENU_CAPTURE_BAR,
@@ -111,6 +129,16 @@ pub fn tray_menu(settings: &Settings, recording: bool) -> Vec<MenuItem> {
             format!("Screenshot an area\t{}", settings.screenshot_hotkey),
         ),
         MenuItem::item(MENU_RECORD, format!("{record}\t{}", settings.record_hotkey)),
+    ]
+    .into_iter()
+    .chain(pause)
+    .chain(rest_of_tray_menu(settings))
+    .collect()
+}
+
+/// The tray menu below the capture items.
+fn rest_of_tray_menu(settings: &Settings) -> Vec<MenuItem> {
+    vec![
         MenuItem::item(MENU_OPEN_FOLDER, "Open screenshots folder"),
         MenuItem::Separator,
         MenuItem::Item {
@@ -244,10 +272,34 @@ impl Recording {
 }
 
 impl State {
+    /// The recording, as the tray menu shows it.
+    fn tray_recording(&self) -> TrayRecording {
+        match &*self.recording.borrow() {
+            None => TrayRecording::Idle,
+            Some(r) if r.clock.get().is_paused() => TrayRecording::Paused,
+            Some(_) => TrayRecording::Running,
+        }
+    }
+
     /// Show the tray menu for the current settings and recording state.
     fn refresh_tray_menu(&self) {
-        let menu = tray_menu(&self.settings.borrow(), self.recording.borrow().is_some());
+        let menu = tray_menu(&self.settings.borrow(), self.tray_recording());
         self.platform.set_tray_menu(menu);
+    }
+
+    /// A recording started or ended: update the tray menu, and register
+    /// the pause hotkey only while there is one.
+    fn recording_changed(&self, cx: &AsyncApp) {
+        self.refresh_tray_menu();
+        let registering = self.platform.set_hotkeys(self.hotkeys());
+        // Nothing waits for the answer; a taken hotkey is only logged.
+        cx.background_executor()
+            .spawn(async move {
+                for conflict in registering.await {
+                    log::warn!("{} is taken by another application", conflict.hotkey);
+                }
+            })
+            .detach();
     }
 
     /// Change the settings and save them in the background.
@@ -281,9 +333,9 @@ impl State {
         }
     }
 
-    /// The global hotkeys the settings name.
+    /// The global hotkeys the settings name, for now.
     fn hotkeys(&self) -> Vec<(u32, Hotkey)> {
-        hotkeys(&self.settings.borrow())
+        hotkeys(&self.settings.borrow(), self.recording.borrow().is_some())
     }
 }
 
@@ -332,6 +384,9 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                     Some(TRAY_DELAY),
                     cx,
                 ),
+                PlatformEvent::Hotkey(PAUSE_HOTKEY) | PlatformEvent::TrayCommand(MENU_PAUSE) => {
+                    toggle_pause(&state, cx)
+                }
                 // One hotkey starts a recording and stops it.
                 PlatformEvent::Hotkey(RECORD_HOTKEY) | PlatformEvent::TrayCommand(MENU_RECORD) => {
                     if state.recording.borrow().is_some() {
@@ -775,7 +830,14 @@ async fn record(
     let chosen = Instant::now();
     let clock = Rc::new(Cell::new(Clock::new(chosen)));
     // The controls come first, so they are excluded before the first frame.
-    let (controls, requests) = match open_controls(&info, region, clock.clone(), cx) {
+    let keys = {
+        let settings = state.settings.borrow();
+        RecordKeys {
+            pause: settings.pause_hotkey.clone(),
+            stop: settings.record_hotkey.clone(),
+        }
+    };
+    let (controls, requests) = match open_controls(&info, region, clock.clone(), keys, cx) {
         Some((controls, requests)) => (Some(controls), Some(requests)),
         None => (None, None),
     };
@@ -837,7 +899,7 @@ async fn record(
     };
     recording.refresh_controls(cx);
     state.recording.replace(Some(recording));
-    state.refresh_tray_menu();
+    state.recording_changed(cx);
     if let Some(requests) = requests {
         handle_controls(state.clone(), requests, cx);
     }
@@ -852,6 +914,7 @@ fn open_controls(
     info: &MonitorInfo,
     region: Option<PhysicalRect>,
     clock: Rc<Cell<Clock>>,
+    keys: RecordKeys,
     cx: &mut AsyncApp,
 ) -> Option<(Controls, UnboundedReceiver<RecordBarEvent>)> {
     let (b, scale) = (info.bounds, info.scale_factor);
@@ -875,7 +938,7 @@ fn open_controls(
     let view = Rc::new(RefCell::new(None));
     let slot = view.clone();
     let opened = popup::open(info, rect, Activation::OnClick, cx, move |window, cx| {
-        let bar = cx.new(|cx| RecordBar::new(clock, window, cx));
+        let bar = cx.new(|cx| RecordBar::new(clock, keys, window, cx));
         slot.replace(Some(bar.clone()));
         bar
     });
@@ -963,6 +1026,7 @@ fn toggle_pause(state: &State, cx: &mut AsyncApp) {
     }
     recording.clock.set(clock);
     recording.refresh_controls(cx);
+    state.refresh_tray_menu();
 }
 
 /// Take the recording in progress and its recorder, closing the controls.
@@ -976,7 +1040,7 @@ fn end_recording(state: &State, cx: &mut AsyncApp) -> Option<(Recorder, PathBuf)
     let mut recording = slot.take()?;
     drop(slot);
     recording.close_controls(cx);
-    state.refresh_tray_menu();
+    state.recording_changed(cx);
     Some((recording.recorder?, recording.path))
 }
 
@@ -1058,7 +1122,7 @@ async fn restart_recording(state: &Rc<State>, cx: &mut AsyncApp) {
             if let Some(mut recording) = recording {
                 recording.close_controls(cx);
             }
-            state.refresh_tray_menu();
+            state.recording_changed(cx);
             let failure = Failure::new("Could not restart recording.", format!("restart: {e:#}"))
                 .of_recording();
             log::error!("{}", failure.detail);
@@ -1458,7 +1522,7 @@ mod tests {
     #[test]
     fn the_tray_menu_follows_the_settings() {
         let settings = Settings::default();
-        let menu = tray_menu(&settings, false);
+        let menu = tray_menu(&settings, TrayRecording::Idle);
         assert!(auto_save_checked(&menu));
         assert!(menu.contains(&MenuItem::item(MENU_CAPTURE_BAR, "Capture Bar\tCtrl+Alt+C")));
         assert!(menu.contains(&MenuItem::item(
@@ -1466,16 +1530,42 @@ mod tests {
             "Screenshot an area\tCtrl+Alt+S"
         )));
         assert!(menu.contains(&MenuItem::item(MENU_RECORD, "Record an area\tCtrl+Alt+R")));
-        // While recording, the same item stops it.
-        assert!(
-            tray_menu(&settings, true)
-                .contains(&MenuItem::item(MENU_RECORD, "Stop recording\tCtrl+Alt+R"))
+        let pause_item = |menu: &[MenuItem]| {
+            menu.iter()
+                .find(|item| matches!(item, MenuItem::Item { id: MENU_PAUSE, .. }))
+                .cloned()
+        };
+        assert_eq!(pause_item(&menu), None);
+        // While recording, the same item stops it, and pausing appears.
+        let running = tray_menu(&settings, TrayRecording::Running);
+        assert!(running.contains(&MenuItem::item(MENU_RECORD, "Stop recording\tCtrl+Alt+R")));
+        assert_eq!(
+            pause_item(&running),
+            Some(MenuItem::item(MENU_PAUSE, "Pause recording\tCtrl+Alt+P"))
+        );
+        assert_eq!(
+            pause_item(&tray_menu(&settings, TrayRecording::Paused)),
+            Some(MenuItem::item(MENU_PAUSE, "Resume recording\tCtrl+Alt+P"))
         );
         let off = Settings {
             auto_save: false,
             ..settings
         };
-        assert!(!auto_save_checked(&tray_menu(&off, false)));
+        assert!(!auto_save_checked(&tray_menu(&off, TrayRecording::Idle)));
+    }
+
+    #[test]
+    fn the_pause_chord_is_taken_only_while_recording() {
+        let settings = Settings::default();
+        let ids = |recording| {
+            hotkeys(&settings, recording)
+                .into_iter()
+                .map(|(id, _)| id)
+                .collect::<Vec<_>>()
+        };
+        assert!(!ids(false).contains(&PAUSE_HOTKEY));
+        assert!(ids(true).contains(&PAUSE_HOTKEY));
+        assert!(ids(false).contains(&RECORD_HOTKEY));
     }
 
     #[test]
