@@ -1,6 +1,7 @@
 # Test matrix
 
-Milestone 3 (video technical spike) is **complete** (2026-09-29).
+Milestone 4 (area recording MVP) is in progress: step 1 is ready for the
+owner to try. Milestone 3 (video technical spike) is **complete** (2026-09-29).
 Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
 steps by 2026-09-28 (sleep and wake left for the owner to try later); see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
@@ -22,6 +23,59 @@ mise exec -- cargo test
 
 `cargo test` includes GPU golden tests. They run on WARP (software, so they
 work anywhere) and on the hardware adapter when there is one.
+
+## Milestone 4: area recording MVP
+
+Built in four steps, each tried and approved by the owner: (1) start and
+stop a recording from the Capture Bar, a hotkey and the tray; (2) the
+recording control bar: elapsed time, Pause/Resume, Stop, Restart,
+Discard, excluded from capture; (3) stop and pause hotkeys and the
+Recording settings (pointer, 30/60 fps, countdown, folder); (4) hardening:
+30 minutes without memory growth, no Framecut UI in the output.
+
+### Step 1: start and stop
+
+Automated: the Capture Bar's Record mode (R and S switch modes, Window is
+passed over and cannot be chosen, the last mode is remembered, clicking
+Record then Display); the overlay stays in Area mode when choosing an
+area to record; recording file names, the `.partial` name in progress, and
+` (2)` suffixes; the tray item switching between Record and Stop; the
+recorded region: even sizes, cut to the monitor, grown to 64 pixels.
+
+Encoder sizes, 2026-09-29 (RTX 4090): NVENC refuses anything under 145×49,
+the software encoder anything under 34×34. Regions under 256 pixels a side
+now use the software encoder and regions under 64 are grown: 2×2, 32×32,
+130×50, 64×256 and 200×300 all record. Recordings are written as
+`….mp4.partial` (MP4 inside, `ftypmp42`) and renamed on Stop.
+
+Smoke test (release build, scratch settings and folder, the animated test
+page on display 2), 2026-09-29: overlay up 123 ms after the hotkey
+(freeze 81 ms); recording started 307–369 ms after the choice; 1280×720
+area for 3.68 s and the whole 3840×2160 display for 2.73 s, hardware
+encoder, 0 dropped; quitting mid-recording finished the file (debug
+run). The first frames show neither the overlay nor the Capture Bar.
+
+Acceptance (manual):
+
+1. Start it: `mise exec -- cargo run --release -p framecut`. Right-click
+   the tray icon: there is **Record an area   Ctrl+Alt+R**.
+2. Press **Ctrl+Alt+R**. The overlay says "Drag to record an area · Esc:
+   cancel"; Space does nothing. Drag over something that moves and
+   release. There is no on-screen indicator yet (that is step 2); the tray
+   item now reads **Stop recording**.
+3. After about 10 seconds, press **Ctrl+Alt+R** again. A notification says
+   "Recording saved · 0:10"; clicking it plays the MP4: only the area, the
+   pointer visible, no dimmed overlay at the start.
+4. Press **Ctrl+Alt+C**. The bar shows **Screenshot S** and **Record R**.
+   Press **R**: Window greys out and the arrows skip it. Press **D**: the
+   whole display records at once. Stop it from the tray.
+5. Open the Capture Bar again: it opens in Record mode. **S** goes back to
+   Screenshot; Escape closes it.
+6. Start a recording, press Escape on the overlay instead: nothing is
+   recorded. Start one and quit Framecut from the tray: the file is still
+   there, finished.
+7. The recordings are in `Videos\Framecut`, named `Recording <date>
+   <time>.mp4`, with no `.partial` files left.
 
 ## Milestone 3: video technical spike
 
