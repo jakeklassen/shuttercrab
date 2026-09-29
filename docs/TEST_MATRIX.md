@@ -1,7 +1,8 @@
 # Test matrix
 
 Milestone 4 (area recording MVP) is in progress: step 1 passed on
-2026-09-29. Milestone 3 (video technical spike) is **complete** (2026-09-29).
+2026-09-29; step 2 is ready for the owner to try. Milestone 3 (video
+technical spike) is **complete** (2026-09-29).
 Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
 steps by 2026-09-28 (sleep and wake left for the owner to try later); see [Milestone
 2](#milestone-2-screenshot-workflow). Milestone 1 (area screenshot) **passed** the owner's acceptance test on
@@ -80,6 +81,52 @@ Acceptance (manual):
    there, finished.
 7. The recordings are in `Videos\Framecut`, named `Recording <date>
    <time>.mp4`, with no `.partial` files left.
+
+### Step 2: the recording controls
+
+Automated: the controls show the recorded time ("Recording 1:24", "Paused
+at 0:05") and Pause or Resume; P, Space and S ask to pause and stop;
+Restart and Discard take two steps (M, then R or D) and nothing else opens
+them; Escape closes the menu; clicking each button. The clock leaves
+paused time out. The controls go below the area, above it when there is
+no room, and inside a display recording along the bottom, above the
+taskbar, always on the monitor. The icons are embedded. Excluding a window
+from capture now reads the affinity back and fails unless it is
+`WDA_EXCLUDEFROMCAPTURE`.
+
+Live check (release build, scratch settings and folder, the test page on
+display 2, the owner hands-off), 2026-09-29:
+
+| Check | Result |
+|---|---|
+| Display recording, controls over the area | Excluded (confirmed by read-back); not in frames at 0, 1.5, 3.5 or 5 s |
+| Area recordings | Controls below the area, outside it |
+| 3 s, paused 3 s (P), 2 s, stop (S) | 5.13 s long; largest frame step 45 ms, no gap at the pause |
+| 3 s, restart (M, R), then stop from the hotkey | 2.17 s: only what followed the restart |
+| Discard (M, D) | No file, no `.partial`; the controls closed |
+| Start after the choice | 345–357 ms, the controls already up |
+
+Acceptance (manual):
+
+1. Start it: `mise exec -- cargo run --release -p framecut`. Press
+   **Ctrl+Alt+R** and drag an area over something that moves. A small dark
+   bar appears just below the area (above it if there is no room): a red
+   dot, the time counting up, **Pause P**, **Stop S** and **⋯ M**. The
+   window you were using keeps the keyboard.
+2. Click **Pause**: the dot and time turn amber, the time stops, the
+   button reads **Resume**. Wait a few seconds, click **Resume**.
+3. Click the bar's time, then press **P** twice (pause, resume) and **S**:
+   the recording stops and the bar goes. Play it: the pause left no gap,
+   no frozen stretch, and the bar is nowhere in the video.
+4. Record the whole display (Ctrl+Alt+C, R, D): the bar sits along the
+   bottom, over the recording, yet is not in the video.
+5. Start a recording; press **M** (or click ⋯): the row becomes **Restart
+   R**, **Discard D**, **✕ Esc**. Escape goes back. **M** then **R**:
+   the time starts again from 0:00 and the video, once stopped, holds only
+   what came after.
+6. Start a recording; **M** then **D**: the bar goes and no file appears
+   in `Videos\Framecut`.
+7. Ctrl+Alt+R still stops a recording, bar and all.
 
 ## Milestone 3: video technical spike
 
