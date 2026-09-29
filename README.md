@@ -17,7 +17,7 @@ The specification is [docs/PRD.md](docs/PRD.md).
   toggle, snapping) passed on 2026-09-28. Step 3 (the Capture Bar) passed on
   2026-09-28. Step 4 (thumbnail, notifications, capture exclusion)
   passed on 2026-09-28. Step 5 (the settings window) passed on
-  2026-09-28.
+  2026-09-28. Step 6 (hardening, HDR video) is built and awaiting its test.
 
 Documentation:
 

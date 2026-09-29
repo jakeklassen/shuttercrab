@@ -402,6 +402,45 @@ Acceptance (manual):
    the GPU. **Open** next to the log folder opens it.
 10. Say what you think of the window's layout and wording.
 
+### Step 6: hardening and HDR video
+
+Hardening (PRD §22–§25):
+
+- **Lost graphics device** (removed, hung, reset, driver error; sleep and
+  wake or a driver update): the cached Direct3D device is dropped and the
+  capture retried once with a new one. Before, every later capture failed
+  until Framecut was restarted. Unit tests: the retry policy and the
+  recognised HRESULTs (a device loss cannot be forced from a test).
+- **Display changed mid-capture** (HDR toggled, resolution changed):
+  captured again once instead of failing.
+- **Messages** (PRD §24): notifications say what happened and what to do
+  ("Another app is holding the clipboard; try again in a moment", "Could
+  not save to …. Check the folder in Settings."); error codes and details
+  go to the log only. Smoke test: with the folder unwritable, the
+  screenshot still reached the clipboard, Framecut kept running, and the
+  log named the cause.
+- **Memory** (PRD §23): after each capture the device returns the driver's
+  pooled memory (`IDXGIDevice3::Trim`). Private memory after 30 4K
+  captures: 399 MB, was 668 MB; flat from the second capture on (no
+  leak). At rest: 84 MB.
+- **Idle** (PRD §22.1): 0 ms of CPU over 10 s idle after captures.
+- **Latency** (PRD §22.2): overlay 112–120 ms after the hotkey (freeze
+  87–92 ms, about 12 ms more with the trim); clipboard 1–3 ms after
+  release.
+
+HDR video: the anchor comparison above (the owner chose the 90th
+percentile, now `SCREENSHOT_ANCHOR`).
+
+Acceptance (manual):
+
+1. Pause an HDR video full screen, press **Ctrl+Alt+C**, **D**, and paste:
+   it looks like option 2 of the comparison (sky detail, foreground as in
+   the player's own HDR-off picture).
+2. With Framecut running, toggle HDR (**Win+Alt+B**), take a screenshot,
+   toggle it back, take another: both work and look right.
+3. Put the PC to sleep, wake it, take a screenshot: it works.
+4. Leave Framecut idle for a few minutes: Task Manager shows about 0% CPU.
+
 ## Milestone 1: area screenshot
 
 Exit criterion (PRD §31): *hotkey → drag → release → paste into
@@ -725,3 +764,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Include cursor (§15) | **Passed: owner, 2026-09-28** | `include_cursor` |
 | Launch at sign-in (§26) | **Passed: owner, 2026-09-28** | Run key |
 | Diagnostics: monitors, HDR, SDR white, GPU (§26) | **Passed: owner, 2026-09-28** | |
+| Lost device (sleep/wake, driver reset) recovers; display change mid-capture retried (§25) | Passed (unit); awaits the owner | Retry policy tests |
+| Human-readable errors, details in the log only (§24) | Passed (unit + smoke) | Unwritable folder: clipboard kept |
+| Idle CPU, bounded memory (§22.1, §23) | Passed locally | 0 ms / 10 s idle; 399 MB private after 30 captures, flat |
+| HDR video exposure (§9.6, §34.2) | Owner chose the 90th percentile, 2026-09-28 | ΔE00 0.80 vs the player's HDR-off frame |
