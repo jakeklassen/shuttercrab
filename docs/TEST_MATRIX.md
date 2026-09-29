@@ -329,7 +329,7 @@ whatever the executable; the entries are also "Not measured", so
 Windows' startup scan (`StartupAppTask`) has not processed them yet and
 may fill the name in later. Every test entry was removed. To check once
 more with the installed build (GPUI Kit's packaging guide: do not test
-only `targetelease`).
+only `target\release`).
 
 Decisions:
 
@@ -595,7 +595,7 @@ To retake some states of a session, point `--out` at it and name the states.
 The rest of the session is kept, and the report covers all of it:
 
 ```powershell
-.	argeteleasepture-spike.exe gate --out capturesgate-20260927-112049 --states hdr-low,hdr-mid
+.\target\release\capture-spike.exe gate --out captures\gate-20260927-112049 --states hdr-low,hdr-mid
 ```
 
 Add `--scenes` to retake only some scenes, e.g. `--states hdr-mid --scenes
