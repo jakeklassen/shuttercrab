@@ -22,6 +22,56 @@ mise exec -- cargo test
 `cargo test` includes GPU golden tests. They run on WARP (software, so they
 work anywhere) and on the hardware adapter when there is one.
 
+## Milestone 3: video technical spike
+
+Exit criterion (PRD Milestone 3): a 60-second recording that plays
+correctly, has the correct duration, has stable colours, shows no
+white-wash, pauses and resumes without a timeline gap, does not leak
+memory, and does not accumulate an unbounded frame queue.
+
+The pipeline (`framecut-capture::record`, driven by `capture-spike
+record`): Windows.Graphics.Capture in FP16 → region cropped on the GPU →
+the HDR/WCG → SDR conversion per frame (the 90th-percentile anchor, eased
+over 0.5 s so video does not pump) → the Direct3D video processor to NV12
+(BT.709, studio range) → Media Foundation's sink writer with the hardware
+H.264 encoder → MP4 tagged Rec.709. Frames never leave the GPU. Encoder
+input comes from four NV12 textures released through `IMFTrackedSample`;
+a frame arriving while all four are with the encoder is dropped and
+counted. Timestamps are the capture clock (QPC); paused time is removed;
+frames faster than the frame rate are skipped; a still screen gets its
+last frame repeated every second and at the stop.
+
+Measured, 2026-09-28 (release build, RTX 4090, 3840×2160 HDR display at
+SDR white 280 nits, an animated test page: colour patches, a running
+clock, a moving bar):
+
+| Check | Result |
+|---|---|
+| 60 s at 30 fps, paused 20 s in for 10 s | 60.01 s long, 1,795 frames, 0 dropped, hardware encoder |
+| Plays; format | H.264 High, yuv420p, BT.709 primaries, transfer and matrix, limited range |
+| Timeline | Steps ≤ 42 ms throughout; none over 50 ms, none at the pause |
+| Colours vs a screenshot of the page | Mean ΔE00 0.18, max 0.68; codes within 1–3 |
+| White-wash | White 255, black 0 after BT.709 decoding |
+| Stable colours | Frame at 50 s vs 5 s: mean ΔE00 0.001 |
+| Memory | Private 319–324 MB, flat over 70 s |
+| Unbounded queue | Four encoder textures by construction; 0 dropped at 30 or 60 fps |
+| 60 fps, 10 s | 596 frames, 0 dropped |
+| Still HDR page, 8 s | A frame every second (was 3 frames in all); 8.0 s |
+
+Found on the way: removing the capture's FrameArrived handler twice made
+Windows end the process (0xC0000409); teardown now runs once.
+
+Acceptance (manual):
+
+1. Watch the 60-second test recording, `rec\exit60.mp4` in the scratch
+   folder, in the Windows Media Player or Films & TV app. It plays
+   smoothly, lasts one minute, and the colours look like the page.
+2. Around 20 s in, the clock on the page jumps by 10 seconds (the pause),
+   but the video itself carries on without a stall, freeze or skip.
+3. Optionally, record something of your own:
+   `.\target\release\capture-spike.exe record --monitor DISPLAY1 --seconds 20`
+   and play it back (it goes to `captures\recording-….mp4`).
+
 ## Milestone 2: screenshot workflow
 
 Milestone 2 is built in six steps, each tried and approved by the owner: (1)
