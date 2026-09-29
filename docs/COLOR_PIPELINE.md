@@ -188,11 +188,30 @@ is barely touched.
   Edge-like curves side by side on real captures, and chose the Edge-like one:
   every step of the test image stays distinguishable. v3 spread everything
   above SDR white over ≈ 6 codes; v4 spreads it over ≈ 65.
-- **The gain from the peak is a first choice, not a settled one.** A second
-  review (Codex) and the research both flag that one bright pixel sets the
-  exposure of its whole region, so cropping or a spark can change it. It is
-  per region, which limits the reach. A steadier anchor is follow-up work,
-  to be judged on real HDR video in Milestone 1.
+- **The anchor: the region's 90th percentile, not its peak** (Milestone 2,
+  2026-09-28). `P` in the curve is the brightness mapped to white. v4 used
+  the region's peak, and a second review (Codex) and the research flagged
+  that one bright pixel then sets the exposure of the whole region. On a
+  real HDR video frame (YouTube, HDR on; highlights at 5.2× SDR white,
+  about 1,250 nits) the owner compared five anchors against the player's
+  own HDR-off rendering of the same paused frame, and chose the 90th
+  percentile of the region's tile peaks (`SCREENSHOT_ANCHOR`):
+
+  | Anchor | `P` | Mean ΔE00 vs the player's HDR-off frame |
+  |---|---|---|
+  | Region peak (v4) | 5.21 | 2.57 |
+  | **90th percentile** | **3.06** | **0.80** |
+  | 75th percentile | 2.02 | 1.29 |
+  | Fixed 1,000 nits | 4.17 | 1.81 |
+  | Fixed at the panel's peak, 456 nits | 1.90 | 1.47 |
+  | (Windows' 8-bit conversion, no curve) | — | 14.6 |
+
+  With the peak, one small bright patch by the sun darkened the whole
+  frame. The percentile lets the brightest tenth of the region's tiles
+  reach white and exposes for the rest. On the Milestone 0 HDR test image
+  (SDR brightness 280 nits) the eight grey steps stay distinct: 148 177
+  201 214 224 231 236 245 against the peak's 143 171 195 207 216 222 227
+  235.
 - **Nine pixels, not one.** Non-SDR content lands on the grid by chance about
   half the time per tested channel. Requiring the 3×3 neighbourhood makes a
   chance match need nine coincidences even for saturated content (≈ 0.2%), and
@@ -294,13 +313,16 @@ linearly to 80 + 4 × slider nits: 10, 50 and 100 read `SDRWhiteLevel` 1500,
   HDR video, rounded corners, or two HDR windows close together fall inside
   one box and are tone mapped with it. Codex's review lists these as the
   cases to test with real content.
-- **Peak-driven gain.** A single very bright highlight dims its whole region.
-  Cropping differently can change the exposure, and video could pump. A
-  steadier anchor (a percentile, or a fixed reference-white placement) is
-  follow-up work.
-- **The panel's peak.** Windows and applications limit HDR content to the
-  display's peak luminance before composition, so detail above it is gone from
-  the source. No transform can recover it.
+- **Percentile anchor.** The brightest tenth of a region's tiles can clip
+  to white (a sun, a lamp); the rest of the region is exposed for its
+  content. A single spark no longer dims the whole region, but a very
+  different crop of the same content can still move the anchor a little.
+- **The panel's peak.** Some applications limit HDR content to the
+  display's peak luminance before composition (Edge's static HDR image
+  peaked at 1.62× on a 456-nit panel at 280-nit SDR white); others do not
+  (YouTube's video reached 5.2×, about 1,250 nits, on the same panel). Detail
+  an application removes is gone from the source; no transform can recover
+  it.
 - **Little headroom, little room.** At high SDR brightness (`P` ≈ 1.06 on
   this panel) HDR content is barely above SDR white and the curve barely
   acts; there is nothing to separate.

@@ -636,10 +636,33 @@ No established test method for HDR screenshots exists; objective metrics
 | Framecut v3 | 255 | ΔE00 0.00 | 4.48 | 159 191 218 236 248 251 252 253 |
 | Framecut v4 (chosen) | 255 | ΔE00 0.00 | 0.90 | 143 171 195 207 216 222 227 235 |
 
-The owner compared these as images and chose v4. Still to do, in the owner's
-A/B style: real HDR video and photos (e.g. a paused YouTube HDR clip in Edge,
-HDR on and off), multiple HDR windows, subtitles and controls over video, and
-a steadier exposure anchor than the region's peak (see
+The owner compared these as images and chose v4.
+
+### Real HDR video (Milestone 2 step 6, 2026-09-28)
+
+A YouTube HDR video, paused full screen on display 1 (SDR white 240 nits,
+panel peak 456 nits; the frame reached 5.2× SDR white, about 1,250 nits),
+captured once with `capture-spike capture`, converted with each anchor
+(`capture-spike convert --anchor …`), and compared with the same paused
+frame captured with Windows HDR off (the player's own HDR-to-SDR
+rendering). The owner compared the six side by side and chose the 90th
+percentile ("2 looks closest to me"), which is also closest by the numbers:
+
+| Anchor | Mean ΔE00 vs the player's HDR-off frame |
+|---|---|
+| Windows' 8-bit conversion | 14.6 |
+| Region peak (v4) | 2.57 |
+| **90th percentile (chosen)** | **0.80** |
+| 75th percentile | 1.29 |
+| Fixed 1,000 nits | 1.81 |
+| Fixed at the panel's peak | 1.47 |
+
+The test image's grey steps under the new anchor (Edge `?hdr` page,
+display 2, SDR white 280 nits): 148 177 201 214 224 231 236 245, all
+distinct (region peak: 143 … 235, as in Milestone 0).
+
+Still open: a darker video scene, HDR photos, several HDR windows, and
+subtitles or controls over video (see
 [COLOR_PIPELINE.md](COLOR_PIPELINE.md#known-limits-and-expected-differences)).
 
 ## Manual tools
