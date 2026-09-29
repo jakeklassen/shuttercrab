@@ -153,6 +153,34 @@ impl Drop for Recorder {
     }
 }
 
+/// The smallest recording, physical pixels a side. Media Foundation's
+/// software H.264 encoder refuses 32×32 and takes 34×34; smaller than this
+/// is no use as a video anyway.
+pub const MIN_SIDE: u32 = 64;
+
+/// Hardware encoders have minimum sizes of their own (NVENC's H.264 needs
+/// at least 145×49, and fails only once frames arrive), so smaller
+/// recordings use the software encoder, which is quick at such sizes.
+const HARDWARE_MIN_SIDE: u32 = 256;
+
+/// What of a `width`×`height` monitor is recorded for `region`: all of it
+/// for `None`; otherwise the region on the monitor, grown about its centre
+/// to [`MIN_SIDE`] if smaller, with even sizes, as NV12 requires.
+pub fn recordable(region: Option<PhysicalRect>, width: u32, height: u32) -> PhysicalRect {
+    let full = PhysicalRect::new(0, 0, width, height);
+    let r = region.unwrap_or(full).clamp_to(width, height);
+    let grow = |at: i32, side: u32, limit: u32| {
+        if side >= MIN_SIDE || limit < MIN_SIDE {
+            return (at, side.min(limit));
+        }
+        let start = at - (MIN_SIDE - side) as i32 / 2;
+        (start.clamp(0, (limit - MIN_SIDE) as i32), MIN_SIDE)
+    };
+    let (x, w) = grow(r.x, r.width, width);
+    let (y, h) = grow(r.y, r.height, height);
+    PhysicalRect::new(x, y, w & !1, h & !1)
+}
+
 /// 100-nanosecond units, Media Foundation's and Windows.Graphics.Capture's.
 const TICKS_PER_SECOND: i64 = 10_000_000;
 
@@ -280,13 +308,8 @@ impl Session {
             .find(|m| m.hmonitor == hmonitor(options.monitor))
             .context("the monitor is no longer attached")?;
         let white_scale = monitor.white_scale()?;
-        let full = PhysicalRect::new(0, 0, monitor.bounds.width, monitor.bounds.height);
-        let region = options
-            .region
-            .unwrap_or(full)
-            .clamp_to(full.width, full.height);
-        // NV12 needs even sizes.
-        let region = PhysicalRect::new(region.x, region.y, region.width & !1, region.height & !1);
+        let (width, height) = (monitor.bounds.width, monitor.bounds.height);
+        let region = recordable(options.region, width, height);
         ensure!(!region.is_empty(), "the region is empty");
 
         let gpu = video_gpu(&monitor.adapter)?;
@@ -314,7 +337,8 @@ impl Session {
             None,
         )?;
         let nv12 = Nv12::new(&gpu, &rgba, w, h, options.fps)?;
-        let writer = Mp4Writer::new(&gpu, &options.path, w, h, options.fps)?;
+        let hardware = w.min(h) >= HARDWARE_MIN_SIDE;
+        let writer = Mp4Writer::new(&gpu, &options.path, w, h, options.fps, hardware)?;
 
         // The capture: FP16, two buffers, the pointer only if asked.
         ensure!(
@@ -728,7 +752,8 @@ struct Mp4Writer {
 }
 
 impl Mp4Writer {
-    fn new(gpu: &Gpu, path: &Path, w: u32, h: u32, fps: u32) -> Result<Self> {
+    /// With `hardware`, Media Foundation may choose a hardware encoder.
+    fn new(gpu: &Gpu, path: &Path, w: u32, h: u32, fps: u32, hardware: bool) -> Result<Self> {
         unsafe {
             let mut token = 0;
             let mut manager = None;
@@ -737,10 +762,13 @@ impl Mp4Writer {
             manager.ResetDevice(&gpu.device, token)?;
 
             let mut attributes = None;
-            MFCreateAttributes(&mut attributes, 3)?;
+            MFCreateAttributes(&mut attributes, 4)?;
             let attributes = attributes.context("no attributes")?;
-            attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, 1)?;
+            attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, hardware as u32)?;
             attributes.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, &manager)?;
+            // MP4 whatever the file is called: the app writes to a
+            // `.partial` name and renames the file once it is finished.
+            attributes.SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4)?;
 
             let _ = std::fs::remove_file(path);
             let writer = MFCreateSinkWriterFromURL(&HSTRING::from(path), None, &attributes)
@@ -853,6 +881,35 @@ impl Drop for Mp4Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn recorded_regions_are_even_on_screen_and_not_too_small() {
+        let rect = |x, y, w, h| Some(PhysicalRect::new(x, y, w, h));
+        // All of it, or the region with odd sizes made even.
+        assert_eq!(
+            recordable(None, 3840, 2160),
+            PhysicalRect::new(0, 0, 3840, 2160)
+        );
+        assert_eq!(
+            recordable(rect(10, 20, 1001, 777), 3840, 2160),
+            PhysicalRect::new(10, 20, 1000, 776)
+        );
+        // Off the edge: cut to the monitor (40×60 here), then grown back
+        // to the minimum inside it.
+        assert_eq!(
+            recordable(rect(3800, 2100, 400, 400), 3840, 2160),
+            PhysicalRect::new(3776, 2096, 64, 64)
+        );
+        // Tiny: grown about its centre, kept on the monitor.
+        assert_eq!(
+            recordable(rect(100, 300, 20, 200), 3840, 2160),
+            PhysicalRect::new(78, 300, 64, 200)
+        );
+        assert_eq!(
+            recordable(rect(0, 0, 10, 10), 3840, 2160),
+            PhysicalRect::new(0, 0, 64, 64)
+        );
+    }
 
     fn analysis(peaks: &[f32]) -> Analysis {
         use crate::color::{TILE, TileStats, find_regions};
