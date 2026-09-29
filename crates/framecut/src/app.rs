@@ -5,15 +5,20 @@
 //! monitor at once. The PNG goes to the clipboard and, with auto-save on,
 //! the output folder.
 //!
+//! Recording (PRD §7.7) starts from the Capture Bar's Record mode or the
+//! recording hotkey: the same overlay chooses the area, then the recorder
+//! runs on its own thread until the hotkey is pressed again, and the MP4
+//! goes to the recordings folder.
+//!
 //! Capture, clipboard and file work happen on the capture thread, the
 //! platform thread and GPUI's background executor; this code only awaits
 //! them, so the GPUI main thread never blocks (§17).
 
 use crate::{
-    capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent, CaptureTarget},
+    capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent, CaptureMode, CaptureTarget},
     files,
     overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
-    popup,
+    popup, recording,
     selection::ScreenWindow,
     settings::{self, Settings},
     settings_window::{Diagnostics, Hooks, SettingsWindow},
@@ -21,7 +26,8 @@ use crate::{
 };
 use chrono::{Local, NaiveDateTime};
 use framecut_capture::{
-    Capture, MonitorId, MonitorInfo, PhysicalRect, Screenshot, monitor_under_pointer,
+    Capture, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot, monitor_under_pointer,
+    record::{RecordOptions, Recorder, RecordingSummary},
 };
 use framecut_platform::{
     Hotkey, MenuItem, Platform, PlatformEvent, drag::DragImage, targets, window as platform_window,
@@ -44,6 +50,7 @@ use std::{
 pub const SCREENSHOT_HOTKEY: u32 = 1;
 pub const QUIT_HOTKEY: u32 = 2;
 pub const CAPTURE_BAR_HOTKEY: u32 = 3;
+pub const RECORD_HOTKEY: u32 = 4;
 
 /// Ids for the tray menu's items.
 pub const MENU_SCREENSHOT: u32 = 1;
@@ -52,17 +59,20 @@ pub const MENU_AUTO_SAVE: u32 = 3;
 pub const MENU_QUIT: u32 = 4;
 pub const MENU_CAPTURE_BAR: u32 = 5;
 pub const MENU_SETTINGS: u32 = 6;
+pub const MENU_RECORD: u32 = 7;
 
 /// Quits without the tray menu; kept for development.
 pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
 
-/// The global hotkeys for `settings`: the Capture Bar, area screenshots, and
-/// quit. A hotkey the settings spell wrongly is left out (main checks them
-/// at startup; the settings window only stores valid ones).
+/// The global hotkeys for `settings`: the Capture Bar, area screenshots,
+/// recording, and quit. A hotkey the settings spell wrongly is left out
+/// (main checks them at startup; the settings window only stores valid
+/// ones).
 pub fn hotkeys(settings: &Settings) -> Vec<(u32, Hotkey)> {
     [
         (CAPTURE_BAR_HOTKEY, settings.capture_bar_hotkey.as_str()),
         (SCREENSHOT_HOTKEY, settings.screenshot_hotkey.as_str()),
+        (RECORD_HOTKEY, settings.record_hotkey.as_str()),
         (QUIT_HOTKEY, QUIT_KEYS),
     ]
     .into_iter()
@@ -80,8 +90,14 @@ const BAR_TOP: f32 = 24.0;
 /// The thumbnail's distance from the work area's edges, logical pixels.
 const THUMBNAIL_MARGIN: f32 = 16.0;
 
-/// The tray icon's context menu for the current settings.
-pub fn tray_menu(settings: &Settings) -> Vec<MenuItem> {
+/// The tray icon's context menu for the current settings, and whether a
+/// recording is running.
+pub fn tray_menu(settings: &Settings, recording: bool) -> Vec<MenuItem> {
+    let record = if recording {
+        "Stop recording"
+    } else {
+        "Record an area"
+    };
     vec![
         // A tab right-aligns the rest of the label, like a menu accelerator.
         MenuItem::item(
@@ -92,6 +108,7 @@ pub fn tray_menu(settings: &Settings) -> Vec<MenuItem> {
             MENU_SCREENSHOT,
             format!("Screenshot an area\t{}", settings.screenshot_hotkey),
         ),
+        MenuItem::item(MENU_RECORD, format!("{record}\t{}", settings.record_hotkey)),
         MenuItem::item(MENU_OPEN_FOLDER, "Open screenshots folder"),
         MenuItem::Separator,
         MenuItem::Item {
@@ -113,6 +130,8 @@ pub fn tray_menu(settings: &Settings) -> Vec<MenuItem> {
 pub struct Failure {
     pub message: String,
     pub detail: String,
+    /// Whether a recording failed, rather than a screenshot.
+    pub recording: bool,
 }
 
 impl Failure {
@@ -120,12 +139,30 @@ impl Failure {
         Self {
             message: message.into(),
             detail: detail.into(),
+            recording: false,
         }
     }
 
     /// A failure whose message says it all.
     fn plain(message: &str) -> Self {
         Self::new(message, message)
+    }
+
+    /// The same failure, of a recording.
+    fn of_recording(self) -> Self {
+        Self {
+            recording: true,
+            ..self
+        }
+    }
+
+    /// The notification's title.
+    fn title(&self) -> &'static str {
+        if self.recording {
+            "Recording failed"
+        } else {
+            "Screenshot failed"
+        }
     }
 }
 
@@ -164,9 +201,25 @@ struct State {
     /// a newer one has replaced it.
     thumbnail: RefCell<Option<popup::Popup>>,
     thumbnail_generation: Cell<u64>,
+    /// The recording in progress, if any.
+    recording: RefCell<Option<Recording>>,
+}
+
+/// A recording in progress.
+struct Recording {
+    recorder: Recorder,
+    /// Where the finished file goes; until then it is written to
+    /// [`files::partial_path`] of it.
+    path: PathBuf,
 }
 
 impl State {
+    /// Show the tray menu for the current settings and recording state.
+    fn refresh_tray_menu(&self) {
+        let menu = tray_menu(&self.settings.borrow(), self.recording.borrow().is_some());
+        self.platform.set_tray_menu(menu);
+    }
+
     /// Change the settings and save them in the background.
     fn update_settings(&self, change: impl FnOnce(&mut Settings), cx: &mut AsyncApp) -> Settings {
         let settings = {
@@ -208,7 +261,8 @@ impl State {
 #[derive(Clone, Copy, Debug)]
 enum Start {
     CaptureBar,
-    Target(CaptureTarget),
+    Screenshot(CaptureTarget),
+    Record(CaptureTarget),
 }
 
 /// Start handling platform events. Call once, inside the GPUI application.
@@ -228,13 +282,14 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
         busy: Cell::new(false),
         thumbnail: RefCell::new(None),
         thumbnail_generation: Cell::new(0),
+        recording: RefCell::new(None),
     });
     cx.spawn(async move |cx| {
         let mut events = events;
         while let Some(event) = events.next().await {
             match event {
                 PlatformEvent::Hotkey(SCREENSHOT_HOTKEY) => {
-                    start(&state, Start::Target(CaptureTarget::Area), None, cx)
+                    start(&state, Start::Screenshot(CaptureTarget::Area), None, cx)
                 }
                 PlatformEvent::Hotkey(CAPTURE_BAR_HOTKEY)
                 | PlatformEvent::TrayActivated
@@ -243,10 +298,20 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                 }
                 PlatformEvent::TrayCommand(MENU_SCREENSHOT) => start(
                     &state,
-                    Start::Target(CaptureTarget::Area),
+                    Start::Screenshot(CaptureTarget::Area),
                     Some(TRAY_DELAY),
                     cx,
                 ),
+                // One hotkey starts a recording and stops it.
+                PlatformEvent::Hotkey(RECORD_HOTKEY) | PlatformEvent::TrayCommand(MENU_RECORD) => {
+                    if state.recording.borrow().is_some() {
+                        stop_recording(&state, cx);
+                    } else {
+                        let tray = matches!(event, PlatformEvent::TrayCommand(_));
+                        let delay = tray.then_some(TRAY_DELAY);
+                        start(&state, Start::Record(CaptureTarget::Area), delay, cx);
+                    }
+                }
                 PlatformEvent::TrayCommand(MENU_OPEN_FOLDER) => open_folder(&state, cx),
                 PlatformEvent::TrayCommand(MENU_SETTINGS) => open_settings(&state, cx),
                 PlatformEvent::TrayCommand(MENU_AUTO_SAVE) => {
@@ -255,9 +320,16 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                         "auto-save {}",
                         if settings.auto_save { "on" } else { "off" }
                     );
-                    state.platform.set_tray_menu(tray_menu(&settings));
+                    state.refresh_tray_menu();
                 }
                 PlatformEvent::Hotkey(QUIT_HOTKEY) | PlatformEvent::TrayCommand(MENU_QUIT) => {
+                    // A recording running at quit is kept, finished as if
+                    // stopped.
+                    let recording = state.recording.take();
+                    if let Some(recording) = recording {
+                        log::info!("finishing the recording before quitting");
+                        report_recording(&state, finish_recording(recording, cx).await);
+                    }
                     log::info!("quitting");
                     cx.update(|cx| cx.quit());
                 }
@@ -295,12 +367,13 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
             None => Err(Failure::plain("No monitor is under the pointer.")),
             Some(monitor) => match what {
                 Start::CaptureBar => capture_bar(&state, monitor, pressed, cx).await,
-                Start::Target(target) => capture(&state, target, monitor, pressed, cx).await,
+                Start::Screenshot(target) => capture(&state, target, monitor, pressed, cx).await,
+                Start::Record(target) => record(&state, target, monitor, pressed, cx).await,
             },
         };
         if let Err(failure) = result {
             log::error!("{}", failure.detail);
-            state.notify("Screenshot failed", failure.message, None);
+            state.notify(failure.title(), failure.message, None);
         }
         state.busy.set(false);
     })
@@ -390,7 +463,7 @@ fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
         changed: Rc::new(move |cx: &mut App| {
             let settings = changed.settings.borrow().clone();
             changed.save(&settings, cx.background_executor());
-            changed.platform.set_tray_menu(tray_menu(&settings));
+            changed.refresh_tray_menu();
             log::info!("settings changed");
         }),
         pause_hotkeys: Rc::new(move || {
@@ -451,21 +524,19 @@ async fn capture_bar(
         .into_iter()
         .find(|m| m.id == monitor)
         .ok_or_else(|| Failure::plain("The monitor under the pointer is gone."))?;
-    let last = state.settings.borrow().last_target;
+    let (mode, target) = {
+        let settings = state.settings.borrow();
+        (settings.last_mode, settings.last_target)
+    };
     let (bar, outcome) = popup::open(&info, bar_rect(&info), true, cx, move |window, cx| {
-        cx.new(|cx| CaptureBar::new(last, window, cx))
+        cx.new(|cx| CaptureBar::new(target, window, cx).with_mode(mode))
     })
     .map_err(|e| Failure::new("Could not open the Capture Bar.", e))?;
     if let Some(hwnd) = bar.hwnd() {
         platform_window::round_corners(hwnd);
         // Never part of a screenshot, even if the screen is frozen while
-        // the bar is still fading out. FRAMECUT_CAPTURABLE_UI keeps it
-        // capturable, for screenshots of Framecut itself.
-        if std::env::var_os("FRAMECUT_CAPTURABLE_UI").is_none()
-            && let Err(e) = platform_window::exclude_from_capture(hwnd)
-        {
-            log::warn!("could not exclude the Capture Bar from capture: {e:#}");
-        }
+        // the bar is still fading out.
+        exclude_from_capture(hwnd, "Capture Bar");
     }
     log::info!(
         "Capture Bar up {} ms after the request",
@@ -479,11 +550,33 @@ async fn capture_bar(
             log::info!("Capture Bar dismissed");
             Ok(())
         }
-        CaptureBarEvent::Chosen(target) => {
-            log::info!("Capture Bar: {target:?}");
-            state.update_settings(|s| s.last_target = target, cx);
-            capture(state, target, monitor, Instant::now(), cx).await
+        CaptureBarEvent::Chosen(mode, target) => {
+            log::info!("Capture Bar: {mode:?} {target:?}");
+            state.update_settings(
+                |s| {
+                    s.last_mode = mode;
+                    s.last_target = target;
+                },
+                cx,
+            );
+            match mode {
+                CaptureMode::Screenshot => {
+                    capture(state, target, monitor, Instant::now(), cx).await
+                }
+                CaptureMode::Record => record(state, target, monitor, Instant::now(), cx).await,
+            }
         }
+    }
+}
+
+/// Keep one of Framecut's windows out of screenshots and recordings (PRD
+/// §13.6). FRAMECUT_CAPTURABLE_UI leaves them capturable, for screenshots
+/// of Framecut itself.
+fn exclude_from_capture(hwnd: isize, what: &str) {
+    if std::env::var_os("FRAMECUT_CAPTURABLE_UI").is_none()
+        && let Err(e) = platform_window::exclude_from_capture(hwnd)
+    {
+        log::warn!("could not exclude the {what} from capture: {e:#}");
     }
 }
 
@@ -511,33 +604,8 @@ async fn capture(
         CaptureTarget::Area => Mode::Area,
         CaptureTarget::Window => Mode::Window,
     };
-    let frozen = pressed.elapsed();
     let info = frame.monitor().clone();
-    let windows = screen_windows(info.bounds);
-    let snap_to_windows = state.settings.borrow().snap_to_windows;
-    let overlay_frame = OverlayFrame::from_bgra(
-        width,
-        height,
-        info.scale_factor,
-        frame.preview_bgra().to_vec(),
-    );
-    let (overlay, outcome) = popup::open(&info, info.bounds, true, cx, move |window, cx| {
-        cx.new(|cx| {
-            SelectionOverlay::new(overlay_frame, window, cx)
-                .with_windows(windows, snap_to_windows)
-                .with_mode(mode)
-        })
-    })
-    .map_err(|e| Failure::new("Could not open the selection screen.", e))?;
-    log::info!(
-        "overlay up {} ms after the request (freeze {} ms)",
-        pressed.elapsed().as_millis(),
-        frozen.as_millis()
-    );
-
-    let mut outcome = outcome;
-    let event = outcome.next().await.unwrap_or(OverlayEvent::Cancelled);
-    overlay.close(cx);
+    let event = select(state, &frame, mode, false, pressed, cx).await?;
     let released = Instant::now();
     let shot = match event {
         OverlayEvent::Cancelled => {
@@ -560,6 +628,208 @@ async fn capture(
         }
     };
     deliver(state, shot?, &info, released, taken_at, cx).await
+}
+
+/// Show the selection overlay over `frame`, in `mode` or, with
+/// `recording`, to choose an area to record, and wait for the choice.
+async fn select(
+    state: &State,
+    frame: &FrozenFrame,
+    mode: Mode,
+    recording: bool,
+    pressed: Instant,
+    cx: &mut AsyncApp,
+) -> Result<OverlayEvent, Failure> {
+    let frozen = pressed.elapsed();
+    let info = frame.monitor().clone();
+    let (width, height) = frame.size();
+    let windows = screen_windows(info.bounds);
+    let snap_to_windows = state.settings.borrow().snap_to_windows;
+    let overlay_frame = OverlayFrame::from_bgra(
+        width,
+        height,
+        info.scale_factor,
+        frame.preview_bgra().to_vec(),
+    );
+    let (overlay, outcome) = popup::open(&info, info.bounds, true, cx, move |window, cx| {
+        cx.new(|cx| {
+            let overlay = SelectionOverlay::new(overlay_frame, window, cx)
+                .with_windows(windows, snap_to_windows)
+                .with_mode(mode);
+            if recording {
+                overlay.for_recording()
+            } else {
+                overlay
+            }
+        })
+    })
+    .map_err(|e| Failure::new("Could not open the selection screen.", e))?;
+    // A screenshot's own screen is frozen before the overlay appears, but a
+    // recording may be running (PRD §13.5), or about to start as it goes.
+    if let Some(hwnd) = overlay.hwnd() {
+        exclude_from_capture(hwnd, "selection overlay");
+    }
+    log::info!(
+        "overlay up {} ms after the request (freeze {} ms)",
+        pressed.elapsed().as_millis(),
+        frozen.as_millis()
+    );
+    let mut outcome = outcome;
+    let event = outcome.next().await.unwrap_or(OverlayEvent::Cancelled);
+    overlay.close(cx);
+    Ok(event)
+}
+
+/// Record `target` on `monitor`: choose the area on a frozen frame of it,
+/// then start the recorder. It runs until [`stop_recording`].
+async fn record(
+    state: &Rc<State>,
+    target: CaptureTarget,
+    monitor: MonitorId,
+    pressed: Instant,
+    cx: &mut AsyncApp,
+) -> Result<(), Failure> {
+    if state.recording.borrow().is_some() {
+        log::info!("already recording; the new request is ignored");
+        return Ok(());
+    }
+    let region = match target {
+        CaptureTarget::Display => None,
+        CaptureTarget::Area | CaptureTarget::Window => {
+            let frame = state.capture.freeze_monitor(monitor, false).await?;
+            match select(state, &frame, Mode::Area, true, pressed, cx).await? {
+                OverlayEvent::Selected(rect) => Some(rect),
+                OverlayEvent::Display => None,
+                OverlayEvent::Window { visible, .. } => Some(visible),
+                OverlayEvent::Cancelled => {
+                    log::info!("recording cancelled");
+                    return Ok(());
+                }
+            }
+        }
+    };
+    let chosen = Instant::now();
+    let settings = state.settings.borrow().clone();
+    let dir = settings.recording_dir();
+    let (fps, include_cursor) = (settings.record_fps(), settings.record_cursor);
+    let started_at = Local::now().naive_local();
+    let started = cx
+        .background_executor()
+        .spawn(async move {
+            let path = files::new_recording(&dir, started_at).map_err(|e| {
+                Failure::new(
+                    format!(
+                        "Could not save to {}. Check the folder in Settings.",
+                        dir.display()
+                    ),
+                    format!("{e:#}"),
+                )
+            })?;
+            let options = RecordOptions {
+                monitor,
+                region,
+                fps,
+                include_cursor,
+                path: files::partial_path(&path),
+            };
+            let recorder = Recorder::start(options).map_err(|e| {
+                Failure::new("Could not start recording.", format!("recorder: {e:#}"))
+            })?;
+            Ok::<_, Failure>(Recording { recorder, path })
+        })
+        .await
+        .map_err(Failure::of_recording)?;
+    log::info!(
+        "recording {} at {fps} fps, {} ms after the choice",
+        match region {
+            Some(r) => format!("{}×{} at {},{}", r.width, r.height, r.x, r.y),
+            None => "the display".to_string(),
+        },
+        chosen.elapsed().as_millis()
+    );
+    state.recording.replace(Some(started));
+    state.refresh_tray_menu();
+    Ok(())
+}
+
+/// Stop the recording in progress, finish its file, and say where it is.
+fn stop_recording(state: &Rc<State>, cx: &mut AsyncApp) {
+    let Some(recording) = state.recording.take() else {
+        return;
+    };
+    state.refresh_tray_menu();
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        let result = finish_recording(recording, cx).await;
+        report_recording(&state, result);
+    })
+    .detach();
+}
+
+/// Stop `recording` and move the file to its final name, off the main
+/// thread. On failure, the unfinished file is deleted: it cannot be played.
+async fn finish_recording(
+    recording: Recording,
+    cx: &mut AsyncApp,
+) -> Result<RecordingSummary, Failure> {
+    cx.background_executor()
+        .spawn(async move {
+            let Recording { recorder, path } = recording;
+            let partial = files::partial_path(&path);
+            let summary = recorder.stop().and_then(|summary| {
+                std::fs::rename(&partial, &path)?;
+                Ok(summary)
+            });
+            match summary {
+                Ok(summary) => Ok(RecordingSummary { path, ..summary }),
+                Err(e) => {
+                    let _ = std::fs::remove_file(&partial);
+                    Err(Failure::new(
+                        "The recording could not be finished.",
+                        format!("finishing {}: {e:#}", path.display()),
+                    )
+                    .of_recording())
+                }
+            }
+        })
+        .await
+}
+
+/// Log a finished recording and tell the user where it went.
+fn report_recording(state: &State, result: Result<RecordingSummary, Failure>) {
+    match result {
+        Ok(summary) => {
+            let name = summary
+                .path
+                .file_name()
+                .unwrap_or_default()
+                .to_string_lossy();
+            log::info!(
+                "saved {name}: {}×{}, {:.2} s, {} frames ({} dropped, {} skipped), {:.1} s paused, {} encoder",
+                summary.width,
+                summary.height,
+                summary.duration.as_secs_f64(),
+                summary.frames,
+                summary.dropped_busy,
+                summary.skipped_rate,
+                summary.paused.as_secs_f64(),
+                if summary.hardware_encoder {
+                    "hardware"
+                } else {
+                    "software"
+                }
+            );
+            state.notify(
+                format!("Recording saved · {}", recording::clock(summary.duration)),
+                format!("{name}, {} × {}", summary.width, summary.height),
+                Some(summary.path.clone()),
+            );
+        }
+        Err(failure) => {
+            log::error!("{}", failure.detail);
+            state.notify(failure.title(), failure.message, None);
+        }
+    }
 }
 
 /// Windows on the monitor at `bounds`, front to back, relative to it. The
@@ -813,11 +1083,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             if let Err(e) = framecut_platform::drag::refuse_drops(hwnd) {
                 log::warn!("the thumbnail still accepts drops: {e:#}");
             }
-            if std::env::var_os("FRAMECUT_CAPTURABLE_UI").is_none()
-                && let Err(e) = platform_window::exclude_from_capture(hwnd)
-            {
-                log::warn!("could not exclude the thumbnail from capture: {e:#}");
-            }
+            exclude_from_capture(hwnd, "thumbnail");
         }
         let generation = state.thumbnail_generation.get() + 1;
         state.thumbnail_generation.set(generation);
@@ -890,18 +1156,24 @@ mod tests {
     #[test]
     fn the_tray_menu_follows_the_settings() {
         let settings = Settings::default();
-        let menu = tray_menu(&settings);
+        let menu = tray_menu(&settings, false);
         assert!(auto_save_checked(&menu));
         assert!(menu.contains(&MenuItem::item(MENU_CAPTURE_BAR, "Capture Bar\tCtrl+Alt+C")));
         assert!(menu.contains(&MenuItem::item(
             MENU_SCREENSHOT,
             "Screenshot an area\tCtrl+Alt+S"
         )));
+        assert!(menu.contains(&MenuItem::item(MENU_RECORD, "Record an area\tCtrl+Alt+R")));
+        // While recording, the same item stops it.
+        assert!(
+            tray_menu(&settings, true)
+                .contains(&MenuItem::item(MENU_RECORD, "Stop recording\tCtrl+Alt+R"))
+        );
         let off = Settings {
             auto_save: false,
             ..settings
         };
-        assert!(!auto_save_checked(&tray_menu(&off)));
+        assert!(!auto_save_checked(&tray_menu(&off, false)));
     }
 
     #[test]

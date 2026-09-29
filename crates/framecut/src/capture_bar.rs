@@ -1,7 +1,7 @@
 //! The Capture Bar (PRD §7.5): a small bar at the top of the screen that
-//! asks what to capture. It opens from its own hotkey or the tray icon,
-//! remembers the last choice, works from the keyboard, and disappears as
-//! soon as a target is chosen.
+//! asks whether to take a screenshot or record, and of what. It opens from
+//! its own hotkey or the tray icon, remembers the last choice, works from
+//! the keyboard, and disappears as soon as a target is chosen.
 
 use gpui_kit::{
     Context, EventEmitter, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
@@ -11,7 +11,55 @@ use gpui_kit::{
 };
 use serde::{Deserialize, Serialize};
 
-/// What a screenshot captures.
+/// Whether the bar takes a screenshot or starts a recording.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum CaptureMode {
+    #[default]
+    Screenshot,
+    Record,
+}
+
+impl CaptureMode {
+    const ALL: [CaptureMode; 2] = [Self::Screenshot, Self::Record];
+
+    fn label(self) -> &'static str {
+        match self {
+            Self::Screenshot => "Screenshot",
+            Self::Record => "Record",
+        }
+    }
+
+    /// The letter that switches to it from the keyboard.
+    fn key(self) -> &'static str {
+        match self {
+            Self::Screenshot => "s",
+            Self::Record => "r",
+        }
+    }
+
+    fn icon(self) -> IconName {
+        match self {
+            Self::Screenshot => IconName::Camera,
+            Self::Record => IconName::Video,
+        }
+    }
+
+    fn id(self) -> &'static str {
+        match self {
+            Self::Screenshot => "mode-screenshot",
+            Self::Record => "mode-record",
+        }
+    }
+
+    /// Whether `target` can be captured this way: recordings are of an
+    /// area or a display (PRD §7.7).
+    pub fn offers(self, target: CaptureTarget) -> bool {
+        self == Self::Screenshot || target != CaptureTarget::Window
+    }
+}
+
+/// What a screenshot or recording captures.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureTarget {
@@ -61,7 +109,7 @@ impl CaptureTarget {
 /// What the user did with the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureBarEvent {
-    Chosen(CaptureTarget),
+    Chosen(CaptureMode, CaptureTarget),
     Dismissed,
 }
 
@@ -70,6 +118,7 @@ pub const BAR_WIDTH: f32 = 312.0;
 pub const BAR_HEIGHT: f32 = 132.0;
 
 pub struct CaptureBar {
+    mode: CaptureMode,
     selected: CaptureTarget,
     focus: FocusHandle,
     done: bool,
@@ -106,14 +155,40 @@ impl CaptureBar {
         })
         .detach();
         Self {
+            mode: CaptureMode::Screenshot,
             selected,
             focus,
             done: false,
         }
     }
 
+    /// Start in `mode` rather than Screenshot.
+    pub fn with_mode(mut self, mode: CaptureMode) -> Self {
+        self.set_mode(mode);
+        self
+    }
+
+    pub fn mode(&self) -> CaptureMode {
+        self.mode
+    }
+
     pub fn selected(&self) -> CaptureTarget {
         self.selected
+    }
+
+    /// Switch modes, moving off a target the new mode does not offer.
+    fn set_mode(&mut self, mode: CaptureMode) {
+        self.mode = mode;
+        if !mode.offers(self.selected) {
+            self.selected = CaptureTarget::Area;
+        }
+    }
+
+    fn choose(&mut self, target: CaptureTarget, cx: &mut Context<Self>) {
+        if self.mode.offers(target) {
+            self.selected = target;
+            self.finish(CaptureBarEvent::Chosen(self.mode, target), cx);
+        }
     }
 
     /// Report once; later input and deactivation are ignored.
@@ -123,10 +198,18 @@ impl CaptureBar {
         }
     }
 
+    /// Move the selection `by` targets, wrapping, over the ones this mode
+    /// offers.
     fn step(&mut self, by: isize, cx: &mut Context<Self>) {
-        let all = CaptureTarget::ALL;
-        let at = all.iter().position(|t| *t == self.selected).unwrap_or(0) as isize;
-        self.selected = all[(at + by).rem_euclid(all.len() as isize) as usize];
+        let offered: Vec<_> = CaptureTarget::ALL
+            .into_iter()
+            .filter(|t| self.mode.offers(*t))
+            .collect();
+        let at = offered
+            .iter()
+            .position(|t| *t == self.selected)
+            .unwrap_or(0) as isize;
+        self.selected = offered[(at + by).rem_euclid(offered.len() as isize) as usize];
         cx.notify();
     }
 
@@ -134,23 +217,74 @@ impl CaptureBar {
         let key = event.keystroke.key.as_str();
         match key {
             "escape" => self.finish(CaptureBarEvent::Dismissed, cx),
-            "enter" | "space" => self.finish(CaptureBarEvent::Chosen(self.selected), cx),
+            "enter" | "space" => self.choose(self.selected, cx),
             "left" | "up" => self.step(-1, cx),
             "right" | "down" => self.step(1, cx),
             "tab" if event.keystroke.modifiers.shift => self.step(-1, cx),
             "tab" => self.step(1, cx),
             _ => {
-                if let Some(target) = CaptureTarget::ALL.into_iter().find(|t| t.key() == key) {
-                    self.selected = target;
-                    self.finish(CaptureBarEvent::Chosen(target), cx);
+                if let Some(mode) = CaptureMode::ALL.into_iter().find(|m| m.key() == key) {
+                    self.set_mode(mode);
+                    cx.notify();
+                } else if let Some(target) = CaptureTarget::ALL.into_iter().find(|t| t.key() == key)
+                {
+                    self.choose(target, cx);
                 }
             }
         }
     }
 
+    fn mode_tab(&self, mode: CaptureMode, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let on = mode == self.mode;
+        div()
+            .id(mode.id())
+            .role(Role::Tab)
+            .aria_label(mode.label())
+            .test_support()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .when_else(
+                on,
+                |d| d.bg(tile()).text_color(gpui_kit::white()),
+                |d| {
+                    d.text_color(muted())
+                        .hover(|s| s.text_color(gpui_kit::white()))
+                },
+            )
+            .cursor_pointer()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                    this.set_mode(mode);
+                    cx.notify();
+                }),
+            )
+            .text_sm()
+            .child(
+                Icon::new(mode.icon())
+                    .size(px(16.))
+                    .when(on && mode == CaptureMode::Record, |icon| {
+                        icon.text_color(recording())
+                    }),
+            )
+            .child(mode.label())
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted())
+                    .child(mode.key().to_uppercase()),
+            )
+    }
+
     fn target(&self, target: CaptureTarget, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let selected = target == self.selected;
+        let offered = self.mode.offers(target);
+        let selected = offered && target == self.selected;
         let label: SharedString = target.label().into();
+        let text = if offered { gpui_kit::white() } else { muted() };
         div()
             .id(target.id())
             .role(Role::Button)
@@ -167,23 +301,19 @@ impl CaptureBar {
             .border_2()
             .border_color(if selected { accent() } else { tile() })
             .bg(tile())
-            .hover(|s| s.bg(rgb(0x353535)))
-            .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                    this.selected = target;
-                    this.finish(CaptureBarEvent::Chosen(target), cx);
-                }),
-            )
+            .when(!offered, |d| d.opacity(0.4))
+            .when(offered, |d| {
+                d.hover(|s| s.bg(rgb(0x353535)))
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| this.choose(target, cx)),
+                    )
+            })
             .child(
                 Icon::new(target.icon())
                     .size(px(22.))
-                    .text_color(if selected {
-                        accent()
-                    } else {
-                        gpui_kit::white()
-                    }),
+                    .text_color(if selected { accent() } else { text }),
             )
             .child(
                 div()
@@ -191,7 +321,7 @@ impl CaptureBar {
                     .items_center()
                     .gap_1()
                     .text_sm()
-                    .text_color(gpui_kit::white())
+                    .text_color(text)
                     .child(label)
                     .child(
                         div()
@@ -203,29 +333,13 @@ impl CaptureBar {
     }
 }
 
+/// The red of a recording in progress.
+fn recording() -> Hsla {
+    rgb(0xE5484D).into()
+}
+
 impl Render for CaptureBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let mode = |id: &'static str, icon: IconName, label: &'static str, on: bool| {
-            div()
-                .id(id)
-                .role(Role::Tab)
-                .aria_label(label)
-                .test_support()
-                .flex()
-                .items_center()
-                .gap_1p5()
-                .px_2()
-                .py_1()
-                .rounded_md()
-                .when_else(
-                    on,
-                    |d| d.bg(tile()).text_color(gpui_kit::white()),
-                    |d| d.text_color(muted()),
-                )
-                .text_sm()
-                .child(Icon::new(icon).size(px(16.)))
-                .child(label)
-        };
         div()
             .id("capture-bar")
             .role(Role::Dialog)
@@ -246,16 +360,7 @@ impl Render for CaptureBar {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .child(mode(
-                        "mode-screenshot",
-                        IconName::Camera,
-                        "Screenshot",
-                        true,
-                    ))
-                    .child(
-                        mode("mode-record", IconName::Video, "Record", false)
-                            .child(div().text_xs().text_color(muted()).child("soon")),
-                    ),
+                    .children(CaptureMode::ALL.map(|m| self.mode_tab(m, cx))),
             )
             .child(
                 div()

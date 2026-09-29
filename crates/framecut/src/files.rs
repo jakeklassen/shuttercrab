@@ -1,4 +1,5 @@
-//! Screenshot files: `Capture 2026-09-22 13-42-18.png` (PRD §12).
+//! Output files: `Capture 2026-09-22 13-42-18.png` and
+//! `Recording 2026-09-22 13-45-03.mp4` (PRD §12).
 
 use anyhow::{Context, Result};
 use chrono::NaiveDateTime;
@@ -9,18 +10,42 @@ pub fn capture_name(at: NaiveDateTime) -> String {
     format!("Capture {}.png", at.format("%Y-%m-%d %H-%M-%S"))
 }
 
+/// The file name for a recording started at `at` (local time).
+pub fn recording_name(at: NaiveDateTime) -> String {
+    format!("Recording {}.mp4", at.format("%Y-%m-%d %H-%M-%S"))
+}
+
+/// The extension a recording has until it is finished.
+const PARTIAL: &str = "partial";
+
 /// A path in `dir` for `name` that does not exist yet: `name`, then
 /// `name (2)`, `name (3)`… for screenshots taken within the same second.
 pub fn unused_path(dir: &Path, name: &str) -> PathBuf {
+    let free = |p: &Path| !p.exists() && !partial_path(p).exists();
     let first = dir.join(name);
-    if !first.exists() {
+    if free(&first) {
         return first;
     }
     let (stem, extension) = name.rsplit_once('.').unwrap_or((name, ""));
     (2..)
         .map(|n| dir.join(format!("{stem} ({n}).{extension}")))
-        .find(|p| !p.exists())
+        .find(|p| free(p))
         .expect("some suffix is free")
+}
+
+/// Where a recording is written until it is finished: `name.mp4.partial`,
+/// so an interrupted recording is never mistaken for a finished one.
+pub fn partial_path(path: &Path) -> PathBuf {
+    let mut name = path.as_os_str().to_owned();
+    name.push(".");
+    name.push(PARTIAL);
+    PathBuf::from(name)
+}
+
+/// The path for a new recording in `dir`, creating the folder if needed.
+pub fn new_recording(dir: &Path, at: NaiveDateTime) -> Result<PathBuf> {
+    std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
+    Ok(unused_path(dir, &recording_name(at)))
 }
 
 /// Save `png` as a new screenshot in `dir`, creating the folder if needed.
@@ -73,6 +98,25 @@ mod tests {
     #[test]
     fn names_follow_the_prd() {
         assert_eq!(capture_name(at()), "Capture 2026-09-22 13-42-18.png");
+        assert_eq!(recording_name(at()), "Recording 2026-09-22 13-42-18.mp4");
+    }
+
+    #[test]
+    fn a_recording_in_progress_keeps_its_name_taken() {
+        let dir = std::env::temp_dir().join(format!("framecut-rec-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        let first = new_recording(&dir, at()).unwrap();
+        assert_eq!(
+            partial_path(&first).file_name().unwrap(),
+            "Recording 2026-09-22 13-42-18.mp4.partial"
+        );
+        std::fs::write(partial_path(&first), b"").unwrap();
+        let second = new_recording(&dir, at()).unwrap();
+        assert_eq!(
+            second.file_name().unwrap(),
+            "Recording 2026-09-22 13-42-18 (2).mp4"
+        );
+        std::fs::remove_dir_all(&dir).unwrap();
     }
 
     #[test]

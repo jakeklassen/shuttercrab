@@ -93,6 +93,8 @@ pub struct SelectionOverlay {
     dragging: bool,
     /// Where the pointer went down in Window mode.
     pressed: bool,
+    /// Choosing an area to record: Area mode only.
+    recording: bool,
     focus: FocusHandle,
 }
 
@@ -122,8 +124,17 @@ impl SelectionOverlay {
             end_stuck: Stuck::default(),
             dragging: false,
             pressed: false,
+            recording: false,
             focus,
         }
+    }
+
+    /// Choose an area to record rather than to capture: recordings are of
+    /// an area (PRD §7.7), so Space does not switch to Window mode.
+    pub fn for_recording(mut self) -> Self {
+        self.recording = true;
+        self.mode = Mode::Area;
+        self
     }
 
     /// The windows on this monitor, front to back, for Window mode and,
@@ -228,7 +239,7 @@ impl SelectionOverlay {
     }
 
     fn toggle_mode(&mut self, cx: &mut Context<Self>) {
-        if self.dragging {
+        if self.dragging || self.recording {
             return;
         }
         self.mode = match self.mode {
@@ -413,6 +424,7 @@ impl SelectionOverlay {
     /// A short hint at the top: what the mouse does and how to switch.
     fn hint(&self, window: &Window) -> impl IntoElement {
         let text: SharedString = match self.mode {
+            Mode::Area if self.recording => "Drag to record an area  ·  Esc: cancel",
             Mode::Area => "Drag to capture an area  ·  Space: window  ·  Esc: cancel",
             Mode::Window => "Click a window, or the desktop for the whole display  ·  Space: area  ·  Esc: cancel",
         }

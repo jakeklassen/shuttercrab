@@ -105,6 +105,7 @@ fn main() {
         &defaults.capture_bar_hotkey,
     );
     normalize(&mut settings.screenshot_hotkey, &defaults.screenshot_hotkey);
+    normalize(&mut settings.record_hotkey, &defaults.record_hotkey);
 
     let capture = match Capture::start() {
         Ok(capture) => capture,
@@ -119,7 +120,7 @@ fn main() {
     let hotkeys = app::hotkeys(&settings);
     let tray = Tray {
         tooltip: "Framecut".into(),
-        menu: app::tray_menu(&settings),
+        menu: app::tray_menu(&settings, false),
     };
     let (platform, events, conflicts) = match Platform::start(&hotkeys, Some(tray)) {
         Ok(started) => started,
@@ -156,9 +157,10 @@ fn main() {
         platform.notify(title, message);
     }
     log::info!(
-        "ready: {} opens the Capture Bar, {} takes an area screenshot, {} quits",
+        "ready: {} opens the Capture Bar, {} takes an area screenshot, {} records an area, {} quits",
         settings.capture_bar_hotkey,
         settings.screenshot_hotkey,
+        settings.record_hotkey,
         app::QUIT_KEYS
     );
 

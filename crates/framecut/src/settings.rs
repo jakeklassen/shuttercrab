@@ -4,7 +4,7 @@
 //! fields removed by hand) still loads. A file that cannot be parsed is kept
 //! as `settings.json.bad` rather than overwritten.
 
-use crate::capture_bar::CaptureTarget;
+use crate::capture_bar::{CaptureMode, CaptureTarget};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -16,6 +16,8 @@ pub struct Settings {
     pub capture_bar_hotkey: String,
     /// Starts an area screenshot directly, e.g. `Ctrl+Alt+S`.
     pub screenshot_hotkey: String,
+    /// Starts an area recording directly, or stops the one running.
+    pub record_hotkey: String,
     /// Put screenshots on the clipboard.
     pub copy_to_clipboard: bool,
     /// Also save each screenshot as a PNG file.
@@ -26,7 +28,8 @@ pub struct Settings {
     pub snap_to_windows: bool,
     /// Draw the pointer into screenshots (PRD §15: off by default).
     pub include_cursor: bool,
-    /// What the Capture Bar offers first: the last target used.
+    /// What the Capture Bar offers first: the last mode and target used.
+    pub last_mode: CaptureMode,
     pub last_target: CaptureTarget,
     /// Show a thumbnail in the corner after each screenshot.
     pub show_thumbnail: bool,
@@ -34,6 +37,12 @@ pub struct Settings {
     pub thumbnail_seconds: u32,
     /// Also show a Windows notification after each screenshot.
     pub notify_after_capture: bool,
+    /// Where recordings are saved; `None` means `Videos\Framecut`.
+    pub recording_dir: Option<PathBuf>,
+    /// Record the pointer (PRD §15: on by default for recordings).
+    pub record_cursor: bool,
+    /// 30 or 60 (PRD §13.1).
+    pub record_fps: u32,
 }
 
 impl Default for Settings {
@@ -41,15 +50,20 @@ impl Default for Settings {
         Self {
             capture_bar_hotkey: "Ctrl+Alt+C".into(),
             screenshot_hotkey: "Ctrl+Alt+S".into(),
+            record_hotkey: "Ctrl+Alt+R".into(),
             copy_to_clipboard: true,
             auto_save: true,
             output_dir: None,
             snap_to_windows: true,
             include_cursor: false,
+            last_mode: CaptureMode::Screenshot,
             last_target: CaptureTarget::Area,
             show_thumbnail: true,
             thumbnail_seconds: 6,
             notify_after_capture: false,
+            recording_dir: None,
+            record_cursor: true,
+            record_fps: 30,
         }
     }
 }
@@ -58,6 +72,18 @@ impl Settings {
     /// The folder screenshots are saved to.
     pub fn output_dir(&self) -> PathBuf {
         self.output_dir.clone().unwrap_or_else(default_output_dir)
+    }
+
+    /// The folder recordings are saved to.
+    pub fn recording_dir(&self) -> PathBuf {
+        self.recording_dir
+            .clone()
+            .unwrap_or_else(default_recording_dir)
+    }
+
+    /// The recording frame rate: 60 if asked for, otherwise 30.
+    pub fn record_fps(&self) -> u32 {
+        if self.record_fps == 60 { 60 } else { 30 }
     }
 }
 
@@ -68,6 +94,15 @@ pub fn default_output_dir() -> PathBuf {
         .or_else(dirs::home_dir)
         .unwrap_or_else(std::env::temp_dir)
         .join("Framecut")
+}
+
+/// `Videos\Framecut`, or `Framecut Videos` beside the screenshots folder
+/// when there is no Videos folder.
+pub fn default_recording_dir() -> PathBuf {
+    match dirs::video_dir() {
+        Some(videos) => videos.join("Framecut"),
+        None => default_output_dir().with_file_name("Framecut Videos"),
+    }
 }
 
 /// `%APPDATA%\Framecut\settings.json`.
@@ -176,5 +211,18 @@ mod tests {
     fn the_default_folder_is_under_pictures() {
         let dir = Settings::default().output_dir();
         assert!(dir.ends_with("Framecut"), "{}", dir.display());
+    }
+
+    #[test]
+    fn recordings_default_to_their_own_folder_with_the_pointer_at_30_fps() {
+        let settings = Settings::default();
+        assert_ne!(settings.recording_dir(), settings.output_dir());
+        assert!(settings.record_cursor);
+        assert_eq!(settings.record_fps(), 30);
+        let odd = Settings {
+            record_fps: 45,
+            ..settings
+        };
+        assert_eq!(odd.record_fps(), 30);
     }
 }

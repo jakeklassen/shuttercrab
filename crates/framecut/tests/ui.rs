@@ -34,6 +34,18 @@ fn open_with(
     windows: Vec<ScreenWindow>,
     snap: bool,
 ) -> Opened {
+    open_built(cx, logical, scale, move |overlay| {
+        overlay.with_windows(windows, snap)
+    })
+}
+
+/// As [`open`], with the overlay finished by `build`.
+fn open_built(
+    cx: &mut TestAppContext,
+    logical: (f32, f32),
+    scale: f32,
+    build: impl FnOnce(SelectionOverlay) -> SelectionOverlay + 'static,
+) -> Opened {
     cx.update(gpui_kit::init);
     let (w, h) = ((logical.0 * scale) as u32, (logical.1 * scale) as u32);
     // A mid-grey frame, as a monitor would deliver it.
@@ -43,7 +55,7 @@ fn open_with(
     let handle = cx.open_window(size(px(logical.0), px(logical.1)), move |window, cx| {
         cx.subscribe_self(move |_, event: &OverlayEvent, _| sink.borrow_mut().push(*event))
             .detach();
-        SelectionOverlay::new(frame, window, cx).with_windows(windows, snap)
+        build(SelectionOverlay::new(frame, window, cx))
     });
     Opened { handle, events }
 }
@@ -200,6 +212,20 @@ fn space_switches_between_area_and_window(cx: &mut TestAppContext) {
     update(cx, &opened, |window, cx| window.press("space", cx));
     assert_eq!(mode(cx, &opened), Mode::Area);
     assert!(opened.events.borrow().is_empty());
+}
+
+#[gpui_kit::test]
+fn an_area_to_record_stays_in_area_mode(cx: &mut TestAppContext) {
+    let opened = open_built(cx, (400.0, 300.0), 1.5, SelectionOverlay::for_recording);
+    update(cx, &opened, |window, cx| {
+        assert!(
+            label(window, "mode-hint")
+                .unwrap()
+                .starts_with("Drag to record")
+        );
+        window.press("space", cx);
+    });
+    assert_eq!(mode(cx, &opened), Mode::Area);
 }
 
 #[gpui_kit::test]
