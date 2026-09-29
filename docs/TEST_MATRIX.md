@@ -404,6 +404,16 @@ Acceptance (manual):
 
 ### Step 6: hardening and HDR video
 
+Owner's results, 2026-09-28: 1 (a paused HDR video through the Capture Bar
+looks like the chosen option) and 4 (idle CPU) pass. 2 (HDR toggled with
+Framecut running) works; the HDR-on and HDR-off screenshots are similar,
+with the largest difference in the brightest sky, which the percentile
+anchor keeps more saturated than the player's own HDR-off rendering
+("probably ok"). The video's title text, drawn over the video, came out
+fainter with HDR on: the known "UI over HDR content is exposed with it"
+limit, now seen on real content. 3 (sleep and wake) is deferred by the
+owner to another time.
+
 Hardening (PRD §22–§25):
 
 - **Lost graphics device** (removed, hung, reset, driver error; sleep and
