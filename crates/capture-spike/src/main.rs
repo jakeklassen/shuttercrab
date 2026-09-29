@@ -36,8 +36,8 @@ USAGE
   capture-spike convert SOURCE.fp16 OUT.png [--highlights tonemap|clip]
                         [--anchor peak|pNN|BRIGHTNESS]
       Re-run the transform on a saved FP16 frame. --anchor picks what sets an
-      HDR region's exposure: its peak (default), a percentile of its tile
-      peaks (p90), or a fixed brightness over SDR white (4.2).
+      HDR region's exposure: its peak, a percentile of its tile peaks
+      (p90, Framecut's and the default), or a fixed brightness over SDR white (4.2).
 
   capture-spike compare REFERENCE.png TEST.png [--roi X,Y,W,H] [--source TEST.fp16]
                         [--heatmap OUT.png]
@@ -341,12 +341,13 @@ fn probe(mut args: Args) -> Result<()> {
     Ok(())
 }
 
-/// `--anchor peak` (default), `--anchor p90` (a percentile of the region's
+/// `--anchor peak`, `--anchor p90` (Framecut's, the default) (a percentile of the region's
 /// tile peaks) or `--anchor 4.2` (a fixed brightness over SDR white, such as
 /// the display's peak).
 fn anchor(args: &mut Args) -> Result<Anchor> {
     let Some(text) = args.option("--anchor")? else {
-        return Ok(Anchor::RegionPeak);
+        // What Framecut uses.
+        return Ok(color::SCREENSHOT_ANCHOR);
     };
     if text == "peak" {
         return Ok(Anchor::RegionPeak);

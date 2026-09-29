@@ -378,6 +378,13 @@ pub enum Anchor {
     Fixed(f32),
 }
 
+/// The anchor for screenshots: the 90th percentile of a region's tile
+/// peaks. Chosen by the owner on a real HDR video frame (2026-09-28): it
+/// came closest to the video player's own HDR-off rendering (mean ΔE00
+/// 0.80, against 2.57 for the region peak), and the HDR test image's eight
+/// grey steps stay distinct (docs/COLOR_PIPELINE.md).
+pub const SCREENSHOT_ANCHOR: Anchor = Anchor::Percentile(0.9);
+
 /// Set each region's `peak` to the brightness `anchor` maps to white.
 /// `stats` and `tiles_x` are what [`find_regions`] used.
 pub fn anchor_regions(

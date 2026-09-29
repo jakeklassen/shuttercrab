@@ -9,7 +9,7 @@
 
 use crate::{
     capture::{self, PixelFormat},
-    color::{ColorMode, Highlights},
+    color::{ColorMode, Highlights, SCREENSHOT_ANCHOR},
     display,
     gpu::{Gpu, SdrConverter},
 };
@@ -494,7 +494,13 @@ impl Service {
                 )
                 .map_err(unavailable)?;
                 let sdr = converter
-                    .convert(gpu, &frame.texture, white_scale, Highlights::Tonemap)
+                    .convert_anchored(
+                        gpu,
+                        &frame.texture,
+                        white_scale,
+                        Highlights::Tonemap,
+                        SCREENSHOT_ANCHOR,
+                    )
                     .map_err(unavailable)?;
                 let mut bgra = sdr.rgba;
                 for px in bgra.as_chunks_mut::<4>().0 {
@@ -662,7 +668,13 @@ impl Service {
                 let frame = capture::capture_window(gpu, window, PixelFormat::Fp16, include_cursor)
                     .map_err(failed)?;
                 let sdr = converter
-                    .convert(gpu, &frame.texture, white_scale, Highlights::Tonemap)
+                    .convert_anchored(
+                        gpu,
+                        &frame.texture,
+                        white_scale,
+                        Highlights::Tonemap,
+                        SCREENSHOT_ANCHOR,
+                    )
                     .map_err(failed)?;
                 (sdr.width, sdr.height, sdr.rgba)
             }
