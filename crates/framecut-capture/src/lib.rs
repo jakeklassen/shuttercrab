@@ -10,6 +10,7 @@ pub mod display;
 pub mod gpu;
 pub mod png_io;
 pub mod raw;
+pub mod record;
 pub mod service;
 
 pub use service::{

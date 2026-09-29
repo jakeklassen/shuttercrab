@@ -69,6 +69,13 @@ USAGE
   capture-spike hdr-fixture OUT.png
       Write the HDR test image (BT.2020 PQ PNG) used by the mixed scene.
 
+  capture-spike record [--monitor M] [--region X,Y,W,H] [--seconds N] [--fps 30|60]
+                       [--pause AT,FOR] [--cursor on] [--out FILE.mp4]
+      Record H.264 MP4 through the Milestone 3 pipeline (default: 10 s at
+      30 fps, the whole monitor, ./captures/recording-TIMESTAMP.mp4). With
+      --pause, pause AT seconds in for FOR seconds, then carry on; the
+      paused time is left out of the video.
+
 Run `capture-spike help` for this text.";
 
 fn main() {
@@ -101,6 +108,7 @@ fn run() -> Result<()> {
         Some("gate") => gate(args),
         Some("gate-report") => gate_report(args),
         Some("hdr-fixture") => hdr_fixture(args),
+        Some("record") => record(args),
         Some("help") | None => {
             println!("{USAGE}");
             Ok(())
@@ -168,6 +176,96 @@ pub fn print_snapshot(shot: &snapshot::Snapshot) {
         println!("No pixel exceeds SDR white: SDR content is reproduced as captured");
     }
     println!("Saved {}", shot.dir.display());
+}
+
+fn record(mut args: Args) -> Result<()> {
+    use framecut_capture::{
+        MonitorId, PhysicalRect,
+        record::{RecordOptions, Recorder},
+    };
+    let monitor = args.option("--monitor")?;
+    let region = args
+        .option("--region")?
+        .map(|r| Roi::parse(&r))
+        .transpose()?
+        .map(|r| PhysicalRect::new(r.x as i32, r.y as i32, r.width, r.height));
+    let seconds: f64 = args
+        .option("--seconds")?
+        .map(|s| s.parse())
+        .transpose()?
+        .unwrap_or(10.0);
+    let fps: u32 = args
+        .option("--fps")?
+        .map(|f| f.parse())
+        .transpose()?
+        .unwrap_or(30);
+    let pause = args
+        .option("--pause")?
+        .map(|p| -> Result<(f64, f64)> {
+            let (at, length) = p
+                .split_once(',')
+                .context("--pause takes AT,FOR in seconds")?;
+            Ok((at.parse()?, length.parse()?))
+        })
+        .transpose()?;
+    let include_cursor = args.option("--cursor")?.as_deref() == Some("on");
+    let out = args.option("--out")?.map(PathBuf::from).unwrap_or_else(|| {
+        PathBuf::from("captures").join(format!("recording-{}.mp4", snapshot::timestamp()))
+    });
+    args.finish()?;
+    if let Some(dir) = out.parent().filter(|d| !d.as_os_str().is_empty()) {
+        std::fs::create_dir_all(dir)?;
+    }
+    let monitors = display::enumerate()?;
+    let target = display::select(&monitors, monitor.as_deref())?;
+    println!(
+        "Recording {} for {seconds} s at {fps} fps...",
+        target.device_name
+    );
+    let recorder = Recorder::start(RecordOptions {
+        monitor: MonitorId(target.hmonitor.0 as u64),
+        region,
+        fps,
+        include_cursor,
+        path: out.clone(),
+    })?;
+    // Count from when recording is running, not from before its setup.
+    let started = std::time::Instant::now();
+    let wait_until = |t: f64| {
+        let left = t - started.elapsed().as_secs_f64();
+        if left > 0.0 {
+            std::thread::sleep(Duration::from_secs_f64(left));
+        }
+    };
+    if let Some((at, length)) = pause {
+        wait_until(at);
+        recorder.pause();
+        println!("paused at {at} s");
+        wait_until(at + length);
+        recorder.resume();
+        println!("resumed at {} s", at + length);
+        wait_until(seconds + length);
+    } else {
+        wait_until(seconds);
+    }
+    let summary = recorder.stop()?;
+    println!(
+        "{}x{}, {} frames ({} dropped: encoder busy, {} skipped: over {fps} fps), {:.3} s long, {:.3} s paused, {} encoder -> {}",
+        summary.width,
+        summary.height,
+        summary.frames,
+        summary.dropped_busy,
+        summary.skipped_rate,
+        summary.duration.as_secs_f64(),
+        summary.paused.as_secs_f64(),
+        if summary.hardware_encoder {
+            "hardware"
+        } else {
+            "software"
+        },
+        summary.path.display()
+    );
+    Ok(())
 }
 
 fn convert(mut args: Args) -> Result<()> {

@@ -59,8 +59,15 @@ impl Gpu {
             )
             .context("D3D11CreateDevice failed")?;
         }
-        let device: ID3D11Device = device.context("D3D11 returned no device")?;
-        let context: ID3D11DeviceContext = context.context("D3D11 returned no context")?;
+        Self::from_device(
+            device.context("D3D11 returned no device")?,
+            context.context("D3D11 returned no context")?,
+        )
+    }
+
+    /// Wrap a device created elsewhere (the recorder's, with the video APIs
+    /// enabled).
+    pub fn from_device(device: ID3D11Device, context: ID3D11DeviceContext) -> Result<Self> {
         // WGC's free-threaded frame pool uses this device from its own thread.
         unsafe {
             let _ = context
