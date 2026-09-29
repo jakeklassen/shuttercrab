@@ -27,7 +27,7 @@ use std::{
         mpsc::{Receiver, Sender, channel},
     },
     thread::JoinHandle,
-    time::{Duration, Instant},
+    time::Duration,
 };
 use windows::{
     Foundation::TypedEventHandler,
@@ -44,6 +44,7 @@ use windows::{
             Dxgi::{Common::*, IDXGIAdapter},
         },
         Media::MediaFoundation::*,
+        System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
         System::WinRT::{
             Direct3D11::IDirect3DDxgiInterfaceAccess,
             Graphics::Capture::IGraphicsCaptureItemInterop, RO_INIT_MULTITHREADED, RoInitialize,
@@ -154,6 +155,20 @@ impl Drop for Recorder {
 
 /// 100-nanosecond units, Media Foundation's and Windows.Graphics.Capture's.
 const TICKS_PER_SECOND: i64 = 10_000_000;
+
+/// How long a still screen goes without a repeated frame.
+const HEARTBEAT: i64 = TICKS_PER_SECOND;
+
+/// Now, in the clock Windows.Graphics.Capture stamps frames with:
+/// QueryPerformanceCounter in 100-nanosecond units.
+fn qpc_ticks() -> i64 {
+    let (mut counter, mut frequency) = (0i64, 0i64);
+    unsafe {
+        let _ = QueryPerformanceCounter(&mut counter);
+        let _ = QueryPerformanceFrequency(&mut frequency);
+    }
+    (counter as i128 * TICKS_PER_SECOND as i128 / frequency.max(1) as i128) as i64
+}
 
 /// Keeps HDR exposure steady across frames: the 90th-percentile anchor of
 /// each frame, eased towards over half a second, so video neither pumps nor
@@ -351,26 +366,41 @@ impl Session {
 
     fn run(&mut self, inbox: &Receiver<Event>) -> Result<RecordingSummary> {
         let period = TICKS_PER_SECOND / self.options.fps as i64;
-        let started = Instant::now();
-        // The output timeline starts at the first frame.
-        let mut origin: Option<i64> = None;
-        let mut paused_since: Option<Instant> = None;
-        let mut paused = Duration::ZERO;
+        // One clock throughout: frames carry their capture time in QPC
+        // ticks (100 ns), and pauses and the stop are measured on it too.
+        // The output timeline starts when recording starts.
+        let origin = qpc_ticks();
+        let mut paused_since: Option<i64> = None;
+        let mut paused: i64 = 0;
         let mut last: Option<(i64, usize)> = None;
         let (mut frames, mut dropped_busy, mut skipped_rate) = (0u64, 0u64, 0u64);
         loop {
-            let event = match inbox.recv_timeout(Duration::from_millis(200)) {
+            let event = match inbox.recv_timeout(Duration::from_millis(250)) {
                 Ok(event) => event,
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => continue,
+                // A still screen delivers no frames. Repeat the last one
+                // every second, so the video can be seeked and edited.
+                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
+                    if paused_since.is_none()
+                        && let Some((previous, slot)) = last
+                    {
+                        let now = qpc_ticks() - origin - paused;
+                        if now - previous >= HEARTBEAT {
+                            self.writer.write(&self.nv12, slot, now, period)?;
+                            last = Some((now, slot));
+                            frames += 1;
+                        }
+                    }
+                    continue;
+                }
                 Err(_) => Event::Stop,
             };
             match event {
                 Event::Pause => {
-                    paused_since.get_or_insert_with(Instant::now);
+                    paused_since.get_or_insert_with(qpc_ticks);
                 }
                 Event::Resume => {
                     if let Some(since) = paused_since.take() {
-                        paused += since.elapsed();
+                        paused += qpc_ticks() - since;
                     }
                 }
                 Event::Stop => break,
@@ -382,9 +412,7 @@ impl Session {
                             frame.Close()?;
                             continue;
                         }
-                        let origin = *origin.get_or_insert(captured);
-                        let paused_ticks = (paused.as_nanos() / 100) as i64;
-                        let time = (captured - origin - paused_ticks).max(0);
+                        let time = (captured - origin - paused).max(0);
                         if let Some((previous, _)) = last
                             && time < previous + period * 9 / 10
                         {
@@ -409,12 +437,11 @@ impl Session {
             }
         }
         if let Some(since) = paused_since.take() {
-            paused += since.elapsed();
+            paused += qpc_ticks() - since;
         }
-        // A still screen delivers no frames: repeat the last one so the
-        // video lasts until the stop.
-        let elapsed = started.elapsed().saturating_sub(paused);
-        let end = (elapsed.as_nanos() / 100) as i64;
+        // Repeat the last frame at the stop, so the video lasts until then.
+        let end = qpc_ticks() - origin - paused;
+        let paused = Duration::from_nanos(paused.max(0) as u64 * 100);
         let duration = match last {
             Some((time, slot)) => {
                 let end = end.max(time + period);
