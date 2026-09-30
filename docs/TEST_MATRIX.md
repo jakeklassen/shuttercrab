@@ -92,7 +92,12 @@ anywhere, and once the bar is clicked its hints switch to letters, which
 then work. Second run (2026-09-30): all nine steps confirmed; the owner
 then asked for Restart and Discard in view with their own chords rather
 than behind a ⋯ menu, guarded against slips: by default the bar asks
-first; with asking off, they act at once and can be undone for 10 s.
+first; with asking off, they act at once and can be undone for a while.
+Third run (2026-09-30): steps 1–10 confirmed; the owner asked for Enter
+to discard at once during the undo countdown, a configurable undo time
+(5, 10, 20 or 30 s), and a Snipping Tool-style dashed border around the
+recorded area (red, amber while paused, grey while a discard can be
+undone), drawn outside the area where the monitor has room.
 
 Chords, registered only while recording (Undo only while there is
 something to undo): Ctrl+Alt+P pause/resume, Ctrl+Alt+R stop, Ctrl+Alt+N
@@ -127,40 +132,40 @@ display 2, the owner hands-off), 2026-09-29:
 | Discard (M, D) | No file, no `.partial`; the controls closed |
 | Start after the choice | 345–357 ms, the controls already up |
 
-Acceptance (manual):
+Acceptance (manual; the third run confirmed steps 1–10 of the version
+before the border, 2026-09-30):
 
 1. Start it: `mise exec -- cargo run --release -p framecut`. Open an
-   editor, press **Ctrl+Alt+R** and drag an area over it. The bar shows
-   the time, **Pause Ctrl+Alt+P**, **Stop Ctrl+Alt+R**, **Restart
-   Ctrl+Alt+N** and, set apart in red, **Discard Ctrl+Alt+D**; nothing is
-   cut off. Click into the editor and type: it all types normally.
-2. **Ctrl+Alt+P** pauses and resumes; so does the tray's Pause/Resume
-   recording.
+   editor, press **Ctrl+Alt+R** and drag an area over it. A dashed red
+   border now outlines the area, and the bar below it shows the time,
+   **Pause Ctrl+Alt+P**, **Stop Ctrl+Alt+R**, **Restart Ctrl+Alt+N** and,
+   set apart in red, **Discard Ctrl+Alt+D**; nothing is cut off. Click
+   into the editor through the border's gaps and type: it all works.
+2. **Ctrl+Alt+P**: the border and the time turn amber; again, red.
 3. **Ctrl+Alt+D**: the recording pauses and the bar asks "Discard this
-   m:ss recording?". Press **Esc**: the take is kept, recording resumes,
-   and typing goes to the editor again. Ask again and press
-   **Ctrl+Alt+P**: kept too.
-4. **Ctrl+Alt+N**: the bar asks "Restart? The m:ss take is thrown away."
-   Press **Enter**: the time starts again from 0:00 and the keyboard is
-   back in the editor.
+   m:ss recording?". **Esc** keeps the take; typing goes to the editor
+   again.
+4. **Ctrl+Alt+N**, then **Enter**: the time starts again from 0:00.
 5. **Ctrl+Alt+R** stops. Play the video: only what followed the restart,
-   no gap at the pauses, no bar. Only one new file in `Videos\Framecut`.
-6. Start another; **Ctrl+Alt+D**, then **Enter**: the bar goes and no
-   file appears.
-7. Tray → **Settings…** → **Recording**: turn off **Ask before
-   discarding or restarting**.
-8. Start a recording; **Ctrl+Alt+D**: no question; the bar says
-   "Discarded · deleted in 10 s" with **Undo Ctrl+Alt+Z**. Press
-   **Ctrl+Alt+Z**: "Discard undone", and recording carries on. Press
-   **Ctrl+Alt+D** again and wait 10 s: the bar goes, no file.
-9. Start a recording, wait a few seconds, **Ctrl+Alt+N**: it restarts at
-   once, and **Keep previous take Ctrl+Alt+Z** stands in Restart's place
-   for 10 s. Press **Ctrl+Alt+Z**: "Kept Recording ….mp4". Stop: two new
-   files, the first take and the new one. Restart again without
-   Ctrl+Alt+Z: after 10 s the offer goes, and only the new take is saved.
-10. Record the whole display (Ctrl+Alt+C, R, D): the bar sits along the
-    bottom, over the recording, yet is not in the video.
-11. Turn asking back on, if you prefer it.
+   no border, no bar.
+6. Tray → **Settings…** → **Recording**: turn off **Ask before
+   discarding or restarting**, and set **Undo lasts** to 20 seconds.
+7. Start a recording; **Ctrl+Alt+D**: the border turns grey and the bar
+   says "Discarded · deleted in 20 s" with **Undo** and **Discard now**.
+   Press **Z** (or Ctrl+Alt+Z): "Discard undone", recording carries on,
+   and the keyboard is back in the editor.
+8. **Ctrl+Alt+D** again, then **Enter**: gone at once, no waiting, no
+   file, and the keyboard is back in the editor. (**Ctrl+Alt+D** twice
+   does the same.)
+9. Start a recording, **Ctrl+Alt+N**: it restarts at once, and **Keep
+   previous take Ctrl+Alt+Z** stands in Restart's place for 20 s.
+10. Record an area touching the top-left corner of the screen: the
+    border's top and left sides sit just inside the area, and are still
+    not in the video.
+11. Record the whole display (Ctrl+Alt+C, R, D): the border runs round
+    the screen's edge and the bar along the bottom; neither is in the
+    video.
+12. Set the settings back as you like them.
 
 ## Milestone 3: video technical spike
 
