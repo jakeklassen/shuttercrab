@@ -7,9 +7,11 @@
 mod clipboard;
 mod console;
 pub mod drag;
+pub mod frame;
 mod hotkey;
 pub mod icon;
 mod instance;
+mod layered;
 pub mod startup;
 pub mod targets;
 pub mod window;

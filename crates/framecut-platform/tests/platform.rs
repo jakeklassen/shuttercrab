@@ -130,3 +130,41 @@ fn framecuts_own_windows_are_targets_unless_excluded_from_capture() {
         DestroyWindow(hwnd).unwrap();
     }
 }
+
+#[test]
+fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
+    use framecut_platform::frame::{Frame, FrameStyle, Rect};
+    use windows::Win32::{
+        Foundation::HWND,
+        UI::WindowsAndMessaging::{
+            GWL_EXSTYLE, GetWindowDisplayAffinity, GetWindowLongW, IsWindowVisible,
+            WDA_EXCLUDEFROMCAPTURE, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT,
+        },
+    };
+    // A pretend monitor far off-screen, so nothing flashes on the desktop.
+    let bounds = Rect::new(-30000, -30000, 1000, 800);
+    let area = Rect::new(-29900, -29900, 400, 300);
+    let style = FrameStyle {
+        thickness: 3,
+        dash: 12,
+        gap: 8,
+    };
+    let (frame, missing) = Frame::show(area, bounds, style, [0xE5, 0x48, 0x4D]).unwrap();
+    assert_eq!(missing, 0);
+    let windows = frame.windows();
+    assert_eq!(windows.len(), 4);
+    for handle in windows {
+        let hwnd = HWND(handle as _);
+        unsafe {
+            assert!(IsWindowVisible(hwnd).as_bool());
+            let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
+            assert_ne!(ex & WS_EX_TRANSPARENT.0, 0, "the pointer passes through");
+            assert_ne!(ex & WS_EX_NOACTIVATE.0, 0, "it never takes the keyboard");
+            let mut affinity = 0;
+            GetWindowDisplayAffinity(hwnd, &mut affinity).unwrap();
+            assert_eq!(affinity, WDA_EXCLUDEFROMCAPTURE.0);
+        }
+    }
+    frame.recolor([0xF5, 0xA5, 0x24]).unwrap();
+    drop(frame);
+}
