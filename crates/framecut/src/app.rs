@@ -35,7 +35,10 @@ use framecut_capture::{
     record::{RecordOptions, Recorder, RecordingSummary},
 };
 use framecut_platform::{
-    Hotkey, MenuItem, Platform, PlatformEvent, drag::DragImage, targets, window as platform_window,
+    Hotkey, MenuItem, Platform, PlatformEvent,
+    drag::DragImage,
+    frame::{Frame, FrameStyle, Rect as FrameRect},
+    targets, window as platform_window,
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{
@@ -253,9 +256,6 @@ struct State {
     undo_generation: Cell<u64>,
 }
 
-/// How long Discard and Restart can be undone when they do not ask first.
-const UNDO_WINDOW: Duration = Duration::from_secs(10);
-
 /// A finished take that a restart replaced: deleted when its undo window
 /// closes, unless Undo keeps it.
 struct PreviousTake {
@@ -280,6 +280,8 @@ struct Discarded {
     /// The recording was running, and resumes if the discard is undone.
     resume: bool,
     generation: u64,
+    /// The window that had the keyboard before the controls took it.
+    give_back: Option<isize>,
 }
 
 /// A recording in progress.
@@ -299,7 +301,19 @@ struct Recording {
     asking: Option<Asking>,
     /// A discard that can still be undone, if any.
     discarded: Option<Discarded>,
+    /// The dashed border around the recorded area, if it is shown.
+    frame: Option<Frame>,
 }
+
+/// The border's colours (RGB): recording, paused, and discarded.
+const FRAME_RECORDING: [u8; 3] = [0xE5, 0x48, 0x4D];
+const FRAME_PAUSED: [u8; 3] = [0xF5, 0xA5, 0x24];
+const FRAME_DISCARDED: [u8; 3] = [0x9D, 0x9D, 0x9D];
+
+/// The border's look, logical pixels.
+const FRAME_THICKNESS: f32 = 2.0;
+const FRAME_DASH: f32 = 8.0;
+const FRAME_GAP: f32 = 5.0;
 
 /// The recording controls' window and view.
 struct Controls {
@@ -315,7 +329,9 @@ impl Recording {
         }
     }
 
+    /// Close the controls and remove the border.
     fn close_controls(&mut self, cx: &mut AsyncApp) {
+        self.frame = None;
         if let Some(controls) = self.controls.take() {
             controls.popup.close(cx);
         }
@@ -344,7 +360,27 @@ impl Recording {
             clock.resume(now);
         }
         self.clock.set(clock);
+        self.color_frame_for_clock();
         true
+    }
+
+    /// Draw the border in `color`.
+    fn color_frame(&self, color: [u8; 3]) {
+        if let Some(frame) = &self.frame
+            && let Err(e) = frame.recolor(color)
+        {
+            log::warn!("could not redraw the recording border: {e:#}");
+        }
+    }
+
+    /// Draw the border red while recording, amber while paused.
+    fn color_frame_for_clock(&self) {
+        let paused = self.clock.get().is_paused();
+        self.color_frame(if paused {
+            FRAME_PAUSED
+        } else {
+            FRAME_RECORDING
+        });
     }
 }
 
@@ -956,6 +992,7 @@ async fn record(
         Some((controls, requests)) => (Some(controls), Some(requests)),
         None => (None, None),
     };
+    let frame = show_frame(&info, region);
 
     let settings = state.settings.borrow().clone();
     let dir = settings.recording_dir();
@@ -1013,6 +1050,7 @@ async fn record(
         controls,
         asking: None,
         discarded: None,
+        frame,
     };
     recording.refresh_controls(cx);
     state.recording.replace(Some(recording));
@@ -1097,6 +1135,33 @@ fn open_controls(
     Some((Controls { popup, view }, requests))
 }
 
+/// Show the dashed border around `region` (physical pixels relative to the
+/// monitor; `None` for all of it) before recording starts, so it is
+/// excluded from the first frame.
+fn show_frame(info: &MonitorInfo, region: Option<PhysicalRect>) -> Option<Frame> {
+    let (b, scale) = (info.bounds, info.scale_factor);
+    let area = framecut_capture::record::recordable(region, b.width, b.height);
+    let px = |logical: f32| ((logical * scale).round() as u32).max(1);
+    let style = FrameStyle {
+        thickness: px(FRAME_THICKNESS),
+        dash: px(FRAME_DASH),
+        gap: px(FRAME_GAP),
+    };
+    let area = FrameRect::new(b.x + area.x, b.y + area.y, area.width, area.height);
+    let bounds = FrameRect::new(b.x, b.y, b.width, b.height);
+    match Frame::show(area, bounds, style, FRAME_RECORDING) {
+        Ok((frame, 0)) => Some(frame),
+        Ok((frame, missing)) => {
+            log::warn!("{missing} sides of the recording border would be recorded; left out");
+            Some(frame)
+        }
+        Err(e) => {
+            log::warn!("could not show the recording border: {e:#}");
+            None
+        }
+    }
+}
+
 /// Do what the recording controls ask until they close.
 fn handle_controls(
     state: Rc<State>,
@@ -1171,9 +1236,16 @@ async fn request(state: &Rc<State>, action: Destructive, cx: &mut AsyncApp) {
         Some(_) => return,
         None => {}
     }
-    // A discarded take is already on its way out; a restart's previous
-    // take is still on offer.
-    if discarded || (action == Destructive::Restart && state.previous_take.borrow().is_some()) {
+    // Discarding a discarded take again removes it at once; restarting it
+    // means nothing.
+    if discarded {
+        if action == Destructive::Discard {
+            confirm(state, cx).await;
+        }
+        return;
+    }
+    // A restart's previous take is still on offer.
+    if action == Destructive::Restart && state.previous_take.borrow().is_some() {
         return;
     }
     let confirm_first = state.settings.borrow().confirm_discard;
@@ -1234,9 +1306,18 @@ fn stop_asking(state: &State, cx: &mut AsyncApp) -> Option<Asking> {
     Some(asking)
 }
 
-/// Yes: throw the take away as asked.
+/// Yes: throw the take away as asked, or a discarded one at once rather
+/// than when its undo window closes.
 async fn confirm(state: &Rc<State>, cx: &mut AsyncApp) {
     let Some(asking) = stop_asking(state, cx) else {
+        let discarded = state
+            .recording
+            .borrow()
+            .as_ref()
+            .is_some_and(|r| r.discarded.is_some());
+        if discarded {
+            discard_recording(state, cx);
+        }
         return;
     };
     match asking.action {
@@ -1265,12 +1346,15 @@ fn keep_take(state: &State, cx: &mut AsyncApp) {
     state.refresh_tray_menu();
 }
 
-/// Discard at once, but pause rather than delete for [`UNDO_WINDOW`], so
+/// Discard at once, but pause rather than delete for the undo window, so
 /// Undo can bring the take back.
+/// The controls take the keyboard meanwhile, so Enter can discard at once;
+/// it goes back afterwards.
 fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
     let generation = state.next_generation();
-    let until = Instant::now() + UNDO_WINDOW;
-    let view = {
+    let window = state.settings.borrow().undo_window();
+    let until = Instant::now() + window;
+    let (view, hwnd) = {
         let mut slot = state.recording.borrow_mut();
         let Some(recording) = slot.as_mut() else {
             return;
@@ -1279,20 +1363,30 @@ fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
             return;
         }
         let resume = recording.set_paused(true);
-        recording.discarded = Some(Discarded { resume, generation });
-        recording.view()
+        recording.color_frame(FRAME_DISCARDED);
+        let hwnd = recording.controls.as_ref().and_then(|c| c.popup.hwnd());
+        let give_back = platform_window::foreground_window().filter(|w| Some(*w) != hwnd);
+        recording.discarded = Some(Discarded {
+            resume,
+            generation,
+            give_back,
+        });
+        (recording.view(), hwnd)
     };
     log::info!(
         "recording discarded; it can be undone for {} s",
-        UNDO_WINDOW.as_secs()
+        window.as_secs()
     );
     show(view, cx, |bar, cx| {
         bar.set_mode(BarMode::Discarded { until }, cx)
     });
+    if let Some(hwnd) = hwnd {
+        platform_window::bring_to_front(hwnd);
+    }
     state.recording_changed(cx);
     let state = state.clone();
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(UNDO_WINDOW).await;
+        cx.background_executor().timer(window).await;
         let due = state
             .recording
             .borrow()
@@ -1314,10 +1408,14 @@ fn undo(state: &Rc<State>, cx: &mut AsyncApp) {
             .and_then(|r| Some((r.discarded.take()?, r.view())))
     };
     if let Some((discarded, view)) = discarded {
-        if discarded.resume
-            && let Some(recording) = state.recording.borrow().as_ref()
-        {
-            recording.set_paused(false);
+        if let Some(recording) = state.recording.borrow().as_ref() {
+            if discarded.resume {
+                recording.set_paused(false);
+            }
+            recording.color_frame_for_clock();
+        }
+        if let Some(window) = discarded.give_back {
+            platform_window::bring_to_front(window);
         }
         log::info!("discard undone");
         show(view, cx, |bar, cx| {
@@ -1379,10 +1477,13 @@ fn end_recording(state: &State, cx: &mut AsyncApp) -> Option<(Recorder, PathBuf)
         log::info!("the recording is restarting; the request is ignored");
         return None;
     }
-    // Hand the keyboard back if the controls were asking.
+    // Hand the keyboard back if the controls were asking or counting down.
     stop_asking(state, cx);
     let mut recording = state.recording.borrow_mut().take()?;
     recording.close_controls(cx);
+    if let Some(window) = recording.discarded.and_then(|d| d.give_back) {
+        platform_window::bring_to_front(window);
+    }
     state.recording_changed(cx);
     Some((recording.recorder?, recording.path))
 }
@@ -1424,7 +1525,7 @@ fn discard_recording(state: &Rc<State>, cx: &mut AsyncApp) {
 
 /// Start again with the same area and settings, as a new file (PRD §7.7).
 /// With `keep_previous`, the take it replaces is finished and kept for
-/// [`UNDO_WINDOW`], so Undo can keep it; otherwise it is deleted.
+/// the undo window, so Undo can keep it; otherwise it is deleted.
 async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut AsyncApp) {
     let taken = state.recording.borrow_mut().as_mut().and_then(|recording| {
         let recorder = recording.recorder.take()?;
@@ -1465,14 +1566,19 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
             let view = recording.view();
             drop(slot);
             log::info!("recording restarted");
-            let until = Instant::now() + UNDO_WINDOW;
+            let until = Instant::now() + state.settings.borrow().undo_window();
             if kept {
                 let generation = state.next_generation();
                 state.previous_take.replace(Some(PreviousTake {
                     path: previous,
                     generation,
                 }));
-                forget_previous_take_later(state, generation, cx);
+                forget_previous_take_later(
+                    state,
+                    generation,
+                    until.saturating_duration_since(Instant::now()),
+                    cx,
+                );
             }
             show(view, cx, |bar, cx| {
                 bar.offer_previous(kept.then_some(until), cx);
@@ -1508,10 +1614,15 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
 
 /// Delete the take a restart replaced once its undo window closes, unless
 /// Undo kept it or a newer window replaced it.
-fn forget_previous_take_later(state: &Rc<State>, generation: u64, cx: &mut AsyncApp) {
+fn forget_previous_take_later(
+    state: &Rc<State>,
+    generation: u64,
+    window: Duration,
+    cx: &mut AsyncApp,
+) {
     let state = state.clone();
     cx.spawn(async move |cx| {
-        cx.background_executor().timer(UNDO_WINDOW).await;
+        cx.background_executor().timer(window).await;
         let due = state
             .previous_take
             .borrow()

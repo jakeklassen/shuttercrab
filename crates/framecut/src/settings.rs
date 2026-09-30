@@ -52,6 +52,8 @@ pub struct Settings {
     /// Ask before Discard or Restart throws a take away; when off, they act
     /// at once and can be undone for a few seconds.
     pub confirm_discard: bool,
+    /// How long Discard and Restart can be undone when they do not ask.
+    pub undo_seconds: u32,
     /// 30 or 60 (PRD §13.1).
     pub record_fps: u32,
 }
@@ -80,6 +82,7 @@ impl Default for Settings {
             record_cursor: true,
             record_fps: 30,
             confirm_discard: true,
+            undo_seconds: 10,
         }
     }
 }
@@ -101,7 +104,21 @@ impl Settings {
     pub fn record_fps(&self) -> u32 {
         if self.record_fps == 60 { 60 } else { 30 }
     }
+
+    /// How long Discard and Restart can be undone: one of
+    /// [`UNDO_CHOICES`] seconds, 10 if the file says otherwise.
+    pub fn undo_window(&self) -> std::time::Duration {
+        let seconds = if UNDO_CHOICES.contains(&self.undo_seconds) {
+            self.undo_seconds
+        } else {
+            10
+        };
+        std::time::Duration::from_secs(seconds.into())
+    }
 }
+
+/// The undo windows the settings offer, in seconds.
+pub const UNDO_CHOICES: [u32; 4] = [5, 10, 20, 30];
 
 /// `Pictures\Framecut`, or a `Framecut` folder in the home directory when
 /// there is no Pictures folder.
@@ -240,5 +257,23 @@ mod tests {
             ..settings
         };
         assert_eq!(odd.record_fps(), 30);
+    }
+
+    #[test]
+    fn throwing_a_take_away_asks_first_and_undo_lasts_a_choice_of_seconds() {
+        use std::time::Duration;
+        let settings = Settings::default();
+        assert!(settings.confirm_discard);
+        assert_eq!(settings.undo_window(), Duration::from_secs(10));
+        let longer = Settings {
+            undo_seconds: 30,
+            ..settings.clone()
+        };
+        assert_eq!(longer.undo_window(), Duration::from_secs(30));
+        let odd = Settings {
+            undo_seconds: 0,
+            ..settings
+        };
+        assert_eq!(odd.undo_window(), Duration::from_secs(10));
     }
 }

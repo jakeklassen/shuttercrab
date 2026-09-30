@@ -489,16 +489,47 @@ impl SettingsWindow {
     }
 
     fn recording(&self) -> SettingPage {
-        SettingPage::new("Recording").group(
-            SettingGroup::new().item(heading("Throwing a take away", None)).item(
-                SettingItem::new(
-                    "Ask before discarding or restarting",
-                    self.switch(|s| s.confirm_discard, |s, v| s.confirm_discard = v),
+        let (read, write) = (self.hooks.clone(), self.hooks.clone());
+        let undo_choices = crate::settings::UNDO_CHOICES
+            .map(|s| {
+                (
+                    SharedString::from(s.to_string()),
+                    SharedString::from(format!("{s} seconds")),
                 )
-                .description(
-                    "Off: Discard and Restart act at once, and Ctrl+Alt+Z undoes them for 10 seconds.",
+            })
+            .to_vec();
+        SettingPage::new("Recording").group(
+            SettingGroup::new()
+                .item(heading("Throwing a take away", None))
+                .item(
+                    SettingItem::new(
+                        "Ask before discarding or restarting",
+                        self.switch(|s| s.confirm_discard, |s, v| s.confirm_discard = v),
+                    )
+                    .description(
+                        "Off: Discard and Restart act at once, and the undo chord (Ctrl+Alt+Z) \
+                         brings the take back for a while.",
+                    ),
+                )
+                .item(
+                    SettingItem::new(
+                        "Undo lasts",
+                        SettingField::dropdown(
+                            undo_choices,
+                            move |_| {
+                                let seconds = read.settings.borrow().undo_window().as_secs();
+                                seconds.to_string().into()
+                            },
+                            move |value, cx| {
+                                if let Ok(seconds) = value.parse() {
+                                    write.settings.borrow_mut().undo_seconds = seconds;
+                                    (write.changed)(cx);
+                                }
+                            },
+                        ),
+                    )
+                    .description("When not asking first."),
                 ),
-            ),
         )
     }
 

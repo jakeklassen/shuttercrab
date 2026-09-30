@@ -268,12 +268,32 @@ fn a_discard_counts_down_and_offers_undo(cx: &mut TestAppContext) {
             "Discarded · deleted in 10 s"
         );
         assert_eq!(label(window, "record-undo-key").unwrap(), "Z");
+        assert_eq!(label(window, "record-discard-now-key").unwrap(), "Enter");
         assert!(window.try_find("record-discard").is_none());
-        window.press("d", cx);
+        window.press("p", cx);
         window.press("z", cx);
+        window.press("enter", cx);
+        window.press("d", cx);
     });
-    assert_eq!(events(&opened), [RecordBarEvent::Undo]);
+    // Z undoes; Enter, or D again, discards at once.
+    assert_eq!(
+        events(&opened),
+        [
+            RecordBarEvent::Undo,
+            RecordBarEvent::Confirm,
+            RecordBarEvent::Confirm
+        ]
+    );
     assert_eq!(mode(cx, &opened), BarMode::Discarded { until });
+    // Without the keyboard: the undo chord, and the discard chord again.
+    VisualTestContext::from_window(opened.handle.into(), cx).deactivate_window();
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-undo-key").unwrap(), "Ctrl+Alt+Z");
+        assert_eq!(
+            label(window, "record-discard-now-key").unwrap(),
+            "Ctrl+Alt+D"
+        );
+    });
 }
 
 #[gpui_kit::test]

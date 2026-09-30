@@ -12,8 +12,9 @@
 //! Throwing a take away is guarded, as the settings say: either the bar
 //! asks first (Enter or the same chord again confirms, Escape keeps the
 //! take), or the action happens at once and can be undone for a few
-//! seconds. The bar only reports what was asked; the app does it and tells
-//! the bar what to show.
+//! seconds; a discarded take counts down with Undo (Z) and Discard now
+//! (Enter, or the discard chord again). The bar only reports what was
+//! asked; the app does it and tells the bar what to show.
 
 use crate::{
     capture_bar::{muted, recording, surface, tile},
@@ -195,6 +196,7 @@ impl RecordBar {
             (BarMode::Confirm(Destructive::Restart, _), "n") => Some(RecordBarEvent::Confirm),
             (BarMode::Confirm(..), "escape") => Some(RecordBarEvent::Cancel),
             (BarMode::Discarded { .. }, "z") => Some(RecordBarEvent::Undo),
+            (BarMode::Discarded { .. }, "enter" | "d") => Some(RecordBarEvent::Confirm),
             _ => None,
         };
         if let Some(request) = request {
@@ -401,15 +403,26 @@ impl RecordBar {
                     ),
                 ]
             }
-            BarMode::Discarded { .. } => vec![self.button(
-                "record-undo",
-                IconName::Undo,
-                "Undo",
-                self.hint("Z", &keys.undo),
-                white,
-                cx,
-                RecordBarEvent::Undo,
-            )],
+            BarMode::Discarded { .. } => vec![
+                self.button(
+                    "record-undo",
+                    IconName::Undo,
+                    "Undo",
+                    self.hint("Z", &keys.undo),
+                    white,
+                    cx,
+                    RecordBarEvent::Undo,
+                ),
+                self.button(
+                    "record-discard-now",
+                    IconName::Trash,
+                    "Discard now",
+                    self.hint("Enter", &keys.discard),
+                    danger(),
+                    cx,
+                    RecordBarEvent::Confirm,
+                ),
+            ],
         }
     }
 }
