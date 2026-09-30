@@ -1,7 +1,7 @@
 # Test matrix
 
 Milestone 4 (area recording MVP) is in progress: step 1 passed on
-2026-09-29; step 2 is ready for the owner to try. Milestone 3 (video
+2026-09-29, step 2 on 2026-09-30. Milestone 3 (video
 technical spike) is **complete** (2026-09-29).
 Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
 steps by 2026-09-28 (sleep and wake left for the owner to try later); see [Milestone
@@ -83,6 +83,9 @@ Acceptance (manual):
    <time>.mp4`, with no `.partial` files left.
 
 ### Step 2: the recording controls
+
+**Passed**: the owner confirmed every step of the final checklist below
+on 2026-09-30.
 
 The owner's first run (2026-09-29): steps 1–5 confirmed, but P did
 nothing until the bar was clicked. Decided with the owner: the bar never
