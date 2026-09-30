@@ -19,7 +19,10 @@ use crate::{
     files,
     overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     popup::{self, Activation},
-    record_bar::{RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent, RecordKeys},
+    record_bar::{
+        BarMode, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent,
+        RecordKeys,
+    },
     recording::{self, Clock},
     selection::ScreenWindow,
     settings::{self, Settings},
@@ -54,6 +57,9 @@ pub const QUIT_HOTKEY: u32 = 2;
 pub const CAPTURE_BAR_HOTKEY: u32 = 3;
 pub const RECORD_HOTKEY: u32 = 4;
 pub const PAUSE_HOTKEY: u32 = 5;
+pub const RESTART_HOTKEY: u32 = 6;
+pub const DISCARD_HOTKEY: u32 = 7;
+pub const UNDO_HOTKEY: u32 = 8;
 
 /// Ids for the tray menu's items.
 pub const MENU_SCREENSHOT: u32 = 1;
@@ -69,12 +75,18 @@ pub const MENU_PAUSE: u32 = 8;
 pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
 
 /// The global hotkeys for `settings`: the Capture Bar, area screenshots,
-/// recording, and quit, plus pausing while `recording` (other apps keep
-/// that chord the rest of the time). A hotkey the settings spell wrongly
-/// is left out (main checks them at startup; the settings window only
-/// stores valid ones).
-pub fn hotkeys(settings: &Settings, recording: bool) -> Vec<(u32, Hotkey)> {
-    let pause = recording.then_some((PAUSE_HOTKEY, settings.pause_hotkey.as_str()));
+/// recording, and quit; pause, restart and discard while `recording`; and
+/// undo while there is something to `undo`. Other apps keep those chords
+/// the rest of the time. A hotkey the settings spell wrongly is left out
+/// (main checks them at startup; the settings window only stores valid
+/// ones).
+pub fn hotkeys(settings: &Settings, recording: bool, undo: bool) -> Vec<(u32, Hotkey)> {
+    let while_recording = [
+        (PAUSE_HOTKEY, settings.pause_hotkey.as_str()),
+        (RESTART_HOTKEY, settings.restart_hotkey.as_str()),
+        (DISCARD_HOTKEY, settings.discard_hotkey.as_str()),
+    ];
+    let undoing = [(UNDO_HOTKEY, settings.undo_hotkey.as_str())];
     [
         (CAPTURE_BAR_HOTKEY, settings.capture_bar_hotkey.as_str()),
         (SCREENSHOT_HOTKEY, settings.screenshot_hotkey.as_str()),
@@ -82,7 +94,8 @@ pub fn hotkeys(settings: &Settings, recording: bool) -> Vec<(u32, Hotkey)> {
         (QUIT_HOTKEY, QUIT_KEYS),
     ]
     .into_iter()
-    .chain(pause)
+    .chain(while_recording.into_iter().filter(|_| recording))
+    .chain(undoing.into_iter().filter(|_| undo))
     .filter_map(|(id, text)| Some((id, Hotkey::parse(text).ok()?)))
     .collect()
 }
@@ -233,6 +246,40 @@ struct State {
     thumbnail_generation: Cell<u64>,
     /// The recording in progress, if any.
     recording: RefCell<Option<Recording>>,
+    /// The take a restart replaced, kept until its undo window closes.
+    previous_take: RefCell<Option<PreviousTake>>,
+    /// Counts undo windows, so a timer knows whether its window is still
+    /// the current one.
+    undo_generation: Cell<u64>,
+}
+
+/// How long Discard and Restart can be undone when they do not ask first.
+const UNDO_WINDOW: Duration = Duration::from_secs(10);
+
+/// A finished take that a restart replaced: deleted when its undo window
+/// closes, unless Undo keeps it.
+struct PreviousTake {
+    /// Its final name; until kept it stays at [`files::partial_path`].
+    path: PathBuf,
+    generation: u64,
+}
+
+/// The controls are asking before a take is thrown away.
+#[derive(Clone, Copy, Debug)]
+struct Asking {
+    action: Destructive,
+    /// The recording was running when asked, and resumes if kept.
+    resume: bool,
+    /// The window that had the keyboard before the bar took it to ask.
+    give_back: Option<isize>,
+}
+
+/// A discard that can still be undone: the recording is paused meanwhile.
+#[derive(Clone, Copy, Debug)]
+struct Discarded {
+    /// The recording was running, and resumes if the discard is undone.
+    resume: bool,
+    generation: u64,
 }
 
 /// A recording in progress.
@@ -248,6 +295,10 @@ struct Recording {
     clock: Rc<Cell<Clock>>,
     /// The recording controls, if they are on screen.
     controls: Option<Controls>,
+    /// A question the controls are asking, if any.
+    asking: Option<Asking>,
+    /// A discard that can still be undone, if any.
+    discarded: Option<Discarded>,
 }
 
 /// The recording controls' window and view.
@@ -269,6 +320,43 @@ impl Recording {
             controls.popup.close(cx);
         }
     }
+
+    /// The controls' view, to change what it shows.
+    fn view(&self) -> Option<Entity<RecordBar>> {
+        self.controls.as_ref().map(|c| c.view.clone())
+    }
+
+    /// Pause or resume the recorder and the clock. Returns whether that
+    /// changed anything.
+    fn set_paused(&self, paused: bool) -> bool {
+        let Some(recorder) = &self.recorder else {
+            return false;
+        };
+        let (mut clock, now) = (self.clock.get(), Instant::now());
+        if clock.is_paused() == paused {
+            return false;
+        }
+        if paused {
+            recorder.pause();
+            clock.pause(now);
+        } else {
+            recorder.resume();
+            clock.resume(now);
+        }
+        self.clock.set(clock);
+        true
+    }
+}
+
+/// Change what the controls show, outside any borrow of the state.
+fn show(
+    view: Option<Entity<RecordBar>>,
+    cx: &mut AsyncApp,
+    f: impl FnOnce(&mut RecordBar, &mut gpui_kit::Context<RecordBar>),
+) {
+    if let Some(view) = view {
+        view.update(cx, f);
+    }
 }
 
 impl State {
@@ -287,8 +375,8 @@ impl State {
         self.platform.set_tray_menu(menu);
     }
 
-    /// A recording started or ended: update the tray menu, and register
-    /// the pause hotkey only while there is one.
+    /// A recording started, ended, or opened or closed an undo window:
+    /// update the tray menu, and register the hotkeys that apply now.
     fn recording_changed(&self, cx: &AsyncApp) {
         self.refresh_tray_menu();
         let registering = self.platform.set_hotkeys(self.hotkeys());
@@ -335,7 +423,17 @@ impl State {
 
     /// The global hotkeys the settings name, for now.
     fn hotkeys(&self) -> Vec<(u32, Hotkey)> {
-        hotkeys(&self.settings.borrow(), self.recording.borrow().is_some())
+        let recording = self.recording.borrow();
+        let undo = self.previous_take.borrow().is_some()
+            || recording.as_ref().is_some_and(|r| r.discarded.is_some());
+        hotkeys(&self.settings.borrow(), recording.is_some(), undo)
+    }
+
+    /// A new undo window's number.
+    fn next_generation(&self) -> u64 {
+        let generation = self.undo_generation.get() + 1;
+        self.undo_generation.set(generation);
+        generation
     }
 }
 
@@ -365,6 +463,8 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
         thumbnail: RefCell::new(None),
         thumbnail_generation: Cell::new(0),
         recording: RefCell::new(None),
+        previous_take: RefCell::new(None),
+        undo_generation: Cell::new(0),
     });
     cx.spawn(async move |cx| {
         let mut events = events;
@@ -387,6 +487,13 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                 PlatformEvent::Hotkey(PAUSE_HOTKEY) | PlatformEvent::TrayCommand(MENU_PAUSE) => {
                     toggle_pause(&state, cx)
                 }
+                PlatformEvent::Hotkey(RESTART_HOTKEY) => {
+                    request(&state, Destructive::Restart, cx).await
+                }
+                PlatformEvent::Hotkey(DISCARD_HOTKEY) => {
+                    request(&state, Destructive::Discard, cx).await
+                }
+                PlatformEvent::Hotkey(UNDO_HOTKEY) => undo(&state, cx),
                 // One hotkey starts a recording and stops it.
                 PlatformEvent::Hotkey(RECORD_HOTKEY) | PlatformEvent::TrayCommand(MENU_RECORD) => {
                     if state.recording.borrow().is_some() {
@@ -408,8 +515,13 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                     state.refresh_tray_menu();
                 }
                 PlatformEvent::Hotkey(QUIT_HOTKEY) | PlatformEvent::TrayCommand(MENU_QUIT) => {
-                    // A recording running at quit is kept, finished as if
-                    // stopped.
+                    // Nothing is lost by quitting: a recording running at
+                    // quit is finished as if stopped (even one discarded
+                    // moments ago), and a take a restart replaced is kept.
+                    let previous = state.previous_take.take();
+                    if let Some(previous) = previous {
+                        keep_previous_take(previous, cx).await;
+                    }
                     let recording = state.recording.take();
                     if let Some(Recording {
                         recorder: Some(recorder),
@@ -835,6 +947,9 @@ async fn record(
         RecordKeys {
             pause: settings.pause_hotkey.clone(),
             stop: settings.record_hotkey.clone(),
+            restart: settings.restart_hotkey.clone(),
+            discard: settings.discard_hotkey.clone(),
+            undo: settings.undo_hotkey.clone(),
         }
     };
     let (controls, requests) = match open_controls(&info, region, clock.clone(), keys, cx) {
@@ -896,6 +1011,8 @@ async fn record(
         options,
         clock,
         controls,
+        asking: None,
+        discarded: None,
     };
     recording.refresh_controls(cx);
     state.recording.replace(Some(recording));
@@ -987,12 +1104,15 @@ fn handle_controls(
     cx: &mut AsyncApp,
 ) {
     cx.spawn(async move |cx| {
-        while let Some(request) = requests.next().await {
-            match request {
+        while let Some(asked) = requests.next().await {
+            match asked {
                 RecordBarEvent::TogglePause => toggle_pause(&state, cx),
                 RecordBarEvent::Stop => stop_recording(&state, cx),
-                RecordBarEvent::Restart => restart_recording(&state, cx).await,
-                RecordBarEvent::Discard => discard_recording(&state, cx),
+                RecordBarEvent::Restart => request(&state, Destructive::Restart, cx).await,
+                RecordBarEvent::Discard => request(&state, Destructive::Discard, cx).await,
+                RecordBarEvent::Confirm => confirm(&state, cx).await,
+                RecordBarEvent::Cancel => keep_take(&state, cx),
+                RecordBarEvent::Undo => undo(&state, cx),
             }
             if state.recording.borrow().is_none() {
                 break;
@@ -1002,49 +1122,274 @@ fn handle_controls(
     .detach();
 }
 
-/// Pause the recording, or resume it if it is paused.
+/// Pause the recording, or resume it if it is paused. While the controls
+/// ask before throwing the take away, this answers "keep it"; while a
+/// discard can be undone, it does nothing.
 fn toggle_pause(state: &State, cx: &mut AsyncApp) {
-    let recording = state.recording.borrow();
-    let Some(recording) = recording.as_ref() else {
-        return;
+    let (asking, discarded) = match &*state.recording.borrow() {
+        Some(r) => (r.asking.is_some(), r.discarded.is_some()),
+        None => return,
     };
-    let Some(recorder) = &recording.recorder else {
-        return;
-    };
-    let (mut clock, now) = (recording.clock.get(), Instant::now());
-    if clock.is_paused() {
-        recorder.resume();
-        clock.resume(now);
-        log::info!("recording resumed");
-    } else {
-        recorder.pause();
-        clock.pause(now);
-        log::info!(
-            "recording paused at {}",
-            recording::clock(clock.elapsed(now))
-        );
+    if asking {
+        return keep_take(state, cx);
     }
-    recording.clock.set(clock);
-    recording.refresh_controls(cx);
+    if discarded {
+        return;
+    }
+    let view = {
+        let recording = state.recording.borrow();
+        let Some(recording) = recording.as_ref() else {
+            return;
+        };
+        let paused = !recording.clock.get().is_paused();
+        recording.set_paused(paused);
+        let clock = recording.clock.get();
+        if paused {
+            log::info!(
+                "recording paused at {}",
+                recording::clock(clock.elapsed(Instant::now()))
+            );
+        } else {
+            log::info!("recording resumed");
+        }
+        recording.view()
+    };
+    show(view, cx, |_, cx| cx.notify());
     state.refresh_tray_menu();
+}
+
+/// Discard or Restart was asked for: ask first, or act at once and offer
+/// undo, as the settings say. Asking for the same action again while the
+/// controls ask confirms it.
+async fn request(state: &Rc<State>, action: Destructive, cx: &mut AsyncApp) {
+    let (asking, discarded) = match &*state.recording.borrow() {
+        Some(r) => (r.asking.map(|a| a.action), r.discarded.is_some()),
+        None => return,
+    };
+    match asking {
+        Some(asked) if asked == action => return confirm(state, cx).await,
+        Some(_) => return,
+        None => {}
+    }
+    // A discarded take is already on its way out; a restart's previous
+    // take is still on offer.
+    if discarded || (action == Destructive::Restart && state.previous_take.borrow().is_some()) {
+        return;
+    }
+    let confirm_first = state.settings.borrow().confirm_discard;
+    match (confirm_first, action) {
+        (true, _) => ask(state, action, cx),
+        (false, Destructive::Discard) => discard_with_undo(state, cx),
+        (false, Destructive::Restart) => restart_recording(state, true, cx).await,
+    }
+}
+
+/// Pause and ask before `action` throws the take away. The controls take
+/// the keyboard so Enter or Escape answers; it goes back afterwards.
+fn ask(state: &State, action: Destructive, cx: &mut AsyncApp) {
+    let (view, hwnd, length) = {
+        let mut slot = state.recording.borrow_mut();
+        let Some(recording) = slot.as_mut() else {
+            return;
+        };
+        if recording.recorder.is_none() {
+            return;
+        }
+        let resume = recording.set_paused(true);
+        let hwnd = recording.controls.as_ref().and_then(|c| c.popup.hwnd());
+        let give_back = platform_window::foreground_window().filter(|w| Some(*w) != hwnd);
+        recording.asking = Some(Asking {
+            action,
+            resume,
+            give_back,
+        });
+        let length = recording.clock.get().elapsed(Instant::now());
+        (recording.view(), hwnd, length)
+    };
+    log::info!(
+        "asking before {action:?} of a {} take",
+        recording::clock(length)
+    );
+    show(view, cx, |bar, cx| {
+        bar.set_mode(BarMode::Confirm(action, length), cx)
+    });
+    if let Some(hwnd) = hwnd {
+        platform_window::bring_to_front(hwnd);
+    }
+    state.refresh_tray_menu();
+}
+
+/// Stop asking: the controls show the actions again and the keyboard goes
+/// back to where it was. Returns what was being asked.
+fn stop_asking(state: &State, cx: &mut AsyncApp) -> Option<Asking> {
+    let (asking, view) = {
+        let mut slot = state.recording.borrow_mut();
+        let recording = slot.as_mut()?;
+        (recording.asking.take()?, recording.view())
+    };
+    show(view, cx, |bar, cx| bar.set_mode(BarMode::Controls, cx));
+    if let Some(window) = asking.give_back {
+        platform_window::bring_to_front(window);
+    }
+    Some(asking)
+}
+
+/// Yes: throw the take away as asked.
+async fn confirm(state: &Rc<State>, cx: &mut AsyncApp) {
+    let Some(asking) = stop_asking(state, cx) else {
+        return;
+    };
+    match asking.action {
+        Destructive::Discard => discard_recording(state, cx),
+        Destructive::Restart => restart_recording(state, false, cx).await,
+    }
+}
+
+/// No: keep the take, and carry on recording if it was running.
+fn keep_take(state: &State, cx: &mut AsyncApp) {
+    let Some(asking) = stop_asking(state, cx) else {
+        return;
+    };
+    let view = {
+        let recording = state.recording.borrow();
+        let Some(recording) = recording.as_ref() else {
+            return;
+        };
+        if asking.resume {
+            recording.set_paused(false);
+        }
+        recording.view()
+    };
+    log::info!("{:?} cancelled; the take is kept", asking.action);
+    show(view, cx, |_, cx| cx.notify());
+    state.refresh_tray_menu();
+}
+
+/// Discard at once, but pause rather than delete for [`UNDO_WINDOW`], so
+/// Undo can bring the take back.
+fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
+    let generation = state.next_generation();
+    let until = Instant::now() + UNDO_WINDOW;
+    let view = {
+        let mut slot = state.recording.borrow_mut();
+        let Some(recording) = slot.as_mut() else {
+            return;
+        };
+        if recording.recorder.is_none() {
+            return;
+        }
+        let resume = recording.set_paused(true);
+        recording.discarded = Some(Discarded { resume, generation });
+        recording.view()
+    };
+    log::info!(
+        "recording discarded; it can be undone for {} s",
+        UNDO_WINDOW.as_secs()
+    );
+    show(view, cx, |bar, cx| {
+        bar.set_mode(BarMode::Discarded { until }, cx)
+    });
+    state.recording_changed(cx);
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(UNDO_WINDOW).await;
+        let due = state
+            .recording
+            .borrow()
+            .as_ref()
+            .and_then(|r| r.discarded)
+            .is_some_and(|d| d.generation == generation);
+        if due {
+            discard_recording(&state, cx);
+        }
+    })
+    .detach();
+}
+
+/// Undo a discard, or keep the take a restart replaced.
+fn undo(state: &Rc<State>, cx: &mut AsyncApp) {
+    let discarded = {
+        let mut slot = state.recording.borrow_mut();
+        slot.as_mut()
+            .and_then(|r| Some((r.discarded.take()?, r.view())))
+    };
+    if let Some((discarded, view)) = discarded {
+        if discarded.resume
+            && let Some(recording) = state.recording.borrow().as_ref()
+        {
+            recording.set_paused(false);
+        }
+        log::info!("discard undone");
+        show(view, cx, |bar, cx| {
+            bar.set_mode(BarMode::Controls, cx);
+            bar.notice("Discard undone", Duration::from_secs(2), cx);
+        });
+        state.recording_changed(cx);
+        return;
+    }
+    let Some(previous) = state.previous_take.take() else {
+        return;
+    };
+    let view = state.recording.borrow().as_ref().and_then(Recording::view);
+    let name = previous
+        .path
+        .file_name()
+        .unwrap_or_default()
+        .to_string_lossy()
+        .into_owned();
+    state.recording_changed(cx);
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        let path = previous.path.clone();
+        keep_previous_take(previous, cx).await;
+        match view {
+            Some(view) => {
+                // A notification now would be in the recording.
+                show(Some(view), cx, |bar, cx| {
+                    bar.offer_previous(None, cx);
+                    bar.notice(format!("Kept {name}"), Duration::from_secs(3), cx);
+                })
+            }
+            None => state.notify("Previous take kept", name, Some(path)),
+        }
+    })
+    .detach();
+}
+
+/// Give a take a restart replaced its final name.
+async fn keep_previous_take(previous: PreviousTake, cx: &mut AsyncApp) {
+    let path = previous.path;
+    let kept = cx
+        .background_executor()
+        .spawn({
+            let path = path.clone();
+            async move { std::fs::rename(files::partial_path(&path), &path) }
+        })
+        .await;
+    match kept {
+        Ok(()) => log::info!("kept the previous take as {}", path.display()),
+        Err(e) => log::error!("could not keep {}: {e}", path.display()),
+    }
 }
 
 /// Take the recording in progress and its recorder, closing the controls.
 /// `None` if there is none, or while a restart is swapping recorders.
 fn end_recording(state: &State, cx: &mut AsyncApp) -> Option<(Recorder, PathBuf)> {
-    let mut slot = state.recording.borrow_mut();
-    if slot.as_ref()?.recorder.is_none() {
+    if state.recording.borrow().as_ref()?.recorder.is_none() {
         log::info!("the recording is restarting; the request is ignored");
         return None;
     }
-    let mut recording = slot.take()?;
-    drop(slot);
+    // Hand the keyboard back if the controls were asking.
+    stop_asking(state, cx);
+    let mut recording = state.recording.borrow_mut().take()?;
     recording.close_controls(cx);
     state.recording_changed(cx);
     Some((recording.recorder?, recording.path))
 }
 
 /// Stop the recording in progress, finish its file, and say where it is.
+/// Stopping always keeps the take, even one the controls were asking about
+/// or one discarded moments ago.
 fn stop_recording(state: &Rc<State>, cx: &mut AsyncApp) {
     let Some((recorder, path)) = end_recording(state, cx) else {
         return;
@@ -1077,9 +1422,10 @@ fn discard_recording(state: &Rc<State>, cx: &mut AsyncApp) {
         .detach();
 }
 
-/// Throw away what has been recorded and start again with the same area
-/// and settings (PRD §7.7).
-async fn restart_recording(state: &Rc<State>, cx: &mut AsyncApp) {
+/// Start again with the same area and settings, as a new file (PRD §7.7).
+/// With `keep_previous`, the take it replaces is finished and kept for
+/// [`UNDO_WINDOW`], so Undo can keep it; otherwise it is deleted.
+async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut AsyncApp) {
     let taken = state.recording.borrow_mut().as_mut().and_then(|recording| {
         let recorder = recording.recorder.take()?;
         Some((recorder, recording.options.clone()))
@@ -1087,26 +1433,55 @@ async fn restart_recording(state: &Rc<State>, cx: &mut AsyncApp) {
     let Some((recorder, options)) = taken else {
         return;
     };
+    let dir = state.settings.borrow().recording_dir();
+    let started_at = Local::now().naive_local();
     let restarted = cx
         .background_executor()
         .spawn(async move {
-            if let Err(e) = recorder.stop() {
-                log::warn!("the restarted recording did not stop cleanly: {e:#}");
+            let finished = recorder.stop();
+            if let Err(e) = &finished {
+                log::warn!("the replaced take did not stop cleanly: {e:#}");
             }
-            let _ = std::fs::remove_file(&options.path);
-            Recorder::start(options)
+            let kept = keep_previous && finished.is_ok();
+            if !kept {
+                let _ = std::fs::remove_file(&options.path);
+            }
+            let path = files::new_recording(&dir, started_at)?;
+            let options = RecordOptions {
+                path: files::partial_path(&path),
+                ..options
+            };
+            let recorder = Recorder::start(options.clone())?;
+            anyhow::Ok((recorder, path, options, kept))
         })
         .await;
     let mut slot = state.recording.borrow_mut();
     match (restarted, slot.as_mut()) {
-        (Ok(recorder), Some(recording)) => {
+        (Ok((recorder, path, options, kept)), Some(recording)) => {
+            let previous = std::mem::replace(&mut recording.path, path);
+            recording.options = options;
             recording.recorder = Some(recorder);
             recording.clock.set(Clock::new(Instant::now()));
-            recording.refresh_controls(cx);
+            let view = recording.view();
+            drop(slot);
             log::info!("recording restarted");
+            let until = Instant::now() + UNDO_WINDOW;
+            if kept {
+                let generation = state.next_generation();
+                state.previous_take.replace(Some(PreviousTake {
+                    path: previous,
+                    generation,
+                }));
+                forget_previous_take_later(state, generation, cx);
+            }
+            show(view, cx, |bar, cx| {
+                bar.offer_previous(kept.then_some(until), cx);
+                bar.notice("Restarted", Duration::from_secs(2), cx);
+            });
+            state.recording_changed(cx);
         }
         // Framecut quit while restarting: the new recording is not wanted.
-        (Ok(recorder), None) => {
+        (Ok((recorder, ..)), None) => {
             drop(slot);
             cx.background_executor()
                 .spawn(async move {
@@ -1129,6 +1504,35 @@ async fn restart_recording(state: &Rc<State>, cx: &mut AsyncApp) {
             state.notify(failure.title(), failure.message, None);
         }
     }
+}
+
+/// Delete the take a restart replaced once its undo window closes, unless
+/// Undo kept it or a newer window replaced it.
+fn forget_previous_take_later(state: &Rc<State>, generation: u64, cx: &mut AsyncApp) {
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(UNDO_WINDOW).await;
+        let due = state
+            .previous_take
+            .borrow()
+            .as_ref()
+            .is_some_and(|p| p.generation == generation);
+        if !due {
+            return;
+        }
+        let Some(previous) = state.previous_take.take() else {
+            return;
+        };
+        let view = state.recording.borrow().as_ref().and_then(Recording::view);
+        show(view, cx, |bar, cx| bar.offer_previous(None, cx));
+        state.recording_changed(cx);
+        let partial = files::partial_path(&previous.path);
+        match std::fs::remove_file(&partial) {
+            Ok(()) => log::info!("the replaced take is deleted"),
+            Err(e) => log::error!("could not delete {}: {e}", partial.display()),
+        }
+    })
+    .detach();
 }
 
 /// Stop `recorder` and move the file to `path`, its final name, off the
@@ -1555,17 +1959,26 @@ mod tests {
     }
 
     #[test]
-    fn the_pause_chord_is_taken_only_while_recording() {
+    fn recording_chords_are_taken_only_while_they_mean_something() {
         let settings = Settings::default();
-        let ids = |recording| {
-            hotkeys(&settings, recording)
+        let ids = |recording, undo| {
+            hotkeys(&settings, recording, undo)
                 .into_iter()
                 .map(|(id, _)| id)
                 .collect::<Vec<_>>()
         };
-        assert!(!ids(false).contains(&PAUSE_HOTKEY));
-        assert!(ids(true).contains(&PAUSE_HOTKEY));
-        assert!(ids(false).contains(&RECORD_HOTKEY));
+        let during = [PAUSE_HOTKEY, RESTART_HOTKEY, DISCARD_HOTKEY];
+        let idle = ids(false, false);
+        assert!(idle.contains(&RECORD_HOTKEY));
+        assert!(during.iter().all(|id| !idle.contains(id)));
+        assert!(!idle.contains(&UNDO_HOTKEY));
+        let recording = ids(true, false);
+        assert!(during.iter().all(|id| recording.contains(id)));
+        assert!(!recording.contains(&UNDO_HOTKEY));
+        // Undo also outlives the recording: a restart's previous take can
+        // be kept after Stop.
+        assert!(ids(true, true).contains(&UNDO_HOTKEY));
+        assert!(ids(false, true).contains(&UNDO_HOTKEY));
     }
 
     #[test]

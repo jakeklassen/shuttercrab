@@ -88,22 +88,32 @@ The owner's first run (2026-09-29): steps 1–5 confirmed, but P did
 nothing until the bar was clicked. Decided with the owner: the bar never
 takes the keyboard (typing into the app being recorded must never become
 a command), its hints show the global chords, which work at once from
-anywhere (Ctrl+Alt+P pause/resume, registered only while recording;
-Ctrl+Alt+R stop), and once the bar is clicked its hints switch to the
-letters, which then work.
+anywhere, and once the bar is clicked its hints switch to letters, which
+then work. Second run (2026-09-30): all nine steps confirmed; the owner
+then asked for Restart and Discard in view with their own chords rather
+than behind a ⋯ menu, guarded against slips: by default the bar asks
+first; with asking off, they act at once and can be undone for 10 s.
 
-Automated: the controls show the recorded time ("Recording 1:24", "Paused
-at 0:05") and Pause or Resume; the hints are the chords while the bar
-does not have the keyboard and the letters once it does, and clicking
-elsewhere closes the menu; P, Space and S ask to pause and stop; Restart
-and Discard take two steps (M, then R or D) and nothing else opens them;
-Escape closes the menu; clicking each button. The pause chord is
-registered only while recording; the tray offers Pause/Resume recording
-then. The clock leaves paused time out. The controls go below the area,
-above it when there is no room, and inside a display recording along the
-bottom, above the taskbar, always on the monitor. The icons are embedded.
-Excluding a window from capture now reads the affinity back and fails
-unless it is `WDA_EXCLUDEFROMCAPTURE`.
+Chords, registered only while recording (Undo only while there is
+something to undo): Ctrl+Alt+P pause/resume, Ctrl+Alt+R stop, Ctrl+Alt+N
+restart, Ctrl+Alt+D discard, Ctrl+Alt+Z undo.
+
+Automated: the controls show the time and all four actions; Resume while
+paused; the hints are the chords while the bar does not have the keyboard
+and the letters (P, S, N, D) once it does; each letter and button asks
+for its action, and Z, Enter and Escape mean nothing without a question or
+something to undo. Asking before a discard or restart: the question
+with the take's length, Enter or the same letter confirms, Escape keeps,
+other letters do nothing, and without the keyboard the hints are the
+chords that answer (the action's own, and pause to keep). A discard counts
+down with Undo; after a restart, Keep previous take takes Restart's place
+until the offer ends. Every recording chord is registered only while it
+means something. The tray offers Pause/Resume recording while one runs.
+The clock leaves paused time out. The controls go below the area, above it
+when there is no room, and inside a display recording along the bottom,
+above the taskbar, always on the monitor. The icons are embedded.
+Excluding a window from capture reads the affinity back and fails unless
+it is `WDA_EXCLUDEFROMCAPTURE`.
 
 Live check (release build, scratch settings and folder, the test page on
 display 2, the owner hands-off), 2026-09-29:
@@ -120,31 +130,37 @@ display 2, the owner hands-off), 2026-09-29:
 Acceptance (manual):
 
 1. Start it: `mise exec -- cargo run --release -p framecut`. Open an
-   editor, press **Ctrl+Alt+R** and drag an area over it. A small dark bar
-   appears just below the area (above it if there is no room): a red dot,
-   the time counting up, **Pause Ctrl+Alt+P**, **Stop Ctrl+Alt+R** and
-   **⋯**. Click into the editor and type, including p, s and m: it all
-   types normally and the recording carries on.
-2. Without touching the bar, press **Ctrl+Alt+P**: the dot and time turn
-   amber, the time stops, the button reads **Resume**. **Ctrl+Alt+P**
-   again resumes.
-3. Right-click the tray icon: **Pause recording Ctrl+Alt+P** (or Resume)
-   and **Stop recording Ctrl+Alt+R** are there. Pause and resume from it.
-4. Click the bar's time: the hints change to **P**, **S** and **M**.
-   Press **P** twice (pause, resume). Click back into the editor: the
-   hints go back to the chords, and typing goes to the editor.
-5. Click the bar, press **M** (or click ⋯): the row becomes **Restart R**,
-   **Discard D**, **✕ Esc**; Escape goes back. **M** then **R**: the time
-   starts again from 0:00.
-6. Press **Ctrl+Alt+R** to stop. Play the video: it holds only what came
-   after the restart, the pauses left no gap or frozen stretch, and the
-   bar is nowhere in it.
-7. Record the whole display (Ctrl+Alt+C, R, D): the bar sits along the
-   bottom, over the recording, yet is not in the video.
-8. Start a recording, click the bar, **M** then **D**: the bar goes and no
-   file appears in `Videos\Framecut`.
-9. With nothing recording, Ctrl+Alt+P does nothing in Framecut: other apps
-   have it back.
+   editor, press **Ctrl+Alt+R** and drag an area over it. The bar shows
+   the time, **Pause Ctrl+Alt+P**, **Stop Ctrl+Alt+R**, **Restart
+   Ctrl+Alt+N** and, set apart in red, **Discard Ctrl+Alt+D**; nothing is
+   cut off. Click into the editor and type: it all types normally.
+2. **Ctrl+Alt+P** pauses and resumes; so does the tray's Pause/Resume
+   recording.
+3. **Ctrl+Alt+D**: the recording pauses and the bar asks "Discard this
+   m:ss recording?". Press **Esc**: the take is kept, recording resumes,
+   and typing goes to the editor again. Ask again and press
+   **Ctrl+Alt+P**: kept too.
+4. **Ctrl+Alt+N**: the bar asks "Restart? The m:ss take is thrown away."
+   Press **Enter**: the time starts again from 0:00 and the keyboard is
+   back in the editor.
+5. **Ctrl+Alt+R** stops. Play the video: only what followed the restart,
+   no gap at the pauses, no bar. Only one new file in `Videos\Framecut`.
+6. Start another; **Ctrl+Alt+D**, then **Enter**: the bar goes and no
+   file appears.
+7. Tray → **Settings…** → **Recording**: turn off **Ask before
+   discarding or restarting**.
+8. Start a recording; **Ctrl+Alt+D**: no question; the bar says
+   "Discarded · deleted in 10 s" with **Undo Ctrl+Alt+Z**. Press
+   **Ctrl+Alt+Z**: "Discard undone", and recording carries on. Press
+   **Ctrl+Alt+D** again and wait 10 s: the bar goes, no file.
+9. Start a recording, wait a few seconds, **Ctrl+Alt+N**: it restarts at
+   once, and **Keep previous take Ctrl+Alt+Z** stands in Restart's place
+   for 10 s. Press **Ctrl+Alt+Z**: "Kept Recording ….mp4". Stop: two new
+   files, the first take and the new one. Restart again without
+   Ctrl+Alt+Z: after 10 s the offer goes, and only the new take is saved.
+10. Record the whole display (Ctrl+Alt+C, R, D): the bar sits along the
+    bottom, over the recording, yet is not in the video.
+11. Turn asking back on, if you prefer it.
 
 ## Milestone 3: video technical spike
 

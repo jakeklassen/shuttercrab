@@ -18,8 +18,14 @@ pub struct Settings {
     pub screenshot_hotkey: String,
     /// Starts an area recording directly, or stops the one running.
     pub record_hotkey: String,
-    /// Pauses and resumes the recording; registered only while recording.
+    /// Pause, restart and discard the recording; registered only while
+    /// recording.
     pub pause_hotkey: String,
+    pub restart_hotkey: String,
+    pub discard_hotkey: String,
+    /// Undoes a discard or keeps the take a restart replaced; registered
+    /// only while there is something to undo.
+    pub undo_hotkey: String,
     /// Put screenshots on the clipboard.
     pub copy_to_clipboard: bool,
     /// Also save each screenshot as a PNG file.
@@ -43,6 +49,9 @@ pub struct Settings {
     pub recording_dir: Option<PathBuf>,
     /// Record the pointer (PRD §15: on by default for recordings).
     pub record_cursor: bool,
+    /// Ask before Discard or Restart throws a take away; when off, they act
+    /// at once and can be undone for a few seconds.
+    pub confirm_discard: bool,
     /// 30 or 60 (PRD §13.1).
     pub record_fps: u32,
 }
@@ -54,6 +63,9 @@ impl Default for Settings {
             screenshot_hotkey: "Ctrl+Alt+S".into(),
             record_hotkey: "Ctrl+Alt+R".into(),
             pause_hotkey: "Ctrl+Alt+P".into(),
+            restart_hotkey: "Ctrl+Alt+N".into(),
+            discard_hotkey: "Ctrl+Alt+D".into(),
+            undo_hotkey: "Ctrl+Alt+Z".into(),
             copy_to_clipboard: true,
             auto_save: true,
             output_dir: None,
@@ -67,6 +79,7 @@ impl Default for Settings {
             recording_dir: None,
             record_cursor: true,
             record_fps: 30,
+            confirm_discard: true,
         }
     }
 }

@@ -1,19 +1,23 @@
 //! The recording controls (PRD §16): a small bar near the recorded area
-//! with the elapsed time, Pause/Resume, Stop, and a ⋯ menu with Restart
-//! and Discard.
+//! with the elapsed time and Pause/Resume, Stop, Restart and Discard, all
+//! in view (the owner found a ⋯ menu for two actions only slowed them
+//! down).
 //!
 //! The bar never takes the keyboard by itself: the app being recorded
 //! keeps it, so typing is never mistaken for a command. Its hints show the
 //! global chords, which work from anywhere while recording. Once the bar
 //! is clicked it has the keyboard, and its hints switch to letters: P or
-//! Space pauses, S stops, and M opens the menu, where R restarts, D
-//! discards and Escape goes back; clicking elsewhere hands the keyboard
-//! back. The two destructive actions always take two steps. The bar only
-//! reports what was asked; the app does it.
+//! Space pauses, S stops, N restarts, D discards.
+//!
+//! Throwing a take away is guarded, as the settings say: either the bar
+//! asks first (Enter or the same chord again confirms, Escape keeps the
+//! take), or the action happens at once and can be undone for a few
+//! seconds. The bar only reports what was asked; the app does it and tells
+//! the bar what to show.
 
 use crate::{
     capture_bar::{muted, recording, surface, tile},
-    recording::Clock,
+    recording::{Clock, clock},
 };
 use gpui_kit::{
     AnyElement, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
@@ -34,6 +38,29 @@ pub enum RecordBarEvent {
     Stop,
     Restart,
     Discard,
+    /// Yes to the question the bar is asking.
+    Confirm,
+    /// No to it: keep the take.
+    Cancel,
+    Undo,
+}
+
+/// An action that throws a take away.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Destructive {
+    Discard,
+    Restart,
+}
+
+/// What the bar shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum BarMode {
+    /// The time and the four actions.
+    Controls,
+    /// Asking before `Destructive` throws away a take `length` long.
+    Confirm(Destructive, Duration),
+    /// The take is discarded, and deleted at `until` unless undone.
+    Discarded { until: Instant },
 }
 
 /// The global chords that work while recording, as the settings spell
@@ -42,10 +69,13 @@ pub enum RecordBarEvent {
 pub struct RecordKeys {
     pub pause: String,
     pub stop: String,
+    pub restart: String,
+    pub discard: String,
+    pub undo: String,
 }
 
 /// The bar's size in logical pixels.
-pub const RECORD_BAR_WIDTH: f32 = 440.0;
+pub const RECORD_BAR_WIDTH: f32 = 860.0;
 pub const RECORD_BAR_HEIGHT: f32 = 48.0;
 
 /// How often the time is redrawn.
@@ -56,11 +86,20 @@ fn paused() -> Hsla {
     rgb(0xF5A524).into()
 }
 
+/// Discard's muted red.
+fn danger() -> Hsla {
+    rgb(0xE5484D).into()
+}
+
 pub struct RecordBar {
     /// The recording's clock, kept by the app.
     clock: Rc<Cell<Clock>>,
-    /// Showing Restart and Discard instead of Pause and Stop.
-    menu: bool,
+    mode: BarMode,
+    /// A restart kept the previous take until this moment; Undo keeps it
+    /// for good.
+    previous_until: Option<Instant>,
+    /// A short message in place of the time, until it expires.
+    notice: Option<(SharedString, Instant)>,
     /// Whether the bar has the keyboard, so the letters work.
     active: bool,
     keys: RecordKeys,
@@ -81,10 +120,6 @@ impl RecordBar {
         window.focus(&focus, cx);
         cx.observe_window_activation(window, |this, window, cx| {
             this.active = window.is_window_active();
-            // Handing the keyboard back closes the menu, whose keys it had.
-            if !this.active {
-                this.menu = false;
-            }
             cx.notify();
         })
         .detach();
@@ -99,73 +134,108 @@ impl RecordBar {
         .detach();
         Self {
             clock,
-            menu: false,
+            mode: BarMode::Controls,
+            previous_until: None,
+            notice: None,
             active: window.is_window_active(),
             keys,
             focus,
         }
     }
 
-    pub fn menu_open(&self) -> bool {
-        self.menu
+    pub fn mode(&self) -> BarMode {
+        self.mode
     }
 
-    /// The key hint for a button: its letter while the bar has the
-    /// keyboard, otherwise its global chord, if it has one.
-    fn hint(&self, letter: &'static str, chord: Option<&str>) -> SharedString {
-        match (self.active, chord) {
-            (true, _) => letter.into(),
-            (false, Some(chord)) => chord.to_string().into(),
-            (false, None) => SharedString::default(),
-        }
+    pub fn set_mode(&mut self, mode: BarMode, cx: &mut Context<Self>) {
+        self.mode = mode;
+        cx.notify();
+    }
+
+    /// Offer to keep the take a restart replaced, until `until`; `None`
+    /// withdraws the offer.
+    pub fn offer_previous(&mut self, until: Option<Instant>, cx: &mut Context<Self>) {
+        self.previous_until = until;
+        cx.notify();
+    }
+
+    /// Show `text` in place of the time for `length`.
+    pub fn notice(
+        &mut self,
+        text: impl Into<SharedString>,
+        length: Duration,
+        cx: &mut Context<Self>,
+    ) {
+        self.notice = Some((text.into(), Instant::now() + length));
+        cx.notify();
     }
 
     /// The elapsed time as shown.
     pub fn time(&self) -> String {
-        crate::recording::clock(self.clock.get().elapsed(Instant::now()))
+        clock(self.clock.get().elapsed(Instant::now()))
     }
 
     fn ask(&mut self, event: RecordBarEvent, cx: &mut Context<Self>) {
-        self.menu = false;
         cx.emit(event);
         cx.notify();
     }
 
-    fn set_menu(&mut self, open: bool, cx: &mut Context<Self>) {
-        self.menu = open;
-        cx.notify();
-    }
-
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        match (self.menu, event.keystroke.key.as_str()) {
-            (false, "p" | "space") => self.ask(RecordBarEvent::TogglePause, cx),
-            (false, "s") => self.ask(RecordBarEvent::Stop, cx),
-            (false, "m") => self.set_menu(true, cx),
-            (true, "r") => self.ask(RecordBarEvent::Restart, cx),
-            (true, "d") => self.ask(RecordBarEvent::Discard, cx),
-            (true, "escape" | "m") => self.set_menu(false, cx),
-            _ => {}
+        let key = event.keystroke.key.as_str();
+        let request = match (self.mode, key) {
+            (BarMode::Controls, "p" | "space") => Some(RecordBarEvent::TogglePause),
+            (BarMode::Controls, "s") => Some(RecordBarEvent::Stop),
+            (BarMode::Controls, "n") if !self.offering(Instant::now()) => {
+                Some(RecordBarEvent::Restart)
+            }
+            (BarMode::Controls, "d") => Some(RecordBarEvent::Discard),
+            (BarMode::Controls, "z") if self.offering(Instant::now()) => Some(RecordBarEvent::Undo),
+            (BarMode::Confirm(..), "enter") => Some(RecordBarEvent::Confirm),
+            (BarMode::Confirm(Destructive::Discard, _), "d") => Some(RecordBarEvent::Confirm),
+            (BarMode::Confirm(Destructive::Restart, _), "n") => Some(RecordBarEvent::Confirm),
+            (BarMode::Confirm(..), "escape") => Some(RecordBarEvent::Cancel),
+            (BarMode::Discarded { .. }, "z") => Some(RecordBarEvent::Undo),
+            _ => None,
+        };
+        if let Some(request) = request {
+            self.ask(request, cx);
         }
     }
 
-    /// A button: an icon, a label unless `label` is empty, and its key.
+    fn offering(&self, now: Instant) -> bool {
+        self.previous_until.is_some_and(|until| until > now)
+    }
+
+    /// The key hint for a button: its letter while the bar has the
+    /// keyboard, otherwise its global chord.
+    fn hint(&self, letter: &'static str, chord: &str) -> SharedString {
+        if self.active {
+            letter.into()
+        } else {
+            chord.to_string().into()
+        }
+    }
+
+    /// A button: an icon, a label and its key hint.
+    #[allow(clippy::too_many_arguments)]
     fn button(
         &self,
         id: &'static str,
         icon: IconName,
         label: &'static str,
         key: SharedString,
+        color: Hsla,
         cx: &mut Context<Self>,
-        action: impl Fn(&mut Self, &mut Context<Self>) + 'static,
+        event: RecordBarEvent,
     ) -> AnyElement {
-        let name: SharedString = if label.is_empty() { "More" } else { label }.into();
         let key_id = SharedString::from(format!("{id}-key"));
         div()
             .id(id)
             .role(Role::Button)
-            .aria_label(name)
+            .aria_label(label)
             .test_support()
             .flex()
+            .flex_none()
             .items_center()
             .gap_1p5()
             .h(px(32.))
@@ -175,13 +245,13 @@ impl RecordBar {
             .hover(|s| s.bg(rgb(0x353535)))
             .cursor_pointer()
             .text_sm()
-            .text_color(gpui_kit::white())
+            .text_color(color)
             .on_mouse_up(
                 MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| action(this, cx)),
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| this.ask(event, cx)),
             )
             .child(Icon::new(icon).size(px(14.)))
-            .when(!label.is_empty(), |d| d.child(label))
+            .child(label)
             .when(!key.is_empty(), |d| {
                 d.child(
                     div()
@@ -196,75 +266,164 @@ impl RecordBar {
             })
             .into_any_element()
     }
+
+    /// The status text: a notice, or the time and what it means.
+    fn status(&self, now: Instant) -> (SharedString, Hsla) {
+        if let Some((text, until)) = &self.notice
+            && *until > now
+        {
+            return (text.clone(), gpui_kit::white());
+        }
+        let is_paused = self.clock.get().is_paused();
+        match self.mode {
+            BarMode::Controls if is_paused => (self.time().into(), paused()),
+            BarMode::Controls => (self.time().into(), gpui_kit::white()),
+            BarMode::Confirm(Destructive::Discard, length) => (
+                format!("Discard this {} recording?", clock(length)).into(),
+                gpui_kit::white(),
+            ),
+            BarMode::Confirm(Destructive::Restart, length) => (
+                format!("Restart? The {} take is thrown away.", clock(length)).into(),
+                gpui_kit::white(),
+            ),
+            BarMode::Discarded { until } => (
+                format!(
+                    "Discarded · deleted in {} s",
+                    until.saturating_duration_since(now).as_secs() + 1
+                )
+                .into(),
+                muted(),
+            ),
+        }
+    }
+
+    fn buttons(&self, now: Instant, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let white = gpui_kit::white();
+        let keys = self.keys.clone();
+        match self.mode {
+            BarMode::Controls => {
+                let (icon, label) = if self.clock.get().is_paused() {
+                    (IconName::Play, "Resume")
+                } else {
+                    (IconName::Pause, "Pause")
+                };
+                // Just after a restart, keeping the previous take takes
+                // Restart's place.
+                let third = if self.offering(now) {
+                    self.button(
+                        "record-keep-previous",
+                        IconName::Undo,
+                        "Keep previous take",
+                        self.hint("Z", &keys.undo),
+                        white,
+                        cx,
+                        RecordBarEvent::Undo,
+                    )
+                } else {
+                    self.button(
+                        "record-restart",
+                        IconName::RotateCcw,
+                        "Restart",
+                        self.hint("N", &keys.restart),
+                        white,
+                        cx,
+                        RecordBarEvent::Restart,
+                    )
+                };
+                vec![
+                    self.button(
+                        "record-pause",
+                        icon,
+                        label,
+                        self.hint("P", &keys.pause),
+                        white,
+                        cx,
+                        RecordBarEvent::TogglePause,
+                    ),
+                    self.button(
+                        "record-stop",
+                        IconName::Square,
+                        "Stop",
+                        self.hint("S", &keys.stop),
+                        white,
+                        cx,
+                        RecordBarEvent::Stop,
+                    ),
+                    third,
+                    // Set apart, at the end.
+                    div().w(px(4.)).into_any_element(),
+                    self.button(
+                        "record-discard",
+                        IconName::Trash,
+                        "Discard",
+                        self.hint("D", &keys.discard),
+                        danger(),
+                        cx,
+                        RecordBarEvent::Discard,
+                    ),
+                ]
+            }
+            BarMode::Confirm(action, _) => {
+                let (id, icon, label, letter, chord) = match action {
+                    Destructive::Discard => (
+                        "record-confirm",
+                        IconName::Trash,
+                        "Discard",
+                        "Enter",
+                        keys.discard.as_str(),
+                    ),
+                    Destructive::Restart => (
+                        "record-confirm",
+                        IconName::RotateCcw,
+                        "Restart",
+                        "Enter",
+                        keys.restart.as_str(),
+                    ),
+                };
+                vec![
+                    self.button(
+                        "record-keep",
+                        IconName::Play,
+                        "Keep recording",
+                        self.hint("Esc", &keys.pause),
+                        white,
+                        cx,
+                        RecordBarEvent::Cancel,
+                    ),
+                    self.button(
+                        id,
+                        icon,
+                        label,
+                        self.hint(letter, chord),
+                        danger(),
+                        cx,
+                        RecordBarEvent::Confirm,
+                    ),
+                ]
+            }
+            BarMode::Discarded { .. } => vec![self.button(
+                "record-undo",
+                IconName::Undo,
+                "Undo",
+                self.hint("Z", &keys.undo),
+                white,
+                cx,
+                RecordBarEvent::Undo,
+            )],
+        }
+    }
 }
 
 impl Render for RecordBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let is_paused = self.clock.get().is_paused();
-        let status: SharedString = if is_paused {
-            format!("Paused at {}", self.time())
-        } else {
-            format!("Recording {}", self.time())
-        }
-        .into();
-        let buttons = if self.menu {
-            vec![
-                self.button(
-                    "record-restart",
-                    IconName::RotateCcw,
-                    "Restart",
-                    self.hint("R", None),
-                    cx,
-                    |this, cx| this.ask(RecordBarEvent::Restart, cx),
-                ),
-                self.button(
-                    "record-discard",
-                    IconName::Trash,
-                    "Discard",
-                    self.hint("D", None),
-                    cx,
-                    |this, cx| this.ask(RecordBarEvent::Discard, cx),
-                ),
-                self.button(
-                    "record-back",
-                    IconName::X,
-                    "",
-                    self.hint("Esc", None),
-                    cx,
-                    |this, cx| this.set_menu(false, cx),
-                ),
-            ]
-        } else {
-            let (icon, label) = if is_paused {
-                (IconName::Play, "Resume")
-            } else {
-                (IconName::Pause, "Pause")
-            };
-            let pause = self.hint("P", Some(&self.keys.pause));
-            let stop = self.hint("S", Some(&self.keys.stop));
-            let more = self.hint("M", None);
-            vec![
-                self.button("record-pause", icon, label, pause, cx, |this, cx| {
-                    this.ask(RecordBarEvent::TogglePause, cx)
-                }),
-                self.button(
-                    "record-stop",
-                    IconName::Square,
-                    "Stop",
-                    stop,
-                    cx,
-                    |this, cx| this.ask(RecordBarEvent::Stop, cx),
-                ),
-                self.button(
-                    "record-more",
-                    IconName::Ellipsis,
-                    "",
-                    more,
-                    cx,
-                    |this, cx| this.set_menu(true, cx),
-                ),
-            ]
+        let now = Instant::now();
+        let dot = match self.mode {
+            BarMode::Discarded { .. } => muted(),
+            _ if self.clock.get().is_paused() => paused(),
+            _ => recording(),
         };
+        let (status, color) = self.status(now);
+        let buttons = self.buttons(now, cx);
         div()
             .id("record-bar")
             .role(Role::Toolbar)
@@ -280,25 +439,19 @@ impl Render for RecordBar {
             .bg(surface())
             .border_1()
             .border_color(rgb(0x3A3A3A))
-            .child(div().size(px(10.)).rounded_full().bg(if is_paused {
-                paused()
-            } else {
-                recording()
-            }))
+            .child(div().flex_none().size(px(10.)).rounded_full().bg(dot))
             .child(
                 div()
                     .id("record-time")
                     .role(Role::Status)
-                    .aria_label(status)
+                    .aria_label(status.clone())
                     .test_support()
                     .flex_1()
+                    .min_w_0()
+                    .truncate()
                     .text_sm()
-                    .text_color(if is_paused {
-                        paused()
-                    } else {
-                        gpui_kit::white()
-                    })
-                    .child(self.time()),
+                    .text_color(color)
+                    .child(status),
             )
             .children(buttons)
     }

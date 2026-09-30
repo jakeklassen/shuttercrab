@@ -488,6 +488,20 @@ impl SettingsWindow {
             )
     }
 
+    fn recording(&self) -> SettingPage {
+        SettingPage::new("Recording").group(
+            SettingGroup::new().item(heading("Throwing a take away", None)).item(
+                SettingItem::new(
+                    "Ask before discarding or restarting",
+                    self.switch(|s| s.confirm_discard, |s, v| s.confirm_discard = v),
+                )
+                .description(
+                    "Off: Discard and Restart act at once, and Ctrl+Alt+Z undoes them for 10 seconds.",
+                ),
+            ),
+        )
+    }
+
     fn diagnostics(&self) -> SettingPage {
         let d = &self.hooks.diagnostics;
         let info = |title: &str, value: String| {
@@ -575,7 +589,7 @@ impl SettingsWindow {
 }
 
 /// A section heading inside a page. Sections are untitled groups, so the
-/// sidebar lists only the three pages (the owner found per-section entries
+/// sidebar lists only the pages (the owner found per-section entries
 /// that merely scroll the page confusing).
 fn heading(title: &'static str, description: Option<&'static str>) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
@@ -666,7 +680,12 @@ impl Render for SettingsWindow {
             .child(
                 SettingsUi::new("framecut-settings")
                     .sidebar_width(px(200.))
-                    .pages([self.general(), self.screenshot(), self.diagnostics()]),
+                    .pages([
+                        self.general(),
+                        self.screenshot(),
+                        self.recording(),
+                        self.diagnostics(),
+                    ]),
             )
     }
 }

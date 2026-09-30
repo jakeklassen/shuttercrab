@@ -926,28 +926,38 @@ While recording, show a small control surface with:
 - elapsed output duration;
 - Pause / Resume;
 - Stop;
-- overflow menu containing:
-  - Restart;
-  - Discard.
+- Restart;
+- Discard.
+
+All four actions are in view, each with its hotkey. (Decided with the
+owner in Milestone 4: an overflow menu for two actions only slowed a
+practised user down.)
 
 Example:
 
 ```text
-┌─────────────────────────────────────┐
-│ ● 01:24    Pause    Stop     ⋯      │
-└─────────────────────────────────────┘
+┌──────────────────────────────────────────────────────────────────────────┐
+│ ● 01:24   Pause Ctrl+Alt+P   Stop Ctrl+Alt+R   Restart Ctrl+Alt+N   Discard Ctrl+Alt+D │
+└──────────────────────────────────────────────────────────────────────────┘
 ```
 
 Requirements:
 
 - always accessible;
-- keyboard-accessible;
+- keyboard-accessible: global hotkeys for every action, registered only
+  while recording, work from anywhere; the control never takes the
+  keyboard from the app being recorded by itself, so typing is never
+  mistaken for a command, and once clicked it answers single letters;
 - excluded from the capture through `WDA_EXCLUDEFROMCAPTURE` where reliable;
 - fallback to positioning outside the region or hiding when exclusion cannot be guaranteed;
 - stop and pause hotkeys work even if the control is hidden;
 - pause removes elapsed paused time from the encoded timeline;
 - restart reuses the current target/settings;
-- discard leaves no completed recording behind.
+- discard leaves no completed recording behind;
+- Discard and Restart never lose a take by accident: by default they ask
+  first (the recording pauses while asking); with asking turned off they
+  act at once and can be undone for 10 seconds (a discarded take is held
+  paused; the take a restart replaced is kept as its own file if undone).
 
 Do not place a heavy application window on screen during recording.
 

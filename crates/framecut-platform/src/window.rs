@@ -81,6 +81,13 @@ pub fn bring_to_front(hwnd: isize) {
     }
 }
 
+/// The window that has the keyboard, to give it back later with
+/// [`bring_to_front`].
+pub fn foreground_window() -> Option<isize> {
+    let hwnd = unsafe { GetForegroundWindow() };
+    (!hwnd.is_invalid()).then_some(hwnd.0 as isize)
+}
+
 /// Hide the window without destroying it. Hiding a GPUI window before
 /// removing it lets GPUI handle the deactivation while it still knows the
 /// window; otherwise the deactivation arrives during destruction and GPUI
