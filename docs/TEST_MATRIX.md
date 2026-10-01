@@ -221,7 +221,7 @@ Acceptance (manual):
 
 Four parts: (1) a 30-minute memory run, (2) checking every frame for
 Framecut's UI, (3) failures mid-recording, (4) edge cases. Part 4 is
-done; the others wait for the owner's go-ahead.
+done, and part 2 below; the others wait for the owner's go-ahead.
 
 Edge cases (release build, scratch settings and folders, the test page on
 display 2, the owner hands-off, `tmp\edge.ps1`), 2026-10-01:
@@ -233,6 +233,25 @@ display 2, the owner hands-off, `tmp\edge.ps1`), 2026-10-01:
 | The recordings folder was deleted | Made again; the recording saved there |
 | A folder that cannot exist (`Q:\…`) | Logged ("creating Q:\framecut-nowhere: … path specified"), no recording, the bar and border closed |
 | A screenshot during a whole-display recording | Overlay up 68 ms, PNG saved; the recording's brightness steady over all 227 frames (95.1–95.3), so the overlay's dimming never reached it |
+
+Framecut's UI in the output (the same setup, `tmp\ui.ps1`), 2026-10-01:
+every frame of every recording measured where the bar and each border
+strip were (and the countdown, in the recording that had one). A
+control run with the UI left capturable (`FRAMECUT_CAPTURABLE_UI`) shows
+what a leak looks like.
+
+| Recording | Bar region | Border strips | Countdown region |
+|---|---|---|---|
+| Control (UI capturable) | Y 58 every frame: the bar is there | Y 158–197: the dashes are there | — |
+| Whole display, take 2 (restart, previous kept), 138 frames | Y 235, every frame | Y 235, every frame | Y 200, every frame |
+| Whole display, take 1 (countdown, pause, discard undone), 148 frames | Y 235 but one frame | Y 235 but one frame | Y 200 but one frame |
+| Area at the top-left corner (border inside on two sides; a question, cancelled), 134 frames | — | Y 235 but one frame | — |
+
+The one frame in each was the whole display a flat dark grey (Y 44)
+with only the pointer: not Framecut's UI, but the full-screen browser
+blank for one frame, about a second after Framecut handed the keyboard
+back to it (after the countdown; after a cancelled question). Thought to
+be Windows' full-screen optimisation switching back on; not yet proven.
 
 ## Milestone 3: video technical spike
 
