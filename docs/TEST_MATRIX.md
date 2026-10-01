@@ -1,7 +1,7 @@
 # Test matrix
 
 Milestone 4 (area recording MVP) is in progress: step 1 passed on
-2026-09-29, step 2 on 2026-09-30; step 3 is ready for the owner to try.
+2026-09-29, steps 2 and 3 on 2026-09-30.
 Milestone 3 (video
 technical spike) is **complete** (2026-09-29).
 Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
@@ -172,6 +172,10 @@ before the border, 2026-09-30):
 12. Set the settings back as you like them.
 
 ### Step 3: the recording settings
+
+**Passed**: the owner confirmed all seven steps on 2026-09-30. Their one
+note, a refusal message that stayed after Escape backed out of the
+change, is fixed (the message goes with the cancelled change).
 
 Settings → **Recording**: include the pointer, frame rate (30 or 60 fps),
 count down first (off, 3 or 5 s), the recordings folder, a notification
