@@ -255,7 +255,13 @@ control for that (`tmplttab.ps1`): the bare recorder on the same page
 while Alt+Tab switched away and back three times, no Framecut running:
 595 frames, none blank, brightness flat. So a plain focus change does
 not do it; something in how Framecut takes the keyboard or hands it back
-to a full-screen app does. Under investigation.
+to a full-screen app does. A second control (`tmpver.ps1`): another
+window opened over the full-screen page and took focus, then Alt+Tab
+back, twice: the page came back cleanly both times, no blank frame.
+Framecut's blank frames were #202020 exactly: both Windows' dark window
+background and Framecut's popup colour. Not yet explained; one frame,
+only seen with a full-screen app, only after Framecut took the keyboard
+and gave it back.
 
 ## Milestone 3: video technical spike
 
