@@ -1,6 +1,7 @@
 # Test matrix
 
-Milestone 4 (area recording MVP) is **complete** (2026-10-01): step 1
+Milestone 5 (hardening) is in progress, memory first. Milestone 4 (area
+recording MVP) is **complete** (2026-10-01): step 1
 passed on 2026-09-29, steps 2 and 3 on 2026-09-30, step 4 on 2026-10-01.
 Milestone 3 (video
 technical spike) is **complete** (2026-09-29).
@@ -25,6 +26,41 @@ mise exec -- cargo test
 
 `cargo test` includes GPU golden tests. They run on WARP (software, so they
 work anywhere) and on the hardware adapter when there is one.
+
+## Milestone 5: hardening (memory first)
+
+The owner's priority (2026-10-01): lower memory where possible. Framecut
+now logs its memory at idle and three seconds after each capture and
+recording (private, graphics, and the Rust heap within private).
+
+Measured 2026-10-01, release build, 4K HDR monitors, area screenshots and
+recordings of the test page on display 2:
+
+| When | Private | Graphics | Rust heap |
+|---|---|---|---|
+| Idle, 3 s after start | 85 MB | 39 MB | 2.2 MB |
+| Idle, without the capture warm-up | 64 MB | 19.5 MB | 2.2 MB |
+| After a screenshot (2nd and later) | 415 MB | 345 MB | 3.1 MB |
+| After a recording | 274–303 MB | 124 MB | 2.2 MB |
+
+Where it goes:
+
+- Framecut's own data is 2–3 MB; everything else is native (GPUI's and
+  the capture service's Direct3D devices, DirectWrite, the driver, Media
+  Foundation).
+- The capture warm-up (a second Direct3D device kept ready for fast
+  screenshots) costs about 20 MB private and 19.5 MB graphics.
+- The screenshot pipeline alone (`capture-spike shots`) gives back its
+  graphics memory after each shot and keeps about 34 MB of private
+  memory from the second shot on.
+- **The ~305 MB of graphics after a screenshot is GPUI's.** Every GPUI
+  window has render targets the size of the window (swap chain, an
+  intermediate texture and a 4× multisampled copy, about 230 MB for the
+  full-screen 4K overlay), and when the window closes the driver keeps
+  that memory for reuse: GPUI never calls `IDXGIDevice3::Trim`. A local
+  copy of GPUI's Windows layer that trims after each window closes
+  (with its rasterizer state restored afterwards) brought the figures
+  after a screenshot to **97–99 MB private, 48 MB graphics**.
 
 ## Milestone 4: area recording MVP
 
