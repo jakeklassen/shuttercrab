@@ -217,6 +217,23 @@ Acceptance (manual):
 7. Turn off **Show a notification**: a recording saves without one.
    Turn it back on.
 
+### Step 4: hardening
+
+Four parts: (1) a 30-minute memory run, (2) checking every frame for
+Framecut's UI, (3) failures mid-recording, (4) edge cases. Part 4 is
+done; the others wait for the owner's go-ahead.
+
+Edge cases (release build, scratch settings and folders, the test page on
+display 2, the owner hands-off, `tmp\edge.ps1`), 2026-10-01:
+
+| Case | Result |
+|---|---|
+| Quit during a 5 s countdown | Quits; nothing recorded, the folder not even made |
+| Quit while the bar asks before discarding | The take is kept: 2.13 s, finished and playable |
+| The recordings folder was deleted | Made again; the recording saved there |
+| A folder that cannot exist (`Q:\…`) | Logged ("creating Q:\framecut-nowhere: … path specified"), no recording, the bar and border closed |
+| A screenshot during a whole-display recording | Overlay up 68 ms, PNG saved; the recording's brightness steady over all 227 frames (95.1–95.3), so the overlay's dimming never reached it |
+
 ## Milestone 3: video technical spike
 
 **Passed**: the owner watched the 60-second test recording (plays
