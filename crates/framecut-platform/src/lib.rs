@@ -46,7 +46,7 @@ use windows::{
                 MF_STRING, MSG, PostMessageW, PostQuitMessage, RegisterClassW,
                 RegisterWindowMessageW, SM_CXSMICON, SetForegroundWindow, TPM_NONOTIFY,
                 TPM_RETURNCMD, TPM_RIGHTBUTTON, TrackPopupMenu, WINDOW_STYLE, WM_APP,
-                WM_CONTEXTMENU, WM_HOTKEY, WM_NULL, WNDCLASSW, WS_EX_TOOLWINDOW,
+                WM_CONTEXTMENU, WM_DISPLAYCHANGE, WM_HOTKEY, WM_NULL, WNDCLASSW, WS_EX_TOOLWINDOW,
             },
         },
     },
@@ -66,6 +66,8 @@ pub enum PlatformEvent {
     AnotherInstance,
     /// The user clicked the latest notification.
     NotificationClicked,
+    /// A display was attached, detached or changed (`WM_DISPLAYCHANGE`).
+    DisplaysChanged,
 }
 
 /// A hotkey that could not be registered, usually because another
@@ -292,6 +294,11 @@ extern "system" fn window_proc(
             _ => {}
         }
         return LRESULT(0);
+    }
+    // Sent to every top-level window, this hidden one included; Windows
+    // still needs its default handling.
+    if message == WM_DISPLAYCHANGE {
+        with_state(|s| s.events.unbounded_send(PlatformEvent::DisplaysChanged));
     }
     // Explorer restarted: the tray icon is gone and must be added again.
     if with_state(|s| s.taskbar_created != 0 && message == s.taskbar_created) == Some(true) {

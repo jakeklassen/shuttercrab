@@ -144,14 +144,17 @@ enum Event {
     Pause,
     Resume,
     Stop,
-    /// The recorded display went away.
-    Closed,
+    /// The recorded display went away: Windows closed the capture, or the
+    /// app heard that the display is no longer attached.
+    DisplayGone,
 }
 
 /// A recording in progress, on its own thread.
 pub struct Recorder {
     events: Sender<Event>,
     thread: Option<JoinHandle<Result<RecordingSummary>>>,
+    /// Resolves when the thread ends, however it ends.
+    ended: Option<futures::channel::oneshot::Receiver<()>>,
 }
 
 impl Recorder {
@@ -159,15 +162,21 @@ impl Recorder {
     pub fn start(options: RecordOptions) -> Result<Self> {
         let (events, inbox) = channel();
         let (ready, started) = channel::<Result<()>>();
+        // Dropped when the thread ends, which resolves `ended`.
+        let (ending, ended) = futures::channel::oneshot::channel::<()>();
         let frames = events.clone();
         let thread = std::thread::Builder::new()
             .name("framecut-record".into())
-            .spawn(move || record(options, frames, inbox, ready))
+            .spawn(move || {
+                let _ending = ending;
+                record(options, frames, inbox, ready)
+            })
             .context("could not start the recording thread")?;
         match started.recv() {
             Ok(Ok(())) => Ok(Self {
                 events,
                 thread: Some(thread),
+                ended: Some(ended),
             }),
             Ok(Err(e)) => {
                 let _ = thread.join();
@@ -188,11 +197,21 @@ impl Recorder {
         let _ = self.events.send(Event::Resume);
     }
 
-    /// Whether the recording ended by itself (the display went away, the
-    /// device was lost, the disk filled up). [`Recorder::stop`] then
-    /// returns at once with what was saved and why it ended.
-    pub fn has_ended(&self) -> bool {
-        self.thread.as_ref().is_some_and(JoinHandle::is_finished)
+    /// The recorded display is gone: end the recording, keeping what was
+    /// recorded, as if Windows had closed the capture.
+    pub fn display_gone(&self) {
+        let _ = self.events.send(Event::DisplayGone);
+    }
+
+    /// A future that resolves when the recording ends, by [`Recorder::stop`]
+    /// or by itself (the display went away, the device was lost, the disk
+    /// filled up). [`Recorder::stop`] then returns at once with what was
+    /// saved and why it ended. `None` after the first call.
+    pub fn ended(&mut self) -> Option<impl std::future::Future<Output = ()> + 'static> {
+        let ended = self.ended.take()?;
+        Some(async move {
+            let _ = ended.await;
+        })
     }
 
     /// Stop, finish the file, and report what was recorded.
@@ -240,6 +259,21 @@ pub fn recordable(region: Option<PhysicalRect>, width: u32, height: u32) -> Phys
     let (x, w) = grow(r.x, r.width, width);
     let (y, h) = grow(r.y, r.height, height);
     PhysicalRect::new(x, y, w & !1, h & !1)
+}
+
+/// Whether `monitor` is still attached. Unplugging a display does not close
+/// its capture: Windows sends black frames, then none, and a display
+/// plugged back in is a new one. Its handle stops being valid the moment it
+/// goes, before the black frames, so the app checks it when Windows says
+/// the displays changed and tells the recorder with
+/// [`Recorder::display_gone`].
+pub fn attached(monitor: MonitorId) -> bool {
+    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
+    let mut info = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe { GetMonitorInfoW(hmonitor(monitor), &mut info) }.as_bool()
 }
 
 /// 100-nanosecond units, Media Foundation's and Windows.Graphics.Capture's.
@@ -431,7 +465,7 @@ impl Session {
         // Windows closes the item when its display goes away; frames just
         // stop otherwise.
         let closed_token = item.Closed(&TypedEventHandler::new(move |_, _| {
-            let _ = closed.send(Event::Closed);
+            let _ = closed.send(Event::DisplayGone);
             Ok(())
         }))?;
         let capture = pool.CreateCaptureSession(&item)?;
@@ -475,7 +509,23 @@ impl Session {
         // still finished into a file.
         let mut interrupted = None;
         loop {
-            let event = match inbox.recv_timeout(Duration::from_millis(250)) {
+            // Sleep until the next still-screen repeat is due, or for good
+            // while paused or before the first frame: frames and requests
+            // wake the loop themselves.
+            let next = match (paused_since, last) {
+                (None, Some((previous, _))) => {
+                    let due = previous + HEARTBEAT - (qpc_ticks() - origin - paused);
+                    Some(Duration::from_nanos(due.max(10_000) as u64 * 100))
+                }
+                _ => None,
+            };
+            let received = match next {
+                Some(wait) => inbox.recv_timeout(wait),
+                None => inbox
+                    .recv()
+                    .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+            };
+            let event = match received {
                 Ok(event) => event,
                 // A still screen delivers no frames. Repeat the last one
                 // every second, so the video can be seeked and edited.
@@ -508,7 +558,7 @@ impl Session {
                     }
                 }
                 Event::Stop => break,
-                Event::Closed => {
+                Event::DisplayGone => {
                     log::warn!("recording interrupted: the display went away");
                     interrupted = Some(Interruption::DisplayGone);
                     break;
@@ -990,6 +1040,18 @@ impl Drop for Mp4Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn attached_displays_are_present_and_a_stale_handle_is_not() {
+        let monitors = display::enumerate().unwrap();
+        assert!(!monitors.is_empty());
+        for m in &monitors {
+            let id = MonitorId(m.hmonitor.0 as u64);
+            assert!(attached(id), "{} is attached", m.device_name);
+        }
+        // A handle that names no display, as one unplugged does.
+        assert!(!attached(MonitorId(0x7FFF_0001)));
+    }
 
     #[test]
     fn interruptions_are_told_apart_by_their_error_codes() {

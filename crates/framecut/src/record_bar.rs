@@ -79,8 +79,19 @@ pub struct RecordKeys {
 pub const RECORD_BAR_WIDTH: f32 = 860.0;
 pub const RECORD_BAR_HEIGHT: f32 = 48.0;
 
-/// How often the time is redrawn.
-const TICK: Duration = Duration::from_millis(250);
+/// The time is redrawn once a second, just after the clock reaches the
+/// next whole second (paused, the countdowns still move each second).
+const SECOND: Duration = Duration::from_secs(1);
+
+/// How long until the bar next needs redrawing: just past the recorded
+/// time's next whole second while it runs, a second while paused.
+pub fn next_redraw(clock: Clock, now: Instant) -> Duration {
+    if clock.is_paused() {
+        return SECOND;
+    }
+    let into = clock.elapsed(now).subsec_nanos();
+    SECOND - Duration::from_nanos(into.into()) + Duration::from_millis(5)
+}
 
 /// The amber of a paused recording.
 fn paused() -> Hsla {
@@ -124,11 +135,18 @@ impl RecordBar {
             cx.notify();
         })
         .detach();
+        let first = next_redraw(clock.get(), Instant::now());
         cx.spawn(async move |this, cx| {
+            let mut wait = first;
             loop {
-                cx.background_executor().timer(TICK).await;
-                if this.update(cx, |_, cx| cx.notify()).is_err() {
-                    break;
+                cx.background_executor().timer(wait).await;
+                let redrawn = this.update(cx, |this, cx| {
+                    cx.notify();
+                    next_redraw(this.clock.get(), Instant::now())
+                });
+                match redrawn {
+                    Ok(next) => wait = next,
+                    Err(_) => break,
                 }
             }
         })
@@ -467,5 +485,23 @@ impl Render for RecordBar {
                     .child(status),
             )
             .children(buttons)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn redraws_once_a_second_just_after_the_clock_ticks() {
+        let now = Instant::now();
+        let ms = Duration::from_millis;
+        // 3.2 s in: the clock shows 0:04 in 0.8 s.
+        let clock = Clock::new(now - ms(3_200));
+        assert_eq!(next_redraw(clock, now), ms(805));
+        // Paused, the time stands still; countdowns still move.
+        let mut paused = clock;
+        paused.pause(now);
+        assert_eq!(next_redraw(paused, now), SECOND);
     }
 }

@@ -588,6 +588,7 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
                         cx.update(|cx| cx.open_with_system(&path));
                     }
                 }
+                PlatformEvent::DisplaysChanged => displays_changed(&state),
                 PlatformEvent::Hotkey(_) | PlatformEvent::TrayCommand(_) => {}
             }
         }
@@ -1073,6 +1074,9 @@ async fn record(
         chosen.elapsed().as_millis()
     );
     clock.set(Clock::new(Instant::now()));
+    let mut recorder = recorder;
+    let ended = recorder.ended();
+    let watched = path.clone();
     let recording = Recording {
         recorder: Some(recorder),
         path,
@@ -1090,7 +1094,7 @@ async fn record(
     if let Some(requests) = requests {
         handle_controls(state.clone(), requests, cx);
     }
-    watch_recording(state, cx);
+    watch_recording(state, ended, watched, cx);
     Ok(())
 }
 
@@ -1168,30 +1172,53 @@ fn open_controls(
     Some((Controls { popup, view }, requests))
 }
 
-/// How often a recording is checked for having ended by itself.
-const WATCH_EVERY: Duration = Duration::from_millis(500);
-
-/// Notice when the recording ends by itself (the display went away, the
-/// device was lost, the disk filled up: PRD §25) and finish it as if
-/// stopped: what was recorded is saved, and the notification says why.
-fn watch_recording(state: &Rc<State>, cx: &mut AsyncApp) {
+/// Notice when the take written to `path` ends by itself (the display went
+/// away, the device was lost, the disk filled up: PRD §25) and finish it as
+/// if stopped: what was recorded is saved, and the notification says why.
+/// `ended` is the recorder's [`Recorder::ended`]; it also resolves when the
+/// take is stopped, discarded or restarted, and then the take is no longer
+/// the one recording.
+fn watch_recording(
+    state: &Rc<State>,
+    ended: Option<impl std::future::Future<Output = ()> + 'static>,
+    path: PathBuf,
+    cx: &mut AsyncApp,
+) {
+    let Some(ended) = ended else {
+        return;
+    };
     let state = state.clone();
     cx.spawn(async move |cx| {
-        loop {
-            cx.background_executor().timer(WATCH_EVERY).await;
-            let ended = match &*state.recording.borrow() {
-                None => return,
-                // `None` only while Restart swaps recorders.
-                Some(recording) => recording.recorder.as_ref().is_some_and(Recorder::has_ended),
-            };
-            if ended {
-                log::warn!("the recording ended by itself");
-                stop_recording(&state, cx);
-                return;
-            }
+        ended.await;
+        let by_itself = state
+            .recording
+            .borrow()
+            .as_ref()
+            .is_some_and(|r| r.path == path && r.recorder.is_some());
+        if by_itself {
+            log::warn!("the recording ended by itself");
+            stop_recording(&state, cx);
         }
     })
     .detach();
+}
+
+/// Windows says the displays changed: if the recorded one is gone, end the
+/// recording with what was recorded. Other changes leave it alone.
+fn displays_changed(state: &State) {
+    let recording = state.recording.borrow();
+    let Some(recording) = recording.as_ref() else {
+        return;
+    };
+    let Some(recorder) = &recording.recorder else {
+        return;
+    };
+    if framecut_capture::record::attached(recording.options.monitor) {
+        log::info!("displays changed; the recorded one is still attached");
+    } else {
+        log::warn!("the recorded display is gone");
+        recorder.display_gone();
+    }
 }
 
 /// Count down `seconds` over the middle of `region` (physical pixels
@@ -1665,7 +1692,9 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
         .await;
     let mut slot = state.recording.borrow_mut();
     match (restarted, slot.as_mut()) {
-        (Ok((recorder, path, options, kept)), Some(recording)) => {
+        (Ok((mut recorder, path, options, kept)), Some(recording)) => {
+            let ended = recorder.ended();
+            let watched = path.clone();
             let previous = std::mem::replace(&mut recording.path, path);
             recording.options = options;
             recording.recorder = Some(recorder);
@@ -1692,6 +1721,7 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
                 bar.notice("Restarted", Duration::from_secs(2), cx);
             });
             state.recording_changed(cx);
+            watch_recording(state, ended, watched, cx);
         }
         // Framecut quit while restarting: the new recording is not wanted.
         (Ok((recorder, ..)), None) => {
