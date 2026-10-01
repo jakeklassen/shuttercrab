@@ -721,7 +721,8 @@ fn retry_once<S, T>(
 /// HRESULTs meaning the Direct3D device is gone: removed, hung, reset, or
 /// an internal driver error. Sleep and wake or a driver update can cause
 /// them; the device never works again.
-const DEVICE_LOST: [u32; 4] = [0x887A_0005, 0x887A_0006, 0x887A_0007, 0x887A_0020];
+/// DXGI_ERROR_DEVICE_REMOVED, _HUNG, _RESET and DXGI_ERROR_DRIVER_INTERNAL_ERROR.
+pub(crate) const DEVICE_LOST: [u32; 4] = [0x887A_0005, 0x887A_0006, 0x887A_0007, 0x887A_0020];
 
 /// A failure as the user should hear it: a lost device, or `code` with
 /// `message`.

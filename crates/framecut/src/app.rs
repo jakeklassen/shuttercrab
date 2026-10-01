@@ -1090,6 +1090,7 @@ async fn record(
     if let Some(requests) = requests {
         handle_controls(state.clone(), requests, cx);
     }
+    watch_recording(state, cx);
     Ok(())
 }
 
@@ -1165,6 +1166,32 @@ fn open_controls(
         }
     );
     Some((Controls { popup, view }, requests))
+}
+
+/// How often a recording is checked for having ended by itself.
+const WATCH_EVERY: Duration = Duration::from_millis(500);
+
+/// Notice when the recording ends by itself (the display went away, the
+/// device was lost, the disk filled up: PRD §25) and finish it as if
+/// stopped: what was recorded is saved, and the notification says why.
+fn watch_recording(state: &Rc<State>, cx: &mut AsyncApp) {
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        loop {
+            cx.background_executor().timer(WATCH_EVERY).await;
+            let ended = match &*state.recording.borrow() {
+                None => return,
+                // `None` only while Restart swaps recorders.
+                Some(recording) => recording.recorder.as_ref().is_some_and(Recorder::has_ended),
+            };
+            if ended {
+                log::warn!("the recording ended by itself");
+                stop_recording(&state, cx);
+                return;
+            }
+        }
+    })
+    .detach();
 }
 
 /// Count down `seconds` over the middle of `region` (physical pixels
@@ -1780,12 +1807,25 @@ fn report_recording(state: &State, result: Result<RecordingSummary, Failure>) {
                     "software"
                 }
             );
-            if state.settings.borrow().notify_after_recording {
-                state.notify(
-                    format!("Recording saved · {}", recording::clock(summary.duration)),
-                    format!("{name}, {} × {}", summary.width, summary.height),
-                    Some(summary.path.clone()),
-                );
+            let length = recording::clock(summary.duration);
+            match &summary.interrupted {
+                // Unexpected, so always said, whatever the settings.
+                Some(why) => {
+                    log::warn!("the recording ended by itself: {why:?}");
+                    state.notify(
+                        format!("Recording stopped: {}", why.describe()),
+                        format!("What was recorded is saved: {length}, {name}."),
+                        Some(summary.path.clone()),
+                    );
+                }
+                None if state.settings.borrow().notify_after_recording => {
+                    state.notify(
+                        format!("Recording saved · {length}"),
+                        format!("{name}, {} × {}", summary.width, summary.height),
+                        Some(summary.path.clone()),
+                    );
+                }
+                None => {}
             }
         }
         // Failures are always reported.

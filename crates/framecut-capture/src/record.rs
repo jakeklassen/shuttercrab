@@ -85,6 +85,58 @@ pub struct RecordingSummary {
     pub paused: Duration,
     /// Whether Media Foundation chose a hardware encoder.
     pub hardware_encoder: bool,
+    /// Why the recording ended before it was stopped, if it did. What was
+    /// recorded until then is still in the file.
+    pub interrupted: Option<Interruption>,
+}
+
+/// Why a recording ended by itself.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Interruption {
+    /// The recorded display was disconnected or turned off.
+    DisplayGone,
+    /// The graphics driver was reset or the device removed.
+    DeviceLost,
+    /// The file could not be written because the disk is full.
+    DiskFull,
+    /// Anything else, as the error said.
+    Failed(String),
+}
+
+/// ERROR_HANDLE_DISK_FULL and ERROR_DISK_FULL, as HRESULTs.
+const DISK_FULL: [u32; 2] = [0x8007_0027, 0x8007_0070];
+
+impl Interruption {
+    /// What `e`, an error during recording, means for the user.
+    pub fn from_error(e: &anyhow::Error) -> Self {
+        let codes: Vec<u32> = e
+            .chain()
+            .filter_map(|cause| cause.downcast_ref::<windows::core::Error>())
+            .map(|e| e.code().0 as u32)
+            .collect();
+        let text = format!("{e:#}").to_ascii_uppercase();
+        let any = |list: &[u32]| {
+            list.iter()
+                .any(|hr| codes.contains(hr) || text.contains(&format!("0X{hr:08X}")))
+        };
+        if any(&crate::service::DEVICE_LOST) {
+            Self::DeviceLost
+        } else if any(&DISK_FULL) {
+            Self::DiskFull
+        } else {
+            Self::Failed(format!("{e:#}"))
+        }
+    }
+
+    /// Why recording stopped, to finish "Recording stopped: …".
+    pub fn describe(&self) -> String {
+        match self {
+            Self::DisplayGone => "the display was disconnected or turned off".into(),
+            Self::DeviceLost => "the graphics driver was reset".into(),
+            Self::DiskFull => "the disk is full".into(),
+            Self::Failed(_) => "something went wrong (the log has the details)".into(),
+        }
+    }
 }
 
 enum Event {
@@ -92,6 +144,8 @@ enum Event {
     Pause,
     Resume,
     Stop,
+    /// The recorded display went away.
+    Closed,
 }
 
 /// A recording in progress, on its own thread.
@@ -132,6 +186,13 @@ impl Recorder {
 
     pub fn resume(&self) {
         let _ = self.events.send(Event::Resume);
+    }
+
+    /// Whether the recording ended by itself (the display went away, the
+    /// device was lost, the disk filled up). [`Recorder::stop`] then
+    /// returns at once with what was saved and why it ended.
+    pub fn has_ended(&self) -> bool {
+        self.thread.as_ref().is_some_and(JoinHandle::is_finished)
     }
 
     /// Stop, finish the file, and report what was recorded.
@@ -285,6 +346,9 @@ struct Session {
     region: PhysicalRect,
     pool: Direct3D11CaptureFramePool,
     capture: GraphicsCaptureSession,
+    /// The display being captured, and its Closed registration.
+    item: GraphicsCaptureItem,
+    closed_token: i64,
     /// The FrameArrived registration, until the capture is stopped.
     frame_token: Option<i64>,
     crop: ID3D11Texture2D,
@@ -359,8 +423,15 @@ impl Session {
             2,
             size,
         )?;
+        let closed = frames.clone();
         let frame_token = pool.FrameArrived(&TypedEventHandler::new(move |_, _| {
             let _ = frames.send(Event::Frame);
+            Ok(())
+        }))?;
+        // Windows closes the item when its display goes away; frames just
+        // stop otherwise.
+        let closed_token = item.Closed(&TypedEventHandler::new(move |_, _| {
+            let _ = closed.send(Event::Closed);
             Ok(())
         }))?;
         let capture = pool.CreateCaptureSession(&item)?;
@@ -375,6 +446,8 @@ impl Session {
             region,
             pool,
             capture,
+            item,
+            closed_token,
             frame_token: Some(frame_token),
             crop,
             sdr,
@@ -398,6 +471,9 @@ impl Session {
         let mut paused: i64 = 0;
         let mut last: Option<(i64, usize)> = None;
         let (mut frames, mut dropped_busy, mut skipped_rate) = (0u64, 0u64, 0u64);
+        // A failure ends the loop, not the recording: what was written is
+        // still finished into a file.
+        let mut interrupted = None;
         loop {
             let event = match inbox.recv_timeout(Duration::from_millis(250)) {
                 Ok(event) => event,
@@ -409,7 +485,11 @@ impl Session {
                     {
                         let now = qpc_ticks() - origin - paused;
                         if now - previous >= HEARTBEAT {
-                            self.writer.write(&self.nv12, slot, now, period)?;
+                            if let Err(e) = self.writer.write(&self.nv12, slot, now, period) {
+                                interrupted = Some(Interruption::from_error(&e));
+                                log::error!("recording interrupted: {e:#}");
+                                break;
+                            }
                             last = Some((now, slot));
                             frames += 1;
                         }
@@ -428,34 +508,47 @@ impl Session {
                     }
                 }
                 Event::Stop => break,
+                Event::Closed => {
+                    log::warn!("recording interrupted: the display went away");
+                    interrupted = Some(Interruption::DisplayGone);
+                    break;
+                }
                 Event::Frame => {
                     // Take every frame that is ready; the pool holds two.
-                    while let Some(frame) = next_frame(&self.pool)? {
-                        let captured = frame.SystemRelativeTime()?.Duration;
-                        if paused_since.is_some() {
+                    let taken = (|| -> Result<()> {
+                        while let Some(frame) = next_frame(&self.pool)? {
+                            let captured = frame.SystemRelativeTime()?.Duration;
+                            if paused_since.is_some() {
+                                frame.Close()?;
+                                continue;
+                            }
+                            let time = (captured - origin - paused).max(0);
+                            if let Some((previous, _)) = last
+                                && time < previous + period * 9 / 10
+                            {
+                                skipped_rate += 1;
+                                frame.Close()?;
+                                continue;
+                            }
+                            self.copy_region(&frame)?;
                             frame.Close()?;
-                            continue;
+                            let Some(slot) = self.nv12.free_slot() else {
+                                dropped_busy += 1;
+                                continue;
+                            };
+                            self.convert(time)?;
+                            self.nv12.convert(&self.gpu, slot)?;
+                            let time = last.map_or(time, |(previous, _)| time.max(previous + 1));
+                            self.writer.write(&self.nv12, slot, time, period)?;
+                            last = Some((time, slot));
+                            frames += 1;
                         }
-                        let time = (captured - origin - paused).max(0);
-                        if let Some((previous, _)) = last
-                            && time < previous + period * 9 / 10
-                        {
-                            skipped_rate += 1;
-                            frame.Close()?;
-                            continue;
-                        }
-                        self.copy_region(&frame)?;
-                        frame.Close()?;
-                        let Some(slot) = self.nv12.free_slot() else {
-                            dropped_busy += 1;
-                            continue;
-                        };
-                        self.convert(time)?;
-                        self.nv12.convert(&self.gpu, slot)?;
-                        let time = last.map_or(time, |(previous, _)| time.max(previous + 1));
-                        self.writer.write(&self.nv12, slot, time, period)?;
-                        last = Some((time, slot));
-                        frames += 1;
+                        Ok(())
+                    })();
+                    if let Err(e) = taken {
+                        interrupted = Some(Interruption::from_error(&e));
+                        log::error!("recording interrupted: {e:#}");
+                        break;
                     }
                 }
             }
@@ -463,6 +556,10 @@ impl Session {
         if let Some(since) = paused_since.take() {
             paused += qpc_ticks() - since;
         }
+        let why = |e: anyhow::Error| match &interrupted {
+            Some(i) => e.context(format!("after the recording was interrupted ({i:?})")),
+            None => e,
+        };
         // Repeat the last frame at the stop, so the video lasts until then.
         let end = qpc_ticks() - origin - paused;
         let paused = Duration::from_nanos(paused.max(0) as u64 * 100);
@@ -470,15 +567,25 @@ impl Session {
             Some((time, slot)) => {
                 let end = end.max(time + period);
                 if end - period > time {
-                    self.writer.write(&self.nv12, slot, end - period, period)?;
-                    frames += 1;
+                    // Not after a failure: the encoder may be what failed.
+                    if interrupted.is_none() {
+                        self.writer
+                            .write(&self.nv12, slot, end - period, period)
+                            .map_err(why)?;
+                        frames += 1;
+                    }
                 }
+                let end = if interrupted.is_some() {
+                    time + period
+                } else {
+                    end
+                };
                 Duration::from_nanos((end as u64) * 100)
             }
-            None => bail!("no frame was captured"),
+            None => return Err(why(anyhow::anyhow!("no frame was captured"))),
         };
         self.stop_capture();
-        let hardware_encoder = self.writer.finish()?;
+        let hardware_encoder = self.writer.finish().map_err(why)?;
         Ok(RecordingSummary {
             path: self.options.path.clone(),
             width: self.region.width,
@@ -489,6 +596,7 @@ impl Session {
             duration,
             paused,
             hardware_encoder,
+            interrupted,
         })
     }
 
@@ -496,6 +604,7 @@ impl Session {
     /// time with the same token makes Windows end the process.
     fn stop_capture(&mut self) {
         if let Some(token) = self.frame_token.take() {
+            let _ = self.item.RemoveClosed(self.closed_token);
             let _ = self.pool.RemoveFrameArrived(token);
             let _ = self.capture.Close();
             let _ = self.pool.Close();
@@ -881,6 +990,35 @@ impl Drop for Mp4Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn interruptions_are_told_apart_by_their_error_codes() {
+        use windows::core::{Error, HRESULT};
+        let windows_error = |code: u32| {
+            anyhow::Error::from(Error::from_hresult(HRESULT(code as i32)))
+                .context("WriteSample failed")
+        };
+        assert_eq!(
+            Interruption::from_error(&windows_error(0x887A_0005)),
+            Interruption::DeviceLost
+        );
+        assert_eq!(
+            Interruption::from_error(&windows_error(0x8007_0070)),
+            Interruption::DiskFull
+        );
+        // Codes only in the text count too.
+        let text = anyhow::anyhow!("copy failed: 0x887A0007");
+        assert_eq!(Interruption::from_error(&text), Interruption::DeviceLost);
+        let other = anyhow::anyhow!("the monitor changed size during the recording");
+        assert!(matches!(
+            Interruption::from_error(&other),
+            Interruption::Failed(m) if m.contains("changed size")
+        ));
+        assert_eq!(
+            Interruption::DisplayGone.describe(),
+            "the display was disconnected or turned off"
+        );
+    }
 
     #[test]
     fn recorded_regions_are_even_on_screen_and_not_too_small() {
