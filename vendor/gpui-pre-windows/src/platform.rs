@@ -1120,8 +1120,36 @@ impl WindowsPlatformInner {
             .position(|handle| handle.as_raw() == target_window)
             .unwrap();
         lock.remove(index);
+        self.trim_graphics_memory();
 
         lock.is_empty()
+    }
+
+    /// Give back the graphics memory a closed window used. Its render
+    /// targets (swap chain, path intermediate and its multisampled copy, all
+    /// window-sized) are released with the window, but the driver keeps
+    /// their memory for reuse until the device is trimmed: a closed
+    /// full-screen 4K window otherwise leaves about 230 MB behind.
+    fn trim_graphics_memory(&self) {
+        let devices = self.state.directx_devices.borrow();
+        let Some(devices) = devices.as_ref() else {
+            return;
+        };
+        unsafe {
+            // Trim releases only memory not bound to the pipeline.
+            devices.device_context.ClearState();
+            devices.device_context.Flush();
+        }
+        // ClearState also reset the rasterizer state that renderers set
+        // only once, when created; windows still open rely on it.
+        directx_renderer::set_rasterizer_state(&devices.device, &devices.device_context)
+            .log_err();
+        if let Ok(dxgi) = devices
+            .device
+            .cast::<windows::Win32::Graphics::Dxgi::IDXGIDevice3>()
+        {
+            unsafe { dxgi.Trim() };
+        }
     }
 
     #[inline]
