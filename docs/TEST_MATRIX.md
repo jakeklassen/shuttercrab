@@ -234,6 +234,27 @@ display 2, the owner hands-off, `tmp\edge.ps1`), 2026-10-01:
 | A folder that cannot exist (`Q:\…`) | Logged ("creating Q:\framecut-nowhere: … path specified"), no recording, the bar and border closed |
 | A screenshot during a whole-display recording | Overlay up 68 ms, PNG saved; the recording's brightness steady over all 227 frames (95.1–95.3), so the overlay's dimming never reached it |
 
+Failures mid-recording (2026-10-01): until now, a recording that
+failed while running lost everything (the unfinished file was deleted
+on Stop), and a disconnected display went unnoticed (the last frame was
+repeated until Stop). Now the recorder listens for its display going
+away, and an error mid-recording ends the recording rather than the
+thread, so what was written is still finished into a playable file. The
+app notices within half a second, closes the controls and border, and
+always says what happened and what was saved. Automated: a lost device
+and a full disk are told apart by their error codes (also when only in
+the message). Manual check, for the owner:
+
+1. Start Framecut, open `tmp\motion.html` (or anything not private) on
+   display 2, press **Ctrl+Alt+R** and drag an area on display 2.
+2. After 10 seconds or so, unplug display 2's cable (or turn it off, if
+   that disconnects it; some monitors stay attached when off, and then
+   the recording simply carries on with a still picture).
+3. Within a second the bar and border go, and a notification says
+   "Recording stopped: the display was disconnected or turned off" with
+   the length and name saved. Clicking it plays the file, up to the
+   moment the display went.
+
 Framecut's UI in the output (the same setup, `tmp\ui.ps1`), 2026-10-01:
 every frame of every recording measured where the bar and each border
 strip were (and the countdown, in the recording that had one). A
