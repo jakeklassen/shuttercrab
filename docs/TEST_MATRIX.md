@@ -1051,6 +1051,14 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
   with a plain focus change or with another window covering the app and
   handing focus back. Not Framecut's UI. First thing to try: let Windows
   hand focus back when a popup closes instead of Framecut doing it.
+- **Thumbnail pointer polling** (noted 2026-10-01). The thumbnail checks
+  the pointer ten times a second while it is on screen, because GPUI does
+  not report the pointer leaving a window that never takes focus. Use
+  Windows' own leave notice (TrackMouseEvent, WM_MOUSELEAVE) instead.
+- **Screenshot first-frame polling** (noted 2026-10-01). A screenshot waits
+  for its first captured frame by checking every 2 ms (about 25 checks).
+  Wait on the frame pool's FrameArrived event instead, as the recorder
+  does.
 
 ## Manual tools
 
