@@ -247,7 +247,14 @@ file with the last real picture. An error mid-recording also ends the
 recording rather than the thread, so what was written is still finished
 into a playable file. The app hears at once (an event when the recorder
 thread ends, not polling), closes the controls and border, and always
-says what happened and what was saved. Automated: a lost device
+says what happened and what was saved. Second try (2026-10-01): **passed**:
+the display-change event came, the recording stopped and saved 13.71 s,
+the controls and border closed, and the notification said why. Windows
+sent frames unevenly as the cable came out (the owner saw a stutter and
+accepts it), and the last 0.25 s is near-black: Windows delivers
+WM_DISPLAYCHANGE to each window in turn, and Framecut's hidden window got
+it 0.5 s after GPUI's topmost one, by when the black frames had begun
+(noted under [Known issues](#known-issues)). Automated: a lost device
 and a full disk are told apart by their error codes (also when only in
 the message). Manual check, for the owner:
 
@@ -1051,6 +1058,11 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
   with a plain focus change or with another window covering the app and
   handing focus back. Not Framecut's UI. First thing to try: let Windows
   hand focus back when a popup closes instead of Framecut doing it.
+- **Up to a quarter second of black at the end of a recording whose
+  display was unplugged** (found 2026-10-01). Windows delivers
+  WM_DISPLAYCHANGE to each window in turn; Framecut's hidden window got
+  it 0.5 s after GPUI's topmost one. Try making the hidden window topmost
+  so it hears first, or trim the trailing black frames.
 - **Thumbnail pointer polling** (noted 2026-10-01). The thumbnail checks
   the pointer ten times a second while it is on screen, because GPUI does
   not report the pointer leaving a window that never takes focus. Use
