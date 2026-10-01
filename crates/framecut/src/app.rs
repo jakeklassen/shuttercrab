@@ -16,6 +16,7 @@
 
 use crate::{
     capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent, CaptureMode, CaptureTarget},
+    countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
     files,
     overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     popup::{self, Activation},
@@ -309,6 +310,8 @@ struct Recording {
 const FRAME_RECORDING: [u8; 3] = [0xE5, 0x48, 0x4D];
 const FRAME_PAUSED: [u8; 3] = [0xF5, 0xA5, 0x24];
 const FRAME_DISCARDED: [u8; 3] = [0x9D, 0x9D, 0x9D];
+/// Before recording starts, during a countdown.
+const FRAME_WAITING: [u8; 3] = FRAME_DISCARDED;
 
 /// The border's look, logical pixels.
 const FRAME_THICKNESS: f32 = 2.0;
@@ -670,9 +673,7 @@ fn open_settings(state: &Rc<State>, cx: &mut AsyncApp) {
                     popup::close_window(window, cx);
                     false
                 });
-                let view = cx.new(|cx| {
-                    SettingsWindow::new(hooks, (CAPTURE_BAR_HOTKEY, SCREENSHOT_HOTKEY), window, cx)
-                });
+                let view = cx.new(|cx| SettingsWindow::new(hooks, window, cx));
                 cx.new(|cx| Root::new(view, window, cx))
             })
         });
@@ -696,7 +697,8 @@ fn open_settings(state: &Rc<State>, cx: &mut AsyncApp) {
 
 /// How the settings window reaches the rest of Framecut.
 fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
-    let (changed, pause, apply) = (state.clone(), state.clone(), state.clone());
+    let (changed, pause, apply, probe) =
+        (state.clone(), state.clone(), state.clone(), state.clone());
     Hooks {
         settings: state.settings.clone(),
         changed: Rc::new(move |cx: &mut App| {
@@ -720,6 +722,24 @@ fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
                         conflict.id
                     })
                     .collect()
+            })
+        }),
+        probe_hotkeys: Rc::new(move || {
+            let every = hotkeys(&probe.settings.borrow(), true, true);
+            let registering = probe.platform.set_hotkeys(every);
+            let state = probe.clone();
+            Box::pin(async move {
+                let taken = registering
+                    .await
+                    .into_iter()
+                    .map(|conflict| {
+                        log::warn!("{} is taken by another application", conflict.hotkey);
+                        conflict.id
+                    })
+                    .collect();
+                // Back to what applies now; any clash there is in `taken`.
+                drop(state.platform.set_hotkeys(state.hotkeys()).await);
+                taken
             })
         }),
         launch_at_startup: Rc::new(framecut_platform::startup::launch_at_startup),
@@ -975,6 +995,18 @@ async fn record(
             (region, frame.monitor().clone())
         }
     };
+    // The border shows what will be recorded: grey until recording starts.
+    let countdown = state.settings.borrow().countdown();
+    let waiting = if countdown > 0 {
+        FRAME_WAITING
+    } else {
+        FRAME_RECORDING
+    };
+    let frame = show_frame(&info, region, waiting);
+    if countdown > 0 && !count_down(&info, region, countdown, cx).await {
+        log::info!("recording cancelled during the countdown");
+        return Ok(());
+    }
     let chosen = Instant::now();
     let clock = Rc::new(Cell::new(Clock::new(chosen)));
     // The controls come first, so they are excluded before the first frame.
@@ -992,7 +1024,6 @@ async fn record(
         Some((controls, requests)) => (Some(controls), Some(requests)),
         None => (None, None),
     };
-    let frame = show_frame(&info, region);
 
     let settings = state.settings.borrow().clone();
     let dir = settings.recording_dir();
@@ -1053,6 +1084,7 @@ async fn record(
         frame,
     };
     recording.refresh_controls(cx);
+    recording.color_frame_for_clock();
     state.recording.replace(Some(recording));
     state.recording_changed(cx);
     if let Some(requests) = requests {
@@ -1135,10 +1167,58 @@ fn open_controls(
     Some((Controls { popup, view }, requests))
 }
 
+/// Count down `seconds` over the middle of `region` (physical pixels
+/// relative to the monitor; `None` for all of it) before recording starts.
+/// The countdown takes the keyboard, so Enter and Escape work, and gives it
+/// back when it ends. Returns whether to start.
+async fn count_down(
+    info: &MonitorInfo,
+    region: Option<PhysicalRect>,
+    seconds: u32,
+    cx: &mut AsyncApp,
+) -> bool {
+    let (b, scale) = (info.bounds, info.scale_factor);
+    let area = framecut_capture::record::recordable(region, b.width, b.height);
+    let (w, h) = (
+        (COUNTDOWN_WIDTH * scale).round() as i32,
+        (COUNTDOWN_HEIGHT * scale).round() as i32,
+    );
+    let centre = |start: i32, side: u32, size: i32, limit: u32| {
+        (start + (side as i32 - size) / 2).clamp(0, (limit as i32 - size).max(0))
+    };
+    let rect = PhysicalRect::new(
+        b.x + centre(area.x, area.width, w, b.width),
+        b.y + centre(area.y, area.height, h, b.height),
+        w as u32,
+        h as u32,
+    );
+    let give_back = platform_window::foreground_window();
+    let opened = popup::open(info, rect, Activation::Take, cx, move |window, cx| {
+        cx.new(|cx| Countdown::new(seconds, window, cx))
+    });
+    let (popup, mut events) = match opened {
+        Ok(opened) => opened,
+        Err(e) => {
+            log::warn!("could not show the countdown; recording at once: {e}");
+            return true;
+        }
+    };
+    if let Some(hwnd) = popup.hwnd() {
+        platform_window::round_corners(hwnd);
+        exclude_from_capture(hwnd, "countdown");
+    }
+    let event = events.next().await.unwrap_or(CountdownEvent::Cancel);
+    popup.close(cx);
+    if let Some(window) = give_back {
+        platform_window::bring_to_front(window);
+    }
+    event == CountdownEvent::Go
+}
+
 /// Show the dashed border around `region` (physical pixels relative to the
-/// monitor; `None` for all of it) before recording starts, so it is
-/// excluded from the first frame.
-fn show_frame(info: &MonitorInfo, region: Option<PhysicalRect>) -> Option<Frame> {
+/// monitor; `None` for all of it) in `color`, before recording starts, so
+/// it is excluded from the first frame.
+fn show_frame(info: &MonitorInfo, region: Option<PhysicalRect>, color: [u8; 3]) -> Option<Frame> {
     let (b, scale) = (info.bounds, info.scale_factor);
     let area = framecut_capture::record::recordable(region, b.width, b.height);
     let px = |logical: f32| ((logical * scale).round() as u32).max(1);
@@ -1149,7 +1229,7 @@ fn show_frame(info: &MonitorInfo, region: Option<PhysicalRect>) -> Option<Frame>
     };
     let area = FrameRect::new(b.x + area.x, b.y + area.y, area.width, area.height);
     let bounds = FrameRect::new(b.x, b.y, b.width, b.height);
-    match Frame::show(area, bounds, style, FRAME_RECORDING) {
+    match Frame::show(area, bounds, style, color) {
         Ok((frame, 0)) => Some(frame),
         Ok((frame, missing)) => {
             log::warn!("{missing} sides of the recording border would be recorded; left out");
@@ -1700,12 +1780,15 @@ fn report_recording(state: &State, result: Result<RecordingSummary, Failure>) {
                     "software"
                 }
             );
-            state.notify(
-                format!("Recording saved · {}", recording::clock(summary.duration)),
-                format!("{name}, {} × {}", summary.width, summary.height),
-                Some(summary.path.clone()),
-            );
+            if state.settings.borrow().notify_after_recording {
+                state.notify(
+                    format!("Recording saved · {}", recording::clock(summary.duration)),
+                    format!("{name}, {} × {}", summary.width, summary.height),
+                    Some(summary.path.clone()),
+                );
+            }
         }
+        // Failures are always reported.
         Err(failure) => {
             log::error!("{}", failure.detail);
             state.notify(failure.title(), failure.message, None);

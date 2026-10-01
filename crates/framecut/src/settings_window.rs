@@ -1,7 +1,7 @@
-//! The settings window (PRD §26): General, Screenshot and Diagnostics
-//! pages. Every change applies at once; there is no Save button. The whole
-//! window works from the keyboard: Tab between controls, Space or Enter to
-//! use them, Escape to close.
+//! The settings window (PRD §26): General, Screenshot, Recording and
+//! Diagnostics pages. Every change applies at once; there is no Save
+//! button. The whole window works from the keyboard: Tab between controls,
+//! Space or Enter to use them, Escape to close.
 //!
 //! The window reaches the rest of Framecut only through [`Hooks`], so it
 //! can be tested on its own.
@@ -36,6 +36,10 @@ pub struct Hooks {
     /// Register the hotkeys the settings name. Resolves to the ids of those
     /// another application already owns.
     pub apply_hotkeys: Rc<dyn Fn() -> LocalBoxFuture<'static, Vec<u32>>>,
+    /// Register every hotkey the settings name, including those taken only
+    /// while recording, then go back to the ones that apply now. Resolves
+    /// to the ids another application already owns.
+    pub probe_hotkeys: Rc<dyn Fn() -> LocalBoxFuture<'static, Vec<u32>>>,
     /// Whether Framecut starts at sign-in, and a way to change it.
     pub launch_at_startup: Rc<dyn Fn() -> bool>,
     pub set_launch_at_startup: Rc<dyn Fn(bool)>,
@@ -58,34 +62,86 @@ pub struct Diagnostics {
 pub enum HotkeyKind {
     CaptureBar,
     Screenshot,
+    Record,
+    Pause,
+    Restart,
+    Discard,
+    Undo,
 }
 
 impl HotkeyKind {
+    pub const ALL: [HotkeyKind; 7] = [
+        Self::CaptureBar,
+        Self::Screenshot,
+        Self::Record,
+        Self::Pause,
+        Self::Restart,
+        Self::Discard,
+        Self::Undo,
+    ];
+
     fn get(self, s: &Settings) -> &str {
         match self {
-            HotkeyKind::CaptureBar => &s.capture_bar_hotkey,
-            HotkeyKind::Screenshot => &s.screenshot_hotkey,
+            Self::CaptureBar => &s.capture_bar_hotkey,
+            Self::Screenshot => &s.screenshot_hotkey,
+            Self::Record => &s.record_hotkey,
+            Self::Pause => &s.pause_hotkey,
+            Self::Restart => &s.restart_hotkey,
+            Self::Discard => &s.discard_hotkey,
+            Self::Undo => &s.undo_hotkey,
         }
     }
 
     fn set(self, s: &mut Settings, value: String) {
+        let slot = match self {
+            Self::CaptureBar => &mut s.capture_bar_hotkey,
+            Self::Screenshot => &mut s.screenshot_hotkey,
+            Self::Record => &mut s.record_hotkey,
+            Self::Pause => &mut s.pause_hotkey,
+            Self::Restart => &mut s.restart_hotkey,
+            Self::Discard => &mut s.discard_hotkey,
+            Self::Undo => &mut s.undo_hotkey,
+        };
+        *slot = value;
+    }
+
+    /// What the hotkey does, to finish "Ctrl+Alt+S already …".
+    fn does(self) -> &'static str {
         match self {
-            HotkeyKind::CaptureBar => s.capture_bar_hotkey = value,
-            HotkeyKind::Screenshot => s.screenshot_hotkey = value,
+            Self::CaptureBar => "opens the Capture Bar",
+            Self::Screenshot => "takes area screenshots",
+            Self::Record => "starts and stops recording",
+            Self::Pause => "pauses recording",
+            Self::Restart => "restarts recording",
+            Self::Discard => "discards recording",
+            Self::Undo => "undoes a discard",
         }
     }
 
-    fn other(self) -> HotkeyKind {
+    /// The field's element id.
+    fn element_id(self) -> &'static str {
         match self {
-            HotkeyKind::CaptureBar => HotkeyKind::Screenshot,
-            HotkeyKind::Screenshot => HotkeyKind::CaptureBar,
+            Self::CaptureBar => "hotkey-capture-bar",
+            Self::Screenshot => "hotkey-screenshot",
+            Self::Record => "hotkey-record",
+            Self::Pause => "hotkey-pause",
+            Self::Restart => "hotkey-restart",
+            Self::Discard => "hotkey-discard",
+            Self::Undo => "hotkey-undo",
         }
     }
 
-    fn label(self) -> &'static str {
+    /// The id the app registers it under.
+    fn id(self) -> u32 {
+        use crate::app::*;
         match self {
-            HotkeyKind::CaptureBar => "the Capture Bar",
-            HotkeyKind::Screenshot => "area screenshots",
+            Self::CaptureBar => CAPTURE_BAR_HOTKEY,
+            Self::Screenshot => SCREENSHOT_HOTKEY,
+            Self::Record => RECORD_HOTKEY,
+            Self::Pause => PAUSE_HOTKEY,
+            Self::Restart => RESTART_HOTKEY,
+            Self::Discard => DISCARD_HOTKEY,
+            Self::Undo => UNDO_HOTKEY,
         }
     }
 }
@@ -124,8 +180,6 @@ pub fn hotkey_from_keys(
 /// Shows one hotkey; Enter, Space or a click starts recording a new one.
 pub struct HotkeyField {
     kind: HotkeyKind,
-    /// The id the app registers this hotkey under.
-    id: u32,
     hooks: Rc<Hooks>,
     recording: bool,
     message: Option<SharedString>,
@@ -135,7 +189,6 @@ pub struct HotkeyField {
 impl HotkeyField {
     pub fn new(
         kind: HotkeyKind,
-        id: u32,
         hooks: Rc<Hooks>,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -150,7 +203,6 @@ impl HotkeyField {
         .detach();
         Self {
             kind,
-            id,
             hooks,
             recording: false,
             message: None,
@@ -204,9 +256,12 @@ impl HotkeyField {
                 return;
             }
         };
-        let other = self.kind.other();
-        if hotkey == other.get(&self.hooks.settings.borrow()) {
-            self.message = Some(format!("{hotkey} already opens {}.", other.label()).into());
+        let taken_by = HotkeyKind::ALL
+            .into_iter()
+            .filter(|k| *k != self.kind)
+            .find(|k| k.get(&self.hooks.settings.borrow()) == hotkey);
+        if let Some(other) = taken_by {
+            self.message = Some(format!("{hotkey} already {}.", other.does()).into());
             cx.notify();
             return;
         }
@@ -215,7 +270,9 @@ impl HotkeyField {
             .set(&mut self.hooks.settings.borrow_mut(), hotkey.clone());
         self.recording = false;
         cx.notify();
-        let (applied, id, kind) = ((self.hooks.apply_hotkeys)(), self.id, self.kind);
+        // Every hotkey, including those taken only while recording, so a
+        // clash shows now rather than mid-recording.
+        let (applied, id, kind) = ((self.hooks.probe_hotkeys)(), self.kind.id(), self.kind);
         cx.spawn(async move |this, cx| {
             let taken = applied.await;
             let _ = this.update(cx, |this, cx| {
@@ -261,10 +318,7 @@ impl Render for HotkeyField {
                 .to_string()
                 .into()
         };
-        let id = match self.kind {
-            HotkeyKind::CaptureBar => "hotkey-capture-bar",
-            HotkeyKind::Screenshot => "hotkey-screenshot",
-        };
+        let id = self.kind.element_id();
         div()
             .flex()
             .flex_col()
@@ -318,44 +372,30 @@ impl Render for HotkeyField {
 /// The settings window's content.
 pub struct SettingsWindow {
     hooks: Rc<Hooks>,
-    capture_bar: Entity<HotkeyField>,
-    screenshot: Entity<HotkeyField>,
+    /// A field for every hotkey, in [`HotkeyKind::ALL`] order.
+    hotkeys: Vec<Entity<HotkeyField>>,
     focus: FocusHandle,
 }
 
 impl SettingsWindow {
-    pub fn new(
-        hooks: Rc<Hooks>,
-        hotkey_ids: (u32, u32),
-        window: &mut Window,
-        cx: &mut Context<Self>,
-    ) -> Self {
-        let capture_bar = cx.new(|cx| {
-            HotkeyField::new(
-                HotkeyKind::CaptureBar,
-                hotkey_ids.0,
-                hooks.clone(),
-                window,
-                cx,
-            )
-        });
-        let screenshot = cx.new(|cx| {
-            HotkeyField::new(
-                HotkeyKind::Screenshot,
-                hotkey_ids.1,
-                hooks.clone(),
-                window,
-                cx,
-            )
-        });
+    pub fn new(hooks: Rc<Hooks>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+        let hotkeys = HotkeyKind::ALL
+            .map(|kind| cx.new(|cx| HotkeyField::new(kind, hooks.clone(), window, cx)))
+            .to_vec();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         Self {
             hooks,
-            capture_bar,
-            screenshot,
+            hotkeys,
             focus,
         }
+    }
+
+    /// The field for `kind`, as a setting.
+    fn hotkey(&self, kind: HotkeyKind) -> SettingField<SharedString> {
+        let index = HotkeyKind::ALL.iter().position(|k| *k == kind).unwrap_or(0);
+        let field = self.hotkeys[index].clone();
+        SettingField::render(move |_, _, _| field.clone())
     }
 
     /// A switch bound to one boolean setting.
@@ -377,7 +417,6 @@ impl SettingsWindow {
     fn general(&self) -> SettingPage {
         let hooks = self.hooks.clone();
         let (startup_get, startup_set) = (hooks.clone(), hooks.clone());
-        let (capture_bar, screenshot) = (self.capture_bar.clone(), self.screenshot.clone());
         let folder = hooks.clone();
         SettingPage::new("General")
             .default_open(true)
@@ -401,12 +440,16 @@ impl SettingsWindow {
                     ))
                     .item(SettingItem::new(
                         "Open the Capture Bar",
-                        SettingField::render(move |_, _, _| capture_bar.clone()),
+                        self.hotkey(HotkeyKind::CaptureBar),
                     ))
                     .item(SettingItem::new(
                         "Screenshot an area",
-                        SettingField::render(move |_, _, _| screenshot.clone()),
-                    )),
+                        self.hotkey(HotkeyKind::Screenshot),
+                    ))
+                    .item(
+                        SettingItem::new("Record an area", self.hotkey(HotkeyKind::Record))
+                            .description("Press it again to stop."),
+                    ),
             )
             .group(
                 SettingGroup::new()
@@ -421,7 +464,7 @@ impl SettingsWindow {
                     ))
                     .item(SettingItem::new(
                         "Folder",
-                        SettingField::render(move |_, _, _| folder_row(folder.clone())),
+                        SettingField::render(move |_, _, _| folder_row(folder.clone(), Folder::Screenshots)),
                     )),
             )
     }
@@ -488,49 +531,127 @@ impl SettingsWindow {
             )
     }
 
-    fn recording(&self) -> SettingPage {
+    /// A dropdown of `choices` (value, label) bound to one setting.
+    fn dropdown(
+        &self,
+        choices: Vec<(u32, String)>,
+        get: fn(&Settings) -> u32,
+        set: fn(&mut Settings, u32),
+    ) -> SettingField<SharedString> {
         let (read, write) = (self.hooks.clone(), self.hooks.clone());
-        let undo_choices = crate::settings::UNDO_CHOICES
-            .map(|s| {
-                (
-                    SharedString::from(s.to_string()),
-                    SharedString::from(format!("{s} seconds")),
-                )
-            })
-            .to_vec();
-        SettingPage::new("Recording").group(
-            SettingGroup::new()
-                .item(heading("Throwing a take away", None))
-                .item(
-                    SettingItem::new(
-                        "Ask before discarding or restarting",
-                        self.switch(|s| s.confirm_discard, |s, v| s.confirm_discard = v),
-                    )
-                    .description(
-                        "Off: Discard and Restart act at once, and the undo chord (Ctrl+Alt+Z) \
-                         brings the take back for a while.",
-                    ),
-                )
-                .item(
-                    SettingItem::new(
-                        "Undo lasts",
-                        SettingField::dropdown(
-                            undo_choices,
-                            move |_| {
-                                let seconds = read.settings.borrow().undo_window().as_secs();
-                                seconds.to_string().into()
-                            },
-                            move |value, cx| {
-                                if let Ok(seconds) = value.parse() {
-                                    write.settings.borrow_mut().undo_seconds = seconds;
-                                    (write.changed)(cx);
-                                }
-                            },
-                        ),
-                    )
-                    .description("When not asking first."),
-                ),
+        let choices = choices
+            .into_iter()
+            .map(|(value, label)| (SharedString::from(value.to_string()), label.into()))
+            .collect();
+        SettingField::dropdown(
+            choices,
+            move |_| get(&read.settings.borrow()).to_string().into(),
+            move |value, cx| {
+                if let Ok(value) = value.parse() {
+                    set(&mut write.settings.borrow_mut(), value);
+                    (write.changed)(cx);
+                }
+            },
         )
+    }
+
+    fn recording(&self) -> SettingPage {
+        let folder = self.hooks.clone();
+        let undo_chord = self.hooks.settings.borrow().undo_hotkey.clone();
+        let seconds = |s: u32| format!("{s} seconds");
+        SettingPage::new("Recording")
+            .group(
+                SettingGroup::new()
+                    .item(heading("Capture", None))
+                    .item(
+                        SettingItem::new(
+                            "Include the pointer",
+                            self.switch(|s| s.record_cursor, |s, v| s.record_cursor = v),
+                        )
+                        .description("Screenshots have their own setting."),
+                    )
+                    .item(SettingItem::new(
+                        "Frame rate",
+                        self.dropdown(
+                            vec![(30, "30 fps".into()), (60, "60 fps".into())],
+                            Settings::record_fps,
+                            |s, v| s.record_fps = v,
+                        ),
+                    ))
+                    .item(
+                        SettingItem::new(
+                            "Count down first",
+                            self.dropdown(
+                                crate::settings::COUNTDOWN_CHOICES
+                                    .map(|s| {
+                                        let label = if s == 0 { "Off".into() } else { seconds(s) };
+                                        (s, label)
+                                    })
+                                    .to_vec(),
+                                Settings::countdown,
+                                |s, v| s.recording_countdown = v,
+                            ),
+                        )
+                        .description("Over the chosen area, never recorded. Esc cancels, Enter starts at once."),
+                    ),
+            )
+            .group(
+                SettingGroup::new()
+                    .item(heading("Where recordings go", None))
+                    .item(SettingItem::new(
+                        "Folder",
+                        SettingField::render(move |_, _, _| {
+                            folder_row(folder.clone(), Folder::Recordings)
+                        }),
+                    ))
+                    .item(
+                        SettingItem::new(
+                            "Show a notification",
+                            self.switch(
+                                |s| s.notify_after_recording,
+                                |s, v| s.notify_after_recording = v,
+                            ),
+                        )
+                        .description("When a recording is saved; click it to play the file."),
+                    ),
+            )
+            .group(
+                SettingGroup::new()
+                    .item(heading(
+                        "While recording",
+                        Some("These shortcuts are taken only while a recording runs (Undo only while there is something to undo); other apps have them the rest of the time."),
+                    ))
+                    .item(SettingItem::new("Pause and resume", self.hotkey(HotkeyKind::Pause)))
+                    .item(SettingItem::new("Restart", self.hotkey(HotkeyKind::Restart)))
+                    .item(SettingItem::new("Discard", self.hotkey(HotkeyKind::Discard)))
+                    .item(SettingItem::new("Undo", self.hotkey(HotkeyKind::Undo))),
+            )
+            .group(
+                SettingGroup::new()
+                    .item(heading("Throwing a take away", None))
+                    .item(
+                        SettingItem::new(
+                            "Ask before discarding or restarting",
+                            self.switch(|s| s.confirm_discard, |s, v| s.confirm_discard = v),
+                        )
+                        .description(format!(
+                            "Off: Discard and Restart act at once, and {undo_chord} brings the take back for a while."
+                        )),
+                    )
+                    .item(
+                        SettingItem::new(
+                            "Undo lasts",
+                            self.dropdown(
+                                crate::settings::UNDO_CHOICES
+                                    .map(|s| (s, seconds(s)))
+                                    .to_vec(),
+                                |s| s.undo_window().as_secs() as u32,
+                                |s, v| s.undo_seconds = v,
+                            ),
+                        )
+                        .description("When not asking first."),
+                    ),
+            )
     }
 
     fn diagnostics(&self) -> SettingPage {
@@ -641,38 +762,81 @@ fn heading(title: &'static str, description: Option<&'static str>) -> SettingIte
     })
 }
 
-/// The output folder, with buttons to change and open it.
-fn folder_row(hooks: Rc<Hooks>) -> impl IntoElement {
-    let dir = hooks.settings.borrow().output_dir();
+/// Which output folder a row shows.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Folder {
+    Screenshots,
+    Recordings,
+}
+
+impl Folder {
+    fn get(self, s: &Settings) -> PathBuf {
+        match self {
+            Self::Screenshots => s.output_dir(),
+            Self::Recordings => s.recording_dir(),
+        }
+    }
+
+    fn set(self, s: &mut Settings, dir: PathBuf) {
+        match self {
+            Self::Screenshots => s.output_dir = Some(dir),
+            Self::Recordings => s.recording_dir = Some(dir),
+        }
+    }
+
+    /// The ids of the row's text and buttons.
+    fn ids(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            Self::Screenshots => ("output-folder", "choose-folder", "open-folder"),
+            Self::Recordings => (
+                "recording-folder",
+                "choose-recording-folder",
+                "open-recording-folder",
+            ),
+        }
+    }
+
+    fn prompt(self) -> &'static str {
+        match self {
+            Self::Screenshots => "Save screenshots here",
+            Self::Recordings => "Save recordings here",
+        }
+    }
+}
+
+/// An output folder, with buttons to change and open it.
+fn folder_row(hooks: Rc<Hooks>, folder: Folder) -> impl IntoElement {
+    let dir = folder.get(&hooks.settings.borrow());
     let (pick, open) = (hooks.clone(), dir.clone());
+    let (text_id, choose_id, open_id) = folder.ids();
     div()
         .flex()
         .items_center()
         .gap_2()
         .child(
             div()
-                .id("output-folder")
+                .id(text_id)
                 .max_w(px(280.))
                 .overflow_hidden()
                 .text_sm()
                 .child(dir.display().to_string()),
         )
         .child(
-            Button::new("choose-folder")
+            Button::new(choose_id)
                 .label("Change…")
                 .on_click(move |_, _, cx| {
                     let chosen = cx.prompt_for_paths(PathPromptOptions {
                         files: false,
                         directories: true,
                         multiple: false,
-                        prompt: Some("Save screenshots here".into()),
+                        prompt: Some(folder.prompt().into()),
                     });
                     let hooks = pick.clone();
                     cx.spawn(async move |cx| {
                         if let Ok(Ok(Some(mut paths))) = chosen.await
                             && let Some(dir) = paths.pop()
                         {
-                            hooks.settings.borrow_mut().output_dir = Some(dir);
+                            folder.set(&mut hooks.settings.borrow_mut(), dir);
                             cx.update(|cx| (hooks.changed)(cx));
                         }
                     })
@@ -680,7 +844,7 @@ fn folder_row(hooks: Rc<Hooks>) -> impl IntoElement {
                 }),
         )
         .child(
-            Button::new("open-folder")
+            Button::new(open_id)
                 .label("Open")
                 .on_click(move |_, _, cx| {
                     if std::fs::create_dir_all(&open).is_ok() {
@@ -702,8 +866,7 @@ impl Render for SettingsWindow {
             .bg(cx.theme().background)
             .text_color(cx.theme().foreground)
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
-                let recording = this.capture_bar.read(cx).is_recording()
-                    || this.screenshot.read(cx).is_recording();
+                let recording = this.hotkeys.iter().any(|f| f.read(cx).is_recording());
                 if event.keystroke.key == "escape" && !recording {
                     crate::popup::close_window(window, cx);
                 }

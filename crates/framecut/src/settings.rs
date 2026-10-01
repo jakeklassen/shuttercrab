@@ -54,6 +54,10 @@ pub struct Settings {
     pub confirm_discard: bool,
     /// How long Discard and Restart can be undone when they do not ask.
     pub undo_seconds: u32,
+    /// Seconds to count down before recording starts; 0 starts at once.
+    pub recording_countdown: u32,
+    /// Show a Windows notification when a recording is saved.
+    pub notify_after_recording: bool,
     /// 30 or 60 (PRD §13.1).
     pub record_fps: u32,
 }
@@ -81,6 +85,8 @@ impl Default for Settings {
             recording_dir: None,
             record_cursor: true,
             record_fps: 30,
+            recording_countdown: 0,
+            notify_after_recording: true,
             confirm_discard: true,
             undo_seconds: 10,
         }
@@ -114,6 +120,21 @@ impl Settings {
             10
         };
         std::time::Duration::from_secs(seconds.into())
+    }
+}
+
+/// The countdowns the settings offer, in seconds; 0 is none.
+pub const COUNTDOWN_CHOICES: [u32; 3] = [0, 3, 5];
+
+impl Settings {
+    /// The countdown before recording: one of [`COUNTDOWN_CHOICES`], none
+    /// if the file says otherwise.
+    pub fn countdown(&self) -> u32 {
+        if COUNTDOWN_CHOICES.contains(&self.recording_countdown) {
+            self.recording_countdown
+        } else {
+            0
+        }
     }
 }
 
@@ -257,6 +278,23 @@ mod tests {
             ..settings
         };
         assert_eq!(odd.record_fps(), 30);
+    }
+
+    #[test]
+    fn recordings_start_at_once_and_notify_when_saved_by_default() {
+        let settings = Settings::default();
+        assert_eq!(settings.countdown(), 0);
+        assert!(settings.notify_after_recording);
+        let three = Settings {
+            recording_countdown: 3,
+            ..settings.clone()
+        };
+        assert_eq!(three.countdown(), 3);
+        let odd = Settings {
+            recording_countdown: 4,
+            ..settings
+        };
+        assert_eq!(odd.countdown(), 0);
     }
 
     #[test]

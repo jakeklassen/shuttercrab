@@ -8,6 +8,7 @@
 
 pub mod app;
 pub mod capture_bar;
+pub mod countdown;
 pub mod files;
 pub mod icons;
 pub mod logging;
