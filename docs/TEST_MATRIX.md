@@ -1,7 +1,7 @@
 # Test matrix
 
-Milestone 4 (area recording MVP) is in progress: step 1 passed on
-2026-09-29, steps 2 and 3 on 2026-09-30.
+Milestone 4 (area recording MVP) is **complete** (2026-10-01): step 1
+passed on 2026-09-29, steps 2 and 3 on 2026-09-30, step 4 on 2026-10-01.
 Milestone 3 (video
 technical spike) is **complete** (2026-09-29).
 Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
@@ -219,9 +219,9 @@ Acceptance (manual):
 
 ### Step 4: hardening
 
-Four parts: (1) a 30-minute memory run, (2) checking every frame for
-Framecut's UI, (3) failures mid-recording, (4) edge cases. Part 4 is
-done, and part 2 below; the others wait for the owner's go-ahead.
+**Passed** (2026-10-01): all four parts below. Four parts: (1) a
+30-minute memory run, (2) checking every frame for Framecut's UI, (3)
+failures mid-recording, (4) edge cases.
 
 Edge cases (release build, scratch settings and folders, the test page on
 display 2, the owner hands-off, `tmp\edge.ps1`), 2026-10-01:
