@@ -71,6 +71,28 @@ service's readback, next on the list). GPUI binds everything per frame or
 per draw except the rasterizer state, which the fix restores, so windows
 that stay open across a trim draw as before.
 
+Acceptance (manual), windows that stay open while another closes (when the
+trim runs). Wrong would look like: parts of a window missing or blank,
+rounded corners or icons gone, text or edges suddenly jagged, a window
+that stops updating.
+
+1. Start it: `mise exec -- cargo run --release -p framecut`.
+2. Press **Ctrl+Alt+R**, drag an area, and let it record. Note how the
+   bar looks: time, buttons, hints, rounded corners, the red Discard.
+3. While it records, press **Ctrl+Alt+S** and take an area screenshot
+   somewhere else. Afterwards the bar looks the same, its time keeps
+   counting, and hovering its buttons still highlights them.
+4. Still recording, press **Ctrl+Alt+P**: the bar and border turn amber
+   as usual. Resume, then stop with **Ctrl+Alt+R**.
+5. Open **Settings** from the tray and leave it open. Take two or three
+   area screenshots. Settings looks the same after each: switches,
+   dropdowns, hotkey boxes, text. Open a dropdown (say Undo lasts) and
+   switch pages: both still draw normally.
+6. Take a screenshot, and while its thumbnail is still in the corner, take
+   another. The first thumbnail draws normally until it is replaced.
+7. Press **Ctrl+Alt+C** and Escape, a few times: the Capture Bar draws
+   normally each time.
+
 ## Milestone 4: area recording MVP
 
 Built in four steps, each tried and approved by the owner: (1) start and
