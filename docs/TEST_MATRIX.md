@@ -261,7 +261,7 @@ back, twice: the page came back cleanly both times, no blank frame.
 Framecut's blank frames were #202020 exactly: both Windows' dark window
 background and Framecut's popup colour. Not yet explained; one frame,
 only seen with a full-screen app, only after Framecut took the keyboard
-and gave it back.
+and gave it back. Noted under [Known issues](#known-issues).
 
 ## Milestone 3: video technical spike
 
@@ -1011,6 +1011,19 @@ distinct (region peak: 143 … 235, as in Milestone 0).
 Still open: a darker video scene, HDR photos, several HDR windows, and
 subtitles or controls over video (see
 [COLOR_PIPELINE.md](COLOR_PIPELINE.md#known-limits-and-expected-differences)).
+
+## Known issues
+
+Accepted for now by the owner, to revisit in Milestone 5 (hardening).
+
+- **One blank frame after Framecut hands the keyboard back to a
+  full-screen app** (found 2026-10-01, Milestone 4 step 4). About a
+  second after the countdown ends, or after a question on the recording
+  controls is answered, a recording of a full-screen app can hold one
+  frame of flat #202020 with only the pointer. Seen 2 times in 3; never
+  with a plain focus change or with another window covering the app and
+  handing focus back. Not Framecut's UI. First thing to try: let Windows
+  hand focus back when a popup closes instead of Framecut doing it.
 
 ## Manual tools
 
