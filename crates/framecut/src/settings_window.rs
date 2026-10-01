@@ -222,9 +222,11 @@ impl HotkeyField {
         cx.notify();
     }
 
-    /// Stop recording and register the hotkeys the settings name.
+    /// Stop recording, keeping the hotkey as it was, and register the
+    /// hotkeys the settings name. A refusal's message goes with it.
     fn stop(&mut self, cx: &mut Context<Self>) {
         self.recording = false;
+        self.message = None;
         cx.notify();
         let applied = (self.hooks.apply_hotkeys)();
         cx.spawn(async move |_, _| {

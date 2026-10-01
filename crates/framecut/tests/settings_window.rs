@@ -299,3 +299,20 @@ fn a_recording_chord_another_app_owns_is_refused(cx: &mut TestAppContext) {
         );
     });
 }
+
+#[gpui_kit::test]
+fn backing_out_of_a_refused_hotkey_clears_the_message(cx: &mut TestAppContext) {
+    let opened = open_field(cx, HotkeyKind::Undo);
+    update(cx, &opened, |window, cx| {
+        window.click("hotkey-undo", cx);
+        window.press("ctrl-alt-r", cx);
+    });
+    update(cx, &opened, |window, _| {
+        assert!(label(window, "hotkey-undo-message").is_some());
+    });
+    update(cx, &opened, |window, cx| window.press("escape", cx));
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "hotkey-undo-message"), None);
+        assert_eq!(label(window, "hotkey-undo").as_deref(), Some("Ctrl+Alt+Z"));
+    });
+}
