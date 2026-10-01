@@ -268,6 +268,29 @@ the message). Manual check, for the owner:
    the length and name saved. Clicking it plays the file, up to the
    moment the display went.
 
+Memory (2026-10-01): the owner recorded YouTube on display 2, the whole
+display at 60 fps, for 31 minutes, pausing every 10 minutes; Framecut's
+memory was sampled every 10 s (`tmp\memwatch.ps1`).
+
+| | Private | Graphics | Handles |
+|---|---|---|---|
+| Idle, before recording | 84 MB | 27 MB | 870 |
+| Recording, minute 2 to minute 31 | 407 → 413 MB | 458 MB, flat | ~1,535, flat |
+| After it, settled | 116 MB | 161 MB | 1,113 |
+| After a second, 34 s recording | 188 MB | 225 MB | 1,202 |
+
+The file: 31:03.5 long (the time recorded, pauses left out), 54,443
+frames, none dropped, largest step between frames 83 ms. No growth while
+recording. What stays after a recording was then pinned down without the
+app (`capture-spike record --repeat`): the recorder gives back all its
+graphics memory after every take (574 MB during a 4K take, 0 after), and
+keeps about 265 MB of private memory after the first 4K hardware-encoded
+take (79 MB at 720p), the same after every later take: the encoder and
+its driver, loaded once. GPUI windows opened and closed 100 times kept
+about 120 MB of graphics and 250 MB of private memory, all of it within
+the first 20 windows and none after: pools that grow once, not a leak.
+Noted under [Known issues](#known-issues).
+
 Framecut's UI in the output (the same setup, `tmp\ui.ps1`), 2026-10-01:
 every frame of every recording measured where the bar and each border
 strip were (and the countdown, in the recording that had one). A
@@ -1063,6 +1086,12 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
   WM_DISPLAYCHANGE to each window in turn; Framecut's hidden window got
   it 0.5 s after GPUI's topmost one. Try making the hidden window topmost
   so it hears first, or trim the trailing black frames.
+- **Memory kept after the first recordings** (found 2026-10-01). Not a
+  leak (it stops growing), but a lot for a tray app: about 265 MB private
+  after the first 4K hardware-encoded recording (the encoder and driver,
+  loaded once), and about 120 MB graphics and 250 MB private kept by GPUI
+  after its first windows close. Look at unloading the encoder when idle
+  and at what GPUI keeps per window.
 - **Thumbnail pointer polling** (noted 2026-10-01). The thumbnail checks
   the pointer ten times a second while it is on screen, because GPUI does
   not report the pointer leaving a window that never takes focus. Use
