@@ -250,8 +250,12 @@ what a leak looks like.
 The one frame in each was the whole display a flat dark grey (Y 44)
 with only the pointer: not Framecut's UI, but the full-screen browser
 blank for one frame, about a second after Framecut handed the keyboard
-back to it (after the countdown; after a cancelled question). Thought to
-be Windows' full-screen optimisation switching back on; not yet proven.
+back to it (after the countdown; after a cancelled question). The
+control for that (`tmplttab.ps1`): the bare recorder on the same page
+while Alt+Tab switched away and back three times, no Framecut running:
+595 frames, none blank, brightness flat. So a plain focus change does
+not do it; something in how Framecut takes the keyboard or hands it back
+to a full-screen app does. Under investigation.
 
 ## Milestone 3: video technical spike
 
