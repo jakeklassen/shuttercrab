@@ -1,7 +1,8 @@
 # Test matrix
 
 Milestone 4 (area recording MVP) is in progress: step 1 passed on
-2026-09-29, step 2 on 2026-09-30. Milestone 3 (video
+2026-09-29, step 2 on 2026-09-30; step 3 is ready for the owner to try.
+Milestone 3 (video
 technical spike) is **complete** (2026-09-29).
 Milestone 2 (screenshot workflow) is **complete**: the owner accepted all six
 steps by 2026-09-28 (sleep and wake left for the owner to try later); see [Milestone
@@ -169,6 +170,48 @@ before the border, 2026-09-30):
     the screen's edge and the bar along the bottom; neither is in the
     video.
 12. Set the settings back as you like them.
+
+### Step 3: the recording settings
+
+Settings → **Recording**: include the pointer, frame rate (30 or 60 fps),
+count down first (off, 3 or 5 s), the recordings folder, a notification
+when a recording is saved (on by default), the chords taken while
+recording (pause, restart, discard, undo), and the discard and restart
+guards from step 2. The recording hotkey joins the others on the General
+page.
+
+Automated: every hotkey field shows its setting, records a new one, and
+is checked against every other hotkey ("Ctrl+Alt+R already starts and
+stops recording"); a new hotkey is probed together with the chords
+taken only while recording, so a clash with another app shows in
+Settings rather than mid-recording, and the old one is kept. The
+countdown ticks once a second and starts at zero; Enter starts at once,
+Escape cancels, and nothing follows either. The settings default to no
+countdown and a notification when saved, and odd values in the file fall
+back to them.
+
+Acceptance (manual):
+
+1. Start it: `mise exec -- cargo run --release -p framecut`. Tray →
+   **Settings…**. **General** lists **Record an area Ctrl+Alt+R** with the
+   other hotkeys.
+2. **Recording** shows Capture (pointer, frame rate, count down first),
+   Where recordings go (folder, notification), While recording (four
+   chords) and Throwing a take away. Tab moves through all of them.
+3. Change **Pause and resume** to another chord, say Ctrl+Alt+F9; try
+   **Ctrl+Alt+R** for it: refused, "already starts and stops recording".
+   Record and pause with the new chord; the bar shows it. Set it back.
+4. Turn off **Include the pointer**, set **Frame rate** to 60 fps, and
+   record a few seconds of something moving: no pointer in the video, and
+   it plays at 60 fps. Set them back.
+5. Set **Count down first** to 3 seconds. Ctrl+Alt+R and drag: a 3, 2, 1
+   over the area, the border grey until recording starts and red after.
+   The countdown is not in the video. Try again and press **Esc** during
+   it: nothing is recorded. Again with **Enter**: it starts at once.
+6. **Folder** → **Change…**: pick another folder; the next recording goes
+   there. **Open** opens it. Set it back.
+7. Turn off **Show a notification**: a recording saves without one.
+   Turn it back on.
 
 ## Milestone 3: video technical spike
 
