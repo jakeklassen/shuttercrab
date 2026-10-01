@@ -62,6 +62,15 @@ Where it goes:
   (with its rasterizer state restored afterwards) brought the figures
   after a screenshot to **97–99 MB private, 48 MB graphics**.
 
+The fix ships in `vendor/gpui-pre-windows` (on gpui-kit 0.7.0 / GPUI 0.3.7,
+which still never trims; see its `FRAMECUT.md`; upstream report drafted in
+`docs/upstream/gpui-trim-after-window-close.md`). Checked on 0.3.7,
+2026-10-01: idle 84 MB private, 39 MB graphics; after a screenshot
+**88 MB and 39.3 MB**; after a second, 126 MB and 39.3 MB (the capture
+service's readback, next on the list). GPUI binds everything per frame or
+per draw except the rasterizer state, which the fix restores, so windows
+that stay open across a trim draw as before.
+
 ## Milestone 4: area recording MVP
 
 Built in four steps, each tried and approved by the owner: (1) start and
