@@ -70,11 +70,13 @@ USAGE
       Write the HDR test image (BT.2020 PQ PNG) used by the mixed scene.
 
   capture-spike record [--monitor M] [--region X,Y,W,H] [--seconds N] [--fps 30|60]
-                       [--pause AT,FOR] [--cursor on] [--out FILE.mp4]
+                       [--pause AT,FOR] [--cursor on] [--out FILE.mp4] [--repeat N]
       Record H.264 MP4 through the Milestone 3 pipeline (default: 10 s at
       30 fps, the whole monitor, ./captures/recording-TIMESTAMP.mp4). With
       --pause, pause AT seconds in for FOR seconds, then carry on; the
-      paused time is left out of the video.
+      paused time is left out of the video. With --repeat, record N takes in
+      a row (FILE-1.mp4, FILE-2.mp4…) and print this process's private and
+      graphics memory before and after each, to find leaks.
 
 Run `capture-spike help` for this text.";
 
@@ -209,6 +211,11 @@ fn record(mut args: Args) -> Result<()> {
         })
         .transpose()?;
     let include_cursor = args.option("--cursor")?.as_deref() == Some("on");
+    let repeat: u32 = args
+        .option("--repeat")?
+        .map(|r| r.parse())
+        .transpose()?
+        .unwrap_or(1);
     let out = args.option("--out")?.map(PathBuf::from).unwrap_or_else(|| {
         PathBuf::from("captures").join(format!("recording-{}.mp4", snapshot::timestamp()))
     });
@@ -222,50 +229,125 @@ fn record(mut args: Args) -> Result<()> {
         "Recording {} for {seconds} s at {fps} fps...",
         target.device_name
     );
-    let recorder = Recorder::start(RecordOptions {
-        monitor: MonitorId(target.hmonitor.0 as u64),
-        region,
-        fps,
-        include_cursor,
-        path: out.clone(),
-    })?;
-    // Count from when recording is running, not from before its setup.
-    let started = std::time::Instant::now();
-    let wait_until = |t: f64| {
-        let left = t - started.elapsed().as_secs_f64();
-        if left > 0.0 {
-            std::thread::sleep(Duration::from_secs_f64(left));
-        }
-    };
-    if let Some((at, length)) = pause {
-        wait_until(at);
-        recorder.pause();
-        println!("paused at {at} s");
-        wait_until(at + length);
-        recorder.resume();
-        println!("resumed at {} s", at + length);
-        wait_until(seconds + length);
-    } else {
-        wait_until(seconds);
+    if repeat > 1 {
+        print_memory("before");
     }
-    let summary = recorder.stop()?;
-    println!(
-        "{}x{}, {} frames ({} dropped: encoder busy, {} skipped: over {fps} fps), {:.3} s long, {:.3} s paused, {} encoder -> {}",
-        summary.width,
-        summary.height,
-        summary.frames,
-        summary.dropped_busy,
-        summary.skipped_rate,
-        summary.duration.as_secs_f64(),
-        summary.paused.as_secs_f64(),
-        if summary.hardware_encoder {
-            "hardware"
+    for take in 1..=repeat {
+        let path = if repeat > 1 {
+            out.with_file_name(format!(
+                "{}-{take}.mp4",
+                out.file_stem().unwrap_or_default().to_string_lossy()
+            ))
         } else {
-            "software"
-        },
-        summary.path.display()
-    );
+            out.clone()
+        };
+        let recorder = Recorder::start(RecordOptions {
+            monitor: MonitorId(target.hmonitor.0 as u64),
+            region,
+            fps,
+            include_cursor,
+            path,
+        })?;
+        // Count from when recording is running, not from before its setup.
+        let started = std::time::Instant::now();
+        let wait_until = |t: f64| {
+            let left = t - started.elapsed().as_secs_f64();
+            if left > 0.0 {
+                std::thread::sleep(Duration::from_secs_f64(left));
+            }
+        };
+        if let Some((at, length)) = pause {
+            wait_until(at);
+            recorder.pause();
+            println!("paused at {at} s");
+            wait_until(at + length);
+            recorder.resume();
+            println!("resumed at {} s", at + length);
+            wait_until(seconds + length);
+        } else {
+            wait_until(seconds);
+        }
+        if repeat > 1 {
+            print_memory(&format!("during take {take}"));
+        }
+        let summary = recorder.stop()?;
+        println!(
+            "{}x{}, {} frames ({} dropped: encoder busy, {} skipped: over {fps} fps), {:.3} s long, {:.3} s paused, {} encoder -> {}",
+            summary.width,
+            summary.height,
+            summary.frames,
+            summary.dropped_busy,
+            summary.skipped_rate,
+            summary.duration.as_secs_f64(),
+            summary.paused.as_secs_f64(),
+            if summary.hardware_encoder {
+                "hardware"
+            } else {
+                "software"
+            },
+            summary.path.display()
+        );
+        if repeat > 1 {
+            // What the take left behind, once Windows has had a moment.
+            std::thread::sleep(Duration::from_secs(2));
+            print_memory(&format!("after take {take}"));
+        }
+    }
     Ok(())
+}
+
+/// Print this process's private memory and its use of the graphics
+/// adapters' own memory, in MB.
+fn print_memory(when: &str) {
+    use windows::{
+        Win32::{
+            Graphics::Dxgi::{
+                CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
+                IDXGIAdapter3, IDXGIFactory1,
+            },
+            System::{
+                ProcessStatus::{
+                    GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
+                },
+                Threading::GetCurrentProcess,
+            },
+        },
+        core::Interface,
+    };
+    let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
+    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
+        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
+        ..Default::default()
+    };
+    let private = unsafe {
+        GetProcessMemoryInfo(
+            GetCurrentProcess(),
+            (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(),
+            counters.cb,
+        )
+    }
+    .map(|()| mb(counters.PrivateUsage as u64))
+    .unwrap_or(f64::NAN);
+    let mut graphics = 0;
+    if let Ok(factory) = unsafe { CreateDXGIFactory1::<IDXGIFactory1>() } {
+        let mut index = 0;
+        while let Ok(adapter) = unsafe { factory.EnumAdapters1(index) } {
+            let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+            if let Ok(adapter) = adapter.cast::<IDXGIAdapter3>()
+                && unsafe {
+                    adapter.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
+                }
+                .is_ok()
+            {
+                graphics += info.CurrentUsage;
+            }
+            index += 1;
+        }
+    }
+    println!(
+        "  memory {when}: private {private:.1} MB, graphics {:.1} MB",
+        mb(graphics)
+    );
 }
 
 fn convert(mut args: Args) -> Result<()> {
