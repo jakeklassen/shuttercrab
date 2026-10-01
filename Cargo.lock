@@ -820,6 +820,8 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "framecut-capture",
+ "framecut-platform",
+ "futures",
  "half",
  "png 0.18.1",
  "serde_json",

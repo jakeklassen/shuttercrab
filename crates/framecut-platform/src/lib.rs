@@ -12,6 +12,7 @@ mod hotkey;
 pub mod icon;
 mod instance;
 mod layered;
+pub mod memory;
 pub mod startup;
 pub mod targets;
 pub mod window;

@@ -13,6 +13,10 @@ use std::path::PathBuf;
 /// Keeps settings and logs in this folder instead of the user's, for tests.
 const DATA_DIR_VARIABLE: &str = "FRAMECUT_DATA_DIR";
 
+/// Counts the Rust heap for the memory lines in the log.
+#[global_allocator]
+static HEAP: framecut::heap::Counting = framecut::heap::Counting;
+
 fn main() {
     // Release builds have no console; print to the terminal that started us.
     #[cfg(not(debug_assertions))]

@@ -17,7 +17,7 @@
 use crate::{
     capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent, CaptureMode, CaptureTarget},
     countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
-    files,
+    files, heap,
     overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     popup::{self, Activation},
     record_bar::{
@@ -506,6 +506,7 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
         undo_generation: Cell::new(0),
     });
     cx.spawn(async move |cx| {
+        heap::log_memory_soon("idle after start", cx);
         let mut events = events;
         while let Some(event) = events.next().await {
             match event {
@@ -619,6 +620,7 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
             state.notify(failure.title(), failure.message, None);
         }
         state.busy.set(false);
+        heap::log_memory_soon("after a capture request", cx);
     })
     .detach();
 }
@@ -1633,6 +1635,7 @@ fn stop_recording(state: &Rc<State>, cx: &mut AsyncApp) {
     cx.spawn(async move |cx| {
         let result = finish_recording(recorder, path, cx).await;
         report_recording(&state, result);
+        heap::log_memory_soon("after a recording", cx);
     })
     .detach();
 }

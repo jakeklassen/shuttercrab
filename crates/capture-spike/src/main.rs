@@ -78,6 +78,10 @@ USAGE
       a row (FILE-1.mp4, FILE-2.mp4…) and print this process's private and
       graphics memory before and after each, to find leaks.
 
+  capture-spike shots [--monitor M] [--repeat N]
+      Freeze the monitor and take a full screenshot through the app's capture
+      service N times (default 5), printing memory around each. Saves nothing.
+
 Run `capture-spike help` for this text.";
 
 fn main() {
@@ -111,6 +115,7 @@ fn run() -> Result<()> {
         Some("gate-report") => gate_report(args),
         Some("hdr-fixture") => hdr_fixture(args),
         Some("record") => record(args),
+        Some("shots") => shots(args),
         Some("help") | None => {
             println!("{USAGE}");
             Ok(())
@@ -297,57 +302,43 @@ fn record(mut args: Args) -> Result<()> {
 }
 
 /// Print this process's private memory and its use of the graphics
-/// adapters' own memory, in MB.
+/// adapters' own memory.
 fn print_memory(when: &str) {
-    use windows::{
-        Win32::{
-            Graphics::Dxgi::{
-                CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
-                IDXGIAdapter3, IDXGIFactory1,
-            },
-            System::{
-                ProcessStatus::{
-                    GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS, PROCESS_MEMORY_COUNTERS_EX,
-                },
-                Threading::GetCurrentProcess,
-            },
-        },
-        core::Interface,
-    };
-    let mb = |bytes: u64| bytes as f64 / (1024.0 * 1024.0);
-    let mut counters = PROCESS_MEMORY_COUNTERS_EX {
-        cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
-        ..Default::default()
-    };
-    let private = unsafe {
-        GetProcessMemoryInfo(
-            GetCurrentProcess(),
-            (&mut counters as *mut PROCESS_MEMORY_COUNTERS_EX).cast::<PROCESS_MEMORY_COUNTERS>(),
-            counters.cb,
-        )
-    }
-    .map(|()| mb(counters.PrivateUsage as u64))
-    .unwrap_or(f64::NAN);
-    let mut graphics = 0;
-    if let Ok(factory) = unsafe { CreateDXGIFactory1::<IDXGIFactory1>() } {
-        let mut index = 0;
-        while let Ok(adapter) = unsafe { factory.EnumAdapters1(index) } {
-            let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
-            if let Ok(adapter) = adapter.cast::<IDXGIAdapter3>()
-                && unsafe {
-                    adapter.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
-                }
-                .is_ok()
-            {
-                graphics += info.CurrentUsage;
-            }
-            index += 1;
-        }
-    }
     println!(
-        "  memory {when}: private {private:.1} MB, graphics {:.1} MB",
-        mb(graphics)
+        "  memory {when}: {}",
+        framecut_platform::memory::Usage::now()
     );
+}
+
+/// Freeze a monitor and take a full screenshot of it through the app's
+/// capture service, again and again, printing memory after each: what does
+/// a screenshot leave behind? Nothing is saved.
+fn shots(mut args: Args) -> Result<()> {
+    use framecut_capture::{Capture, MonitorId, PhysicalRect};
+    let monitor = args.option("--monitor")?;
+    let repeat: u32 = args
+        .option("--repeat")?
+        .map(|r| r.parse())
+        .transpose()?
+        .unwrap_or(5);
+    args.finish()?;
+    let monitors = display::enumerate()?;
+    let target = display::select(&monitors, monitor.as_deref())?;
+    let id = MonitorId(target.hmonitor.0 as u64);
+    let capture = Capture::start()?;
+    print_memory("before");
+    for shot in 1..=repeat {
+        let frame = futures::executor::block_on(capture.freeze_monitor(id, false))?;
+        let (width, height) = frame.size();
+        let whole = PhysicalRect::new(0, 0, width, height);
+        let screenshot = futures::executor::block_on(capture.screenshot(&frame, whole))?;
+        print_memory(&format!("holding shot {shot} ({width}x{height})"));
+        drop(screenshot);
+        drop(frame);
+        std::thread::sleep(Duration::from_secs(1));
+        print_memory(&format!("after shot {shot}"));
+    }
+    Ok(())
 }
 
 fn convert(mut args: Args) -> Result<()> {
