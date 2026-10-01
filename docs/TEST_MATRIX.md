@@ -237,11 +237,17 @@ display 2, the owner hands-off, `tmp\edge.ps1`), 2026-10-01:
 Failures mid-recording (2026-10-01): until now, a recording that
 failed while running lost everything (the unfinished file was deleted
 on Stop), and a disconnected display went unnoticed (the last frame was
-repeated until Stop). Now the recorder listens for its display going
-away, and an error mid-recording ends the recording rather than the
-thread, so what was written is still finished into a playable file. The
-app notices within half a second, closes the controls and border, and
-always says what happened and what was saved. Automated: a lost device
+repeated until Stop). The owner's first try (2026-10-01): unplugging
+does not close the capture; Windows sent half a second of black frames,
+then none, and the recording carried on black, with no notification.
+Now Windows' display-change message (WM_DISPLAYCHANGE, which arrived
+half a second before the black frames) makes the app check whether the
+recorded display is still attached; if not, the recorder finishes the
+file with the last real picture. An error mid-recording also ends the
+recording rather than the thread, so what was written is still finished
+into a playable file. The app hears at once (an event when the recorder
+thread ends, not polling), closes the controls and border, and always
+says what happened and what was saved. Automated: a lost device
 and a full disk are told apart by their error codes (also when only in
 the message). Manual check, for the owner:
 
