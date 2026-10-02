@@ -1236,8 +1236,11 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
 - **Up to a quarter second of black at the end of a recording whose
   display was unplugged** (found 2026-10-01). Windows delivers
   WM_DISPLAYCHANGE to each window in turn; Framecut's hidden window got
-  it 0.5 s after GPUI's topmost one. Try making the hidden window topmost
-  so it hears first, or trim the trailing black frames.
+  it 0.5 s after GPUI's topmost one. Deferred by the owner (2026-10-02) to
+  the end of Milestone 5 as a rare edge case. Preferred fix: when the
+  display goes away, drop the frames captured after it went dark, so the
+  file ends on the last real picture whatever order Windows uses; making
+  the hidden window topmost is the quicker, weaker alternative.
 - ~~Memory kept after the first recordings~~ (found and fixed 2026-10-01):
   GPUI now trims after a window closes and recording runs in a helper
   process; see Milestone 5, "Memory pass: before and after".
