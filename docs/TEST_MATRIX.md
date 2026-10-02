@@ -156,6 +156,26 @@ about 476 MB for about a second, then back to about 97 MB. That is GPUI's
 full-screen 4K window (its window-sized render targets, the largest a 4×
 multisampled one); see [Known issues](#known-issues).
 
+### The blank frame after the keyboard hand-back, re-checked
+
+Milestone 4 step 4 found one flat #202020 frame in 2 of 3 recordings of
+the full-screen test page, about a second after Framecut handed the
+keyboard back. Re-checked 2026-10-01 evening (`tmp\blank.ps1`: the same
+page full screen on display 2, the owner hands-off; every frame's top band,
+the colour patches, tested for flatness), on three builds:
+
+| Build | Questions, Escape, during a display take | Countdowns before a display take | Area takes of the top-left, a question cancelled |
+|---|---|---|---|
+| `c0edc30`, the build that showed it | 8, none blank (660 frames) | 4, none blank | 4, none blank |
+| `901ab84`, before the recording helper | 8, none blank (664 frames) | 4, none blank | 4, none blank |
+| `2985877`, current | 8, none blank (669 frames) | 4, none blank | 5, none blank |
+
+The same build that showed it no longer does, so no Framecut change fixed
+it: something outside Framecut changed (Windows, the graphics driver,
+Edge), or the morning's run had a condition not recreated here. Not
+reproduced in 49 hand-backs; recorded as no longer reproducing.
+`tmp\blank.ps1 -Mode ask|countdown|area` is the check if it comes back.
+
 ## Milestone 4: area recording MVP
 
 Built in four steps, each tried and approved by the owner: (1) start and
@@ -1205,14 +1225,14 @@ subtitles or controls over video (see
 
 Accepted for now by the owner, to revisit in Milestone 5 (hardening).
 
-- **One blank frame after Framecut hands the keyboard back to a
-  full-screen app** (found 2026-10-01, Milestone 4 step 4). About a
-  second after the countdown ends, or after a question on the recording
-  controls is answered, a recording of a full-screen app can hold one
-  frame of flat #202020 with only the pointer. Seen 2 times in 3; never
-  with a plain focus change or with another window covering the app and
-  handing focus back. Not Framecut's UI. First thing to try: let Windows
-  hand focus back when a popup closes instead of Framecut doing it.
+- ~~One blank frame after Framecut hands the keyboard back to a
+  full-screen app~~ (found 2026-10-01, Milestone 4 step 4; no longer
+  reproduces, 2026-10-01). About a second after the countdown ended, or
+  after a question on the recording controls was answered, a recording of
+  a full-screen app held one frame of flat #202020 with only the pointer,
+  2 times in 3. Re-checked that evening on the build that showed it and
+  on two later ones: none in 49 hand-backs. See Milestone 5, "The blank
+  frame after the keyboard hand-back, re-checked".
 - **Up to a quarter second of black at the end of a recording whose
   display was unplugged** (found 2026-10-01). Windows delivers
   WM_DISPLAYCHANGE to each window in turn; Framecut's hidden window got
