@@ -118,6 +118,10 @@ pub enum TrayRecording {
 /// closed before the screen is frozen.
 const TRAY_DELAY: Duration = Duration::from_millis(250);
 
+/// The least time, seconds, a thumbnail stays when it is the screenshot's
+/// only copy (neither copied nor saved).
+const RESCUE_SECONDS: u32 = 30;
+
 /// The Capture Bar's distance from the top of the monitor, logical pixels.
 const BAR_TOP: f32 = 24.0;
 
@@ -244,8 +248,10 @@ struct State {
     notified: RefCell<Option<PathBuf>>,
     settings_path: Option<PathBuf>,
     /// One capture at a time: a second request while the Capture Bar or
-    /// the overlay is up is ignored.
-    busy: Cell<bool>,
+    /// the overlay is up is ignored; one while a screenshot is being copied
+    /// and saved waits for it, in `next`.
+    busy: Cell<Busy>,
+    next: Cell<Option<(Start, Option<Duration>)>>,
     /// The thumbnail on screen, and a count that tells its handler whether
     /// a newer one has replaced it.
     thumbnail: RefCell<Option<popup::Popup>>,
@@ -486,6 +492,18 @@ enum Start {
     Record(CaptureTarget),
 }
 
+/// What the current request is doing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum Busy {
+    Idle,
+    /// The Capture Bar, the overlay or a countdown is up: the user is busy
+    /// with it.
+    Choosing,
+    /// A screenshot is being copied and saved, for a few milliseconds
+    /// (longer while another app holds the clipboard).
+    Finishing,
+}
+
 /// Start handling platform events. Call once, inside the GPUI application.
 pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mut App) {
     // Framecut lives in the tray and has no main window. GPUI's default on
@@ -500,7 +518,8 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
         log_dir: framecut.log_dir,
         settings_window: RefCell::new(None),
         notified: RefCell::new(None),
-        busy: Cell::new(false),
+        busy: Cell::new(Busy::Idle),
+        next: Cell::new(None),
         thumbnail: RefCell::new(None),
         thumbnail_generation: Cell::new(0),
         recording: RefCell::new(None),
@@ -600,9 +619,19 @@ pub fn run(framecut: Framecut, events: UnboundedReceiver<PlatformEvent>, cx: &mu
 }
 
 fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut AsyncApp) {
-    if state.busy.replace(true) {
-        return;
+    match state.busy.get() {
+        Busy::Idle => {}
+        Busy::Choosing => {
+            log::info!("{what:?} ignored: a capture is already open");
+            return;
+        }
+        Busy::Finishing => {
+            log::info!("{what:?} waits for the screenshot being finished");
+            state.next.set(Some((what, delay)));
+            return;
+        }
     }
+    state.busy.set(Busy::Choosing);
     let state = state.clone();
     cx.spawn(async move |cx| {
         if let Some(delay) = delay {
@@ -621,7 +650,10 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
             log::error!("{}", failure.detail);
             state.notify(failure.title(), failure.message, None);
         }
-        state.busy.set(false);
+        state.busy.set(Busy::Idle);
+        if let Some((what, delay)) = state.next.take() {
+            start(&state, what, delay, cx);
+        }
         heap::log_memory_soon("after a capture request", cx);
     })
     .detach();
@@ -879,6 +911,7 @@ async fn capture(
     let whole = PhysicalRect::new(0, 0, width, height);
     let mode = match target {
         CaptureTarget::Display => {
+            state.busy.set(Busy::Finishing);
             let shot = state.capture.screenshot(&frame, whole).await;
             let info = frame.monitor().clone();
             // Cut: the frozen screen can go (PRD §23).
@@ -891,6 +924,8 @@ async fn capture(
     let info = frame.monitor().clone();
     let event = select(state, &frame, mode, false, pressed, cx).await?;
     let released = Instant::now();
+    // The overlay is gone: a new request can wait for this one.
+    state.busy.set(Busy::Finishing);
     let shot = match event {
         OverlayEvent::Cancelled => {
             log::info!("selection cancelled");
@@ -1931,7 +1966,8 @@ async fn deliver(
     });
     // Without auto-save, the thumbnail writes a temporary file only if it
     // is opened or dragged.
-    let unsaved = (settings.show_thumbnail && !settings.auto_save).then(|| shot.png.clone());
+    let png = shot.png.clone();
+    let rgba = shot.rgba.clone();
     let copied = if settings.copy_to_clipboard {
         let result = state
             .platform
@@ -1960,8 +1996,14 @@ async fn deliver(
     }
 
     let saved_path = saved.as_ref().and_then(|r| r.as_ref().ok().cloned());
+    // A screenshot that was neither copied nor saved is still shown, so it
+    // is never lost: the thumbnail opens it and drags it out.
+    let copy_failed = matches!(copied, Some(Err(_)));
+    let rescued = copy_failed && saved_path.is_none();
+    let thumbnail = settings.show_thumbnail || copy_failed;
     // PRD §24: say what happened and what to do; the causes go to the log.
-    let busy = "Another app is holding the clipboard; try again in a moment.";
+    let busy = "Another app is holding the clipboard.";
+    let in_thumbnail = "It's in the thumbnail: click to open it, or drag it out.";
     let folder = settings.output_dir();
     let unwritable = format!(
         "Could not save to {}. Check the folder in Settings.",
@@ -1969,15 +2011,15 @@ async fn deliver(
     );
     let result = match (copied, saved) {
         (Some(Err(copy)), Some(Err(save))) => Err(Failure::new(
-            format!("Could not copy or save the screenshot. {unwritable}"),
+            format!("Could not copy or save the screenshot. {unwritable} {in_thumbnail}"),
             format!("copy: {copy:#}; save: {save:#}"),
         )),
         (Some(Err(copy)), Some(Ok(_))) => Err(Failure::new(
-            format!("The screenshot was saved, but not copied. {busy}"),
+            format!("The screenshot was saved, but not copied. {busy} {in_thumbnail}"),
             format!("copy: {copy:#}"),
         )),
         (Some(Err(copy)), None) => Err(Failure::new(
-            format!("The screenshot was not copied. {busy}"),
+            format!("The screenshot was not copied. {busy} {in_thumbnail}"),
             format!("copy: {copy:#}"),
         )),
         (Some(Ok(())), Some(Err(save))) => Err(Failure::new(
@@ -1994,6 +2036,41 @@ async fn deliver(
         }
         _ => Ok(()),
     };
+
+    if thumbnail {
+        let small = match preview {
+            Some(preview) => preview.await,
+            None => {
+                let (w, h) = thumbnail::image_size(width, height);
+                let scale = monitor.scale_factor;
+                let (max_w, max_h) = ((w * scale).ceil() as u32, (h * scale).ceil() as u32);
+                cx.background_executor()
+                    .spawn(async move {
+                        thumbnail::scale_down(&rgba, width, height, max_w, max_h)
+                    })
+                    .await
+            }
+        };
+        let file = match saved_path.clone() {
+            Some(path) => CaptureFile::Saved(path),
+            None => CaptureFile::Unsaved { png, taken_at },
+        };
+        // When the thumbnail is the only copy, leave time to read the
+        // message and use it.
+        let seconds = if rescued {
+            settings.thumbnail_seconds.max(RESCUE_SECONDS)
+        } else {
+            settings.thumbnail_seconds
+        };
+        let pending = PendingThumbnail {
+            small,
+            size: (width, height),
+            file,
+            monitor: monitor.clone(),
+            seconds,
+        };
+        show_thumbnail(state.clone(), pending, cx);
+    }
     result?;
 
     if settings.notify_after_capture {
@@ -2007,25 +2084,8 @@ async fn deliver(
         state.notify(
             format!("Screenshot {width} × {height}"),
             message,
-            saved_path.clone(),
+            saved_path,
         );
-    }
-    if let Some(preview) = preview {
-        let file = match saved_path {
-            Some(path) => CaptureFile::Saved(path),
-            None => CaptureFile::Unsaved {
-                png: unsaved.unwrap_or_default(),
-                taken_at,
-            },
-        };
-        let thumbnail = PendingThumbnail {
-            small: preview.await,
-            size: (width, height),
-            file,
-            monitor: monitor.clone(),
-            seconds: settings.thumbnail_seconds,
-        };
-        show_thumbnail(state.clone(), thumbnail, cx);
     }
     Ok(())
 }
@@ -2121,6 +2181,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             }
             exclude_from_capture(hwnd, "thumbnail");
         }
+        log::debug!("thumbnail up for {seconds} s");
         let generation = state.thumbnail_generation.get() + 1;
         state.thumbnail_generation.set(generation);
         if let Some(previous) = state.thumbnail.replace(Some(card)) {

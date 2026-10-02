@@ -12,8 +12,8 @@ use windows::{
         Graphics::Gdi::{BI_BITFIELDS, BITMAPV5HEADER, LCS_GM_IMAGES},
         System::{
             DataExchange::{
-                CloseClipboard, EmptyClipboard, OpenClipboard, RegisterClipboardFormatW,
-                SetClipboardData,
+                CloseClipboard, EmptyClipboard, GetOpenClipboardWindow, OpenClipboard,
+                RegisterClipboardFormatW, SetClipboardData,
             },
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
             Ole::CF_DIBV5,
@@ -86,6 +86,50 @@ fn global(bytes: &[u8]) -> Result<HGLOBAL> {
     }
 }
 
+/// The program that has the clipboard open, for the log. Windows knows it
+/// only if it opened the clipboard with a window of its own.
+fn holder() -> String {
+    use windows::{
+        Win32::{
+            System::Threading::{
+                OpenProcess, PROCESS_NAME_WIN32, PROCESS_QUERY_LIMITED_INFORMATION,
+                QueryFullProcessImageNameW,
+            },
+            UI::WindowsAndMessaging::GetWindowThreadProcessId,
+        },
+        core::PWSTR,
+    };
+    let Ok(window) = (unsafe { GetOpenClipboardWindow() }) else {
+        return "held without a window, so the program is unknown".into();
+    };
+    let mut pid = 0;
+    unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+    let name = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
+        .ok()
+        .and_then(|process| {
+            let mut buffer = [0u16; 260];
+            let mut len = buffer.len() as u32;
+            let found = unsafe {
+                QueryFullProcessImageNameW(
+                    process,
+                    PROCESS_NAME_WIN32,
+                    PWSTR(buffer.as_mut_ptr()),
+                    &mut len,
+                )
+            }
+            .is_ok();
+            let _ = unsafe { windows::Win32::Foundation::CloseHandle(process) };
+            found.then(|| String::from_utf16_lossy(&buffer[..len as usize]))
+        });
+    match name {
+        Some(path) => format!(
+            "{}, process {pid}",
+            path.rsplit(['\\', '/']).next().unwrap_or(&path)
+        ),
+        None => format!("process {pid}"),
+    }
+}
+
 /// Replace the clipboard contents with the image. `owner` must be a window
 /// on the calling thread: with no owner, Windows refuses the data.
 pub(crate) fn write(owner: HWND, png: &[u8], rgba: &[u8], width: u32, height: u32) -> Result<()> {
@@ -103,7 +147,7 @@ pub(crate) fn write(owner: HWND, png: &[u8], rgba: &[u8], width: u32, height: u3
         std::thread::sleep(RETRY);
     }
     if !opened {
-        bail!("another application is holding the clipboard");
+        bail!("another application is holding the clipboard ({})", holder());
     }
     let result = (|| -> Result<()> {
         unsafe { EmptyClipboard() }.context("EmptyClipboard failed")?;
