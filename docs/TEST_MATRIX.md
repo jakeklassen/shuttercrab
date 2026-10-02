@@ -196,6 +196,28 @@ Throughout: every file the exact size dragged, the clipboard holding the
 latest, overlay up 101–121 ms after the hotkey, copy and save 4–50 ms
 after release.
 
+### HDR switched during a recording
+
+`tmp\hdr.ps1`, 2026-10-02, release build, the test page full screen on
+display 2 (SDR white 280 nits, S = 3.5), the owner hands-off; HDR switched
+on display 2 only with `capture-spike hdr DISPLAY2 on|off`. Take 1 starts
+with HDR on, switches it off at about 3 s and on at about 10 s; take 2 the
+other way round. Measured per frame: the page's white (Y 235 is right) and
+a mid-grey step (Y 147 is right).
+
+| Take | Before (`76ec505`) | After (`168ae15`) |
+|---|---|---|
+| 1: HDR on → off → on | With HDR off: white 141, grey 89 (3.5× too dark) for the 6 s until HDR came back | White 235 and grey 147 throughout, but one 0.5 s step at the switch back on (white 141) |
+| 2: HDR off → on → off | With HDR on: grey 174, whites clipped (washed out) for 6 s | White 235 and grey 147 throughout, but a part-second at the first switch (white 141–235) |
+
+The recorder read the display's SDR white once, at the start. It now
+reads it again when Windows reports a display change (the same
+WM_DISPLAYCHANGE that ends a recording whose display is unplugged), about
+0.5 s after the switch; the log says "the display changed: SDR white is now
+1 (was 3.5)". Each take: 0 frames dropped, the file fine. The half second
+around a switch, while the display itself blanks, can be off; see
+[Known issues](#known-issues).
+
 ## Milestone 4: area recording MVP
 
 Built in four steps, each tried and approved by the owner: (1) start and
@@ -1280,6 +1302,13 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
   screenshot checked for its first frame every 2 ms; it now waits on the
   frame pool's FrameArrived event, as the recorder does. Freezing still
   takes 68–83 ms.
+- **Up to half a second off-exposure when HDR is switched during a
+  recording** (found 2026-10-02). The recorder learns of the switch from
+  WM_DISPLAYCHANGE about 0.5 s later, so the frames in between are
+  converted with the old white level (3.5× too dark or washed out), while
+  the display itself is blanking for the switch. Not yet checked: the SDR
+  content brightness slider moved during a recording, which may not send
+  WM_DISPLAYCHANGE at all.
 
 ## Manual tools
 
@@ -1292,6 +1321,7 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
 | `capture-spike fit SRC.fp16 [--roi …] [--map M.png]` | The same without a reference: how close values sit to 8-bit codes |
 | `capture-spike probe SRC.fp16 X,Y,W,H` | Exact values over a region |
 | `capture-spike convert SRC.fp16 OUT.png [--highlights clip]` | Re-run the transform on a saved frame |
+| `capture-spike hdr DISPLAY2 on\|off` | Switch HDR on one display, as the Settings app does |
 
 Coordinates are physical pixels from the captured monitor's top-left corner.
 
