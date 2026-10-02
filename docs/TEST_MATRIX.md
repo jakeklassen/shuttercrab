@@ -29,7 +29,7 @@ work anywhere) and on the hardware adapter when there is one.
 
 ## Milestone 5: hardening (memory first)
 
-The owner's priority (2026-10-01): lower memory where possible. Framecut
+The owner's priority (2026-10-01): lower memory where possible. Shuttercrab
 now logs its memory at idle and three seconds after each capture and
 recording (private, graphics, and the Rust heap within private).
 
@@ -45,7 +45,7 @@ recordings of the test page on display 2:
 
 Where it goes:
 
-- Framecut's own data is 2–3 MB; everything else is native (GPUI's and
+- Shuttercrab's own data is 2–3 MB; everything else is native (GPUI's and
   the capture service's Direct3D devices, DirectWrite, the driver, Media
   Foundation).
 - The capture warm-up (a second Direct3D device kept ready for fast
@@ -63,7 +63,7 @@ Where it goes:
   after a screenshot to **97–99 MB private, 48 MB graphics**.
 
 The fix ships in `vendor/gpui-pre-windows` (on gpui-kit 0.7.0 / GPUI 0.3.7,
-which still never trims; see its `FRAMECUT.md`; upstream report drafted in
+which still never trims; see its `SHUTTERCRAB.md`; upstream report drafted in
 `docs/upstream/gpui-trim-after-window-close.md`). Checked on 0.3.7,
 2026-10-01: idle 84 MB private, 39 MB graphics; after a screenshot
 **88 MB and 39.3 MB**; after a second, 126 MB and 39.3 MB (the capture
@@ -87,8 +87,8 @@ driver for the life of the process. Asking COM to unload unused libraries
 after Media Foundation shuts down (`CoFreeUnusedLibrariesEx`) changed
 nothing. Only ending the process returns it.
 
-So recording moved to a helper process (`framecut.exe --recorder`, see
-`crates/framecut/src/recorder_process.rs`) that exits when the recording
+So recording moved to a helper process (`shuttercrab.exe --recorder`, see
+`crates/shuttercrab/src/recorder_process.rs`) that exits when the recording
 ends. Measured 2026-10-01, the same scenario (3 area screenshots, then 3
 area recordings of 2400×1300 at 60 fps on the test page):
 
@@ -113,7 +113,7 @@ trim runs). Wrong would look like: parts of a window missing or blank,
 rounded corners or icons gone, text or edges suddenly jagged, a window
 that stops updating.
 
-1. Start it: `mise exec -- cargo run --release -p framecut`.
+1. Start it: `mise exec -- cargo run --release -p shuttercrab`.
 2. Press **Ctrl+Alt+R**, drag an area, and let it record. Note how the
    bar looks: time, buttons, hints, rounded corners, the red Discard.
 3. While it records, press **Ctrl+Alt+S** and take an area screenshot
@@ -159,7 +159,7 @@ multisampled one); see [Known issues](#known-issues).
 ### The blank frame after the keyboard hand-back, re-checked
 
 Milestone 4 step 4 found one flat #202020 frame in 2 of 3 recordings of
-the full-screen test page, about a second after Framecut handed the
+the full-screen test page, about a second after Shuttercrab handed the
 keyboard back. Re-checked 2026-10-01 evening (`tmp\blank.ps1`: the same
 page full screen on display 2, the owner hands-off; every frame's top band,
 the colour patches, tested for flatness), on three builds:
@@ -170,8 +170,8 @@ the colour patches, tested for flatness), on three builds:
 | `901ab84`, before the recording helper | 8, none blank (664 frames) | 4, none blank | 4, none blank |
 | `2985877`, current | 8, none blank (669 frames) | 4, none blank | 5, none blank |
 
-The same build that showed it no longer does, so no Framecut change fixed
-it: something outside Framecut changed (Windows, the graphics driver,
+The same build that showed it no longer does, so no Shuttercrab change fixed
+it: something outside Shuttercrab changed (Windows, the graphics driver,
 Edge), or the morning's run had a condition not recreated here. Not
 reproduced in 49 hand-backs; recorded as no longer reproducing.
 `tmp\blank.ps1 -Mode ask|countdown|area` is the check if it comes back.
@@ -225,7 +225,7 @@ stop a recording from the Capture Bar, a hotkey and the tray; (2) the
 recording control bar: elapsed time, Pause/Resume, Stop, Restart,
 Discard, excluded from capture; (3) stop and pause hotkeys and the
 Recording settings (pointer, 30/60 fps, countdown, folder); (4) hardening:
-30 minutes without memory growth, no Framecut UI in the output.
+30 minutes without memory growth, no Shuttercrab UI in the output.
 
 ### Step 1: start and stop
 
@@ -255,7 +255,7 @@ run). The first frames show neither the overlay nor the Capture Bar.
 
 Acceptance (manual):
 
-1. Start it: `mise exec -- cargo run --release -p framecut`. Right-click
+1. Start it: `mise exec -- cargo run --release -p shuttercrab`. Right-click
    the tray icon: there is **Record an area   Ctrl+Alt+R**.
 2. Press **Ctrl+Alt+R**. The overlay says "Drag to record an area · Esc:
    cancel"; Space does nothing. Drag over something that moves and
@@ -270,9 +270,9 @@ Acceptance (manual):
 5. Open the Capture Bar again: it opens in Record mode. **S** goes back to
    Screenshot; Escape closes it.
 6. Start a recording, press Escape on the overlay instead: nothing is
-   recorded. Start one and quit Framecut from the tray: the file is still
+   recorded. Start one and quit Shuttercrab from the tray: the file is still
    there, finished.
-7. The recordings are in `Videos\Framecut`, named `Recording <date>
+7. The recordings are in `Videos\Shuttercrab`, named `Recording <date>
    <time>.mp4`, with no `.partial` files left.
 
 ### Step 2: the recording controls
@@ -331,7 +331,7 @@ display 2, the owner hands-off), 2026-09-29:
 Acceptance (manual; the third run confirmed steps 1–10 of the version
 before the border, 2026-09-30):
 
-1. Start it: `mise exec -- cargo run --release -p framecut`. Open an
+1. Start it: `mise exec -- cargo run --release -p shuttercrab`. Open an
    editor, press **Ctrl+Alt+R** and drag an area over it. A dashed red
    border now outlines the area, and the bar below it shows the time,
    **Pause Ctrl+Alt+P**, **Stop Ctrl+Alt+R**, **Restart Ctrl+Alt+N** and,
@@ -388,7 +388,7 @@ back to them.
 
 Acceptance (manual):
 
-1. Start it: `mise exec -- cargo run --release -p framecut`. Tray →
+1. Start it: `mise exec -- cargo run --release -p shuttercrab`. Tray →
    **Settings…**. **General** lists **Record an area Ctrl+Alt+R** with the
    other hotkeys.
 2. **Recording** shows Capture (pointer, frame rate, count down first),
@@ -412,7 +412,7 @@ Acceptance (manual):
 ### Step 4: hardening
 
 **Passed** (2026-10-01): all four parts below. Four parts: (1) a
-30-minute memory run, (2) checking every frame for Framecut's UI, (3)
+30-minute memory run, (2) checking every frame for Shuttercrab's UI, (3)
 failures mid-recording, (4) edge cases.
 
 Edge cases (release build, scratch settings and folders, the test page on
@@ -423,7 +423,7 @@ display 2, the owner hands-off, `tmp\edge.ps1`), 2026-10-01:
 | Quit during a 5 s countdown | Quits; nothing recorded, the folder not even made |
 | Quit while the bar asks before discarding | The take is kept: 2.13 s, finished and playable |
 | The recordings folder was deleted | Made again; the recording saved there |
-| A folder that cannot exist (`Q:\…`) | Logged ("creating Q:\framecut-nowhere: … path specified"), no recording, the bar and border closed |
+| A folder that cannot exist (`Q:\…`) | Logged ("creating Q:\shuttercrab-nowhere: … path specified"), no recording, the bar and border closed |
 | A screenshot during a whole-display recording | Overlay up 68 ms, PNG saved; the recording's brightness steady over all 227 frames (95.1–95.3), so the overlay's dimming never reached it |
 
 Failures mid-recording (2026-10-01): until now, a recording that
@@ -444,13 +444,13 @@ the display-change event came, the recording stopped and saved 13.71 s,
 the controls and border closed, and the notification said why. Windows
 sent frames unevenly as the cable came out (the owner saw a stutter and
 accepts it), and the last 0.25 s is near-black: Windows delivers
-WM_DISPLAYCHANGE to each window in turn, and Framecut's hidden window got
+WM_DISPLAYCHANGE to each window in turn, and Shuttercrab's hidden window got
 it 0.5 s after GPUI's topmost one, by when the black frames had begun
 (noted under [Known issues](#known-issues)). Automated: a lost device
 and a full disk are told apart by their error codes (also when only in
 the message). Manual check, for the owner:
 
-1. Start Framecut, open `tmp\motion.html` (or anything not private) on
+1. Start Shuttercrab, open `tmp\motion.html` (or anything not private) on
    display 2, press **Ctrl+Alt+R** and drag an area on display 2.
 2. After 10 seconds or so, unplug display 2's cable (or turn it off, if
    that disconnects it; some monitors stay attached when off, and then
@@ -461,7 +461,7 @@ the message). Manual check, for the owner:
    moment the display went.
 
 Memory (2026-10-01): the owner recorded YouTube on display 2, the whole
-display at 60 fps, for 31 minutes, pausing every 10 minutes; Framecut's
+display at 60 fps, for 31 minutes, pausing every 10 minutes; Shuttercrab's
 memory was sampled every 10 s (`tmp\memwatch.ps1`).
 
 | | Private | Graphics | Handles |
@@ -483,10 +483,10 @@ about 120 MB of graphics and 250 MB of private memory, all of it within
 the first 20 windows and none after: pools that grow once, not a leak.
 Noted under [Known issues](#known-issues).
 
-Framecut's UI in the output (the same setup, `tmp\ui.ps1`), 2026-10-01:
+Shuttercrab's UI in the output (the same setup, `tmp\ui.ps1`), 2026-10-01:
 every frame of every recording measured where the bar and each border
 strip were (and the countdown, in the recording that had one). A
-control run with the UI left capturable (`FRAMECUT_CAPTURABLE_UI`) shows
+control run with the UI left capturable (`SHUTTERCRAB_CAPTURABLE_UI`) shows
 what a leak looks like.
 
 | Recording | Bar region | Border strips | Countdown region |
@@ -497,19 +497,19 @@ what a leak looks like.
 | Area at the top-left corner (border inside on two sides; a question, cancelled), 134 frames | — | Y 235 but one frame | — |
 
 The one frame in each was the whole display a flat dark grey (Y 44)
-with only the pointer: not Framecut's UI, but the full-screen browser
-blank for one frame, about a second after Framecut handed the keyboard
+with only the pointer: not Shuttercrab's UI, but the full-screen browser
+blank for one frame, about a second after Shuttercrab handed the keyboard
 back to it (after the countdown; after a cancelled question). The
 control for that (`tmp\alttab.ps1`): the bare recorder on the same page
-while Alt+Tab switched away and back three times, no Framecut running:
+while Alt+Tab switched away and back three times, no Shuttercrab running:
 595 frames, none blank, brightness flat. So a plain focus change does
-not do it; something in how Framecut takes the keyboard or hands it back
+not do it; something in how Shuttercrab takes the keyboard or hands it back
 to a full-screen app does. A second control (`tmp\cover.ps1`): another
 window opened over the full-screen page and took focus, then Alt+Tab
 back, twice: the page came back cleanly both times, no blank frame.
-Framecut's blank frames were #202020 exactly: both Windows' dark window
-background and Framecut's popup colour. Not yet explained; one frame,
-only seen with a full-screen app, only after Framecut took the keyboard
+Shuttercrab's blank frames were #202020 exactly: both Windows' dark window
+background and Shuttercrab's popup colour. Not yet explained; one frame,
+only seen with a full-screen app, only after Shuttercrab took the keyboard
 and gave it back. Noted under [Known issues](#known-issues).
 
 ## Milestone 3: video technical spike
@@ -525,7 +525,7 @@ correctly, has the correct duration, has stable colours, shows no
 white-wash, pauses and resumes without a timeline gap, does not leak
 memory, and does not accumulate an unbounded frame queue.
 
-The pipeline (`framecut-capture::record`, driven by `capture-spike
+The pipeline (`shuttercrab-capture::record`, driven by `capture-spike
 record`): Windows.Graphics.Capture in FP16 → region cropped on the GPU →
 the HDR/WCG → SDR conversion per frame (the 90th-percentile anchor, eased
 over 0.5 s so video does not pump) → the Direct3D video processor to NV12
@@ -585,7 +585,7 @@ kept as `settings.json.bad`; file names and ` (2)` suffixes; the tray icon
 drawing and `HICON` at tray sizes; the tray menu following the settings;
 the single-instance mutex; a second instance reaching the first.
 
-Smoke test (release build, `FRAMECUT_DATA_DIR` pointing at a scratch
+Smoke test (release build, `SHUTTERCRAB_DATA_DIR` pointing at a scratch
 folder so the owner's settings are untouched), 2026-09-27: the tray window
 exists; the hotkey and a tray click each put a screenshot on the clipboard
 and a file in the folder (clipboard 2–3 ms, file 11 ms after release); a
@@ -602,22 +602,22 @@ removed.
 
 Acceptance (manual):
 
-1. Start it: `mise exec -- cargo run --release -p framecut`. The Framecut
+1. Start it: `mise exec -- cargo run --release -p shuttercrab`. The Shuttercrab
    icon (blue square, white corners) appears in the tray, possibly under the
    `^` overflow; drag it onto the taskbar to keep it visible. On the first
-   run a notification says Framecut is running.
+   run a notification says Shuttercrab is running.
 2. Press **Ctrl+Alt+S**, drag, release. Paste: the screenshot is there.
 3. Right-click the tray icon → **Open screenshots folder**. Explorer opens
-   `Pictures\Framecut` with `Capture <date> <time>.png`.
+   `Pictures\Shuttercrab` with `Capture <date> <time>.png`.
 4. Left-click the tray icon: the overlay appears (after a short pause so the
    tray closes first). Drag; a second file appears.
 5. Right-click the tray icon → uncheck **Save screenshots to the folder**.
    Take a screenshot: it pastes, but no new file appears. Check it again.
-6. Start Framecut a second time from another terminal. It exits at once and
-   the running one shows "Framecut is already running".
-7. Right-click the tray icon → **Quit Framecut**. The icon disappears.
-8. The log is `%LOCALAPPDATA%\Framecut\logs\framecut.log` and settings are
-   `%APPDATA%\Framecut\settings.json`.
+6. Start Shuttercrab a second time from another terminal. It exits at once and
+   the running one shows "Shuttercrab is already running".
+7. Right-click the tray icon → **Quit Shuttercrab**. The icon disappears.
+8. The log is `%LOCALAPPDATA%\Shuttercrab\logs\shuttercrab.log` and settings are
+   `%APPDATA%\Shuttercrab\settings.json`.
 
 ### Step 2: window and display capture, Space toggle, snapping
 
@@ -628,7 +628,7 @@ Decisions:
 
 - **Window capture is direct** (PRD §7.3): `CreateForWindow`, so covered
   parts of the window are included and nothing in front of it is. If a
-  window refuses, Framecut cuts its visible part from the frozen screen
+  window refuses, Shuttercrab cuts its visible part from the frozen screen
   and logs a warning.
 - **Window bounds come from DWM** (`DWMWA_EXTENDED_FRAME_BOUNDS`), not
   `GetWindowRect`, which includes invisible resize borders (711×810 vs the
@@ -674,7 +674,7 @@ desktop click captured the whole monitor with its windows, as intended
 
 Acceptance (manual):
 
-1. Start Framecut. Open a few windows, overlapping.
+1. Start Shuttercrab. Open a few windows, overlapping.
 2. **Ctrl+Alt+S**, then **Space**. The hint at the top changes to Window
    mode and the window under the pointer is outlined in blue with its size.
    Move over other windows: the outline follows. Move over the desktop (or
@@ -705,8 +705,8 @@ Decisions:
 - **Placement.** 312×132 logical pixels, centred 24 pixels below the top of
   the monitor under the pointer, like Snipping Tool's toolbar. Rounded
   corners (DWM), and excluded from capture (`WDA_EXCLUDEFROMCAPTURE`), so it
-  can never appear in a screenshot. `FRAMECUT_CAPTURABLE_UI=1` keeps it
-  capturable, for screenshots of Framecut itself.
+  can never appear in a screenshot. `SHUTTERCRAB_CAPTURABLE_UI=1` keeps it
+  capturable, for screenshots of Shuttercrab itself.
 - **Keyboard.** Arrows and Tab move, Enter or Space takes the selection,
   A / W / D choose directly, Escape closes. Losing focus closes it too.
 - **Memory.** It opens on the last target used (`last_target`), so Enter
@@ -759,7 +759,7 @@ overall"; dragging into Claude Code worked). Two bugs, both fixed in
   probe. See Known issues.)
 - **4: the drag image was sometimes a white square**, the first drag after
   starting. The Shell drew the file's thumbnail from its cache, not ready
-  for a file written a moment earlier. Framecut now sets the drag image
+  for a file written a moment earlier. Shuttercrab now sets the drag image
   from the screenshot (`IDragSourceHelper::InitializeFromBitmap`). Live:
   the first drag after a fresh start shows the capture, upright, centred
   on the pointer.
@@ -778,7 +778,7 @@ The owner then preferred a softer look than sharp but a gentler one than
 Windows' fade, which measured as opacity falling in a straight line from
 the centre on each axis, at about 74% overall; the Shell's drag helper
 applies that 74% to every drag image and cannot be told otherwise. So
-Framecut now draws the drag image itself, in a click-through layered
+Shuttercrab now draws the drag image itself, in a click-through layered
 window that follows the pointer (`DoDragDrop` with its own `IDropSource`).
 Chosen from side-by-side drags, 2026-09-28: sharp, 90% opaque, a 20-pixel
 soft edge (half inside, half outside, so it reads as a blurred edge, not
@@ -803,13 +803,13 @@ Decisions:
   Shell's own data object for the file to `SHDoDragDrop`, so Explorer,
   browsers and chat applications receive a normal file drag, with the
   standard drag image. The card closes after a drop.
-- **Without auto-save**, the file is written to `%TEMP%\Framecut` only when
+- **Without auto-save**, the file is written to `%TEMP%\Shuttercrab` only when
   the thumbnail is opened or dragged; those files are deleted after a day.
 - **Notification** after each capture is available but off
   (`notify_after_capture`): the thumbnail already confirms the capture.
 - **Capture exclusion.** The Capture Bar and the thumbnail are excluded
   from every capture (`WDA_EXCLUDEFROMCAPTURE`). The selection overlay is
-  not: it shows a frozen image, so it can never contaminate Framecut's own
+  not: it shows a frozen image, so it can never contaminate Shuttercrab's own
   output, and a screen recorder may want to show it.
 
 Automated: UI tests for click → open, press-and-move → one drag (jitter
@@ -822,7 +822,7 @@ capture the card is 318×243 physical at (3498, 1821), display affinity
 `WDA_EXCLUDEFROMCAPTURE`, `WS_EX_NOACTIVATE`, and the foreground window is
 unchanged. It closed itself after the countdown. Dragged into an Explorer
 window on an empty folder, the PNG arrived there and the card closed. The
-card, imaged with `FRAMECUT_CAPTURABLE_UI`, shows the capture with rounded
+card, imaged with `SHUTTERCRAB_CAPTURABLE_UI`, shows the capture with rounded
 corners and the × on hover.
 
 Acceptance (manual):
@@ -848,7 +848,7 @@ Owner's results, 2026-09-28: items 1–9 pass. Findings, all fixed and
 checked live, to retest:
 
 - **Window mode could not target the settings window**: it skipped every
-  Framecut window. It now skips only Framecut's capture UI, the windows
+  Shuttercrab window. It now skips only Shuttercrab's capture UI, the windows
   excluded from capture (test with an in-process window).
 - **Clicking a notification did nothing**: it now opens the screenshot,
   like the thumbnail.
@@ -860,17 +860,17 @@ checked live, to retest:
   now headings, and the sidebar lists the three pages.
 
 Retest, 2026-09-28: all pass except Task Manager's Startup apps entry,
-which had a generic icon and the name "framecut.exe". The executable had
+which had a generic icon and the name "shuttercrab.exe". The executable had
 no icon or version information when Windows first saw it, and Windows
 caches both per path: the icon cache (refreshed once the file changed)
 and `MuiCache` (`<path>.FriendlyAppName`, which stays until removed).
 The executable now carries both; the stale `MuiCache` value on the dev
 machine was removed.
 
-Not a Framecut defect: Task Manager's Startup apps lists the entry as
-"framecut.exe", even for fresh copies at new paths and with a company
+Not a Shuttercrab defect: Task Manager's Startup apps lists the entry as
+"shuttercrab.exe", even for fresh copies at new paths and with a company
 name added, although the executable's version information, the Shell's
-properties (`System.FileDescription`) and `MuiCache` all say "Framecut".
+properties (`System.FileDescription`) and `MuiCache` all say "Shuttercrab".
 A control settled it: a temporary entry for Windows' own signed
 `notepad.exe` (description "Notepad") also showed as "notepad.exe". On
 this machine Task Manager shows new startup entries by file name,
@@ -903,7 +903,7 @@ Decisions:
   a capture. A hotkey without Ctrl, Alt or Win, the other hotkey, or one
   another application owns is refused with a message, and the old one is
   kept. Recording hotkeys arrive with recording.
-- **Opening it**: the tray menu's **Settings…**, and starting Framecut
+- **Opening it**: the tray menu's **Settings…**, and starting Shuttercrab
   again (from the Start menu, say), which now shows the settings instead
   of the step 1 "already running" notification.
 - **Keyboard**: Tab and Shift+Tab move between controls, Space and Enter
@@ -914,16 +914,16 @@ one (pause, apply, save), a hotkey another application owns (refused,
 old one restored), the other hotkey and a Shift-only one (refused),
 Escape cancelling a recording and then closing the window; key presses to
 hotkeys; the startup entry round trip (under a test name, never
-Framecut's own).
+Shuttercrab's own).
 
-Smoke test (release, scratch data folder), 2026-09-28: starting Framecut
+Smoke test (release, scratch data folder), 2026-09-28: starting Shuttercrab
 again opened the window, in front and focused; Escape and the title bar's
-close button both closed it with no errors in the log and Framecut still
+close button both closed it with no errors in the log and Shuttercrab still
 running. Recording Ctrl+Alt+X for the Capture Bar saved it; afterwards
 Ctrl+Alt+C did nothing and Ctrl+Alt+X opened the Capture Bar.
 
 Two problems found on the way, both fixed: the window stayed hidden when
-Framecut was started with a "start hidden" request (the smoke test's);
+Shuttercrab was started with a "start hidden" request (the smoke test's);
 it is now shown explicitly. And GPUI's own close path logged errors as
 the window went; Escape and the close button now hide it first and remove
 it a moment later, as the overlay does.
@@ -933,7 +933,7 @@ Acceptance (manual):
 1. Right-click the tray icon → **Settings…**. The window opens in front.
 2. Press **Tab** a few times: focus moves through the controls. Press
    **Escape**: the window closes.
-3. Start Framecut again from a second terminal: the settings window
+3. Start Shuttercrab again from a second terminal: the settings window
    opens.
 4. **Hotkeys**: select "Open the Capture Bar", press Enter, press a new
    shortcut (say Ctrl+Alt+X). Close the window; the new shortcut opens the
@@ -945,8 +945,8 @@ Acceptance (manual):
    leaves sooner. **Show a notification**: on, take one, see it; off.
 7. **Folder → Change…**: pick another folder; the next screenshot is saved
    there. Change it back.
-8. **Start Framecut when you sign in**: on. Task Manager → Startup apps
-   lists Framecut. (Turn it off unless you want it.)
+8. **Start Shuttercrab when you sign in**: on. Task Manager → Startup apps
+   lists Shuttercrab. (Turn it off unless you want it.)
 9. **Diagnostics**: your two displays, HDR on, their SDR white levels and
    the GPU. **Open** next to the log folder opens it.
 10. Say what you think of the window's layout and wording.
@@ -955,7 +955,7 @@ Acceptance (manual):
 
 Owner's results, 2026-09-28: 1 (a paused HDR video through the Capture Bar
 looks like the chosen option) and 4 (idle CPU) pass. 2 (HDR toggled with
-Framecut running) works; the HDR-on and HDR-off screenshots are similar,
+Shuttercrab running) works; the HDR-on and HDR-off screenshots are similar,
 with the largest difference in the brightest sky, which the percentile
 anchor keeps more saturated than the player's own HDR-off rendering
 ("probably ok"). The video's title text, drawn over the video, came out
@@ -968,7 +968,7 @@ Hardening (PRD §22–§25):
 - **Lost graphics device** (removed, hung, reset, driver error; sleep and
   wake or a driver update): the cached Direct3D device is dropped and the
   capture retried once with a new one. Before, every later capture failed
-  until Framecut was restarted. Unit tests: the retry policy and the
+  until Shuttercrab was restarted. Unit tests: the retry policy and the
   recognised HRESULTs (a device loss cannot be forced from a test).
 - **Display changed mid-capture** (HDR toggled, resolution changed):
   captured again once instead of failing.
@@ -976,7 +976,7 @@ Hardening (PRD §22–§25):
   ("Another app is holding the clipboard; try again in a moment", "Could
   not save to …. Check the folder in Settings."); error codes and details
   go to the log only. Smoke test: with the folder unwritable, the
-  screenshot still reached the clipboard, Framecut kept running, and the
+  screenshot still reached the clipboard, Shuttercrab kept running, and the
   log named the cause.
 - **Memory** (PRD §23): after each capture the device returns the driver's
   pooled memory (`IDXGIDevice3::Trim`). Private memory after 30 4K
@@ -995,10 +995,10 @@ Acceptance (manual):
 1. Pause an HDR video full screen, press **Ctrl+Alt+C**, **D**, and paste:
    it looks like option 2 of the comparison (sky detail, foreground as in
    the player's own HDR-off picture).
-2. With Framecut running, toggle HDR (**Win+Alt+B**), take a screenshot,
+2. With Shuttercrab running, toggle HDR (**Win+Alt+B**), take a screenshot,
    toggle it back, take another: both work and look right.
 3. Put the PC to sleep, wake it, take a screenshot: it works.
-4. Leave Framecut idle for a few minutes: Task Manager shows about 0% CPU.
+4. Leave Shuttercrab idle for a few minutes: Task Manager shows about 0% CPU.
 
 ## Milestone 1: area screenshot
 
@@ -1009,18 +1009,18 @@ browser/chat, with visually correct SDR output.*
 
 | Suite | Covers |
 |---|---|
-| `framecut` unit tests | Logical → physical conversion: 100–200% scale, any drag direction, snapping to physical pixels, clamping to the monitor, empty clicks |
-| `framecut` `tests/ui.rs` | The real overlay in headless GPUI windows with native pointer and keyboard events: live physical dimensions at 100/125/175/200%, drags in any direction, Escape and right-click cancel, a click selects nothing, the overlay takes focus |
-| `framecut-capture` unit tests | Crop bounds, empty and out-of-bounds regions, PNG round trip |
-| `framecut-platform` unit and live tests | Hotkey parsing; registering a hotkey and reporting a conflict; the `CF_DIBV5` layout |
+| `shuttercrab` unit tests | Logical → physical conversion: 100–200% scale, any drag direction, snapping to physical pixels, clamping to the monitor, empty clicks |
+| `shuttercrab` `tests/ui.rs` | The real overlay in headless GPUI windows with native pointer and keyboard events: live physical dimensions at 100/125/175/200%, drags in any direction, Escape and right-click cancel, a click selects nothing, the overlay takes focus |
+| `shuttercrab-capture` unit tests | Crop bounds, empty and out-of-bounds regions, PNG round trip |
+| `shuttercrab-platform` unit and live tests | Hotkey parsing; registering a hotkey and reporting a conflict; the `CF_DIBV5` layout |
 
 Two live tests touch your machine and are opt-in:
 
 ```powershell
 # Captures the screen in memory and times the freeze and the cut.
-mise exec -- cargo test --release -p framecut-capture --test service -- --ignored --nocapture
+mise exec -- cargo test --release -p shuttercrab-capture --test service -- --ignored --nocapture
 # Replaces the clipboard with a test image.
-mise exec -- cargo test -p framecut-platform --test platform -- --ignored
+mise exec -- cargo test -p shuttercrab-platform --test platform -- --ignored
 ```
 
 Measured on 2026-09-27 (release build, 3840×2160 HDR, RTX 4090): the overlay is
@@ -1039,7 +1039,7 @@ and that only the quit hotkey ends the app.
 
 ### Acceptance (manual)
 
-1. Start it: `mise exec -- cargo run --release -p framecut`. No window
+1. Start it: `mise exec -- cargo run --release -p shuttercrab`. No window
    appears; the terminal says which hotkeys are active.
 2. Put something recognisable on screen: a light-theme page in a browser, VS
    Code, or `fixtures/sdr-reference.html`.
@@ -1231,8 +1231,8 @@ No established test method for HDR screenshots exists; objective metrics
 | Edge, HDR off (reference) | 255 | — | — | 136 164 187 201 211 218 223 232 |
 | Snipping Tool, corrector off | 255 | ΔE00 3.06 | 9.26 | all 255 |
 | Snipping Tool, corrector on | 224 | ΔE00 5.79 | 4.98 | 173 203 215 220 223 225 226 228 |
-| Framecut v3 | 255 | ΔE00 0.00 | 4.48 | 159 191 218 236 248 251 252 253 |
-| Framecut v4 (chosen) | 255 | ΔE00 0.00 | 0.90 | 143 171 195 207 216 222 227 235 |
+| Shuttercrab v3 | 255 | ΔE00 0.00 | 4.48 | 159 191 218 236 248 251 252 253 |
+| Shuttercrab v4 (chosen) | 255 | ΔE00 0.00 | 0.90 | 143 171 195 207 216 222 227 235 |
 
 The owner compared these as images and chose v4.
 
@@ -1267,7 +1267,7 @@ subtitles or controls over video (see
 
 Accepted for now by the owner, to revisit in Milestone 5 (hardening).
 
-- ~~One blank frame after Framecut hands the keyboard back to a
+- ~~One blank frame after Shuttercrab hands the keyboard back to a
   full-screen app~~ (found 2026-10-01, Milestone 4 step 4; no longer
   reproduces, 2026-10-01). About a second after the countdown ended, or
   after a question on the recording controls was answered, a recording of
@@ -1277,7 +1277,7 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
   frame after the keyboard hand-back, re-checked".
 - **Up to a quarter second of black at the end of a recording whose
   display was unplugged** (found 2026-10-01). Windows delivers
-  WM_DISPLAYCHANGE to each window in turn; Framecut's hidden window got
+  WM_DISPLAYCHANGE to each window in turn; Shuttercrab's hidden window got
   it 0.5 s after GPUI's topmost one. Deferred by the owner (2026-10-02) to
   the end of Milestone 5 as a rare edge case. Preferred fix: when the
   display goes away, drop the frames captured after it went dark, so the
@@ -1347,7 +1347,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | **Milestone 1: hotkey → drag → release → paste (§31)** | **Passed: owner's acceptance, 2026-09-27** | Three screenshots in one session; clipboard 18–34 ms after release; overlay 90–171 ms after the hotkey; both monitors; Escape and right-click cancel; quit; HDR on vs off pastes match (VS Code, mean ΔE00 0.022 on downscaled copies) |
 | Background app, no window until invoked | Passed locally | Smoke test: no window before the hotkey |
 | Global screenshot hotkey; conflict reported | Passed locally | Live test; smoke test |
-| Frozen overlay on the monitor under the pointer, exact bounds, focused | Passed locally | Client area (0,0) 3840×2160, foreground; regression test in `framecut-platform` |
+| Frozen overlay on the monitor under the pointer, exact bounds, focused | Passed locally | Client area (0,0) 3840×2160, foreground; regression test in `shuttercrab-platform` |
 | App keeps running after a capture or cancel | Passed locally | Alive 0.1–2 s after the overlay closes; quit hotkey ends it |
 | Live physical-pixel dimensions (§7.2, §20) | Passed (headless) | UI tests at 100/125/175/200% |
 | Escape and right-click cancel | Passed (headless + smoke) | UI tests; smoke test (Escape) |
@@ -1356,7 +1356,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Rapid consecutive screenshots (Milestone 5) | Passed locally, 2026-10-02 | 10 back to back, all saved ([Milestone 5](#rapid-consecutive-screenshots-and-clipboard-contention)) |
 | Overlay within ~150 ms (§22.2) | Passed locally | 130 ms, release build, 4K HDR |
 | Tray icon and menu; left click takes a screenshot (§7.1) | **Passed: owner, 2026-09-27** | Smoke test (tray click); owner ran all 7 acceptance steps |
-| Auto-save to `Pictures/Framecut`, unique names (§12) | Passed locally | Unit tests; smoke test: two files |
+| Auto-save to `Pictures/Shuttercrab`, unique names (§12) | Passed locally | Unit tests; smoke test: two files |
 | Settings on disk, survive a broken file | Passed (unit) | |
 | Log file (§28) | Passed locally | Version, Windows build, monitors, timings; no errors |
 | Single instance | Passed locally | Second launch exits 0; the first notifies |

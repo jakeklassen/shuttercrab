@@ -1,7 +1,7 @@
 # Draft issue for longbridge/gpui-kit: graphics memory kept after a window closes (Windows)
 
-Not filed yet. Framecut carries the fix in `vendor/gpui-pre-windows`
-(see its `FRAMECUT.md`).
+Not filed yet. Shuttercrab carries the fix in `vendor/gpui-pre-windows`
+(see its `SHUTTERCRAB.md`).
 
 ---
 

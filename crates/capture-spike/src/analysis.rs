@@ -441,7 +441,7 @@ pub fn hdr_region(raw: &RawFrame) -> HdrRegion {
 /// A candidate for how Windows places an 8-bit SDR code in scRGB.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Curve {
-    /// Piecewise sRGB (IEC 61966-2-1): what Framecut inverts.
+    /// Piecewise sRGB (IEC 61966-2-1): what Shuttercrab inverts.
     Srgb,
     /// Pure power 2.2, what many SDR displays actually do.
     Gamma22,

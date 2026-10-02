@@ -131,7 +131,7 @@ pub fn run(
     let device = target.device_name.clone();
     std::fs::create_dir_all(dir)?;
     println!(
-        "Framecut Milestone 0 gate on {} ({}), saving to {}\n\
+        "Shuttercrab Milestone 0 gate on {} ({}), saving to {}\n\
          Type q and Enter at any prompt to stop.\n\n\
          Before starting: Night light off, same resolution and scaling throughout,\n\
          browser zoom 100%, pointer parked away from the page. Captures happen\n\
@@ -306,7 +306,7 @@ pub fn report(dir: &Path, scenes: Option<&[String]>) -> Result<String> {
     let mut gate_results: Vec<bool> = Vec::new();
     let mut invariance_results: Vec<bool> = Vec::new();
 
-    writeln!(md, "# Framecut Milestone 0 gate\n")?;
+    writeln!(md, "# Shuttercrab Milestone 0 gate\n")?;
     writeln!(
         md,
         "Session `{}`, analysed with transform `{}` (capture-spike {}). HDR captures are \

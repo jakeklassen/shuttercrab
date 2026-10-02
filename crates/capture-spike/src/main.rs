@@ -1,4 +1,4 @@
-//! capture-spike: Framecut's Milestone 0 executable. Run with no arguments
+//! capture-spike: Shuttercrab's Milestone 0 executable. Run with no arguments
 //! for usage.
 
 #[cfg(not(windows))]
@@ -21,7 +21,7 @@ use windows::Win32::{
 };
 
 const USAGE: &str = "\
-capture-spike: prove Framecut's HDR/WCG -> SDR capture path (Milestone 0)
+capture-spike: prove Shuttercrab's HDR/WCG -> SDR capture path (Milestone 0)
 
 USAGE
   capture-spike list
@@ -37,7 +37,7 @@ USAGE
                         [--anchor peak|pNN|BRIGHTNESS]
       Re-run the transform on a saved FP16 frame. --anchor picks what sets an
       HDR region's exposure: its peak, a percentile of its tile peaks
-      (p90, Framecut's and the default), or a fixed brightness over SDR white (4.2).
+      (p90, Shuttercrab's and the default), or a fixed brightness over SDR white (4.2).
 
   capture-spike compare REFERENCE.png TEST.png [--roi X,Y,W,H] [--source TEST.fp16]
                         [--heatmap OUT.png]
@@ -99,7 +99,7 @@ fn run() -> Result<()> {
     let build = snapshot::windows_build();
     ensure!(
         build >= 22000,
-        "Framecut requires Windows 11 (this is build {build})"
+        "Shuttercrab requires Windows 11 (this is build {build})"
     );
     unsafe {
         // Physical pixels everywhere; monitor bounds and DPI depend on it.
@@ -207,7 +207,7 @@ pub fn print_snapshot(shot: &snapshot::Snapshot) {
 }
 
 fn record(mut args: Args) -> Result<()> {
-    use framecut_capture::{
+    use shuttercrab_capture::{
         MonitorId, PhysicalRect,
         record::{RecordOptions, Recorder},
     };
@@ -327,7 +327,7 @@ fn record(mut args: Args) -> Result<()> {
 fn print_memory(when: &str) {
     println!(
         "  memory {when}: {}",
-        framecut_platform::memory::Usage::now()
+        shuttercrab_platform::memory::Usage::now()
     );
 }
 
@@ -335,7 +335,7 @@ fn print_memory(when: &str) {
 /// capture service, again and again, printing memory after each: what does
 /// a screenshot leave behind? Nothing is saved.
 fn shots(mut args: Args) -> Result<()> {
-    use framecut_capture::{Capture, MonitorId, PhysicalRect};
+    use shuttercrab_capture::{Capture, MonitorId, PhysicalRect};
     let monitor = args.option("--monitor")?;
     let repeat: u32 = args
         .option("--repeat")?
@@ -536,12 +536,12 @@ fn probe(mut args: Args) -> Result<()> {
     Ok(())
 }
 
-/// `--anchor peak`, `--anchor p90` (Framecut's, the default) (a percentile of the region's
+/// `--anchor peak`, `--anchor p90` (Shuttercrab's, the default) (a percentile of the region's
 /// tile peaks) or `--anchor 4.2` (a fixed brightness over SDR white, such as
 /// the display's peak).
 fn anchor(args: &mut Args) -> Result<Anchor> {
     let Some(text) = args.option("--anchor")? else {
-        // What Framecut uses.
+        // What Shuttercrab uses.
         return Ok(color::SCREENSHOT_ANCHOR);
     };
     if text == "peak" {

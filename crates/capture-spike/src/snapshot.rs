@@ -171,7 +171,7 @@ pub fn take(monitor: Option<&str>, dir: &Path, highlights: Highlights) -> Result
     Ok(snapshot)
 }
 
-pub use framecut_capture::display::windows_build;
+pub use shuttercrab_capture::display::windows_build;
 
 /// Local time as `YYYYMMDD-HHMMSS`, for directory names.
 pub fn timestamp() -> String {

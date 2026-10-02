@@ -7,17 +7,17 @@ pending the project owner's confirmation. Transform version:
 [Evidence](#evidence)).
 
 This is the color decision record the PRD requires (§37, items 3 and 4): what
-Framecut does to turn a Windows desktop capture into an SDR PNG, why, and the
+Shuttercrab does to turn a Windows desktop capture into an SDR PNG, why, and the
 evidence behind it. The code that implements it is
-[`shaders/hdr_to_sdr.hlsl`](../crates/framecut-capture/shaders/hdr_to_sdr.hlsl),
+[`shaders/hdr_to_sdr.hlsl`](../crates/shuttercrab-capture/shaders/hdr_to_sdr.hlsl),
 mirrored step for step by the CPU reference in
-[`src/color.rs`](../crates/framecut-capture/src/color.rs). Tests hold the two to
+[`src/color.rs`](../crates/shuttercrab-capture/src/color.rs). Tests hold the two to
 each other and to known values.
 
 ## The contract
 
 For ordinary SDR content (UI, text, web pages, code) shown on an HDR-enabled
-monitor, Framecut's PNG must match a capture of the same content with HDR off
+monitor, Shuttercrab's PNG must match a capture of the same content with HDR off
 (PRD §9.1), whatever the SDR content brightness slider is set to (§32.2).
 Content brighter than SDR white must compress gracefully instead of washing
 out the image (§9.6).
@@ -69,7 +69,7 @@ D(e) = e / 12.92                     e ≤ 0.04045
        ((e + 0.055) / 1.055)^2.4     otherwise        (IEC 61966-2-1, piecewise sRGB)
 ```
 
-That is Framecut's working hypothesis, and it is measured, not assumed (see
+That is Shuttercrab's working hypothesis, and it is measured, not assumed (see
 [Evidence](#evidence)). On a real 4K HDR capture at `SDRWhiteLevel` 3000, **all
 9.5 million channel values of ordinary SDR app content lie within 0.1 of an
 integer code** under this model (mean distance 0.008 code). Gamma 2.2 fits far

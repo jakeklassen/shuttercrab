@@ -1,10 +1,14 @@
-# Framecut
+# Shuttercrab
 
 A Windows 11 screenshot and screen-recording utility, written in Rust with
 [GPUI Kit](https://gpui-kit.com). It works like Snipping Tool (one hotkey, drag,
 paste) and produces SDR output that looks right when Windows HDR is enabled.
 
 The specification is [docs/PRD.md](docs/PRD.md).
+
+Shuttercrab was called Framecut until 2026-10-02. On its first start it
+carries Framecut's settings and startup entry over; captures already saved
+stay in the Framecut folders.
 
 ## Status
 
@@ -39,10 +43,10 @@ Documentation:
 ## Use it
 
 ```powershell
-mise exec -- cargo run --release -p framecut
+mise exec -- cargo run --release -p shuttercrab
 ```
 
-Framecut runs in the tray with no window. Only one copy runs at a time.
+Shuttercrab runs in the tray with no window. Only one copy runs at a time.
 
 | Keys | Does |
 |---|---|
@@ -53,28 +57,28 @@ Framecut runs in the tray with no window. Only one copy runs at a time.
 | **Ctrl+Alt+R** | Record an area (drag it); again to stop |
 | While recording | **Ctrl+Alt+P** pause and resume, **Ctrl+Alt+N** restart, **Ctrl+Alt+D** discard (each asks first unless turned off in Settings; then **Ctrl+Alt+Z** undoes) |
 | Right-click the tray icon | Settings…, open the screenshots folder, turn saving on or off, quit |
-| Start Framecut again | Opens its settings window |
+| Start Shuttercrab again | Opens its settings window |
 | Ctrl+Alt+Shift+Q | Quit (for development) |
 
 The screenshot is on the clipboard as PNG and as a bitmap; paste it anywhere.
 Window captures keep the window's rounded corners transparent in the PNG
 (the bitmap has them on white).
-It is also saved to `Pictures\Framecut` as `Capture YYYY-MM-DD HH-MM-SS.png`.
+It is also saved to `Pictures\Shuttercrab` as `Capture YYYY-MM-DD HH-MM-SS.png`.
 A thumbnail appears in the corner for a few seconds: click it to open the
 image, or drag it into a chat, browser or folder. It never takes the
 keyboard, so Ctrl+V still pastes where you were.
 
-Recordings are saved to `Videos\Framecut` as `Recording YYYY-MM-DD
+Recordings are saved to `Videos\Shuttercrab` as `Recording YYYY-MM-DD
 HH-MM-SS.mp4` (H.264, SDR). While recording, a small bar beside the area
 shows the time and the actions, and a dashed border marks the area;
 neither is ever in the video. All the keys can be changed in Settings.
 
 | File | Where |
 |---|---|
-| Settings | `%APPDATA%\Framecut\settings.json` |
-| Log (this run, and the previous one) | `%LOCALAPPDATA%\Framecut\logs` |
+| Settings | `%APPDATA%\Shuttercrab\settings.json` |
+| Log (this run, and the previous one) | `%LOCALAPPDATA%\Shuttercrab\logs` |
 
-Setting `FRAMECUT_DATA_DIR` keeps settings and logs in that folder instead,
+Setting `SHUTTERCRAB_DATA_DIR` keeps settings and logs in that folder instead,
 for testing.
 
 ## Setup

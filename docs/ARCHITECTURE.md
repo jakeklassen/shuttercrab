@@ -8,14 +8,14 @@ records the others as they are made.
 
 | Crate | Owns | PRD §30 equivalent |
 |---|---|---|
-| [`framecut`](../crates/framecut) | The GPUI Kit application: the selection overlay and the screenshot flow | `app` |
-| [`framecut-capture`](../crates/framecut-capture) | Monitors and their color state, Windows.Graphics.Capture, the HDR/WCG → SDR transform, cropping and PNG encoding, behind the capture service | `capture-core`, `color`, `screenshot` (without clipboard) |
-| [`framecut-platform`](../crates/framecut-platform) | Global hotkeys, the clipboard, window behaviour applied to GPUI windows' `HWND`s | `windows-platform` |
+| [`shuttercrab`](../crates/shuttercrab) | The GPUI Kit application: the selection overlay and the screenshot flow | `app` |
+| [`shuttercrab-capture`](../crates/shuttercrab-capture) | Monitors and their color state, Windows.Graphics.Capture, the HDR/WCG → SDR transform, cropping and PNG encoding, behind the capture service | `capture-core`, `color`, `screenshot` (without clipboard) |
+| [`shuttercrab-platform`](../crates/shuttercrab-platform) | Global hotkeys, the clipboard, window behaviour applied to GPUI windows' `HWND`s | `windows-platform` |
 | [`capture-spike`](../crates/capture-spike) | Milestone 0's measurement tools and the HDR-off / HDR-on gate | — |
 
 PRD §30 allows simpler boundaries. `capture-core`, `color` and `screenshot`
 share one Direct3D device and one thread, so they are one crate; the
-clipboard sits with the other Win32 integration in `framecut-platform`.
+clipboard sits with the other Win32 integration in `shuttercrab-platform`.
 
 ## ADR 1 — Windows.Graphics.Capture
 
@@ -45,12 +45,12 @@ favours it.
 Accepted (Milestone 1). The app talks to two services, each on its own
 thread:
 
-- **Capture service** (`framecut_capture::Capture`). One thread owns the
+- **Capture service** (`shuttercrab_capture::Capture`). One thread owns the
   WinRT apartment, the Direct3D device per adapter and the compiled shaders.
   The app awaits `freeze_monitor` and `screenshot`; no COM or Direct3D object
   crosses to it (PRD §19, §38 rule 12). `warm_up` at launch creates the
   devices and loads WGC, so the first hotkey is as fast as the rest.
-- **Platform service** (`framecut_platform::Platform`). One thread with a
+- **Platform service** (`shuttercrab_platform::Platform`). One thread with a
   message-only window owns the global hotkeys and writes the clipboard (which
   needs an owner window).
 
@@ -81,7 +81,7 @@ Accepted (Milestone 1).
   holds whatever the host process declares; the app declares it too, through
   GPUI's manifest.
 - **Logical pixels** in UI code, as GPUI reports them.
-- The conversion happens in one place, `framecut::selection`: each corner of
+- The conversion happens in one place, `shuttercrab::selection`: each corner of
   a drag snaps to the nearest physical pixel (`round(logical × scale)`) and
   the rectangle is clamped to the monitor. Pointer positions are physical
   pixels over the scale, so they convert back exactly.

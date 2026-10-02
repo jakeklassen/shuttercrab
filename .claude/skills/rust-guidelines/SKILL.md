@@ -19,9 +19,9 @@ by chapter and otherwise unchanged.
 2. When reviewing, cite each finding by its rule ID (for example
    `M-MEM-REUSE`), with the file and line, what the code does, and what the
    rule asks instead.
-3. Framecut is an application (a binary crate with library crates beside
+3. Shuttercrab is an application (a binary crate with library crates beside
    it), so the Application chapter applies to it. The Library chapters apply
-   to its library crates (`framecut-capture`, `framecut-platform`) where
+   to its library crates (`shuttercrab-capture`, `shuttercrab-platform`) where
    they make sense for an application's internals.
 4. The guidelines are advice, not law. Where one conflicts with this
    project's conventions or measurements, say so rather than following it

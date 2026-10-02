@@ -1,15 +1,15 @@
 [package]
 name = "capture-spike"
 version = "0.1.0"
-description = "Milestone 0: prove Framecut's HDR/WCG to SDR capture path"
+description = "Milestone 0: prove Shuttercrab's HDR/WCG to SDR capture path"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
 
 [dependencies]
 anyhow = "1"
-framecut-capture = { path = "../framecut-capture" }
-framecut-platform = { path = "../framecut-platform" }
+shuttercrab-capture = { path = "../shuttercrab-capture" }
+shuttercrab-platform = { path = "../shuttercrab-platform" }
 futures = "0.3"
 half = "2.7"
 png = "0.18"

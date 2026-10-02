@@ -1,5 +1,5 @@
 [workspace]
-members = ["crates/capture-spike", "crates/framecut", "crates/framecut-capture", "crates/framecut-platform"]
+members = ["crates/capture-spike", "crates/shuttercrab", "crates/shuttercrab-capture", "crates/shuttercrab-platform"]
 exclude = ["vendor"]
 resolver = "3"
 
@@ -24,8 +24,8 @@ rustybuzz = { opt-level = 3 }
 taffy = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
 
-# GPUI's Windows layer with Framecut's fix for graphics memory kept after
-# windows close (vendor/gpui-pre-windows/FRAMECUT.md). Remove once upstream
+# GPUI's Windows layer with Shuttercrab's fix for graphics memory kept after
+# windows close (vendor/gpui-pre-windows/SHUTTERCRAB.md). Remove once upstream
 # has it.
 [patch.crates-io]
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }

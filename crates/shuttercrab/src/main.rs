@@ -1,0 +1,230 @@
+// Release builds are a windowed app on Windows, with no console behind them.
+#![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
+
+use shuttercrab::{
+    app::{self, QUIT_HOTKEY, Shuttercrab},
+    logging,
+    settings::{self, Loaded, Settings},
+};
+use shuttercrab_capture::{Capture, display::windows_build};
+use shuttercrab_platform::{Hotkey, Platform, Tray};
+use std::path::PathBuf;
+
+/// Keeps settings and logs in this folder instead of the user's, for tests.
+const DATA_DIR_VARIABLE: &str = "SHUTTERCRAB_DATA_DIR";
+
+/// Counts the Rust heap for the memory lines in the log.
+#[global_allocator]
+static HEAP: shuttercrab::heap::Counting = shuttercrab::heap::Counting;
+
+fn main() {
+    // The recording helper: no tray, no UI, no single-instance check.
+    if std::env::args().nth(1).as_deref() == Some(shuttercrab::recorder_process::FLAG) {
+        std::process::exit(shuttercrab::recorder_process::serve());
+    }
+    // Release builds have no console; print to the terminal that started us.
+    #[cfg(not(debug_assertions))]
+    shuttercrab_platform::attach_to_parent_terminal();
+
+    let Some(_instance) = shuttercrab_platform::single_instance("Shuttercrab") else {
+        // The log file belongs to the running instance; leave it alone.
+        eprintln!("Shuttercrab is already running.");
+        shuttercrab_platform::signal_running_instance();
+        return;
+    };
+    let data_dir = std::env::var_os(DATA_DIR_VARIABLE).map(PathBuf::from);
+    let log_dir = match &data_dir {
+        Some(dir) => Some(dir.join("logs")),
+        None => logging::default_dir(),
+    };
+    let log_file = logging::init(log_dir.as_deref());
+    log::info!(
+        "Shuttercrab {} on Windows build {}",
+        env!("CARGO_PKG_VERSION"),
+        windows_build()
+    );
+    match &log_file {
+        Some(path) => log::info!("logging to {}", path.display()),
+        None => log::warn!("no log file; logging to the terminal only"),
+    }
+
+    let settings_path = match &data_dir {
+        Some(dir) => Some(dir.join("settings.json")),
+        None => settings::default_path(),
+    };
+    let mut notices = Vec::new();
+    // The first start after the rename from Framecut. A test's own data
+    // folder is never mixed with the real one.
+    let renamed = data_dir.is_none() && carry_over_from_framecut(settings_path.as_deref());
+    if renamed {
+        notices.push((
+            "Framecut is now Shuttercrab".to_string(),
+            "Your settings came across. New captures go to the Shuttercrab folders; earlier ones stay where they were."
+                .to_string(),
+        ));
+    }
+    let (mut settings, first_run) = match settings_path.as_deref().map(settings::load) {
+        Some(Ok((settings, loaded))) => {
+            match &loaded {
+                Loaded::Read => {}
+                Loaded::Created => log::info!("created default settings"),
+                Loaded::Replaced(bad) => {
+                    log::warn!(
+                        "settings could not be read; kept them as {} and used defaults",
+                        bad.display()
+                    );
+                    notices.push((
+                        "Settings were reset".to_string(),
+                        format!(
+                            "The old file could not be read and was kept as {}.",
+                            bad.display()
+                        ),
+                    ));
+                }
+            }
+            (settings, loaded == Loaded::Created)
+        }
+        Some(Err(e)) => {
+            log::error!("could not load settings, using defaults: {e:#}");
+            (Settings::default(), false)
+        }
+        None => {
+            log::warn!("no settings folder; settings will not be saved");
+            (Settings::default(), false)
+        }
+    };
+    if let Some(path) = &settings_path {
+        log::info!("settings in {}", path.display());
+    }
+    // Screenshots written only for the thumbnail to open or drag.
+    let removed = shuttercrab::files::remove_old(
+        &shuttercrab::files::temp_dir(),
+        std::time::Duration::from_secs(24 * 60 * 60),
+    );
+    if removed > 0 {
+        log::info!("removed {removed} temporary screenshots older than a day");
+    }
+
+    let defaults = Settings::default();
+    // Keep valid hotkeys in Shuttercrab's spelling; replace invalid ones.
+    let mut normalize = |value: &mut String, fallback: &str| match Hotkey::parse(value) {
+        Ok(hotkey) => *value = hotkey.to_string(),
+        Err(e) => {
+            log::error!("hotkey {value:?} is not valid ({e:#}); using {fallback}");
+            notices.push((
+                "Hotkey not recognised".to_string(),
+                format!("\"{value}\" is not a valid hotkey, so {fallback} is used instead."),
+            ));
+            *value = fallback.to_string();
+        }
+    };
+    normalize(
+        &mut settings.capture_bar_hotkey,
+        &defaults.capture_bar_hotkey,
+    );
+    normalize(&mut settings.screenshot_hotkey, &defaults.screenshot_hotkey);
+    normalize(&mut settings.record_hotkey, &defaults.record_hotkey);
+    normalize(&mut settings.pause_hotkey, &defaults.pause_hotkey);
+    normalize(&mut settings.restart_hotkey, &defaults.restart_hotkey);
+    normalize(&mut settings.discard_hotkey, &defaults.discard_hotkey);
+    normalize(&mut settings.undo_hotkey, &defaults.undo_hotkey);
+
+    let capture = match Capture::start() {
+        Ok(capture) => capture,
+        Err(e) => {
+            log::error!("could not start capture: {e:#}");
+            std::process::exit(1);
+        }
+    };
+    capture.warm_up();
+
+    // Every hotkey in the settings is valid now.
+    let hotkeys = app::hotkeys(&settings, false, false);
+    let tray = Tray {
+        tooltip: "Shuttercrab".into(),
+        menu: app::tray_menu(&settings, app::TrayRecording::Idle),
+    };
+    let (platform, events, conflicts) = match Platform::start(&hotkeys, Some(tray)) {
+        Ok(started) => started,
+        Err(e) => {
+            log::error!("could not start the platform thread: {e:#}");
+            std::process::exit(1);
+        }
+    };
+    for conflict in &conflicts {
+        log::warn!(
+            "{} is taken by another application ({})",
+            conflict.hotkey,
+            conflict.reason
+        );
+        if conflict.id != QUIT_HOTKEY {
+            notices.push((
+                format!("{} is in use", conflict.hotkey),
+                "Another app owns this hotkey. Click the Shuttercrab tray icon to capture instead."
+                    .to_string(),
+            ));
+        }
+    }
+    if first_run && conflicts.is_empty() {
+        notices.push((
+            "Shuttercrab is running".to_string(),
+            format!(
+                "Press {} to capture, or {} for an area. Shuttercrab lives in the tray.",
+                settings.capture_bar_hotkey, settings.screenshot_hotkey
+            ),
+        ));
+    }
+    // One at a time: Windows shows only the latest tray notification.
+    if let Some((title, message)) = notices.into_iter().next() {
+        platform.notify(title, message);
+    }
+    log::info!(
+        "ready: {} opens the Capture Bar, {} takes an area screenshot, {} records an area, {} quits",
+        settings.capture_bar_hotkey,
+        settings.screenshot_hotkey,
+        settings.record_hotkey,
+        app::QUIT_KEYS
+    );
+
+    gpui_kit::application()
+        .with_assets(shuttercrab::icons::Icons)
+        .run(move |cx| {
+            gpui_kit::init(cx);
+            app::run(
+                Shuttercrab {
+                    capture,
+                    platform,
+                    settings,
+                    settings_path,
+                    log_dir: log_file.as_ref().and_then(|f| f.parent().map(Into::into)),
+                },
+                events,
+                cx,
+            );
+        });
+}
+
+/// Carry Framecut's settings and startup entry over to Shuttercrab, once.
+/// Returns whether settings came across.
+fn carry_over_from_framecut(settings_path: Option<&std::path::Path>) -> bool {
+    use shuttercrab::migrate;
+    match shuttercrab_platform::startup::adopt_entry(migrate::OLD_NAME) {
+        Ok(true) => log::info!("moved Framecut's startup entry to Shuttercrab"),
+        Ok(false) => {}
+        Err(e) => log::warn!("could not move Framecut's startup entry: {e:#}"),
+    }
+    let (Some(old), Some(new)) = (migrate::old_settings_path(), settings_path) else {
+        return false;
+    };
+    match migrate::carry_settings(&old, new, &migrate::old_default_dirs()) {
+        Ok(true) => {
+            log::info!("carried Framecut's settings over from {}", old.display());
+            true
+        }
+        Ok(false) => false,
+        Err(e) => {
+            log::warn!("could not carry Framecut's settings over: {e:#}");
+            false
+        }
+    }
+}
