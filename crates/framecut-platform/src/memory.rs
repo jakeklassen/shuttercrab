@@ -4,8 +4,9 @@
 use windows::{
     Win32::{
         Graphics::Dxgi::{
-            CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO,
-            IDXGIAdapter3, IDXGIFactory1,
+            CreateDXGIFactory1, DXGI_MEMORY_SEGMENT_GROUP_LOCAL,
+            DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL, DXGI_QUERY_VIDEO_MEMORY_INFO, IDXGIAdapter3,
+            IDXGIFactory1,
         },
         System::{
             ProcessStatus::{
@@ -24,14 +25,19 @@ pub struct Usage {
     pub private: u64,
     /// The graphics adapters' own memory this process uses.
     pub graphics: u64,
+    /// Graphics memory this process uses in system memory (the adapters'
+    /// non-local segment), such as readback and shared surfaces.
+    pub graphics_shared: u64,
 }
 
 impl Usage {
     /// The usage now.
     pub fn now() -> Self {
+        let (graphics, graphics_shared) = graphics();
         Self {
             private: private(),
-            graphics: graphics(),
+            graphics,
+            graphics_shared,
         }
     }
 }
@@ -51,26 +57,27 @@ fn private() -> u64 {
     read.map_or(0, |()| counters.PrivateUsage as u64)
 }
 
-/// The sum over adapters of this process's use of their local memory.
-fn graphics() -> u64 {
+/// The sum over adapters of this process's use of their local memory, and of
+/// their non-local (system) memory.
+fn graphics() -> (u64, u64) {
     let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
-        return 0;
+        return (0, 0);
     };
-    let mut total = 0;
+    let (mut local, mut shared) = (0, 0);
     let mut index = 0;
     while let Ok(adapter) = unsafe { factory.EnumAdapters1(index) } {
-        let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
-        if let Ok(adapter) = adapter.cast::<IDXGIAdapter3>()
-            && unsafe {
-                adapter.QueryVideoMemoryInfo(0, DXGI_MEMORY_SEGMENT_GROUP_LOCAL, &mut info)
-            }
-            .is_ok()
-        {
-            total += info.CurrentUsage;
+        if let Ok(adapter) = adapter.cast::<IDXGIAdapter3>() {
+            let usage = |group| {
+                let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                unsafe { adapter.QueryVideoMemoryInfo(0, group, &mut info) }
+                    .map_or(0, |()| info.CurrentUsage)
+            };
+            local += usage(DXGI_MEMORY_SEGMENT_GROUP_LOCAL);
+            shared += usage(DXGI_MEMORY_SEGMENT_GROUP_NON_LOCAL);
         }
         index += 1;
     }
-    total
+    (local, shared)
 }
 
 /// Bytes as megabytes, one decimal.
@@ -82,9 +89,10 @@ impl std::fmt::Display for Usage {
     fn fmt(&self, f: &mut std::fmt::Formatter) -> std::fmt::Result {
         write!(
             f,
-            "private {}, graphics {}",
+            "private {}, graphics {} (+{} in system memory)",
             mb(self.private),
-            mb(self.graphics)
+            mb(self.graphics),
+            mb(self.graphics_shared)
         )
     }
 }
