@@ -1,0 +1,156 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Shuttercrab: fast screenshots and screen recording for Windows</title>
+<meta name="description" content="Fast, keyboard-first screenshots and screen recording for Windows, with colour that holds up on HDR displays.">
+<meta name="color-scheme" content="dark">
+<meta name="theme-color" content="#16181D">
+<link rel="icon" type="image/png" sizes="32x32" href="favicon-32.png">
+<link rel="icon" type="image/png" sizes="16x16" href="favicon-16.png">
+<link rel="apple-touch-icon" href="icon-256.png">
+<meta property="og:title" content="Shuttercrab">
+<meta property="og:description" content="Fast, keyboard-first screenshots and screen recording for Windows, with colour that holds up on HDR displays.">
+<meta property="og:image" content="https://jakeklassen.github.io/shuttercrab/icon-256.png">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Bricolage+Grotesque:opsz,wght@12..96,600;12..96,800&family=IBM+Plex+Sans:wght@400;500;600&family=IBM+Plex+Mono:wght@500&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --ink: #16181D;
+    --panel: #1D2027;
+    --rim: #3A3F4A;
+    --line: #2A2E36;
+    --chalk: #F3F1EC;
+    --muted: #C9C6BF;
+    --quiet: #A8A49C;
+    --coral: #E8603C;
+    --display: 'Bricolage Grotesque', 'Segoe UI', system-ui, sans-serif;
+    --body: 'IBM Plex Sans', 'Segoe UI', system-ui, sans-serif;
+    --mono: 'IBM Plex Mono', Consolas, monospace;
+  }
+  * { box-sizing: border-box; }
+  html { background: var(--ink); color-scheme: dark; }
+  body { margin: 0; background: var(--ink); color: var(--chalk); font-family: var(--body); line-height: 1.5; }
+  a { color: var(--chalk); }
+  a:hover { color: var(--coral); }
+  a:focus-visible { outline: 2px solid var(--coral); outline-offset: 3px; border-radius: 4px; }
+  .wrap { max-width: 1120px; margin: 0 auto; padding: 0 1.5rem; }
+  .wordmark { font-family: var(--display); font-weight: 800; letter-spacing: -0.035em; }
+  .wordmark span { color: var(--coral); }
+  .kbd { font-family: var(--mono); font-size: 0.9em; padding: 0.15em 0.45em; border-radius: 6px; background: #23262E; border: 1px solid var(--rim); white-space: nowrap; }
+  .button { display: inline-flex; align-items: center; min-height: 48px; padding: 0 1.4rem; border-radius: 8px; font-weight: 600; font-size: 1.05rem; text-decoration: none; }
+  .button.primary { background: var(--coral); color: var(--ink); }
+  .button.primary:hover { background: #F07450; color: var(--ink); }
+  .button.secondary { border: 1px solid var(--rim); color: var(--chalk); }
+  .button.secondary:hover { border-color: var(--coral); }
+
+  header { display: flex; align-items: center; justify-content: space-between; gap: 1rem; padding: 1.5rem 0; }
+  .brand { display: flex; align-items: center; gap: 0.75rem; text-decoration: none; }
+  .brand .wordmark { font-size: 1.5rem; }
+  nav { display: flex; align-items: center; gap: 1.5rem; }
+  nav a:not(.button) { text-decoration: none; }
+  nav .button { min-height: 44px; padding: 0 1.1rem; font-size: 1rem; }
+
+  .hero { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); align-items: center; gap: 2rem; padding: 3rem 0 4rem; }
+  .hero-text { display: flex; flex-direction: column; gap: 1.5rem; }
+  .bracketed { position: relative; align-self: flex-start; padding: 1.1rem 1.6rem; }
+  .bracketed svg { position: absolute; }
+  .bracketed .tl { left: 0; top: 0; }
+  .bracketed .br { right: 0; bottom: 0; }
+  h1 { margin: 0; font-family: var(--display); font-weight: 800; font-size: clamp(3rem, 8vw, 5.5rem); line-height: 0.95; letter-spacing: -0.035em; }
+  .lede { margin: 0; max-width: 32rem; font-size: 1.25rem; line-height: 1.55; color: var(--muted); text-wrap: pretty; }
+  .actions { display: flex; flex-wrap: wrap; gap: 0.75rem; }
+  .mascot { display: flex; justify-content: center; }
+  .mascot img { width: min(460px, 100%); height: auto; aspect-ratio: 1; }
+
+  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 1rem; padding-bottom: 4rem; }
+  .feature { display: flex; flex-direction: column; gap: 0.75rem; padding: 1.75rem; border-radius: 16px; background: var(--panel); }
+  .feature h2 { margin: 0; font-family: var(--display); font-weight: 800; font-size: 1.6rem; }
+  .feature p { margin: 0; font-size: 1.05rem; color: var(--muted); }
+
+  .download { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1.5rem; padding: 2.5rem; margin-bottom: 3rem; border-radius: 20px; background: var(--panel); }
+  .download-id { display: flex; align-items: center; gap: 1.25rem; }
+  .download-id div { display: flex; flex-direction: column; gap: 0.3rem; }
+  .download-title { font-family: var(--display); font-weight: 800; font-size: 1.75rem; }
+  .download-note { color: var(--muted); }
+
+  footer { display: flex; flex-wrap: wrap; justify-content: space-between; gap: 1rem; padding: 1.5rem 0 2.5rem; border-top: 1px solid var(--line); color: var(--quiet); font-size: 0.95rem; }
+  footer a { color: var(--quiet); }
+
+  @media (max-width: 560px) {
+    nav a:not(.button) { display: none; }
+    .download { padding: 1.75rem; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header>
+  <a class="brand" href="#top" aria-label="Shuttercrab home">
+    <img src="icon-64.png" alt="" width="32" height="32">
+    <span class="wordmark">shutter<span>crab</span></span>
+  </a>
+  <nav aria-label="Main">
+    <a href="#features">Features</a>
+    <a href="https://github.com/jakeklassen/shuttercrab">GitHub</a>
+    <a class="button primary" href="https://github.com/jakeklassen/shuttercrab/releases/latest">Download</a>
+  </nav>
+</header>
+
+<main id="top">
+  <section class="hero">
+    <div class="hero-text">
+      <div class="bracketed">
+        <svg class="tl" width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><path d="M3 31V3h28" fill="none" stroke="#E8603C" stroke-width="5"/></svg>
+        <svg class="br" width="34" height="34" viewBox="0 0 34 34" aria-hidden="true"><path d="M31 3v28H3" fill="none" stroke="#E8603C" stroke-width="5"/></svg>
+        <h1>Snip snip.</h1>
+      </div>
+      <p class="lede">Fast, keyboard-first screenshots and screen recording for Windows, with colour that holds up on HDR displays.</p>
+      <div class="actions">
+        <a class="button primary" href="https://github.com/jakeklassen/shuttercrab/releases/latest">Download for Windows</a>
+        <a class="button secondary" href="https://github.com/jakeklassen/shuttercrab">View on GitHub</a>
+      </div>
+    </div>
+    <div class="mascot">
+      <img src="mascot.svg" alt="The Shuttercrab mascot: a coral crab with camera-lens eyes, its claws gripping the corners of a selection" width="460" height="460">
+    </div>
+  </section>
+
+  <section id="features" class="features" aria-label="Features">
+    <div class="feature">
+      <h2>One shortcut</h2>
+      <p>Press <span class="kbd">Ctrl+Alt+S</span>, drag an area, let go. It's on your clipboard and saved before you've moved on.</p>
+    </div>
+    <div class="feature">
+      <h2>Right on HDR</h2>
+      <p>With Windows HDR on, most capture tools wash out. Shuttercrab keeps the colours you were looking at.</p>
+    </div>
+    <div class="feature">
+      <h2>Records too</h2>
+      <p><span class="kbd">Ctrl+Alt+R</span> records an area to MP4. Pause, restart or throw a take away without touching the mouse.</p>
+    </div>
+  </section>
+
+  <section id="download" class="download" aria-label="Download">
+    <div class="download-id">
+      <img src="icon-256.png" alt="Shuttercrab app icon" width="72" height="72">
+      <div>
+        <span class="download-title">Get Shuttercrab</span>
+        <span class="download-note">For Windows 11</span>
+      </div>
+    </div>
+    <a class="button primary" href="https://github.com/jakeklassen/shuttercrab/releases/latest">Download for Windows</a>
+  </section>
+</main>
+
+<footer>
+  <span>Shuttercrab. Made with Rust.</span>
+  <a href="https://github.com/jakeklassen/shuttercrab">GitHub</a>
+</footer>
+
+</div>
+</body>
+</html>
