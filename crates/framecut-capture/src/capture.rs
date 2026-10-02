@@ -4,6 +4,7 @@ use crate::gpu::Gpu;
 use anyhow::{Context, Result, bail, ensure};
 use std::time::{Duration, Instant};
 use windows::{
+    Foundation::TypedEventHandler,
     Graphics::{
         Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession},
         DirectX::DirectXPixelFormat,
@@ -122,6 +123,21 @@ fn capture_item(
             return Err(e).context("CreateCaptureSession failed");
         }
     };
+    // Woken when a frame arrives, rather than checking every few
+    // milliseconds. Registered before the capture starts, so the first
+    // frame cannot be missed.
+    let (arrived, arrival) = std::sync::mpsc::channel::<()>();
+    let token = match pool.FrameArrived(&TypedEventHandler::new(move |_, _| {
+        let _ = arrived.send(());
+        Ok(())
+    })) {
+        Ok(token) => token,
+        Err(e) => {
+            let _ = session.Close();
+            let _ = pool.Close();
+            return Err(e).context("FrameArrived failed");
+        }
+    };
     let result = (|| {
         session.SetIsCursorCaptureEnabled(include_cursor)?;
         // Cosmetic only; the border is not part of the captured image.
@@ -136,10 +152,10 @@ fn capture_item(
                 Err(e) if e.code().is_ok() => {}
                 Err(e) => return Err(e).context("TryGetNextFrame failed"),
             }
-            if Instant::now() >= deadline {
+            let left = deadline.saturating_duration_since(Instant::now());
+            if left.is_zero() || arrival.recv_timeout(left).is_err() {
                 bail!("no frame arrived within five seconds");
             }
-            std::thread::sleep(Duration::from_millis(2));
         };
         let copy = (|| {
             let content = frame.ContentSize()?;
@@ -189,7 +205,9 @@ fn capture_item(
             border_disabled,
         })
     })();
-    // Stop explicitly, on success and failure alike.
+    // Stop explicitly, on success and failure alike. The handler is removed
+    // once only: removing it twice makes Windows end the process.
+    let _ = pool.RemoveFrameArrived(token);
     let closed = session.Close().and(pool.Close());
     let frame = result?;
     closed?;
