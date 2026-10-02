@@ -11,6 +11,7 @@ release_always = false
 # attaches the installer and update feed, then publishes it.
 git_release_draft = true
 git_tag_name = "v{{ version }}"
+git_release_name = "Shuttercrab {{ version }}"
 # Propose a release only for changes that reach users. A ci:, chore: or
 # docs: commit on its own ships nothing.
 release_commits = "^(feat|fix|perf|refactor|revert)[(:!]"
