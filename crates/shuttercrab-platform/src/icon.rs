@@ -1,6 +1,7 @@
-//! Shuttercrab's icon, drawn in code: a blue rounded square with white
-//! viewfinder corners. Drawing it keeps the tray sharp at any DPI without
-//! shipping image files.
+//! Shuttercrab's icon, drawn in code: a dark rounded square with coral
+//! selection corners at the top left and bottom right, as around the
+//! wordmark. Drawing it keeps the tray sharp at any DPI without shipping
+//! image files.
 
 use anyhow::{Context, Result, bail};
 use windows::Win32::{
@@ -11,28 +12,25 @@ use windows::Win32::{
     UI::WindowsAndMessaging::{CreateIconIndirect, HICON, ICONINFO},
 };
 
-/// Accent blue, #1F6FEB.
-const BLUE: [f32; 3] = [0x1F as f32, 0x6F as f32, 0xEB as f32];
+/// The tile, #2A2E36.
+const TILE: [f32; 3] = [0x2A as f32, 0x2E as f32, 0x36 as f32];
+/// The corners, Shuttercrab's coral, #E8603C.
+const CORAL: [f32; 3] = [0xE8 as f32, 0x60 as f32, 0x3C as f32];
 
 /// The icon as tightly packed straight-alpha RGBA, `size` × `size`.
 pub fn rgba(size: u32) -> Vec<u8> {
     let s = size as f32;
     let radius = s * 0.22;
-    // Viewfinder corners: arms of this length and thickness, inset from the edge.
+    // Selection corners: arms of this length and thickness, inset from the edge.
     let inset = s * 0.22;
-    let arm = s * 0.22;
+    let arm = s * 0.30;
     let thick = (s * 0.09).max(1.0);
     let inside_square = |x: f32, y: f32| {
         let (cx, cy) = (x.clamp(radius, s - radius), y.clamp(radius, s - radius));
         (x - cx).powi(2) + (y - cy).powi(2) <= radius * radius
     };
     let on_corner = |x: f32, y: f32| {
-        [
-            (inset, inset, 1.0, 1.0),
-            (s - inset, inset, -1.0, 1.0),
-            (inset, s - inset, 1.0, -1.0),
-            (s - inset, s - inset, -1.0, -1.0),
-        ]
+        [(inset, inset, 1.0, 1.0), (s - inset, s - inset, -1.0, -1.0)]
         .iter()
         .any(|&(ox, oy, dx, dy): &(f32, f32, f32, f32)| {
             let (u, v) = ((x - ox) * dx, (y - oy) * dy);
@@ -45,24 +43,25 @@ pub fn rgba(size: u32) -> Vec<u8> {
     let mut out = Vec::with_capacity((size * size * 4) as usize);
     for py in 0..size {
         for px in 0..size {
-            let (mut cover, mut white) = (0u32, 0u32);
+            let (mut cover, mut marked) = (0u32, 0u32);
             for sy in 0..N {
                 for sx in 0..N {
                     let x = px as f32 + (sx as f32 + 0.5) / N as f32;
                     let y = py as f32 + (sy as f32 + 0.5) / N as f32;
                     if inside_square(x, y) {
                         cover += 1;
-                        white += u32::from(on_corner(x, y));
+                        marked += u32::from(on_corner(x, y));
                     }
                 }
             }
             let alpha = cover as f32 / (N * N) as f32;
-            let w = if cover > 0 {
-                white as f32 / cover as f32
+            let m = if cover > 0 {
+                marked as f32 / cover as f32
             } else {
                 0.0
             };
-            let c = BLUE.map(|b| (b + (255.0 - b) * w).round() as u8);
+            let c: [u8; 3] =
+                std::array::from_fn(|i| (TILE[i] + (CORAL[i] - TILE[i]) * m).round() as u8);
             out.extend_from_slice(&[c[0], c[1], c[2], (alpha * 255.0).round() as u8]);
         }
     }
@@ -158,16 +157,19 @@ mod tests {
     use super::*;
 
     #[test]
-    fn draws_a_blue_square_with_white_corners() {
+    fn draws_a_dark_square_with_two_coral_corners() {
         let size = 32;
         let px = rgba(size);
         let at =
             |x: u32, y: u32| &px[((y * size + x) * 4) as usize..((y * size + x) * 4 + 4) as usize];
-        // Transparent outside the rounded corner, opaque blue in the middle.
+        // Transparent outside the rounded corner, the opaque tile in the middle.
         assert_eq!(at(0, 0)[3], 0);
-        assert_eq!(at(16, 16), [0x1F, 0x6F, 0xEB, 255]);
-        // A viewfinder arm near the top-left corner is white.
-        assert_eq!(at(9, 7), [255, 255, 255, 255]);
+        assert_eq!(at(16, 16), [0x2A, 0x2E, 0x36, 255]);
+        // Coral corners at the top left and bottom right only.
+        assert_eq!(at(9, 7), [0xE8, 0x60, 0x3C, 255]);
+        assert_eq!(at(22, 24), [0xE8, 0x60, 0x3C, 255]);
+        assert_eq!(at(22, 7), [0x2A, 0x2E, 0x36, 255]);
+        assert_eq!(at(9, 24), [0x2A, 0x2E, 0x36, 255]);
     }
 
     #[test]
