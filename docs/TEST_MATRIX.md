@@ -71,6 +71,9 @@ service's readback, next on the list). GPUI binds everything per frame or
 per draw except the rasterizer state, which the fix restores, so windows
 that stay open across a trim draw as before.
 
+**Passed** (2026-10-01): the owner ran all seven steps; every window
+stayed as it was.
+
 Acceptance (manual), windows that stay open while another closes (when the
 trim runs). Wrong would look like: parts of a window missing or blank,
 rounded corners or icons gone, text or edges suddenly jagged, a window
