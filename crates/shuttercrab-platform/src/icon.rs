@@ -31,12 +31,12 @@ pub fn rgba(size: u32) -> Vec<u8> {
     };
     let on_corner = |x: f32, y: f32| {
         [(inset, inset, 1.0, 1.0), (s - inset, s - inset, -1.0, -1.0)]
-        .iter()
-        .any(|&(ox, oy, dx, dy): &(f32, f32, f32, f32)| {
-            let (u, v) = ((x - ox) * dx, (y - oy) * dy);
-            (0.0..arm).contains(&u) && (0.0..thick).contains(&v)
-                || (0.0..thick).contains(&u) && (0.0..arm).contains(&v)
-        })
+            .iter()
+            .any(|&(ox, oy, dx, dy): &(f32, f32, f32, f32)| {
+                let (u, v) = ((x - ox) * dx, (y - oy) * dy);
+                (0.0..arm).contains(&u) && (0.0..thick).contains(&v)
+                    || (0.0..thick).contains(&u) && (0.0..arm).contains(&v)
+            })
     };
     // 4×4 supersampling for smooth edges at tray sizes.
     const N: u32 = 4;

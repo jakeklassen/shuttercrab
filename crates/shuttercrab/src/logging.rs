@@ -1,7 +1,8 @@
-//! Diagnostics (PRD §28): to stderr and to
-//! `%LOCALAPPDATA%\Shuttercrab\logs\shuttercrab.log`. The previous run's log is
-//! kept as `shuttercrab.previous.log`. Logs never contain pixels, clipboard
-//! contents or window titles.
+//! Diagnostics (PRD §28): to `%LOCALAPPDATA%\Shuttercrab\logs\shuttercrab.log`,
+//! and to stderr: everything in a debug build, only warnings and errors
+//! while a release build starts, nothing after [`stop_terminal`]. The
+//! previous run's log is kept as `shuttercrab.previous.log`. Logs never
+//! contain pixels, clipboard contents or window titles.
 
 use chrono::Local;
 use log::{Level, LevelFilter, Log, Metadata, Record};
@@ -9,8 +10,24 @@ use std::{
     fs::File,
     io::Write as _,
     path::{Path, PathBuf},
-    sync::Mutex,
+    sync::{
+        Mutex,
+        atomic::{AtomicUsize, Ordering},
+    },
 };
+
+/// The most verbose level that also goes to stderr, as a `LevelFilter`
+/// number (0 = none).
+static TERMINAL: AtomicUsize = AtomicUsize::new(if cfg!(debug_assertions) {
+    LevelFilter::Trace as usize
+} else {
+    LevelFilter::Warn as usize
+});
+
+/// Stop writing to stderr; the log file keeps everything.
+pub fn stop_terminal() {
+    TERMINAL.store(LevelFilter::Off as usize, Ordering::Relaxed);
+}
 
 struct Logger {
     file: Option<Mutex<File>>,
@@ -42,7 +59,9 @@ impl Log for Logger {
             record.level(),
             record.args()
         );
-        eprintln!("{line}");
+        if record.level() as usize <= TERMINAL.load(Ordering::Relaxed) {
+            eprintln!("{line}");
+        }
         if let Some(file) = &self.file
             && let Ok(mut file) = file.lock()
         {

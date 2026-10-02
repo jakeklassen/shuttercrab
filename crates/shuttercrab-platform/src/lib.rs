@@ -18,7 +18,7 @@ pub mod targets;
 pub mod window;
 
 pub use clipboard::dibv5;
-pub use console::attach_to_parent_terminal;
+pub use console::{attach_to_parent_terminal, detach_from_terminal};
 pub use hotkey::Hotkey;
 pub use instance::{SingleInstance, single_instance};
 

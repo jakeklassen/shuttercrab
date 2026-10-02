@@ -175,6 +175,23 @@ fn main() {
         settings.record_hotkey,
         app::QUIT_KEYS
     );
+    // A release build started from a terminal says where it went, then lets
+    // the terminal go: the shell has already printed its prompt, and the log
+    // file has the rest.
+    #[cfg(not(debug_assertions))]
+    {
+        match &log_file {
+            Some(path) => {
+                eprintln!(
+                    "Shuttercrab is running in the tray. Log: {}",
+                    path.display()
+                )
+            }
+            None => eprintln!("Shuttercrab is running in the tray."),
+        }
+        logging::stop_terminal();
+        shuttercrab_platform::detach_from_terminal();
+    }
 
     gpui_kit::application()
         .with_assets(shuttercrab::icons::Icons)
