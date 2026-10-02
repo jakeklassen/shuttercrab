@@ -328,7 +328,10 @@ fn shots(mut args: Args) -> Result<()> {
     let capture = Capture::start()?;
     print_memory("before");
     for shot in 1..=repeat {
+        let started = std::time::Instant::now();
         let frame = futures::executor::block_on(capture.freeze_monitor(id, false))?;
+        println!("  froze in {} ms", started.elapsed().as_millis());
+        print_memory(&format!("frozen {shot}"));
         let (width, height) = frame.size();
         let whole = PhysicalRect::new(0, 0, width, height);
         let screenshot = futures::executor::block_on(capture.screenshot(&frame, whole))?;

@@ -249,3 +249,35 @@ fn window_corners_keep_their_coverage() {
         assert_eq!(&got[8..12], [200, 200, 200, 255], "{}", gpu.adapter_name);
     }
 }
+
+#[test]
+fn read_back_stitches_its_bands_into_the_whole_texture() {
+    use windows::Win32::Graphics::{
+        Direct3D11::D3D11_BIND_SHADER_RESOURCE, Dxgi::Common::DXGI_FORMAT_R8G8B8A8_UNORM,
+    };
+    // 1,000 × 700 RGBA8 is 2.8 MB: three 1 MB bands, the last one short.
+    let (width, height) = (1000u32, 700u32);
+    let pixels: Vec<u8> = (0..width * height)
+        .flat_map(|i| {
+            let (x, y) = (i % width, i / width);
+            [
+                x as u8,
+                y as u8,
+                (x >> 8) as u8 | ((y >> 8) as u8) << 4,
+                255,
+            ]
+        })
+        .collect();
+    for gpu in devices() {
+        let texture = gpu
+            .texture(
+                width,
+                height,
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                D3D11_BIND_SHADER_RESOURCE,
+                Some((&pixels, width * 4)),
+            )
+            .unwrap();
+        assert_eq!(gpu.read_back(&texture).unwrap(), pixels);
+    }
+}
