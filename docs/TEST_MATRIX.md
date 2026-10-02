@@ -251,6 +251,24 @@ No gap over 1.6 periods in any recording, and 144 Hz is as even as 120 Hz
 (even at 30 fps, where 144 Hz does not divide evenly). The Capture Bar was
 up in 28–33 ms throughout.
 
+### Installer and drag-and-drop (owner, 2026-10-02)
+
+**Installer, 0.1.0** (`Shuttercrab-win-Setup.exe` from GitHub Releases):
+installs for the user with no administrator prompt, starts in the tray
+with the coral-corner icon and the existing settings, adds a Start menu
+entry and no desktop shortcut, and appears in Installed apps. Unsigned, so
+SmartScreen asks first ("More info, Run anyway"). On a machine that had
+run a development build, the installer reported "already installed": the
+development build's log folder is in `%LOCALAPPDATA%\Shuttercrab`, where
+Velopack installs, and Repair installs normally. Users who install first
+never see this.
+
+**Thumbnail drag-and-drop**, beyond Explorer, Telegram and Claude Code
+(Milestone 2): Zed, VS Code, a GitHub comment box, Claude.ai, Gmail,
+Slack, Discord, Teams, WhatsApp or Signal, Paint, Figma, Notion and
+Obsidian take the image. Warp and Windows Terminal (WSL 2) paste the file's
+path, as terminals do; Claude Code there loads the image from that path.
+
 ## Milestone 4: area recording MVP
 
 Built in four steps, each tried and approved by the owner: (1) start and
@@ -1402,7 +1420,7 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Boundary snapping (§7.2) | **Passed: owner, 2026-09-28** | Catch 10, release 24 logical px; blue side markers |
 | Capture Bar: master hotkey, Area / Window / Display, keyboard, remembers the last target, closes on start (§7.5, §32.6) | **Passed: owner, 2026-09-28** | UI tests; smoke test; all eight acceptance steps |
 | App UI excluded from capture (§7.6) | Capture Bar and thumbnail: passed locally | Display affinity 0x11 |
-| Post-capture thumbnail: after the clipboard, auto-dismiss, click opens, drag into apps, excluded, never blocks the next capture (§7.6, §32.6) | **Passed: owner, 2026-09-28** | UI tests; drags into Explorer, Telegram, Claude Code |
+| Post-capture thumbnail: after the clipboard, auto-dismiss, click opens, drag into apps, excluded, never blocks the next capture (§7.6, §32.6) | **Passed: owner, 2026-09-28** | UI tests; drags into Explorer, Telegram, Claude Code; 2026-10-02 also Zed, VS Code, GitHub, Claude.ai, Gmail, Slack, Discord, Teams, WhatsApp or Signal, Paint, Figma, Notion, Obsidian, and Warp and Windows Terminal (a path, as terminals take) |
 | Optional notification after capture (§8, settings) | Built, off by default | `notify_after_capture` |
 | Settings window: General / Screenshot / Diagnostics, keyboard, applies at once (§26) | **Passed: owner, 2026-09-28** | UI tests; smoke test |
 | Include cursor (§15) | **Passed: owner, 2026-09-28** | `include_cursor` |
