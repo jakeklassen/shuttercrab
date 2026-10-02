@@ -73,6 +73,13 @@ USAGE
       Turn HDR on or off for one monitor (DISPLAY2, or an index from list),
       as the Settings app does, and print its state afterwards.
 
+  capture-spike scale MONITOR [PERCENT]
+      Print one monitor's display scale and the scales it allows, or set it.
+
+  capture-spike refresh MONITOR [HZ]
+      Print one monitor's refresh rate and the rates its resolution allows,
+      or set it until it is changed back or Windows restarts.
+
   capture-spike record [--monitor M] [--region X,Y,W,H] [--seconds N] [--fps 30|60]
                        [--pause AT,FOR] [--cursor on] [--out FILE.mp4] [--repeat N]
       Record H.264 MP4 through the Milestone 3 pipeline (default: 10 s at
@@ -119,6 +126,8 @@ fn run() -> Result<()> {
         Some("gate-report") => gate_report(args),
         Some("hdr-fixture") => hdr_fixture(args),
         Some("hdr") => hdr(args),
+        Some("scale") => scale(args),
+        Some("refresh") => refresh(args),
         Some("record") => record(args),
         Some("shots") => shots(args),
         Some("help") | None => {
@@ -151,6 +160,38 @@ fn hdr(mut args: Args) -> Result<()> {
     display::set_hdr(&device_name, on)?;
     let monitors = display::enumerate()?;
     println!("{}", display::find(&monitors, &device_name)?.describe());
+    Ok(())
+}
+
+/// The device name of the monitor `spec` names.
+fn device_name(spec: &str) -> Result<String> {
+    let monitors = display::enumerate()?;
+    Ok(display::select(&monitors, Some(spec))?.device_name.clone())
+}
+
+fn scale(mut args: Args) -> Result<()> {
+    let spec = args.positional("MONITOR")?;
+    let percent = args.positional("PERCENT").ok();
+    args.finish()?;
+    let name = device_name(&spec)?;
+    if let Some(percent) = percent {
+        display::set_dpi_scale(&name, percent.trim_end_matches('%').parse()?)?;
+    }
+    let (current, allowed) = display::dpi_scale(&name)?;
+    println!("{name}: {current}% (allows {allowed:?})");
+    Ok(())
+}
+
+fn refresh(mut args: Args) -> Result<()> {
+    let spec = args.positional("MONITOR")?;
+    let hz = args.positional("HZ").ok();
+    args.finish()?;
+    let name = device_name(&spec)?;
+    if let Some(hz) = hz {
+        display::set_refresh_rate(&name, hz.trim_end_matches("Hz").trim().parse()?)?;
+    }
+    let (current, rates) = display::refresh_rate(&name)?;
+    println!("{name}: {current} Hz (allows {rates:?})");
     Ok(())
 }
 

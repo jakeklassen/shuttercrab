@@ -15,14 +15,19 @@ use windows::{
         Foundation::{ERROR_INSUFFICIENT_BUFFER, POINT},
         Graphics::{
             Dxgi::{Common::*, *},
-            Gdi::{GetMonitorInfoW, MONITOR_DEFAULTTONULL, MONITORINFO, MonitorFromPoint},
+            Gdi::{
+                CDS_TYPE, ChangeDisplaySettingsExW, DEVMODEW, DISP_CHANGE_SUCCESSFUL,
+                DM_DISPLAYFREQUENCY, ENUM_CURRENT_SETTINGS, ENUM_DISPLAY_SETTINGS_MODE,
+                EnumDisplaySettingsW, GetMonitorInfoW, MONITOR_DEFAULTTONULL, MONITORINFO,
+                MonitorFromPoint,
+            },
         },
         UI::{
             HiDpi::{GetDpiForMonitor, MDT_EFFECTIVE_DPI},
             WindowsAndMessaging::{GetCursorPos, MONITORINFOF_PRIMARY},
         },
     },
-    core::Interface,
+    core::{HSTRING, Interface},
 };
 
 /// A rectangle in physical pixels, in virtual-desktop coordinates.
@@ -341,6 +346,149 @@ struct SetHdrState {
 
 const SET_HDR_STATE: DISPLAYCONFIG_DEVICE_INFO_TYPE = DISPLAYCONFIG_DEVICE_INFO_TYPE(16);
 
+/// The display scales Windows offers, in the order its scale steps count.
+const DPI_STEPS: [u32; 12] = [100, 125, 150, 175, 200, 225, 250, 300, 350, 400, 450, 500];
+
+/// The undocumented DisplayConfig requests the Settings app's Scale list
+/// uses. Scales are steps relative to the monitor's recommended one.
+const GET_DPI_SCALE: DISPLAYCONFIG_DEVICE_INFO_TYPE = DISPLAYCONFIG_DEVICE_INFO_TYPE(-3);
+const SET_DPI_SCALE: DISPLAYCONFIG_DEVICE_INFO_TYPE = DISPLAYCONFIG_DEVICE_INFO_TYPE(-4);
+
+#[repr(C)]
+struct GetDpiScale {
+    header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    min_steps: i32,
+    current_steps: i32,
+    max_steps: i32,
+}
+
+#[repr(C)]
+struct SetDpiScale {
+    header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    steps: i32,
+}
+
+/// The monitor's display scale, percent, and the scales it allows. For
+/// tests of display changes.
+pub fn dpi_scale(device_name: &str) -> Result<(u32, Vec<u32>)> {
+    let (scale, _) = read_dpi_scale(device_name)?;
+    Ok((scale.current, scale.allowed))
+}
+
+/// Set the monitor's display scale, percent, as the Settings app's Scale
+/// list does. For tests of display changes.
+pub fn set_dpi_scale(device_name: &str, percent: u32) -> Result<()> {
+    let (scale, source) = read_dpi_scale(device_name)?;
+    ensure!(
+        scale.allowed.contains(&percent),
+        "{device_name} allows {:?}%, not {percent}%",
+        scale.allowed
+    );
+    let index = DPI_STEPS.iter().position(|&p| p == percent).unwrap() as i32;
+    let packet = SetDpiScale {
+        header: header::<SetDpiScale>(SET_DPI_SCALE, source.adapterId, source.id),
+        steps: index - scale.recommended as i32,
+    };
+    // SAFETY: the packet starts with its header, whose size covers it.
+    let status = unsafe { DisplayConfigSetDeviceInfo((&raw const packet).cast()) };
+    ensure!(
+        status == 0,
+        "setting {device_name} to {percent}% failed ({status})"
+    );
+    Ok(())
+}
+
+struct DpiScale {
+    current: u32,
+    allowed: Vec<u32>,
+    /// The recommended scale's index in `DPI_STEPS`.
+    recommended: usize,
+}
+
+fn read_dpi_scale(device_name: &str) -> Result<(DpiScale, DISPLAYCONFIG_PATH_SOURCE_INFO)> {
+    let paths = active_paths()?;
+    let source = path_for(&paths, device_name)?.sourceInfo;
+    let mut packet = GetDpiScale {
+        header: header::<GetDpiScale>(GET_DPI_SCALE, source.adapterId, source.id),
+        min_steps: 0,
+        current_steps: 0,
+        max_steps: 0,
+    };
+    let status = device_info(&mut packet);
+    ensure!(
+        status == 0,
+        "reading the scale of {device_name} failed ({status})"
+    );
+    // The smallest scale is the first step, so its distance below the
+    // recommended one is the recommended one's index.
+    let recommended = packet.min_steps.unsigned_abs() as usize;
+    let at = |steps: i32| DPI_STEPS.get((recommended as i32 + steps) as usize).copied();
+    let current = at(packet.current_steps).context("an unknown display scale")?;
+    let allowed = (packet.min_steps..=packet.max_steps)
+        .filter_map(at)
+        .collect();
+    Ok((
+        DpiScale {
+            current,
+            allowed,
+            recommended,
+        },
+        source,
+    ))
+}
+
+/// The monitor's refresh rate, Hz, and the rates its current resolution
+/// allows. For tests of display changes.
+pub fn refresh_rate(device_name: &str) -> Result<(u32, Vec<u32>)> {
+    let name = HSTRING::from(device_name);
+    let current = display_mode(&name, ENUM_CURRENT_SETTINGS)
+        .with_context(|| format!("reading the display mode of {device_name}"))?;
+    let mut rates = Vec::new();
+    for index in 0.. {
+        let Some(mode) = display_mode(&name, ENUM_DISPLAY_SETTINGS_MODE(index)) else {
+            break;
+        };
+        if (mode.dmPelsWidth, mode.dmPelsHeight) == (current.dmPelsWidth, current.dmPelsHeight)
+            && !rates.contains(&mode.dmDisplayFrequency)
+        {
+            rates.push(mode.dmDisplayFrequency);
+        }
+    }
+    rates.sort_unstable();
+    Ok((current.dmDisplayFrequency, rates))
+}
+
+/// Set the monitor's refresh rate, Hz, at its current resolution, until
+/// changed back or Windows restarts. For tests of display changes.
+pub fn set_refresh_rate(device_name: &str, hz: u32) -> Result<()> {
+    let (_, rates) = refresh_rate(device_name)?;
+    ensure!(
+        rates.contains(&hz),
+        "{device_name} allows {rates:?} Hz, not {hz} Hz"
+    );
+    let name = HSTRING::from(device_name);
+    let mut mode = display_mode(&name, ENUM_CURRENT_SETTINGS).context("no current mode")?;
+    mode.dmDisplayFrequency = hz;
+    mode.dmFields = DM_DISPLAYFREQUENCY;
+    let result =
+        unsafe { ChangeDisplaySettingsExW(&name, Some(&mode), None, CDS_TYPE(0), None) };
+    ensure!(
+        result == DISP_CHANGE_SUCCESSFUL,
+        "setting {device_name} to {hz} Hz failed ({result:?})"
+    );
+    Ok(())
+}
+
+fn display_mode(name: &HSTRING, which: ENUM_DISPLAY_SETTINGS_MODE) -> Option<DEVMODEW> {
+    let mut mode = DEVMODEW {
+        dmSize: size_of::<DEVMODEW>() as u16,
+        ..Default::default()
+    };
+    unsafe { EnumDisplaySettingsW(name, which, &mut mode) }
+        .as_bool()
+        .then_some(mode)
+}
+
 /// Turn HDR on or off for the monitor `device_name` (`\\.\DISPLAY2`), as
 /// the Settings app's "Use HDR" switch does. For tests of display changes.
 pub fn set_hdr(device_name: &str, on: bool) -> Result<()> {
@@ -585,5 +733,9 @@ mod tests {
         assert_eq!(size_of::<AdvancedColorInfo2>(), 36);
         // header (20) + the enableHdr bit field.
         assert_eq!(size_of::<SetHdrState>(), 24);
+        // header (20) + minimum, current and maximum scale steps.
+        assert_eq!(size_of::<GetDpiScale>(), 32);
+        // header (20) + the scale step to set.
+        assert_eq!(size_of::<SetDpiScale>(), 24);
     }
 }

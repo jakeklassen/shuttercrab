@@ -218,6 +218,39 @@ WM_DISPLAYCHANGE that ends a recording whose display is unplugged), about
 around a switch, while the display itself blanks, can be off; see
 [Known issues](#known-issues).
 
+### Display scaling and 144 Hz
+
+`tmp\display.ps1`, 2026-10-02, release build, display 2 only (display 1
+stayed at 150% and 120 Hz), the owner hands-off. Scale and refresh rate
+set with `capture-spike scale|refresh DISPLAY2 …` and put back afterwards.
+
+**Scaling.** The static reference page full screen on display 2. At each
+scale, three area screenshots dragged at physical pixels (1200×800 at
+(400,300), 640×480 at (2000,900), and an odd 333×211 at (1500,1500)) were
+compared with `capture-spike capture` of the same region, and a 1280×720
+area was recorded.
+
+| Display 2 | Screenshots | Recording |
+|---|---|---|
+| 100% (display 1 at 150%) | 3/3 exact size, identical pixels (ΔE00 max 0.00, code diff 0) | 1280×720 |
+| 125% | 3/3 identical | 1280×720 |
+| 175% | 3/3 identical | 1280×720 |
+| 150% changed to 125% while running | 3/3 identical | 1280×720 |
+
+**Refresh rate.** The moving test page, display 2 recorded whole for 6 s,
+with three area screenshots per run for latency.
+
+| Display 2 | Recording | Frame interval, ms | Within 10% of the period | Overlay up after the hotkey |
+|---|---|---|---|---|
+| 120 Hz | 60 fps, 326 frames | mean 16.8, max 25.0, sd 1.2 | 98% | 108–125 ms |
+| 120 Hz | 30 fps, 162 frames | mean 34.0, max 41.7, sd 2.3 | 91% | 114–122 ms |
+| 144 Hz | 60 fps, 326 frames | mean 16.9, max 25.0, sd 1.3 | 98% | 110–129 ms |
+| 144 Hz | 30 fps, 164 frames | mean 33.6, max 41.7, sd 1.6 | 96% | 109–116 ms |
+
+No gap over 1.6 periods in any recording, and 144 Hz is as even as 120 Hz
+(even at 30 fps, where 144 Hz does not divide evenly). The Capture Bar was
+up in 28–33 ms throughout.
+
 ## Milestone 4: area recording MVP
 
 Built in four steps, each tried and approved by the owner: (1) start and
@@ -1322,6 +1355,8 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
 | `capture-spike probe SRC.fp16 X,Y,W,H` | Exact values over a region |
 | `capture-spike convert SRC.fp16 OUT.png [--highlights clip]` | Re-run the transform on a saved frame |
 | `capture-spike hdr DISPLAY2 on\|off` | Switch HDR on one display, as the Settings app does |
+| `capture-spike scale DISPLAY2 [PERCENT]` | Read or set one display's scale |
+| `capture-spike refresh DISPLAY2 [HZ]` | Read or set one display's refresh rate (until changed back or a restart) |
 
 Coordinates are physical pixels from the captured monitor's top-left corner.
 
@@ -1343,7 +1378,8 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | HDR content beside SDR UI (§31) | Passed | Mixed scene: ≤ 1 code outside the HDR image at all three levels |
 | SDR monitor path (§9.5) | Passed | HDR off: FP16 path and 8-bit capture identical |
 | Advanced Color SDR (WCG) hardware | Not available | `S = 1` from the SDK's description |
-| 125/150/200% scaling, second monitor (§32.3) | Milestone 5 | |
+| 125/150/200% scaling, second monitor (§32.3) | Passed locally, 2026-10-02 | 100, 125, 150, 175% on display 2 with display 1 at 150%, and a change while running: screenshots pixel-identical ([Milestone 5](#display-scaling-and-144-hz)) |
+| 120/144 Hz desktop (Milestone 5) | Passed locally, 2026-10-02 | 30 and 60 fps evenly timed at both ([Milestone 5](#display-scaling-and-144-hz)) |
 | **Milestone 1: hotkey → drag → release → paste (§31)** | **Passed: owner's acceptance, 2026-09-27** | Three screenshots in one session; clipboard 18–34 ms after release; overlay 90–171 ms after the hotkey; both monitors; Escape and right-click cancel; quit; HDR on vs off pastes match (VS Code, mean ΔE00 0.022 on downscaled copies) |
 | Background app, no window until invoked | Passed locally | Smoke test: no window before the hotkey |
 | Global screenshot hotkey; conflict reported | Passed locally | Live test; smoke test |
