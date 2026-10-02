@@ -422,7 +422,11 @@ fn read_dpi_scale(device_name: &str) -> Result<(DpiScale, DISPLAYCONFIG_PATH_SOU
     // The smallest scale is the first step, so its distance below the
     // recommended one is the recommended one's index.
     let recommended = packet.min_steps.unsigned_abs() as usize;
-    let at = |steps: i32| DPI_STEPS.get((recommended as i32 + steps) as usize).copied();
+    let at = |steps: i32| {
+        DPI_STEPS
+            .get((recommended as i32 + steps) as usize)
+            .copied()
+    };
     let current = at(packet.current_steps).context("an unknown display scale")?;
     let allowed = (packet.min_steps..=packet.max_steps)
         .filter_map(at)
@@ -470,8 +474,7 @@ pub fn set_refresh_rate(device_name: &str, hz: u32) -> Result<()> {
     let mut mode = display_mode(&name, ENUM_CURRENT_SETTINGS).context("no current mode")?;
     mode.dmDisplayFrequency = hz;
     mode.dmFields = DM_DISPLAYFREQUENCY;
-    let result =
-        unsafe { ChangeDisplaySettingsExW(&name, Some(&mode), None, CDS_TYPE(0), None) };
+    let result = unsafe { ChangeDisplaySettingsExW(&name, Some(&mode), None, CDS_TYPE(0), None) };
     ensure!(
         result == DISP_CHANGE_SUCCESSFUL,
         "setting {device_name} to {hz} Hz failed ({result:?})"
