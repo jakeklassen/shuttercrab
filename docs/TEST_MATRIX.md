@@ -101,7 +101,7 @@ area recordings of 2400×1300 at 60 fps on the test page):
 | After a recording | 274–303 MB, 124 MB graphics | **90–94 MB, 39 MB graphics** |
 | Recording starts after the choice | 345–397 ms | 516–536 ms |
 
-The helper was also driven directly (`tmphelper.ps1`): start, pause,
+The helper was also driven directly (`tmp\helper.ps1`): start, pause,
 resume, stop, and closing its input instead of stopping (as when the app
 goes away) all finish the file and exit with code 0.
 
