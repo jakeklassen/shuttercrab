@@ -5,6 +5,7 @@ description = "Shuttercrab's capture and color pipeline: monitors, Windows.Graph
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
+license.workspace = true
 
 [dependencies]
 anyhow = "1"

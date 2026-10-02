@@ -89,3 +89,9 @@ mise exec -- cargo test
 
 The Milestone 0 tools remain: `mise exec -- cargo run --release -p
 capture-spike -- help`.
+
+## Licence
+
+Shuttercrab is licensed under either of [MIT](LICENSE-MIT) or
+[Apache-2.0](LICENSE-APACHE), at your option. The patched copy of GPUI's
+Windows layer in `vendor/gpui-pre-windows` keeps its own Apache-2.0 licence.
