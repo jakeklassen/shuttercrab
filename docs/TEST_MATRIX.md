@@ -87,6 +87,24 @@ driver for the life of the process. Asking COM to unload unused libraries
 after Media Foundation shuts down (`CoFreeUnusedLibrariesEx`) changed
 nothing. Only ending the process returns it.
 
+So recording moved to a helper process (`framecut.exe --recorder`, see
+`crates/framecut/src/recorder_process.rs`) that exits when the recording
+ends. Measured 2026-10-01, the same scenario (3 area screenshots, then 3
+area recordings of 2400×1300 at 60 fps on the test page):
+
+| | Before (one process) | With the helper |
+|---|---|---|
+| Idle | 85 MB, 39 MB graphics | 84 MB, 39 MB graphics |
+| During a recording, app | 498–578 MB, 440 MB graphics | 99 MB, 52 MB graphics |
+| During a recording, helper | (in the app) | 186–195 MB, 316 MB graphics |
+| During a recording, combined | 498–578 MB, 440 MB graphics | 285–294 MB, 368 MB graphics |
+| After a recording | 274–303 MB, 124 MB graphics | **90–94 MB, 39 MB graphics** |
+| Recording starts after the choice | 345–397 ms | 516–536 ms |
+
+The helper was also driven directly (`tmphelper.ps1`): start, pause,
+resume, stop, and closing its input instead of stopping (as when the app
+goes away) all finish the file and exit with code 0.
+
 **Passed** (2026-10-01): the owner ran all seven steps; every window
 stayed as it was.
 
