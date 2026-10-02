@@ -79,6 +79,14 @@ after the second shot 75 MB instead of 95 (`capture-spike shots`), with the
 4K freeze unchanged at 73–85 ms. About 11 MB more than after the first
 shot stays regardless; it is the driver's.
 
+The encoder (2026-10-01, `capture-spike record --repeat`): after a
+recording the graphics memory is all returned, but private memory stays at
+about 58 MB (software encoder, small area), 79 MB (hardware, 720p) or 265
+MB (hardware, 4K): the NVIDIA encoder's system-memory buffers, kept by its
+driver for the life of the process. Asking COM to unload unused libraries
+after Media Foundation shuts down (`CoFreeUnusedLibrariesEx`) changed
+nothing. Only ending the process returns it.
+
 **Passed** (2026-10-01): the owner ran all seven steps; every window
 stayed as it was.
 
