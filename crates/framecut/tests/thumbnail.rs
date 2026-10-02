@@ -27,13 +27,17 @@ fn open(cx: &mut TestAppContext, seconds: u32) -> Opened {
             .detach();
         Thumbnail::new(image, seconds, cx)
     });
-    let opened = Opened { handle, events };
-    // The headless pointer starts at (0, 0), over the card; move it away,
-    // as it would be after a capture.
-    update(cx, &opened, |window, cx| {
-        pointer(window, point(px(-50.0), px(-50.0)), false, cx)
-    });
+    Opened { handle, events }
+}
+
+/// The pointer moves onto or off the card. In the app, GPUI reports this
+/// as the window's hover state, which a headless window never changes.
+fn over(cx: &mut TestAppContext, opened: &Opened, over: bool) {
     opened
+        .handle
+        .update(cx, |card, _, cx| card.set_pointer_over(over, cx))
+        .unwrap();
+    update(cx, opened, |_, _| {});
 }
 
 fn update(cx: &mut TestAppContext, opened: &Opened, f: impl FnOnce(&mut Window, &mut App)) {
@@ -113,7 +117,7 @@ fn the_close_button_appears_on_hover_and_closes(cx: &mut TestAppContext) {
     update(cx, &opened, |window, _| {
         assert!(window.try_find("thumbnail-close").is_none());
     });
-    update(cx, &opened, |window, cx| window.hover("thumbnail", cx));
+    over(cx, &opened, true);
     update(cx, &opened, |window, cx| {
         window.click("thumbnail-close", cx)
     });
@@ -136,35 +140,23 @@ fn it_closes_itself_after_the_countdown(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn the_countdown_waits_while_the_pointer_is_over_it(cx: &mut TestAppContext) {
     let opened = open(cx, 2);
-    update(cx, &opened, |window, cx| window.hover("thumbnail", cx));
+    cx.executor().advance_clock(Duration::from_millis(1500));
+    over(cx, &opened, true);
     cx.executor().advance_clock(Duration::from_secs(10));
     assert!(opened.events.borrow().is_empty());
-    // The pointer leaves: two more seconds.
-    update(cx, &opened, |window, cx| {
-        pointer(window, point(px(-50.0), px(-50.0)), false, cx)
-    });
-    cx.executor().advance_clock(Duration::from_millis(2100));
+    // The pointer leaves: the countdown carries on where it stopped, with
+    // half a second left.
+    over(cx, &opened, false);
+    cx.executor().advance_clock(Duration::from_millis(400));
+    assert!(opened.events.borrow().is_empty());
+    cx.executor().advance_clock(Duration::from_millis(200));
     assert_eq!(*opened.events.borrow(), [ThumbnailEvent::Close]);
 }
 
 #[gpui_kit::test]
-fn leaving_the_card_restarts_the_countdown_without_a_mouse_event(cx: &mut TestAppContext) {
-    // The owner's case: hover, then leave. Windows sends the card no mouse
-    // move once the pointer is outside, so the probe tells it.
-    cx.update(gpui_kit::init);
-    let over = Rc::new(std::cell::Cell::new(true));
-    let probe = over.clone();
-    let image = render_image(&scale_down(&[200; 64 * 36 * 4], 64, 36, 64, 36));
-    let events = Rc::new(RefCell::new(Vec::new()));
-    let sink = events.clone();
-    let _handle = cx.open_window(size(px(252.0), px(147.0)), move |_, cx| {
-        cx.subscribe_self(move |_, event: &ThumbnailEvent, _| sink.borrow_mut().push(*event))
-            .detach();
-        Thumbnail::new(image, 2, cx).with_pointer_probe(Box::new(move || probe.get()))
-    });
-    cx.executor().advance_clock(Duration::from_secs(10));
-    assert!(events.borrow().is_empty());
-    over.set(false);
-    cx.executor().advance_clock(Duration::from_millis(3100));
-    assert_eq!(*events.borrow(), [ThumbnailEvent::Close]);
+fn a_click_stops_the_countdown(cx: &mut TestAppContext) {
+    let opened = open(cx, 2);
+    update(cx, &opened, |window, cx| window.click("thumbnail", cx));
+    cx.executor().advance_clock(Duration::from_secs(5));
+    assert_eq!(*opened.events.borrow(), [ThumbnailEvent::Open]);
 }

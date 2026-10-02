@@ -2103,16 +2103,8 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
         let rect = thumbnail_rect(work, monitor.scale_factor, size);
         let image = thumbnail::render_image(&small);
         let drag_picture = thumbnail::soften(&small, thumbnail::DRAG_LOOK);
-        let over = move || {
-            platform_window::cursor_position().is_some_and(|(x, y)| {
-                x >= rect.x
-                    && y >= rect.y
-                    && x < rect.x + rect.width as i32
-                    && y < rect.y + rect.height as i32
-            })
-        };
         let opened = popup::open(&monitor, rect, Activation::Never, cx, move |_, cx| {
-            cx.new(|cx| Thumbnail::new(image, seconds, cx).with_pointer_probe(Box::new(over)))
+            cx.new(|cx| Thumbnail::new(image, seconds, cx))
         });
         let (card, mut events) = match opened {
             Ok(opened) => opened,

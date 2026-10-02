@@ -692,7 +692,9 @@ overall"; dragging into Claude Code worked). Two bugs, both fixed in
   pointer left, no move arrived and the card stayed "hovered". The
   countdown now asks Windows where the pointer is (a probe; the headless
   test reproduces the case with no mouse event). Live: kept while hovered,
-  closed about 5 s after the pointer left.
+  closed about 5 s after the pointer left. (Replaced 2026-10-01 by the
+  window's hover state, which also clears when the pointer leaves; no more
+  probe. See Known issues.)
 - **4: the drag image was sometimes a white square**, the first drag after
   starting. The Shell drew the file's thumbnail from its cache, not ready
   for a file written a moment earlier. Framecut now sets the drag image
@@ -1226,14 +1228,15 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
   allocated whether or not the window draws any. Try allocating the path
   textures only when a scene has paths, in `vendor/gpui-pre-windows` (the
   alternative noted in the upstream draft).
-- **Thumbnail pointer polling** (noted 2026-10-01). The thumbnail checks
-  the pointer ten times a second while it is on screen, because GPUI does
-  not report the pointer leaving a window that never takes focus. Use
-  Windows' own leave notice (TrackMouseEvent, WM_MOUSELEAVE) instead.
-- **Screenshot first-frame polling** (noted 2026-10-01). A screenshot waits
-  for its first captured frame by checking every 2 ms (about 25 checks).
-  Wait on the frame pool's FrameArrived event instead, as the recorder
-  does.
+- ~~Thumbnail pointer polling~~ (noted and fixed 2026-10-01). The
+  thumbnail checked the pointer ten times a second. It now follows the
+  window's hover state, which GPUI keeps from Windows' own enter and leave
+  notices (TrackMouseEvent, WM_MOUSELEAVE), and counts down with one timer
+  that waits while the pointer is over it.
+- ~~Screenshot first-frame polling~~ (noted and fixed 2026-10-01). A
+  screenshot checked for its first frame every 2 ms; it now waits on the
+  frame pool's FrameArrived event, as the recorder does. Freezing still
+  takes 68–83 ms.
 
 ## Manual tools
 

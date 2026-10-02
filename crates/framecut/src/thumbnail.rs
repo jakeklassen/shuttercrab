@@ -9,11 +9,14 @@
 use gpui_kit::{
     Context, EventEmitter, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, Pixels, Point, Render,
-    RenderImage, Role, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    RenderImage, Role, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Task,
     TestSupportExt as _, Window, assets::IconName, component::Icon, div, img,
     prelude::FluentBuilder as _, px, rgb,
 };
-use std::{sync::Arc, time::Duration};
+use std::{
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 /// The largest image the card shows, logical pixels.
 pub const MAX_WIDTH: f32 = 240.0;
@@ -24,9 +27,6 @@ pub const MIN_SIDE: f32 = 64.0;
 pub const PADDING: f32 = 6.0;
 /// A press that moves further than this, logical pixels, is a drag.
 const DRAG_DISTANCE: f32 = 4.0;
-/// How often the card checks the pointer and counts down: often enough that
-/// the close button follows the pointer without a visible lag.
-const TICK: Duration = Duration::from_millis(100);
 
 /// What the user did with the thumbnail.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -168,17 +168,19 @@ pub fn render_image(small: &Small) -> Arc<RenderImage> {
     Arc::new(RenderImage::new([image::Frame::new(buffer)]))
 }
 
-/// Tells whether the pointer is over the card. GPUI updates an element's
-/// hover state only on mouse moves inside the window, so leaving the card
-/// goes unnoticed; the app asks Windows instead.
-pub type PointerProbe = Box<dyn Fn() -> bool>;
-
 pub struct Thumbnail {
     image: Arc<RenderImage>,
     hovered: bool,
-    probe: Option<PointerProbe>,
+    /// The window's hover state as GPUI last reported it. The card fills its
+    /// window, so this says whether the pointer is over the card; unlike an
+    /// element's hover, it also clears when the pointer leaves the window.
+    window_hovered: bool,
     /// Time left before the card closes itself.
     left: Duration,
+    /// When the countdown last started running; `None` while it waits.
+    running_since: Option<Instant>,
+    /// Closes the card when the time is up; dropping it stops the countdown.
+    countdown: Option<Task<()>>,
     /// Where the left button went down, while it may still become a click.
     pressed_at: Option<Point<Pixels>>,
     closed: bool,
@@ -190,45 +192,56 @@ impl Thumbnail {
     /// A card for `image` that closes itself after `seconds` without the
     /// pointer over it.
     pub fn new(image: Arc<RenderImage>, seconds: u32, cx: &mut Context<Self>) -> Self {
-        cx.spawn(async move |this, cx| {
-            loop {
-                cx.background_executor().timer(TICK).await;
-                let done = this.update(cx, |this, cx| {
-                    if let Some(probe) = &this.probe {
-                        let over = probe();
-                        if over != this.hovered {
-                            this.hovered = over;
-                            cx.notify();
-                        }
-                    }
-                    if !this.hovered {
-                        this.left = this.left.saturating_sub(TICK);
-                    }
-                    if this.left.is_zero() {
-                        this.close(cx);
-                    }
-                    this.closed
-                });
-                if done.unwrap_or(true) {
-                    break;
-                }
-            }
-        })
-        .detach();
-        Self {
+        let mut card = Self {
             image,
             hovered: false,
-            probe: None,
+            window_hovered: false,
             left: Duration::from_secs(seconds.max(1).into()),
+            running_since: None,
+            countdown: None,
             pressed_at: None,
             closed: false,
+        };
+        card.run_countdown(cx);
+        card
+    }
+
+    /// The pointer moved onto or off the card: the countdown waits while it
+    /// is over the card and carries on when it leaves.
+    pub fn set_pointer_over(&mut self, over: bool, cx: &mut Context<Self>) {
+        if over != self.hovered {
+            self.pointer_changed(over, cx);
+            cx.notify();
         }
     }
 
-    /// Ask `probe`, every tick, whether the pointer is over the card.
-    pub fn with_pointer_probe(mut self, probe: PointerProbe) -> Self {
-        self.probe = Some(probe);
-        self
+    fn pointer_changed(&mut self, over: bool, cx: &mut Context<Self>) {
+        self.hovered = over;
+        if over {
+            self.stop_countdown(cx);
+        } else {
+            self.run_countdown(cx);
+        }
+    }
+
+    fn run_countdown(&mut self, cx: &mut Context<Self>) {
+        if self.closed {
+            return;
+        }
+        let left = self.left;
+        self.running_since = Some(cx.background_executor().now());
+        self.countdown = Some(cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(left).await;
+            this.update(cx, |this, cx| this.close(cx)).ok();
+        }));
+    }
+
+    fn stop_countdown(&mut self, cx: &mut Context<Self>) {
+        if let Some(since) = self.running_since.take() {
+            let ran = cx.background_executor().now().saturating_duration_since(since);
+            self.left = self.left.saturating_sub(ran);
+        }
+        self.countdown = None;
     }
 
     pub fn is_closed(&self) -> bool {
@@ -236,6 +249,8 @@ impl Thumbnail {
     }
 
     fn close(&mut self, cx: &mut Context<Self>) {
+        self.running_since = None;
+        self.countdown = None;
         if !std::mem::replace(&mut self.closed, true) {
             cx.emit(ThumbnailEvent::Close);
         }
@@ -272,7 +287,15 @@ impl Thumbnail {
 }
 
 impl Render for Thumbnail {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+        // GPUI redraws the window when the pointer enters or leaves it.
+        let over = window.is_window_hovered();
+        if over != self.window_hovered {
+            self.window_hovered = over;
+            if over != self.hovered {
+                self.pointer_changed(over, cx);
+            }
+        }
         let hovered = self.hovered;
         div()
             .id("thumbnail")
@@ -286,10 +309,6 @@ impl Render for Thumbnail {
             .border_1()
             .border_color(rgb(0x3A3A3A))
             .cursor_pointer()
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                this.hovered = *hovered;
-                cx.notify();
-            }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_move(cx.listener(Self::on_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_up))
