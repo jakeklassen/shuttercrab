@@ -40,6 +40,7 @@ enum Request {
     Pause,
     Resume,
     DisplayGone,
+    DisplayChanged,
     Stop,
 }
 
@@ -289,6 +290,11 @@ impl RecorderProcess {
         self.request(Request::DisplayGone);
     }
 
+    /// The displays changed; see [`Recorder::display_changed`].
+    pub fn display_changed(&self) {
+        self.request(Request::DisplayChanged);
+    }
+
     /// A future that resolves when the recording ends, by
     /// [`RecorderProcess::stop`] or by itself; see [`Recorder::ended`].
     /// `None` after the first call.
@@ -418,6 +424,7 @@ pub fn serve() -> i32 {
             Next::Asked(Request::Pause) => recorder.pause(),
             Next::Asked(Request::Resume) => recorder.resume(),
             Next::Asked(Request::DisplayGone) => recorder.display_gone(),
+            Next::Asked(Request::DisplayChanged) => recorder.display_changed(),
             Next::Asked(Request::Start(_)) => log::warn!("the recorder is already recording"),
             Next::Asked(Request::Stop) | Next::Ended => break,
         }

@@ -147,6 +147,9 @@ enum Event {
     /// The recorded display went away: Windows closed the capture, or the
     /// app heard that the display is no longer attached.
     DisplayGone,
+    /// The displays changed (HDR switched on or off, say): read the
+    /// recorded display's white level again.
+    DisplayChanged,
 }
 
 /// A recording in progress, on its own thread.
@@ -201,6 +204,13 @@ impl Recorder {
     /// recorded, as if Windows had closed the capture.
     pub fn display_gone(&self) {
         let _ = self.events.send(Event::DisplayGone);
+    }
+
+    /// The displays changed and the recorded one is still attached: carry
+    /// on with its white level as it is now, so a recording stays exposed
+    /// right when HDR is switched on or off.
+    pub fn display_changed(&self) {
+        let _ = self.events.send(Event::DisplayChanged);
     }
 
     /// A future that resolves when the recording ends, by [`Recorder::stop`]
@@ -563,6 +573,7 @@ impl Session {
                     interrupted = Some(Interruption::DisplayGone);
                     break;
                 }
+                Event::DisplayChanged => self.reread_white_scale(),
                 Event::Frame => {
                     // Take every frame that is ready; the pool holds two.
                     let taken = (|| -> Result<()> {
@@ -689,6 +700,34 @@ impl Session {
                 .CopySubresourceRegion(&self.crop, 0, 0, 0, 0, &source, 0, Some(&area))
         };
         Ok(())
+    }
+
+    /// Read the display's white level again after a display change.
+    fn reread_white_scale(&mut self) {
+        let found = display::enumerate().and_then(|monitors| {
+            let monitor = monitors
+                .iter()
+                .find(|m| m.hmonitor == hmonitor(self.options.monitor))
+                .context("the monitor is no longer attached")?;
+            monitor.white_scale()
+        });
+        match found {
+            Ok(scale) if scale != self.white_scale => {
+                log::info!(
+                    "the display changed: SDR white is now {scale} (was {})",
+                    self.white_scale
+                );
+                self.white_scale = scale;
+                // Start the exposure afresh rather than easing from a
+                // level measured at the old white.
+                self.exposure = Exposure {
+                    value: None,
+                    last: 0,
+                };
+            }
+            Ok(_) => log::debug!("the display changed; its white level did not"),
+            Err(e) => log::warn!("could not read the display's white level again: {e:#}"),
+        }
     }
 
     /// HDR → SDR into `rgba`, with steady exposure.

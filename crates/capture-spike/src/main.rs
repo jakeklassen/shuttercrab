@@ -69,6 +69,10 @@ USAGE
   capture-spike hdr-fixture OUT.png
       Write the HDR test image (BT.2020 PQ PNG) used by the mixed scene.
 
+  capture-spike hdr MONITOR on|off
+      Turn HDR on or off for one monitor (DISPLAY2, or an index from list),
+      as the Settings app does, and print its state afterwards.
+
   capture-spike record [--monitor M] [--region X,Y,W,H] [--seconds N] [--fps 30|60]
                        [--pause AT,FOR] [--cursor on] [--out FILE.mp4] [--repeat N]
       Record H.264 MP4 through the Milestone 3 pipeline (default: 10 s at
@@ -114,6 +118,7 @@ fn run() -> Result<()> {
         Some("gate") => gate(args),
         Some("gate-report") => gate_report(args),
         Some("hdr-fixture") => hdr_fixture(args),
+        Some("hdr") => hdr(args),
         Some("record") => record(args),
         Some("shots") => shots(args),
         Some("help") | None => {
@@ -130,6 +135,22 @@ fn list(args: Args) -> Result<()> {
     for (i, monitor) in display::enumerate()?.iter().enumerate() {
         println!("[{i}] {}", monitor.describe());
     }
+    Ok(())
+}
+
+fn hdr(mut args: Args) -> Result<()> {
+    let spec = args.positional("MONITOR")?;
+    let on = match args.positional("on|off")?.as_str() {
+        "on" => true,
+        "off" => false,
+        other => bail!("expected on or off, not {other:?}"),
+    };
+    args.finish()?;
+    let monitors = display::enumerate()?;
+    let device_name = display::select(&monitors, Some(&spec))?.device_name.clone();
+    display::set_hdr(&device_name, on)?;
+    let monitors = display::enumerate()?;
+    println!("{}", display::find(&monitors, &device_name)?.describe());
     Ok(())
 }
 

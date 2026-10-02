@@ -303,13 +303,11 @@ pub fn enumerate() -> Result<Vec<Monitor>> {
     Ok(monitors)
 }
 
-fn describe_output(
-    paths: &[DISPLAYCONFIG_PATH_INFO],
-    adapter: &IDXGIAdapter1,
-    adapter_name: &str,
+/// The display path whose source is the GDI device `device_name`.
+fn path_for<'a>(
+    paths: &'a [DISPLAYCONFIG_PATH_INFO],
     device_name: &str,
-    desc: &DXGI_OUTPUT_DESC1,
-) -> Result<Monitor> {
+) -> Result<&'a DISPLAYCONFIG_PATH_INFO> {
     let mut matching = Vec::new();
     for path in paths {
         let mut source = DISPLAYCONFIG_SOURCE_DEVICE_NAME {
@@ -330,7 +328,59 @@ fn describe_output(
         "{device_name} maps to {} display paths; cloned displays are not supported, use an extended desktop",
         matching.len()
     );
-    let target = matching[0].targetInfo;
+    Ok(matching[0])
+}
+
+/// `DISPLAYCONFIG_SET_HDR_STATE` from the Windows 11 24H2 SDK (wingdi.h,
+/// 10.0.26100): bit 0 turns HDR on. windows 0.62 predates it.
+#[repr(C)]
+struct SetHdrState {
+    header: DISPLAYCONFIG_DEVICE_INFO_HEADER,
+    value: u32,
+}
+
+const SET_HDR_STATE: DISPLAYCONFIG_DEVICE_INFO_TYPE = DISPLAYCONFIG_DEVICE_INFO_TYPE(16);
+
+/// Turn HDR on or off for the monitor `device_name` (`\\.\DISPLAY2`), as
+/// the Settings app's "Use HDR" switch does. For tests of display changes.
+pub fn set_hdr(device_name: &str, on: bool) -> Result<()> {
+    let paths = active_paths()?;
+    let target = path_for(&paths, device_name)?.targetInfo;
+    let status = if windows_build() >= 26100 {
+        let packet = SetHdrState {
+            header: header::<SetHdrState>(SET_HDR_STATE, target.adapterId, target.id),
+            value: on as u32,
+        };
+        // SAFETY: the packet starts with its header, whose size covers it.
+        unsafe { DisplayConfigSetDeviceInfo((&raw const packet).cast()) }
+    } else {
+        let packet = DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE {
+            header: header::<DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE>(
+                DISPLAYCONFIG_DEVICE_INFO_SET_ADVANCED_COLOR_STATE,
+                target.adapterId,
+                target.id,
+            ),
+            Anonymous: DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE_0 { value: on as u32 },
+        };
+        // SAFETY: as above.
+        unsafe { DisplayConfigSetDeviceInfo((&raw const packet).cast()) }
+    };
+    ensure!(
+        status == 0,
+        "turning HDR {} on {device_name} failed ({status})",
+        on_off(on)
+    );
+    Ok(())
+}
+
+fn describe_output(
+    paths: &[DISPLAYCONFIG_PATH_INFO],
+    adapter: &IDXGIAdapter1,
+    adapter_name: &str,
+    device_name: &str,
+    desc: &DXGI_OUTPUT_DESC1,
+) -> Result<Monitor> {
+    let target = path_for(paths, device_name)?.targetInfo;
 
     let mut name = DISPLAYCONFIG_TARGET_DEVICE_NAME {
         header: header::<DISPLAYCONFIG_TARGET_DEVICE_NAME>(
@@ -533,5 +583,7 @@ mod tests {
         // header (20) + flags + colorEncoding + bitsPerColorChannel + activeColorMode.
         assert_eq!(size_of::<DISPLAYCONFIG_DEVICE_INFO_HEADER>(), 20);
         assert_eq!(size_of::<AdvancedColorInfo2>(), 36);
+        // header (20) + the enableHdr bit field.
+        assert_eq!(size_of::<SetHdrState>(), 24);
     }
 }

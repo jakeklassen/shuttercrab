@@ -1248,7 +1248,8 @@ fn watch_recording(
 }
 
 /// Windows says the displays changed: if the recorded one is gone, end the
-/// recording with what was recorded. Other changes leave it alone.
+/// recording with what was recorded; otherwise the recorder reads its white
+/// level again (HDR switched on or off).
 fn displays_changed(state: &State) {
     let recording = state.recording.borrow();
     let Some(recording) = recording.as_ref() else {
@@ -1259,6 +1260,7 @@ fn displays_changed(state: &State) {
     };
     if framecut_capture::record::attached(recording.options.monitor) {
         log::info!("displays changed; the recorded one is still attached");
+        recorder.display_changed();
     } else {
         log::warn!("the recorded display is gone");
         recorder.display_gone();
