@@ -18,6 +18,10 @@ const DATA_DIR_VARIABLE: &str = "FRAMECUT_DATA_DIR";
 static HEAP: framecut::heap::Counting = framecut::heap::Counting;
 
 fn main() {
+    // The recording helper: no tray, no UI, no single-instance check.
+    if std::env::args().nth(1).as_deref() == Some(framecut::recorder_process::FLAG) {
+        std::process::exit(framecut::recorder_process::serve());
+    }
     // Release builds have no console; print to the terminal that started us.
     #[cfg(not(debug_assertions))]
     framecut_platform::attach_to_parent_terminal();

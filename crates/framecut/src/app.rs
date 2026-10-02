@@ -24,6 +24,7 @@ use crate::{
         BarMode, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent,
         RecordKeys,
     },
+    recorder_process::RecorderProcess,
     recording::{self, Clock},
     selection::ScreenWindow,
     settings::{self, Settings},
@@ -33,7 +34,7 @@ use crate::{
 use chrono::{Local, NaiveDateTime};
 use framecut_capture::{
     Capture, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot, monitor_under_pointer,
-    record::{RecordOptions, Recorder, RecordingSummary},
+    record::{RecordOptions, RecordingSummary},
 };
 use framecut_platform::{
     Hotkey, MenuItem, Platform, PlatformEvent,
@@ -288,7 +289,7 @@ struct Discarded {
 /// A recording in progress.
 struct Recording {
     /// `None` only while Restart swaps in a new one.
-    recorder: Option<Recorder>,
+    recorder: Option<RecorderProcess>,
     /// Where the finished file goes; until then it is written to
     /// [`files::partial_path`] of it.
     path: PathBuf,
@@ -1051,7 +1052,7 @@ async fn record(
                 include_cursor,
                 path: files::partial_path(&path),
             };
-            let recorder = Recorder::start(options.clone()).map_err(|e| {
+            let recorder = RecorderProcess::start(options.clone()).map_err(|e| {
                 Failure::new("Could not start recording.", format!("recorder: {e:#}"))
             })?;
             Ok::<_, Failure>((recorder, path, options))
@@ -1177,7 +1178,7 @@ fn open_controls(
 /// Notice when the take written to `path` ends by itself (the display went
 /// away, the device was lost, the disk filled up: PRD §25) and finish it as
 /// if stopped: what was recorded is saved, and the notification says why.
-/// `ended` is the recorder's [`Recorder::ended`]; it also resolves when the
+/// `ended` is the recorder's [`RecorderProcess::ended`]; it also resolves when the
 /// take is stopped, discarded or restarted, and then the take is no longer
 /// the one recording.
 fn watch_recording(
@@ -1608,7 +1609,7 @@ async fn keep_previous_take(previous: PreviousTake, cx: &mut AsyncApp) {
 
 /// Take the recording in progress and its recorder, closing the controls.
 /// `None` if there is none, or while a restart is swapping recorders.
-fn end_recording(state: &State, cx: &mut AsyncApp) -> Option<(Recorder, PathBuf)> {
+fn end_recording(state: &State, cx: &mut AsyncApp) -> Option<(RecorderProcess, PathBuf)> {
     if state.recording.borrow().as_ref()?.recorder.is_none() {
         log::info!("the recording is restarting; the request is ignored");
         return None;
@@ -1689,7 +1690,7 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
                 path: files::partial_path(&path),
                 ..options
             };
-            let recorder = Recorder::start(options.clone())?;
+            let recorder = RecorderProcess::start(options.clone())?;
             anyhow::Ok((recorder, path, options, kept))
         })
         .await;
@@ -1790,7 +1791,7 @@ fn forget_previous_take_later(
 /// main thread. On failure, the unfinished file is deleted: it cannot be
 /// played.
 async fn finish_recording(
-    recorder: Recorder,
+    recorder: RecorderProcess,
     path: PathBuf,
     cx: &mut AsyncApp,
 ) -> Result<RecordingSummary, Failure> {

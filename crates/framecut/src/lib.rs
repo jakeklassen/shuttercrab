@@ -16,6 +16,7 @@ pub mod logging;
 pub mod overlay;
 pub mod popup;
 pub mod record_bar;
+pub mod recorder_process;
 pub mod recording;
 pub mod selection;
 pub mod settings;
