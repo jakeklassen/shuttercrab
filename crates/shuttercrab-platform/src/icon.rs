@@ -185,13 +185,24 @@ mod tests {
         }
         let committed =
             std::fs::read(&path).expect("crates/shuttercrab/assets/shuttercrab.ico exists");
-        assert!(
-            committed == drawn,
-            "the app icon is out of date; see this test"
-        );
         // A valid icon directory: type 1, one entry per size, 256 written as 0.
         assert_eq!(&committed[2..6], [1, 0, 8, 0]);
         assert_eq!(committed[6 + 16 * 7], 0);
+        // The same pixels at every size. The compressed bytes may differ
+        // with the PNG encoder's version and features.
+        for (i, &size) in ICON_SIZES.iter().enumerate() {
+            let entry = &committed[6 + 16 * i..6 + 16 * (i + 1)];
+            let len = u32::from_le_bytes(entry[8..12].try_into().unwrap()) as usize;
+            let at = u32::from_le_bytes(entry[12..16].try_into().unwrap()) as usize;
+            let decoder = ::png::Decoder::new(std::io::Cursor::new(&committed[at..at + len]));
+            let mut reader = decoder.read_info().unwrap();
+            let mut pixels = vec![0; reader.output_buffer_size().unwrap()];
+            reader.next_frame(&mut pixels).unwrap();
+            assert!(
+                pixels == rgba(size),
+                "the app icon is out of date at {size} px; see this test"
+            );
+        }
     }
 
     #[test]
