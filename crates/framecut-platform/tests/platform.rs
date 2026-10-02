@@ -32,7 +32,8 @@ fn puts_png_and_bitmap_on_the_clipboard() {
     };
     let (platform, _events, _) = Platform::start(&[], None).unwrap();
     let rgba = vec![200u8; 4 * 3 * 2];
-    block_on(platform.copy_image(vec![0x89, b'P', b'N', b'G'], rgba, 3, 2)).unwrap();
+    let png = std::sync::Arc::new(vec![0x89, b'P', b'N', b'G']);
+    block_on(platform.copy_image(png, std::sync::Arc::new(rgba), 3, 2)).unwrap();
     unsafe {
         let png = RegisterClipboardFormatW(windows::core::w!("PNG"));
         OpenClipboard(None).unwrap();

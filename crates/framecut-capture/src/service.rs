@@ -188,16 +188,17 @@ impl Drop for FrozenFrame {
     }
 }
 
-/// A finished screenshot.
+/// A finished screenshot. Its pixels and PNG are shared, not copied, with
+/// whatever takes them: the clipboard, the file, the thumbnail.
 #[derive(Clone)]
 pub struct Screenshot {
     pub width: u32,
     pub height: u32,
     /// Tightly packed RGBA8 sRGB, top row first, straight alpha. Opaque,
     /// except for window captures' rounded corners and borders.
-    pub rgba: Vec<u8>,
+    pub rgba: Arc<Vec<u8>>,
     /// The same image as an sRGB PNG file.
-    pub png: Vec<u8>,
+    pub png: Arc<Vec<u8>>,
 }
 
 impl fmt::Debug for Screenshot {
@@ -615,8 +616,8 @@ impl Service {
         Ok(Screenshot {
             width: region.width,
             height: region.height,
-            rgba,
-            png,
+            rgba: Arc::new(rgba),
+            png: Arc::new(png),
         })
     }
 
@@ -689,8 +690,8 @@ impl Service {
         Ok(Screenshot {
             width,
             height,
-            rgba,
-            png,
+            rgba: Arc::new(rgba),
+            png: Arc::new(png),
         })
     }
 }
@@ -827,6 +828,9 @@ fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
     let mut writer = encoder.write_header().map_err(failed)?;
     writer.write_image_data(rgba).map_err(failed)?;
     writer.finish().map_err(failed)?;
+    // The buffer grew by doubling and may outlive the screenshot (an
+    // unsaved one stays with its thumbnail): give the slack back.
+    png_bytes.shrink_to_fit();
     Ok(png_bytes)
 }
 

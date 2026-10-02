@@ -53,6 +53,7 @@ use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
     rc::Rc,
+    sync::Arc,
     time::{Duration, Instant},
 };
 
@@ -879,7 +880,10 @@ async fn capture(
     let mode = match target {
         CaptureTarget::Display => {
             let shot = state.capture.screenshot(&frame, whole).await;
-            return deliver(state, shot?, frame.monitor(), pressed, taken_at, cx).await;
+            let info = frame.monitor().clone();
+            // Cut: the frozen screen can go (PRD §23).
+            drop(frame);
+            return deliver(state, shot?, &info, pressed, taken_at, cx).await;
         }
         CaptureTarget::Area => Mode::Area,
         CaptureTarget::Window => Mode::Window,
@@ -907,6 +911,8 @@ async fn capture(
             }
         }
     };
+    // Cut: the frozen screen can go before the copying and saving (PRD §23).
+    drop(frame);
     deliver(state, shot?, &info, released, taken_at, cx).await
 }
 
@@ -1909,7 +1915,7 @@ async fn deliver(
     let (width, height) = (shot.width, shot.height);
 
     // Start the file write and the thumbnail image first; they run while
-    // the clipboard is written.
+    // the clipboard is written. All three share the screenshot's buffers.
     let saved = settings.auto_save.then(|| {
         let (dir, png) = (settings.output_dir(), shot.png.clone());
         cx.background_executor()
@@ -1921,7 +1927,7 @@ async fn deliver(
         let scale = monitor.scale_factor;
         let (max_w, max_h) = ((w * scale).ceil() as u32, (h * scale).ceil() as u32);
         cx.background_executor()
-            .spawn(async move { thumbnail::scale_down(rgba, width, height, max_w, max_h) })
+            .spawn(async move { thumbnail::scale_down(&rgba, width, height, max_w, max_h) })
     });
     // Without auto-save, the thumbnail writes a temporary file only if it
     // is opened or dragged.
@@ -2029,7 +2035,7 @@ async fn deliver(
 enum CaptureFile {
     Saved(PathBuf),
     Unsaved {
-        png: Vec<u8>,
+        png: Arc<Vec<u8>>,
         taken_at: NaiveDateTime,
     },
 }
@@ -2039,7 +2045,7 @@ impl CaptureFile {
         match self {
             CaptureFile::Saved(path) => Ok(path.clone()),
             CaptureFile::Unsaved { png, taken_at } => {
-                let (png, taken_at) = (std::mem::take(png), *taken_at);
+                let (png, taken_at) = (png.clone(), *taken_at);
                 let path = cx
                     .background_executor()
                     .spawn(

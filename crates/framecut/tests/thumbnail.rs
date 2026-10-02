@@ -19,7 +19,7 @@ struct Opened {
 
 fn open(cx: &mut TestAppContext, seconds: u32) -> Opened {
     cx.update(gpui_kit::init);
-    let image = render_image(&scale_down(vec![200; 64 * 36 * 4], 64, 36, 64, 36));
+    let image = render_image(&scale_down(&[200; 64 * 36 * 4], 64, 36, 64, 36));
     let events = Rc::new(RefCell::new(Vec::new()));
     let sink = events.clone();
     let handle = cx.open_window(size(px(252.0), px(147.0)), move |_, cx| {
@@ -154,7 +154,7 @@ fn leaving_the_card_restarts_the_countdown_without_a_mouse_event(cx: &mut TestAp
     cx.update(gpui_kit::init);
     let over = Rc::new(std::cell::Cell::new(true));
     let probe = over.clone();
-    let image = render_image(&scale_down(vec![200; 64 * 36 * 4], 64, 36, 64, 36));
+    let image = render_image(&scale_down(&[200; 64 * 36 * 4], 64, 36, 64, 36));
     let events = Rc::new(RefCell::new(Vec::new()));
     let sink = events.clone();
     let _handle = cx.open_window(size(px(252.0), px(147.0)), move |_, cx| {

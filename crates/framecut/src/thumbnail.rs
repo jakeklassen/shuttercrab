@@ -55,16 +55,11 @@ pub struct Small {
 }
 
 /// Tightly packed straight-alpha RGBA, scaled down to at most `max_width` ×
-/// `max_height` physical pixels.
-pub fn scale_down(
-    rgba: Vec<u8>,
-    width: u32,
-    height: u32,
-    max_width: u32,
-    max_height: u32,
-) -> Small {
-    let full =
-        image::RgbaImage::from_raw(width, height, rgba).expect("the buffer matches its size");
+/// `max_height` physical pixels. Reads `rgba` in place: only the small
+/// picture is allocated.
+pub fn scale_down(rgba: &[u8], width: u32, height: u32, max_width: u32, max_height: u32) -> Small {
+    let full = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(width, height, rgba)
+        .expect("the buffer matches its size");
     let fit = (max_width as f32 / width as f32)
         .min(max_height as f32 / height as f32)
         .min(1.0);
@@ -72,15 +67,15 @@ pub fn scale_down(
         ((width as f32 * fit).round() as u32).max(1),
         ((height as f32 * fit).round() as u32).max(1),
     );
-    let small = if (w, h) == (width, height) {
-        full
+    let rgba = if (w, h) == (width, height) {
+        rgba.to_vec()
     } else {
-        image::imageops::thumbnail(&full, w, h)
+        image::imageops::thumbnail(&full, w, h).into_raw()
     };
     Small {
         width: w,
         height: h,
-        rgba: small.into_raw(),
+        rgba,
     }
 }
 

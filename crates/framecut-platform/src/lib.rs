@@ -26,7 +26,10 @@ use anyhow::{Context, Result, anyhow};
 use futures::channel::{mpsc, oneshot};
 use std::{
     cell::RefCell,
-    sync::mpsc::{Receiver, Sender, channel},
+    sync::{
+        Arc,
+        mpsc::{Receiver, Sender, channel},
+    },
 };
 use windows::{
     Win32::{
@@ -113,8 +116,8 @@ pub struct Tray {
 
 enum Command {
     CopyImage {
-        png: Vec<u8>,
-        rgba: Vec<u8>,
+        png: Arc<Vec<u8>>,
+        rgba: Arc<Vec<u8>>,
         width: u32,
         height: u32,
         reply: oneshot::Sender<Result<()>>,
@@ -185,11 +188,12 @@ impl Platform {
     }
 
     /// Put an image on the clipboard as PNG and as a bitmap. Retries briefly
-    /// if another application holds the clipboard.
+    /// if another application holds the clipboard. The buffers are shared,
+    /// not copied.
     pub fn copy_image(
         &self,
-        png: Vec<u8>,
-        rgba: Vec<u8>,
+        png: Arc<Vec<u8>>,
+        rgba: Arc<Vec<u8>>,
         width: u32,
         height: u32,
     ) -> impl Future<Output = Result<()>> + use<> {
