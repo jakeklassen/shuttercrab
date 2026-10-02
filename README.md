@@ -6,10 +6,6 @@ paste) and produces SDR output that looks right when Windows HDR is enabled.
 
 The specification is [docs/PRD.md](docs/PRD.md).
 
-Shuttercrab was called Framecut until 2026-10-02. On its first start it
-carries Framecut's settings and startup entry over; captures already saved
-stay in the Framecut folders.
-
 ## Status
 
 - **Milestone 0** (prove HDR-to-SDR color correctness) passed on 2026-09-27.

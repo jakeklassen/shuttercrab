@@ -32,22 +32,6 @@ pub fn set_launch_at_startup(enabled: bool) -> Result<()> {
     }
 }
 
-/// Replace the startup entry an earlier name of the app left, if any, with
-/// this executable's. Returns whether there was one.
-pub fn adopt_entry(old_name: &str) -> Result<bool> {
-    adopt(old_name, NAME)
-}
-
-fn adopt(old_name: &str, name: &str) -> Result<bool> {
-    if entry(old_name).is_none() {
-        return Ok(false);
-    }
-    let exe = std::env::current_exe().context("no path for this executable")?;
-    set_entry(name, &format!("\"{}\"", exe.display()))?;
-    remove_entry(old_name)?;
-    Ok(true)
-}
-
 fn entry(name: &str) -> Option<String> {
     let mut size = 0u32;
     unsafe {
@@ -126,24 +110,5 @@ mod tests {
         assert_eq!(entry(&name), None);
         // Removing twice is fine.
         remove_entry(&name).unwrap();
-    }
-
-    #[test]
-    fn an_old_entry_is_replaced_by_this_executable() {
-        let old = format!("ShuttercrabTestOld.{}", std::process::id());
-        let new = format!("ShuttercrabTestNew.{}", std::process::id());
-        assert!(!adopt(&old, &new).unwrap());
-        assert_eq!(entry(&new), None);
-
-        set_entry(&old, r#""C:\Old\framecut.exe""#).unwrap();
-        let adopted = adopt(&old, &new);
-        let (now, left) = (entry(&new), entry(&old));
-        // Clean up before asserting, so a failure leaves nothing behind.
-        let _ = remove_entry(&new);
-        let _ = remove_entry(&old);
-        assert!(adopted.unwrap());
-        let exe = std::env::current_exe().unwrap();
-        assert_eq!(now, Some(format!("\"{}\"", exe.display())));
-        assert_eq!(left, None);
     }
 }

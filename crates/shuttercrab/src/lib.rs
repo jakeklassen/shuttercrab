@@ -13,7 +13,6 @@ pub mod files;
 pub mod heap;
 pub mod icons;
 pub mod logging;
-pub mod migrate;
 pub mod overlay;
 pub mod popup;
 pub mod record_bar;

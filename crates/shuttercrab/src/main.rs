@@ -53,16 +53,6 @@ fn main() {
         None => settings::default_path(),
     };
     let mut notices = Vec::new();
-    // The first start after the rename from Framecut. A test's own data
-    // folder is never mixed with the real one.
-    let renamed = data_dir.is_none() && carry_over_from_framecut(settings_path.as_deref());
-    if renamed {
-        notices.push((
-            "Framecut is now Shuttercrab".to_string(),
-            "Your settings came across. New captures go to the Shuttercrab folders; earlier ones stay where they were."
-                .to_string(),
-        ));
-    }
     let (mut settings, first_run) = match settings_path.as_deref().map(settings::load) {
         Some(Ok((settings, loaded))) => {
             match &loaded {
@@ -202,29 +192,4 @@ fn main() {
                 cx,
             );
         });
-}
-
-/// Carry Framecut's settings and startup entry over to Shuttercrab, once.
-/// Returns whether settings came across.
-fn carry_over_from_framecut(settings_path: Option<&std::path::Path>) -> bool {
-    use shuttercrab::migrate;
-    match shuttercrab_platform::startup::adopt_entry(migrate::OLD_NAME) {
-        Ok(true) => log::info!("moved Framecut's startup entry to Shuttercrab"),
-        Ok(false) => {}
-        Err(e) => log::warn!("could not move Framecut's startup entry: {e:#}"),
-    }
-    let (Some(old), Some(new)) = (migrate::old_settings_path(), settings_path) else {
-        return false;
-    };
-    match migrate::carry_settings(&old, new, &migrate::old_default_dirs()) {
-        Ok(true) => {
-            log::info!("carried Framecut's settings over from {}", old.display());
-            true
-        }
-        Ok(false) => false,
-        Err(e) => {
-            log::warn!("could not carry Framecut's settings over: {e:#}");
-            false
-        }
-    }
 }

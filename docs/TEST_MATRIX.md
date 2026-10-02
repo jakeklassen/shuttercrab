@@ -603,7 +603,7 @@ removed.
 Acceptance (manual):
 
 1. Start it: `mise exec -- cargo run --release -p shuttercrab`. The Shuttercrab
-   icon (a dark square with coral corners at the top left and bottom right; blue with four white corners before the rename) appears in the tray, possibly under the
+   icon (a dark square with coral corners at the top left and bottom right) appears in the tray, possibly under the
    `^` overflow; drag it onto the taskbar to keep it visible. On the first
    run a notification says Shuttercrab is running.
 2. Press **Ctrl+Alt+S**, drag, release. Paste: the screenshot is there.

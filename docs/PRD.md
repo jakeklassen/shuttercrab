@@ -8,7 +8,7 @@
 **Platform integration:** Windows APIs through the `windows` crate  
 **Primary goal:** A Snipping Tool-like screenshot and screen-recording utility that produces visually correct SDR output when Windows HDR is enabled.
 
-**Product name:** Shuttercrab (Framecut until 2026-10-02; the name was crowded).
+**Product name:** Shuttercrab.
 
 ---
 
