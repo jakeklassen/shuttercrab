@@ -30,6 +30,7 @@ use crate::{
     settings::{self, Settings},
     settings_window::{Diagnostics, Hooks, SettingsWindow},
     thumbnail::{self, Thumbnail, ThumbnailEvent},
+    update::{self, UpdateBackend},
 };
 use chrono::{Local, NaiveDateTime};
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
@@ -76,6 +77,7 @@ pub const MENU_CAPTURE_BAR: u32 = 5;
 pub const MENU_SETTINGS: u32 = 6;
 pub const MENU_RECORD: u32 = 7;
 pub const MENU_PAUSE: u32 = 8;
+pub const MENU_UPDATE: u32 = 9;
 
 /// Quits without the tray menu; kept for development.
 pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
@@ -129,7 +131,13 @@ const BAR_TOP: f32 = 24.0;
 const THUMBNAIL_MARGIN: f32 = 16.0;
 
 /// The tray icon's context menu for the current settings and recording.
-pub fn tray_menu(settings: &Settings, recording: TrayRecording) -> Vec<MenuItem> {
+/// `update` is a downloaded release's version, offered as "Restart to
+/// update" only while nothing is recording.
+pub fn tray_menu(
+    settings: &Settings,
+    recording: TrayRecording,
+    update: Option<&str>,
+) -> Vec<MenuItem> {
     let record = match recording {
         TrayRecording::Idle => "Record an area",
         TrayRecording::Running | TrayRecording::Paused => "Stop recording",
@@ -155,13 +163,22 @@ pub fn tray_menu(settings: &Settings, recording: TrayRecording) -> Vec<MenuItem>
     ]
     .into_iter()
     .chain(pause)
-    .chain(rest_of_tray_menu(settings))
+    .chain(rest_of_tray_menu(
+        settings,
+        update.filter(|_| recording == TrayRecording::Idle),
+    ))
     .collect()
 }
 
 /// The tray menu below the capture items.
-fn rest_of_tray_menu(settings: &Settings) -> Vec<MenuItem> {
-    vec![
+fn rest_of_tray_menu(settings: &Settings, update: Option<&str>) -> Vec<MenuItem> {
+    let update = update.map(|version| {
+        [
+            MenuItem::item(MENU_UPDATE, format!("Restart to update to {version}")),
+            MenuItem::Separator,
+        ]
+    });
+    let mut menu = vec![
         MenuItem::item(MENU_OPEN_FOLDER, "Open screenshots folder"),
         MenuItem::Separator,
         MenuItem::Item {
@@ -173,8 +190,10 @@ fn rest_of_tray_menu(settings: &Settings) -> Vec<MenuItem> {
         MenuItem::Separator,
         MenuItem::item(MENU_SETTINGS, "Settings…"),
         MenuItem::Separator,
-        MenuItem::item(MENU_QUIT, "Quit Shuttercrab"),
-    ]
+    ];
+    menu.extend(update.into_iter().flatten());
+    menu.push(MenuItem::item(MENU_QUIT, "Quit Shuttercrab"));
+    menu
 }
 
 /// A failure to report: a message for the user, and the details for the log
@@ -235,11 +254,16 @@ pub struct Shuttercrab {
     pub settings_path: Option<PathBuf>,
     /// Where the log is written, for the Diagnostics page.
     pub log_dir: Option<PathBuf>,
+    /// Updates from GitHub Releases; `None` when not installed by Velopack.
+    pub updates: Option<Arc<dyn UpdateBackend>>,
 }
 
 struct State {
     capture: Capture,
     platform: Platform,
+    updates: Option<Arc<dyn UpdateBackend>>,
+    /// A downloaded release's version, waiting for "Restart to update".
+    update_ready: RefCell<Option<String>>,
     settings: Rc<RefCell<Settings>>,
     log_dir: Option<PathBuf>,
     /// The settings window, while it is open.
@@ -418,7 +442,11 @@ impl State {
 
     /// Show the tray menu for the current settings and recording state.
     fn refresh_tray_menu(&self) {
-        let menu = tray_menu(&self.settings.borrow(), self.tray_recording());
+        let menu = tray_menu(
+            &self.settings.borrow(),
+            self.tray_recording(),
+            self.update_ready.borrow().as_deref(),
+        );
         self.platform.set_tray_menu(menu);
     }
 
@@ -513,6 +541,8 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
     let state = Rc::new(State {
         capture: shuttercrab.capture,
         platform: shuttercrab.platform,
+        updates: shuttercrab.updates,
+        update_ready: RefCell::new(None),
         settings: Rc::new(RefCell::new(shuttercrab.settings)),
         settings_path: shuttercrab.settings_path,
         log_dir: shuttercrab.log_dir,
@@ -526,6 +556,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         previous_take: RefCell::new(None),
         undo_generation: Cell::new(0),
     });
+    watch_for_updates(&state, cx);
     cx.spawn(async move |cx| {
         heap::log_memory_soon("idle after start", cx);
         let mut events = events;
@@ -576,27 +607,9 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     state.refresh_tray_menu();
                 }
                 PlatformEvent::Hotkey(QUIT_HOTKEY) | PlatformEvent::TrayCommand(MENU_QUIT) => {
-                    // Nothing is lost by quitting: a recording running at
-                    // quit is finished as if stopped (even one discarded
-                    // moments ago), and a take a restart replaced is kept.
-                    let previous = state.previous_take.take();
-                    if let Some(previous) = previous {
-                        keep_previous_take(previous, cx).await;
-                    }
-                    let recording = state.recording.take();
-                    if let Some(Recording {
-                        recorder: Some(recorder),
-                        path,
-                        ..
-                    }) = recording
-                    {
-                        log::info!("finishing the recording before quitting");
-                        let finished = finish_recording(recorder, path, cx).await;
-                        report_recording(&state, finished);
-                    }
-                    log::info!("quitting");
-                    cx.update(|cx| cx.quit());
+                    quit(&state, cx).await
                 }
+                PlatformEvent::TrayCommand(MENU_UPDATE) => restart_to_update(&state, cx).await,
                 // Starting Shuttercrab again (say, from the Start menu) shows its
                 // settings: something visible, and the way to change it.
                 PlatformEvent::AnotherInstance => {
@@ -616,6 +629,91 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         }
     })
     .detach();
+}
+
+/// Look for a newer release now and every few hours, in the background,
+/// until one is downloaded; then offer it in the tray menu.
+fn watch_for_updates(state: &Rc<State>, cx: &mut App) {
+    let Some(backend) = state.updates.clone() else {
+        return;
+    };
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        loop {
+            match cx.background_spawn(backend.fetch()).await {
+                Ok(Some(version)) => {
+                    log::info!("Shuttercrab {version} is downloaded and ready");
+                    state.update_ready.replace(Some(version.clone()));
+                    state.refresh_tray_menu();
+                    // A notification would show in a recording of the
+                    // screen; the tray menu offers the update when it ends.
+                    if state.tray_recording() == TrayRecording::Idle {
+                        state.notify(
+                            format!("Shuttercrab {version} is ready"),
+                            "Choose Restart to update in the tray menu.",
+                            None,
+                        );
+                    }
+                    return;
+                }
+                Ok(None) => log::debug!("no newer release"),
+                // Offline or rate limited: the next check tries again.
+                Err(e) => log::info!("could not check for updates: {e:#}"),
+            }
+            cx.background_executor().timer(update::CHECK_EVERY).await;
+        }
+    })
+    .detach();
+}
+
+/// Quit. Nothing is lost: a recording running at quit is finished as if
+/// stopped (even one discarded moments ago), and a take a restart replaced
+/// is kept.
+async fn quit(state: &Rc<State>, cx: &mut AsyncApp) {
+    let previous = state.previous_take.take();
+    if let Some(previous) = previous {
+        keep_previous_take(previous, cx).await;
+    }
+    let recording = state.recording.take();
+    if let Some(Recording {
+        recorder: Some(recorder),
+        path,
+        ..
+    }) = recording
+    {
+        log::info!("finishing the recording before quitting");
+        let finished = finish_recording(recorder, path, cx).await;
+        report_recording(state, finished);
+    }
+    log::info!("quitting");
+    cx.update(|cx| cx.quit());
+}
+
+/// Quit so the updater can apply the downloaded release and start it.
+/// Never while a capture is open or a recording runs: the menu hides the
+/// offer then, and a late click is ignored.
+async fn restart_to_update(state: &Rc<State>, cx: &mut AsyncApp) {
+    let Some(backend) = state.updates.clone() else {
+        return;
+    };
+    if state.busy.get() != Busy::Idle || state.recording.borrow().is_some() {
+        log::info!("not restarting to update: a capture or recording is in progress");
+        return;
+    }
+    match backend.apply_after_exit() {
+        Ok(()) => {
+            log::info!("restarting to update");
+            quit(state, cx).await;
+        }
+        Err(e) => {
+            log::error!("could not start the update: {e:#}");
+            state.notify(
+                "Could not update",
+                "Shuttercrab will update the next time it starts.",
+                None,
+            );
+        }
+    }
 }
 
 fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut AsyncApp) {
@@ -2253,7 +2351,7 @@ mod tests {
     #[test]
     fn the_tray_menu_follows_the_settings() {
         let settings = Settings::default();
-        let menu = tray_menu(&settings, TrayRecording::Idle);
+        let menu = tray_menu(&settings, TrayRecording::Idle, None);
         assert!(auto_save_checked(&menu));
         assert!(menu.contains(&MenuItem::item(MENU_CAPTURE_BAR, "Capture Bar\tCtrl+Alt+C")));
         assert!(menu.contains(&MenuItem::item(
@@ -2268,21 +2366,43 @@ mod tests {
         };
         assert_eq!(pause_item(&menu), None);
         // While recording, the same item stops it, and pausing appears.
-        let running = tray_menu(&settings, TrayRecording::Running);
+        let running = tray_menu(&settings, TrayRecording::Running, None);
         assert!(running.contains(&MenuItem::item(MENU_RECORD, "Stop recording\tCtrl+Alt+R")));
         assert_eq!(
             pause_item(&running),
             Some(MenuItem::item(MENU_PAUSE, "Pause recording\tCtrl+Alt+P"))
         );
         assert_eq!(
-            pause_item(&tray_menu(&settings, TrayRecording::Paused)),
+            pause_item(&tray_menu(&settings, TrayRecording::Paused, None)),
             Some(MenuItem::item(MENU_PAUSE, "Resume recording\tCtrl+Alt+P"))
         );
         let off = Settings {
             auto_save: false,
             ..settings
         };
-        assert!(!auto_save_checked(&tray_menu(&off, TrayRecording::Idle)));
+        assert!(!auto_save_checked(&tray_menu(
+            &off,
+            TrayRecording::Idle,
+            None
+        )));
+    }
+
+    #[test]
+    fn a_downloaded_update_is_offered_only_while_nothing_records() {
+        let settings = Settings::default();
+        let offer = MenuItem::item(MENU_UPDATE, "Restart to update to 0.2.0");
+        assert!(!tray_menu(&settings, TrayRecording::Idle, None).contains(&offer));
+        let idle = tray_menu(&settings, TrayRecording::Idle, Some("0.2.0"));
+        // Just above Quit, with a separator between.
+        let at = idle
+            .iter()
+            .position(|item| *item == offer)
+            .expect("offered");
+        assert_eq!(idle[at + 1], MenuItem::Separator);
+        assert!(matches!(idle[at + 2], MenuItem::Item { id: MENU_QUIT, .. }));
+        for recording in [TrayRecording::Running, TrayRecording::Paused] {
+            assert!(!tray_menu(&settings, recording, Some("0.2.0")).contains(&offer));
+        }
     }
 
     #[test]

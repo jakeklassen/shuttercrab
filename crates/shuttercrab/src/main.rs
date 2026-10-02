@@ -22,6 +22,16 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some(shuttercrab::recorder_process::FLAG) {
         std::process::exit(shuttercrab::recorder_process::serve());
     }
+    // Next, before anything else: Velopack may run an install or uninstall
+    // hook here and exit, or apply a downloaded update and restart. The
+    // recording helper above never does, so an update can't end a
+    // recording.
+    velopack::VelopackApp::build()
+        .on_before_uninstall_fast_callback(|_| {
+            // Don't leave a startup entry pointing at a deleted program.
+            let _ = shuttercrab_platform::startup::set_launch_at_startup(false);
+        })
+        .run();
     // Release builds have no console; print to the terminal that started us.
     #[cfg(not(debug_assertions))]
     shuttercrab_platform::attach_to_parent_terminal();
@@ -132,7 +142,7 @@ fn main() {
     let hotkeys = app::hotkeys(&settings, false, false);
     let tray = Tray {
         tooltip: "Shuttercrab".into(),
-        menu: app::tray_menu(&settings, app::TrayRecording::Idle),
+        menu: app::tray_menu(&settings, app::TrayRecording::Idle, None),
     };
     let (platform, events, conflicts) = match Platform::start(&hotkeys, Some(tray)) {
         Ok(started) => started,
@@ -175,6 +185,13 @@ fn main() {
         settings.record_hotkey,
         app::QUIT_KEYS
     );
+    let updates = shuttercrab::update::Velopack::new().map(|velopack| {
+        log::info!(
+            "installed version {}; updates come from GitHub Releases",
+            velopack.version()
+        );
+        std::sync::Arc::new(velopack) as std::sync::Arc<dyn shuttercrab::update::UpdateBackend>
+    });
     // A release build started from a terminal says where it went, then lets
     // the terminal go: the shell has already printed its prompt, and the log
     // file has the rest.
@@ -204,6 +221,7 @@ fn main() {
                     settings,
                     settings_path,
                     log_dir: log_file.as_ref().and_then(|f| f.parent().map(Into::into)),
+                    updates,
                 },
                 events,
                 cx,
