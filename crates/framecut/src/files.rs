@@ -86,6 +86,13 @@ pub fn remove_old(dir: &Path, age: std::time::Duration) -> usize {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// A folder for the test under the workspace's gitignored `tmp`.
+    fn scratch(name: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../tmp/tests")
+            .join(format!("{name}-{}", std::process::id()))
+    }
     use chrono::NaiveDate;
 
     fn at() -> NaiveDateTime {
@@ -103,7 +110,7 @@ mod tests {
 
     #[test]
     fn a_recording_in_progress_keeps_its_name_taken() {
-        let dir = std::env::temp_dir().join(format!("framecut-rec-{}", std::process::id()));
+        let dir = scratch("rec");
         let _ = std::fs::remove_dir_all(&dir);
         let first = new_recording(&dir, at()).unwrap();
         assert_eq!(
@@ -121,7 +128,7 @@ mod tests {
 
     #[test]
     fn screenshots_in_the_same_second_get_numbered() {
-        let dir = std::env::temp_dir().join(format!("framecut-files-{}", std::process::id()));
+        let dir = scratch("files");
         let _ = std::fs::remove_dir_all(&dir);
         let first = save_screenshot(&dir, at(), b"one").unwrap();
         let second = save_screenshot(&dir, at(), b"two").unwrap();
@@ -144,7 +151,7 @@ mod tests {
 
     #[test]
     fn old_files_are_removed_and_new_ones_kept() {
-        let dir = std::env::temp_dir().join(format!("framecut-old-{}", std::process::id()));
+        let dir = scratch("old");
         let _ = std::fs::remove_dir_all(&dir);
         let png = save_screenshot(&dir, at(), b"png").unwrap();
         std::fs::write(dir.join("notes.txt"), b"keep").unwrap();

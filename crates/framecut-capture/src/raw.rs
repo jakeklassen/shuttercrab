@@ -116,8 +116,10 @@ mod tests {
             color_mode: ColorMode::Hdr,
             data,
         };
-        let path =
-            std::env::temp_dir().join(format!("capture-spike-raw-{}.fp16", std::process::id()));
+        // Under the workspace's gitignored `tmp`.
+        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/tests");
+        std::fs::create_dir_all(&dir).unwrap();
+        let path = dir.join(format!("raw-{}.fp16", std::process::id()));
         frame.write(&path).unwrap();
         let back = RawFrame::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();

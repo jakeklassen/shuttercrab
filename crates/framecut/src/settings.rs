@@ -213,16 +213,34 @@ pub fn save(path: &Path, settings: &Settings) -> Result<()> {
 mod tests {
     use super::*;
 
-    fn temp(name: &str) -> PathBuf {
-        let dir =
-            std::env::temp_dir().join(format!("framecut-settings-{}-{name}", std::process::id()));
-        let _ = std::fs::remove_dir_all(&dir);
-        dir.join("settings.json")
+    /// A folder of the test's own under the workspace's gitignored `tmp`,
+    /// removed when the test ends, passed or not.
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new(name: &str) -> Self {
+            let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
+                .join("../../tmp/tests")
+                .join(format!("settings-{}-{name}", std::process::id()));
+            let _ = std::fs::remove_dir_all(&dir);
+            Self(dir)
+        }
+
+        fn settings(&self) -> PathBuf {
+            self.0.join("settings.json")
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
     }
 
     #[test]
     fn creates_defaults_then_reads_them_back() {
-        let path = temp("create");
+        let scratch = Scratch::new("create");
+        let path = scratch.settings();
         let (settings, loaded) = load(&path).unwrap();
         assert_eq!(
             (settings.clone(), loaded),
@@ -239,7 +257,8 @@ mod tests {
 
     #[test]
     fn missing_fields_take_their_defaults() {
-        let path = temp("partial");
+        let scratch = Scratch::new("partial");
+        let path = scratch.settings();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, r#"{ "auto_save": false }"#).unwrap();
         let (settings, _) = load(&path).unwrap();
@@ -250,7 +269,8 @@ mod tests {
 
     #[test]
     fn a_broken_file_is_kept_aside_not_lost() {
-        let path = temp("broken");
+        let scratch = Scratch::new("broken");
+        let path = scratch.settings();
         std::fs::create_dir_all(path.parent().unwrap()).unwrap();
         std::fs::write(&path, "{ not json").unwrap();
         let (settings, loaded) = load(&path).unwrap();
