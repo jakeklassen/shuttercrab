@@ -36,7 +36,18 @@ Documentation:
 - [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md): automated checks, the
   Milestone 0 gate, and the Milestone 1 acceptance test.
 
+## Install
+
+Download `Shuttercrab-win-Setup.exe` from the
+[latest release](https://github.com/jakeklassen/shuttercrab/releases/latest)
+and run it. It installs for your user only (no administrator rights), adds
+Shuttercrab to the Start menu and starts it. Installed copies update
+themselves: when a new release is downloaded, the tray menu offers
+"Restart to update". Uninstall from Windows Settings, Apps.
+
 ## Use it
+
+To run it from the source instead:
 
 ```powershell
 mise exec -- cargo run --release -p shuttercrab
@@ -89,6 +100,21 @@ mise exec -- cargo test
 
 The Milestone 0 tools remain: `mise exec -- cargo run --release -p
 capture-spike -- help`.
+
+## Releases
+
+Commits on `main` follow [Conventional Commits](https://www.conventionalcommits.org).
+On every push, [release-plz](https://release-plz.dev) keeps a Release PR up
+to date with the next version and its [CHANGELOG.md](CHANGELOG.md) entry;
+only `feat`, `fix`, `perf`, `refactor` and `revert` commits call for one.
+Merging that PR runs CI, tags `vX.Y.Z`, builds the installer and update
+packages with [Velopack](https://velopack.io), and publishes them to GitHub
+Releases. The app and its two library crates share one version; the
+workflows are in `.github/workflows`.
+
+To try an update before publishing it, point an installed copy at a folder
+of packages built with `vpk pack`: set `SHUTTERCRAB_UPDATE_SOURCE` to that
+folder before starting it.
 
 ## Licence
 

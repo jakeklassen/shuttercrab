@@ -1,0 +1,143 @@
+# Every push to main updates a Release PR: the next version in Cargo.toml and
+# its CHANGELOG.md entry, from Conventional Commits. Merging that PR tags the
+# release, builds the installer and update packages, and publishes them to
+# GitHub Releases, where installed copies of Shuttercrab find them.
+#
+# CI runs here on every push to main, and nothing is tagged unless it passes.
+# The Release PR itself gets no CI run: GitHub starts no workflows for pull
+# requests opened with GITHUB_TOKEN. Its only changes are the version and the
+# changelog, and the merge is tested here before it ships.
+#
+# The repository must allow GitHub Actions to create pull requests
+# (Settings > Actions > General > Workflow permissions).
+
+name: Release
+
+on:
+  push:
+    branches: [main]
+
+jobs:
+  test:
+    name: CI
+    uses: ./.github/workflows/ci.yml
+
+  release-pr:
+    name: Update the Release PR
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    concurrency:
+      group: release-plz-${{ github.ref }}
+      cancel-in-progress: false
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@v5
+      - uses: release-plz/action@v0.5
+        with:
+          command: release-pr
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  release:
+    name: Tag a draft release
+    needs: test
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: read
+    outputs:
+      tag: ${{ steps.read.outputs.tag }}
+      version: ${{ steps.read.outputs.version }}
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: jdx/mise-action@v5
+      - id: release-plz
+        uses: release-plz/action@v0.5
+        with:
+          command: release
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+      # Empty unless merging the Release PR just released a version. Only
+      # shuttercrab is tagged; its libraries share its version.
+      - id: read
+        env:
+          RELEASES: ${{ steps.release-plz.outputs.releases }}
+        run: |
+          release=$(echo "${RELEASES:-[]}" | jq -c 'map(select(.package_name == "shuttercrab")) | .[0] // {}')
+          echo "tag=$(echo "$release" | jq -r '.tag // empty')" >> "$GITHUB_OUTPUT"
+          echo "version=$(echo "$release" | jq -r '.version // empty')" >> "$GITHUB_OUTPUT"
+
+  package:
+    name: Package
+    needs: release
+    if: needs.release.outputs.tag != ''
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      # The commit release-plz released, which is the one that was pushed.
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@v5
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked -p shuttercrab
+
+      - uses: actions/setup-dotnet@v6
+        with:
+          dotnet-version: 8.0.x
+
+      # vpk must match the velopack crate the app was built with.
+      - name: Install vpk
+        shell: bash
+        run: |
+          version=$(awk '/^name = "velopack"$/ { getline; gsub(/"/, "", $3); print $3 }' Cargo.lock)
+          dotnet tool install -g vpk --version "$version"
+
+      - name: Package and attach to the draft release
+        shell: bash
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          REPO: https://github.com/${{ github.repository }}
+          TAG: ${{ needs.release.outputs.tag }}
+          VERSION: ${{ needs.release.outputs.version }}
+        run: |
+          mkdir publish
+          cp target/release/shuttercrab.exe publish/
+          # The previous release, so vpk can build a small delta from it. The
+          # first release has none.
+          vpk download github --repoUrl "$REPO" --token "$GITHUB_TOKEN" \
+            --channel win --outputDir Releases || true
+          # A tray app: a Start menu shortcut, no desktop shortcut.
+          vpk pack --packId Shuttercrab --packVersion "$VERSION" --packTitle Shuttercrab \
+            --packAuthors Shuttercrab --packDir publish --mainExe shuttercrab.exe \
+            --icon crates/shuttercrab/assets/shuttercrab.ico --shortcuts StartMenuRoot \
+            --channel win --outputDir Releases
+          # Uploads the installer, the packages and their feed into the draft
+          # release release-plz created.
+          vpk upload github --repoUrl "$REPO" --token "$GITHUB_TOKEN" \
+            --channel win --outputDir Releases --tag "$TAG" --merge
+
+  publish:
+    name: Publish the release
+    needs: [release, package]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Publish the draft
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          TAG: ${{ needs.release.outputs.tag }}
+        run: gh release edit "$TAG" --repo "${{ github.repository }}" --draft=false --latest

@@ -1,0 +1,54 @@
+[workspace]
+# Shuttercrab is an app, not a library: versions come from git tags, and
+# nothing goes to crates.io.
+git_only = true
+publish = false
+semver_check = false
+# Release only when the Release PR is merged, not on every push to main.
+release_always = false
+# The release starts as a draft so the previous release is still "latest"
+# while the packages build, and vpk can make deltas from it. The workflow
+# attaches the installer and update feed, then publishes it.
+git_release_draft = true
+git_tag_name = "v{{ version }}"
+# Propose a release only for changes that reach users. A ci:, chore: or
+# docs: commit on its own ships nothing.
+release_commits = "^(feat|fix|perf|refactor|revert)[(:!]"
+
+# The app and its two libraries share one version, one tag and one
+# changelog: a change in either library is a change in the app.
+[[package]]
+name = "shuttercrab"
+version_group = "app"
+changelog_path = "CHANGELOG.md"
+changelog_include = ["shuttercrab-capture", "shuttercrab-platform"]
+
+[[package]]
+name = "shuttercrab-capture"
+version_group = "app"
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "shuttercrab-platform"
+version_group = "app"
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+# A development tool, never released.
+[[package]]
+name = "capture-spike"
+release = false
+
+[changelog]
+# Keep a Changelog groups, less the commits users never see. The first
+# matching parser wins, so the skips come before the catch-all.
+commit_parsers = [
+  { message = "^feat", group = "added" },
+  { message = "^fix", group = "fixed" },
+  { message = "^perf", group = "changed" },
+  { message = "^(ci|chore|docs|test|style|build)[(:!]", skip = true },
+  { message = ".*", group = "other" },
+]
