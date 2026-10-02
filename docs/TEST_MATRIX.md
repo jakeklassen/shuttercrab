@@ -130,6 +130,32 @@ that stops updating.
 7. Press **Ctrl+Alt+C** and Escape, a few times: the Capture Bar draws
    normally each time.
 
+### Memory pass: before and after
+
+Final run, 2026-10-01 (release build, the same scenario throughout: 3 area
+screenshots, then 3 area recordings of 2400×1300 at 60 fps on the test
+page; private memory, graphics in brackets):
+
+| | Before | After |
+|---|---|---|
+| Idle | 85 MB (39) | 85 MB (39) |
+| After a screenshot | 415–446 MB (345) | 97–129 MB (48) |
+| During a recording, combined | 498–578 MB (440) | 285–289 MB (368): app 99, helper 186–188 |
+| After a recording | 274–303 MB (124) | 90–94 MB (39) |
+| Rust heap, throughout | 2–3 MB | 2–3 MB |
+
+What did it: GPUI trims its device after a window closes (the patched
+`vendor/gpui-pre-windows`); frames are read back through a 1 MB band;
+recording runs in a helper process that exits afterwards; a screenshot's
+buffers are shared rather than cloned and the frozen screen is released as
+soon as the region is cut. The capture warm-up stays (20 MB private, 19.5
+MB graphics): it is what keeps the overlay within PRD §22.2's 150 ms.
+
+Sampled every 100 ms, the peak is while the selection overlay is open:
+about 476 MB for about a second, then back to about 97 MB. That is GPUI's
+full-screen 4K window (its window-sized render targets, the largest a 4×
+multisampled one); see [Known issues](#known-issues).
+
 ## Milestone 4: area recording MVP
 
 Built in four steps, each tried and approved by the owner: (1) start and
@@ -1190,12 +1216,16 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
   WM_DISPLAYCHANGE to each window in turn; Framecut's hidden window got
   it 0.5 s after GPUI's topmost one. Try making the hidden window topmost
   so it hears first, or trim the trailing black frames.
-- **Memory kept after the first recordings** (found 2026-10-01). Not a
-  leak (it stops growing), but a lot for a tray app: about 265 MB private
-  after the first 4K hardware-encoded recording (the encoder and driver,
-  loaded once), and about 120 MB graphics and 250 MB private kept by GPUI
-  after its first windows close. Look at unloading the encoder when idle
-  and at what GPUI keeps per window.
+- ~~Memory kept after the first recordings~~ (found and fixed 2026-10-01):
+  GPUI now trims after a window closes and recording runs in a helper
+  process; see Milestone 5, "Memory pass: before and after".
+- **A brief memory peak while the selection overlay is open** (found
+  2026-10-01). About 476 MB private for about a second, back to about 97
+  MB once it closes: GPUI's full-screen 4K window and its window-sized
+  render targets, the largest a 4× multisampled texture for drawing paths,
+  allocated whether or not the window draws any. Try allocating the path
+  textures only when a scene has paths, in `vendor/gpui-pre-windows` (the
+  alternative noted in the upstream draft).
 - **Thumbnail pointer polling** (noted 2026-10-01). The thumbnail checks
   the pointer ten times a second while it is on screen, because GPUI does
   not report the pointer leaving a window that never takes focus. Use
