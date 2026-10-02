@@ -176,6 +176,26 @@ Edge), or the morning's run had a condition not recreated here. Not
 reproduced in 49 hand-backs; recorded as no longer reproducing.
 `tmp\blank.ps1 -Mode ask|countdown|area` is the check if it comes back.
 
+### Rapid consecutive screenshots and clipboard contention
+
+`tmp\rapid.ps1`, 2026-10-02, release build, the test page full screen on
+display 2, the owner hands-off. A: area screenshots back to back, the next
+hotkey straight after each release (sizes 64×64 to 3800×2100), then the
+hotkey 3 times within 60 ms and one selection. B: the script opens the
+clipboard just before the release and holds it.
+
+| Case | Before (`7438d21`) | After (`eeb8126`) |
+|---|---|---|
+| 10 shots back to back | 6 saved: a hotkey within 3–45 ms of the last release was dropped, silently | 10 saved; 4 waited for the previous shot ("waits for the screenshot being finished") |
+| Hotkey 3 times, one selection | 1 file | 1 file; the 2 extra presses logged as ignored |
+| Clipboard held 150 ms | Copied 155 ms after release | Copied 154 ms after release |
+| Held 1.5 s, auto-save on | Saved, not copied, message; no thumbnail | Saved, not copied, message pointing to the thumbnail; thumbnail shown; log names `pwsh.exe` |
+| Held 1.5 s, auto-save off | Lost: not copied, not saved, no thumbnail | Not copied; thumbnail shown for 30 s (the only copy); the holder had no window, logged as unknown |
+
+Throughout: every file the exact size dragged, the clipboard holding the
+latest, overlay up 101–121 ms after the hotkey, copy and save 4–50 ms
+after release.
+
 ## Milestone 4: area recording MVP
 
 Built in four steps, each tried and approved by the owner: (1) start and
@@ -1302,7 +1322,8 @@ Coordinates are physical pixels from the captured monitor's top-left corner.
 | Live physical-pixel dimensions (§7.2, §20) | Passed (headless) | UI tests at 100/125/175/200% |
 | Escape and right-click cancel | Passed (headless + smoke) | UI tests; smoke test (Escape) |
 | Crop and PNG from the frozen, converted frame | Passed locally | Live service test |
-| Clipboard as PNG + bitmap, retry on contention (§11) | Passed (unit); live test opt-in | Owner's paste test is the real check |
+| Clipboard as PNG + bitmap, retry on contention (§11) | Passed locally, 2026-10-02 | Held 150 ms: copied; held 1.5 s: message, thumbnail keeps the screenshot ([Milestone 5](#rapid-consecutive-screenshots-and-clipboard-contention)) |
+| Rapid consecutive screenshots (Milestone 5) | Passed locally, 2026-10-02 | 10 back to back, all saved ([Milestone 5](#rapid-consecutive-screenshots-and-clipboard-contention)) |
 | Overlay within ~150 ms (§22.2) | Passed locally | 130 ms, release build, 4K HDR |
 | Tray icon and menu; left click takes a screenshot (§7.1) | **Passed: owner, 2026-09-27** | Smoke test (tray click); owner ran all 7 acceptance steps |
 | Auto-save to `Pictures/Framecut`, unique names (§12) | Passed locally | Unit tests; smoke test: two files |
