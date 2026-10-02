@@ -71,6 +71,14 @@ service's readback, next on the list). GPUI binds everything per frame or
 per draw except the rasterizer state, which the fix restores, so windows
 that stay open across a trim draw as before.
 
+The capture service's readback (2026-10-01): the driver keeps a staging
+texture's system memory after release, so the whole-frame staging texture
+left 33 MB from the second screenshot on (the Rust heap was back to 0; the
+memory was native). Reading back through a 1 MB band reused down the frame:
+after the second shot 75 MB instead of 95 (`capture-spike shots`), with the
+4K freeze unchanged at 73–85 ms. About 11 MB more than after the first
+shot stays regardless; it is the driver's.
+
 **Passed** (2026-10-01): the owner ran all seven steps; every window
 stayed as it was.
 
