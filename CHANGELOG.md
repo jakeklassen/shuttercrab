@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.1](https://github.com/jakeklassen/shuttercrab/compare/v0.1.0...v0.1.1) - 2026-10-03
+
+### Added
+
+- a taskbar button, and settings on the first run
+- show the selection overlay on every monitor
+
+### Fixed
+
+- *(settings)* move where screenshots go to the Screenshot page
+
 ## [0.1.0](https://github.com/jakeklassen/shuttercrab/releases/tag/v0.1.0) - 2026-10-02
 
 The first release.
