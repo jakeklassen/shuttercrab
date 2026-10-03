@@ -39,6 +39,7 @@
   .wrap { max-width: 1120px; margin: 0 auto; padding: 0 1.5rem; }
   .wordmark { font-family: var(--display); font-weight: 800; letter-spacing: -0.035em; }
   .wordmark span { color: var(--coral); }
+  code { font-family: var(--mono); font-size: 0.9em; color: var(--chalk); }
   .kbd { font-family: var(--mono); font-size: 0.9em; padding: 0.15em 0.45em; border-radius: 6px; background: #23262E; border: 1px solid var(--rim); white-space: nowrap; }
   .button { display: inline-flex; align-items: center; min-height: 48px; padding: 0 1.4rem; border-radius: 8px; font-weight: 600; font-size: 1.05rem; text-decoration: none; }
   .button.primary { background: var(--coral); color: var(--ink); }
@@ -65,10 +66,18 @@
   .mascot { display: flex; justify-content: center; }
   .mascot img { width: min(460px, 100%); height: auto; aspect-ratio: 1; }
 
-  .features { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(300px, 100%), 1fr)); gap: 1rem; padding-bottom: 4rem; }
-  .feature { display: flex; flex-direction: column; gap: 0.75rem; padding: 1.75rem; border-radius: 16px; background: var(--panel); }
+  .features { display: flex; flex-direction: column; gap: 1rem; padding-bottom: 4rem; }
+  .feature { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(320px, 100%), 1fr)); align-items: center; gap: 2rem; padding: 2rem; border-radius: 16px; background: var(--panel); }
+  .feature-text { display: flex; flex-direction: column; gap: 0.75rem; }
   .feature h2 { margin: 0; font-family: var(--display); font-weight: 800; font-size: 1.6rem; }
-  .feature p { margin: 0; font-size: 1.05rem; color: var(--muted); }
+  .feature p { margin: 0; font-size: 1.05rem; color: var(--muted); text-wrap: pretty; }
+  .shot { margin: 0; }
+  .shot img { display: block; width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--rim); }
+  .compare { display: flex; flex-direction: column; gap: 1.25rem; padding: 2rem; border-radius: 16px; background: var(--panel); }
+  .compare h2 { margin: 0; font-family: var(--display); font-weight: 800; font-size: 1.6rem; }
+  .compare > p { margin: 0; max-width: 46rem; font-size: 1.05rem; color: var(--muted); text-wrap: pretty; }
+  .compare figcaption { margin-bottom: 0.5rem; font-size: 0.95rem; font-weight: 500; color: var(--quiet); }
+  .compare figure:last-child figcaption { color: var(--chalk); }
 
   .download { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 1.5rem; padding: 2.5rem; margin-bottom: 3rem; border-radius: 20px; background: var(--panel); }
   .download-id { display: flex; align-items: center; gap: 1.25rem; }
@@ -82,6 +91,7 @@
   @media (max-width: 560px) {
     nav a:not(.button) { display: none; }
     .download { padding: 1.75rem; }
+    .feature, .compare { padding: 1.25rem; gap: 1.25rem; }
   }
 </style>
 </head>
@@ -121,16 +131,44 @@
 
   <section id="features" class="features" aria-label="Features">
     <div class="feature">
-      <h2>One shortcut</h2>
-      <p>Press <span class="kbd">Ctrl+Alt+S</span>, drag an area, let go. It's on your clipboard and saved before you've moved on.</p>
+      <div class="feature-text">
+        <h2>One shortcut</h2>
+        <p>Press <span class="kbd">Ctrl+Alt+S</span> and drag an area. Its size shows as you go. Press <span class="kbd">Space</span> to take a whole window instead, or <span class="kbd">Esc</span> to cancel.</p>
+      </div>
+      <figure class="shot"><img src="shots/ui-select.png" alt="The screen dimmed with a bright area being selected, its size, 1400 by 800, shown below it" width="1200" height="1022" loading="lazy"></figure>
     </div>
     <div class="feature">
+      <div class="feature-text">
+        <h2>On your clipboard and saved</h2>
+        <p>Every screenshot goes to the clipboard and into <code>Pictures\Shuttercrab</code>. A thumbnail sits in the corner for a few seconds: click it to open the image, or drag it into a chat, an email or a document. It doesn't take focus, so <span class="kbd">Ctrl+V</span> works straight away.</p>
+      </div>
+      <figure class="shot"><img src="shots/ui-thumbnail.png" alt="A small thumbnail of the screenshot in the bottom-right corner of the screen" width="1000" height="560" loading="lazy"></figure>
+    </div>
+    <div class="feature">
+      <div class="feature-text">
+        <h2>Everything from one bar</h2>
+        <p><span class="kbd">Ctrl+Alt+C</span> opens the Capture Bar. Choose a screenshot or a recording, then an area, a window or a whole display. Every choice has a letter, so it's quicker typed than clicked.</p>
+      </div>
+      <figure class="shot"><img src="shots/ui-bar.png" alt="The Capture Bar: Screenshot and Record tabs, with Area, Window and Display buttons, each labelled with its key" width="1200" height="520" loading="lazy"></figure>
+    </div>
+    <div class="feature">
+      <div class="feature-text">
+        <h2>Records too</h2>
+        <p><span class="kbd">Ctrl+Alt+R</span> records an area to MP4. Pause, stop, restart or discard the take from the keyboard. The border and the controls stay out of the video.</p>
+      </div>
+      <figure class="shot"><img src="shots/ui-recording.png" alt="A dashed red border around the area being recorded, with a bar below it showing the time and Pause, Stop, Restart and Discard with their shortcuts" width="1200" height="716" loading="lazy"></figure>
+    </div>
+    <div class="compare">
       <h2>Right on HDR</h2>
-      <p>With Windows HDR on, most capture tools wash out. Shuttercrab keeps the colours you were looking at.</p>
-    </div>
-    <div class="feature">
-      <h2>Records too</h2>
-      <p><span class="kbd">Ctrl+Alt+R</span> records an area to MP4. Pause, restart or throw a take away without touching the mouse.</p>
+      <p>With Windows HDR on, a standard 8-bit capture clips light greys and pale colours to white. Shuttercrab converts the HDR image back to the colours you were looking at. Both captures below are of the same test page.</p>
+      <figure class="shot">
+        <figcaption>A standard capture with HDR on</figcaption>
+        <img src="shots/hdr-typical.png" alt="A colour test page captured the standard way: the light greys and pastel swatches have turned white" width="1100" height="319" loading="lazy">
+      </figure>
+      <figure class="shot">
+        <figcaption>Shuttercrab</figcaption>
+        <img src="shots/hdr-shuttercrab.png" alt="The same test page captured by Shuttercrab, with every grey and pastel swatch visible" width="1100" height="319" loading="lazy">
+      </figure>
     </div>
   </section>
 
