@@ -26,6 +26,8 @@ pub struct Settings {
     /// Undoes a discard or keeps the take a restart replaced; registered
     /// only while there is something to undo.
     pub undo_hotkey: String,
+    /// Keep a button on the taskbar that opens the Capture Bar.
+    pub show_in_taskbar: bool,
     /// Put screenshots on the clipboard.
     pub copy_to_clipboard: bool,
     /// Also save each screenshot as a PNG file.
@@ -72,6 +74,7 @@ impl Default for Settings {
             restart_hotkey: "Ctrl+Alt+N".into(),
             discard_hotkey: "Ctrl+Alt+D".into(),
             undo_hotkey: "Ctrl+Alt+Z".into(),
+            show_in_taskbar: true,
             copy_to_clipboard: true,
             auto_save: true,
             output_dir: None,

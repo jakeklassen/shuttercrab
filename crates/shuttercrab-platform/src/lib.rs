@@ -15,6 +15,7 @@ mod layered;
 pub mod memory;
 pub mod startup;
 pub mod targets;
+mod taskbar;
 pub mod window;
 
 pub use clipboard::dibv5;
@@ -72,6 +73,10 @@ pub enum PlatformEvent {
     NotificationClicked,
     /// A display was attached, detached or changed (`WM_DISPLAYCHANGE`).
     DisplaysChanged,
+    /// The taskbar button was clicked (or Shuttercrab chosen in Alt+Tab).
+    TaskbarClicked,
+    /// "Close window" was chosen on the taskbar button.
+    TaskbarClosed,
 }
 
 /// A hotkey that could not be registered, usually because another
@@ -128,6 +133,7 @@ enum Command {
         title: String,
         message: String,
     },
+    TaskbarButton(bool),
 }
 
 /// Posted to the platform window to make its thread drain `commands`.
@@ -242,6 +248,11 @@ impl Platform {
             title: title.into(),
             message: message.into(),
         });
+    }
+
+    /// Show or remove the taskbar button.
+    pub fn set_taskbar_button(&self, show: bool) {
+        self.send(Command::TaskbarButton(show));
     }
 }
 
@@ -459,6 +470,7 @@ fn run(
         }
     };
     let mut hotkeys = hotkeys;
+    let mut taskbar_button = None;
     let conflicts = register_hotkeys(window, &hotkeys);
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
     STATE.with(|s| {
@@ -507,6 +519,14 @@ fn run(
                         Command::Notify { title, message } => {
                             with_state(|s| notify(s, &title, &message));
                         }
+                        Command::TaskbarButton(false) => taskbar_button = None,
+                        Command::TaskbarButton(true) if taskbar_button.is_none() => {
+                            match taskbar::TaskbarButton::show() {
+                                Ok(button) => taskbar_button = Some(button),
+                                Err(e) => log::warn!("{e:#}"),
+                            }
+                        }
+                        Command::TaskbarButton(true) => {}
                     }
                 }
             }
@@ -520,6 +540,7 @@ fn run(
         }
     }
     unregister_hotkeys(window, &hotkeys);
+    drop(taskbar_button);
     with_state(|s| {
         if s.tray.is_some() {
             let data = tray_data(s, NOTIFY_ICON_DATA_FLAGS(0));

@@ -169,7 +169,7 @@ fn main() {
         notices.push((
             "Shuttercrab is running".to_string(),
             format!(
-                "Press {} to capture, or {} for an area. Shuttercrab lives in the tray.",
+                "Press {} to capture, or {} for an area.",
                 settings.capture_bar_hotkey, settings.screenshot_hotkey
             ),
         ));
@@ -222,6 +222,7 @@ fn main() {
                     settings_path,
                     log_dir: log_file.as_ref().and_then(|f| f.parent().map(Into::into)),
                     updates,
+                    first_run,
                 },
                 events,
                 cx,
