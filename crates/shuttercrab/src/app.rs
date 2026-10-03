@@ -79,6 +79,7 @@ pub const MENU_SETTINGS: u32 = 6;
 pub const MENU_RECORD: u32 = 7;
 pub const MENU_PAUSE: u32 = 8;
 pub const MENU_UPDATE: u32 = 9;
+pub const MENU_OPEN: u32 = 10;
 
 /// Quits without the tray menu; kept for development.
 pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
@@ -151,6 +152,9 @@ pub fn tray_menu(
     let pause = pause
         .map(|label| MenuItem::item(MENU_PAUSE, format!("{label}\t{}", settings.pause_hotkey)));
     [
+        // The window, as any tray app's menu offers first.
+        MenuItem::item(MENU_OPEN, "Open Shuttercrab"),
+        MenuItem::Separator,
         // A tab right-aligns the rest of the label, like a menu accelerator.
         MenuItem::item(
             MENU_CAPTURE_BAR,
@@ -622,6 +626,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     }
                 }
                 PlatformEvent::TrayCommand(MENU_OPEN_FOLDER) => open_folder(&state, cx),
+                PlatformEvent::TrayCommand(MENU_OPEN) => open_main(&state, Page::Home, cx),
                 PlatformEvent::TrayCommand(MENU_SETTINGS) => open_main(&state, Page::Settings, cx),
                 PlatformEvent::TrayCommand(MENU_AUTO_SAVE) => {
                     let settings = state.update_settings(|s| s.auto_save = !s.auto_save, cx);
@@ -2571,6 +2576,8 @@ mod tests {
         let settings = Settings::default();
         let menu = tray_menu(&settings, TrayRecording::Idle, None);
         assert!(auto_save_checked(&menu));
+        // The window comes first, as in any tray app.
+        assert_eq!(menu[0], MenuItem::item(MENU_OPEN, "Open Shuttercrab"));
         assert!(menu.contains(&MenuItem::item(MENU_CAPTURE_BAR, "Capture Bar\tCtrl+Alt+C")));
         assert!(menu.contains(&MenuItem::item(
             MENU_SCREENSHOT,
