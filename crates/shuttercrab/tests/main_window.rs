@@ -24,6 +24,9 @@ struct Seen {
     captures: RefCell<Vec<(CaptureMode, CaptureTarget)>>,
     folders: Cell<u32>,
     quits: Cell<u32>,
+    restarts: Cell<u32>,
+    /// The version the fake updater has ready, if any.
+    update: RefCell<Option<String>>,
 }
 
 struct Opened {
@@ -38,6 +41,7 @@ fn open(cx: &mut TestAppContext) -> Opened {
     let settings = Rc::new(RefCell::new(Settings::default()));
     let seen = Rc::new(Seen::default());
     let (s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone());
+    let (s4, s5) = (seen.clone(), seen.clone());
     let hooks = Rc::new(MainHooks {
         settings: Rc::new(Hooks {
             settings: settings.clone(),
@@ -52,6 +56,8 @@ fn open(cx: &mut TestAppContext) -> Opened {
         capture: Rc::new(move |mode, target, _, _| s1.captures.borrow_mut().push((mode, target))),
         open_folder: Rc::new(move |_| s2.folders.set(s2.folders.get() + 1)),
         quit: Rc::new(move |_| s3.quits.set(s3.quits.get() + 1)),
+        update_ready: Rc::new(move || s4.update.borrow().clone()),
+        restart_to_update: Rc::new(move |_| s5.restarts.set(s5.restarts.get() + 1)),
     });
     let out = Rc::new(RefCell::new(None));
     let slot = out.clone();
@@ -192,4 +198,34 @@ fn the_folder_and_quit_have_keys(cx: &mut TestAppContext) {
     assert_eq!(opened.seen.quits.get(), 0);
     press(cx, &opened, &["ctrl-q"]);
     assert_eq!(opened.seen.quits.get(), 1);
+}
+
+#[gpui_kit::test]
+fn the_version_shows_until_an_update_is_ready_then_u_restarts(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    let label = |window: &Window, id: &'static str| {
+        window
+            .try_find(id)
+            .and_then(|e| e.label().map(|l| l.to_string()))
+    };
+    update(cx, &opened, |window, _| {
+        let expected = format!("Shuttercrab {}", env!("CARGO_PKG_VERSION"));
+        assert_eq!(label(window, "version"), Some(expected));
+        assert!(window.try_find("update").is_none());
+    });
+    // U does nothing without an update.
+    press(cx, &opened, &["u"]);
+    assert_eq!(opened.seen.restarts.get(), 0);
+
+    opened.seen.update.replace(Some("9.9.9".into()));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("version").is_none());
+        assert_eq!(
+            label(window, "update").as_deref(),
+            Some("Restart to update to 9.9.9")
+        );
+    });
+    press(cx, &opened, &["u"]);
+    update(cx, &opened, |window, cx| window.click("update", cx));
+    assert_eq!(opened.seen.restarts.get(), 2);
 }

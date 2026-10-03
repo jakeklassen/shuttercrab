@@ -6,7 +6,8 @@
 //! Everything has a key: N or Enter starts a capture, S and R pick the
 //! mode, A, W, D and F the target, T steps through the delays, comma opens
 //! Settings, O the folder, Ctrl+Q quits. Escape closes a menu, or goes back
-//! from Settings.
+//! from Settings. At the bottom, quietly, the version running; once a newer
+//! release is downloaded, Restart to update (U) in its place.
 //!
 //! The window reaches the rest of Shuttercrab only through [`MainHooks`],
 //! so it can be tested on its own.
@@ -51,6 +52,10 @@ pub struct MainHooks {
     pub capture: CaptureHook,
     pub open_folder: Rc<dyn Fn(&mut App)>,
     pub quit: Rc<dyn Fn(&mut App)>,
+    /// A downloaded release's version, waiting for a restart, if any.
+    pub update_ready: Rc<dyn Fn() -> Option<String>>,
+    /// Quit so the downloaded release is applied, and start again.
+    pub restart_to_update: Rc<dyn Fn(&mut App)>,
 }
 
 /// What the window shows.
@@ -335,6 +340,7 @@ impl MainWindow {
             "t" => self.step_delay(cx),
             "," => self.choose_more(More::Settings, window, cx),
             "o" => self.choose_more(More::OpenFolder, window, cx),
+            "u" if (self.hooks.update_ready)().is_some() => (self.hooks.restart_to_update)(cx),
             _ => {
                 if let Some(target) = CaptureTarget::ALL.into_iter().find(|t| t.key() == key) {
                     self.set_target(target, cx);
@@ -725,6 +731,57 @@ impl MainWindow {
             )
     }
 
+    /// Which build is running, quietly, so an update is easy to confirm; in
+    /// its place, once a newer release is downloaded, a way to restart into
+    /// it.
+    fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let footer = div().flex().justify_center().pb_3().text_xs();
+        match (self.hooks.update_ready)() {
+            Some(version) => {
+                let label = SharedString::from(format!("Restart to update to {version}"));
+                footer.child(
+                    div()
+                        .id("update")
+                        .role(Role::Button)
+                        .aria_label(label.clone())
+                        .test_support()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .px_2()
+                        .py_0p5()
+                        .rounded_md()
+                        .border_1()
+                        .border_color(coral().opacity(0.5))
+                        .text_color(coral())
+                        .hover(|s| s.bg(hover()))
+                        .cursor_pointer()
+                        .on_mouse_up(
+                            MouseButton::Left,
+                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
+                                (this.hooks.restart_to_update)(cx)
+                            }),
+                        )
+                        .child(Icon::new(IconName::RotateCcw).size(px(12.)))
+                        .child(label)
+                        .child(Self::key_hint("u")),
+                )
+            }
+            None => {
+                let version =
+                    SharedString::from(format!("Shuttercrab {}", env!("CARGO_PKG_VERSION")));
+                footer.child(
+                    div()
+                        .id("version")
+                        .aria_label(version.clone())
+                        .test_support()
+                        .text_color(muted())
+                        .child(version),
+                )
+            }
+        }
+    }
+
     fn settings_page(
         &self,
         settings: Entity<SettingsWindow>,
@@ -797,7 +854,10 @@ impl Render for MainWindow {
             );
         match (self.page, self.settings.clone()) {
             (Page::Settings, Some(settings)) => root.child(self.settings_page(settings, cx)),
-            _ => root.child(self.toolbar(cx)).child(self.hint()),
+            _ => root
+                .child(self.toolbar(cx))
+                .child(self.hint())
+                .child(self.footer(cx)),
         }
     }
 }

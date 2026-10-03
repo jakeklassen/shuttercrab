@@ -666,7 +666,8 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
 }
 
 /// Look for a newer release now and every few hours, in the background,
-/// until one is downloaded; then offer it in the tray menu.
+/// until one is downloaded; then offer it in the tray menu and the main
+/// window.
 fn watch_for_updates(state: &Rc<State>, cx: &mut App) {
     let Some(backend) = state.updates.clone() else {
         return;
@@ -679,12 +680,16 @@ fn watch_for_updates(state: &Rc<State>, cx: &mut App) {
                     log::info!("Shuttercrab {version} is downloaded and ready");
                     state.update_ready.replace(Some(version.clone()));
                     state.refresh_tray_menu();
+                    let main = state.main_window.borrow().clone();
+                    if let Some((_, view)) = main {
+                        view.update(cx, |_, cx| cx.notify());
+                    }
                     // A notification would show in a recording of the
                     // screen; the tray menu offers the update when it ends.
                     if state.tray_recording() == TrayRecording::Idle {
                         state.notify(
                             format!("Shuttercrab {version} is ready"),
-                            "Choose Restart to update in the tray menu.",
+                            "Restart to update from the tray menu or the Shuttercrab window.",
                             None,
                         );
                     }
@@ -921,6 +926,7 @@ fn start_from_main(
 /// How the main window reaches the rest of Shuttercrab.
 fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
     let (capture, folder, quitting) = (state.clone(), state.clone(), state.clone());
+    let (ready, restarting) = (state.clone(), state.clone());
     MainHooks {
         settings: Rc::new(settings_hooks(state, monitors)),
         capture: Rc::new(move |mode, target, window, cx| {
@@ -933,6 +939,12 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
         quit: Rc::new(move |cx| {
             let state = quitting.clone();
             cx.spawn(async move |cx| quit(&state, cx).await).detach();
+        }),
+        update_ready: Rc::new(move || ready.update_ready.borrow().clone()),
+        restart_to_update: Rc::new(move |cx| {
+            let state = restarting.clone();
+            cx.spawn(async move |cx| restart_to_update(&state, cx).await)
+                .detach();
         }),
     }
 }
