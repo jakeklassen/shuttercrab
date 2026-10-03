@@ -56,7 +56,7 @@ fn open_built(
     let events = Rc::new(RefCell::new(Vec::new()));
     let sink = events.clone();
     let handle = cx.open_window(size(px(logical.0), px(logical.1)), move |window, cx| {
-        cx.subscribe_self(move |_, event: &OverlayEvent, _| sink.borrow_mut().push(*event))
+        cx.subscribe_self(move |_, event: &OverlayEvent, _| sink.borrow_mut().push(event.clone()))
             .detach();
         build(SelectionOverlay::new(frame, window, cx))
     });
@@ -434,4 +434,35 @@ fn a_snapped_edge_holds_until_dragged_well_away_and_shows_it(cx: &mut TestAppCon
         assert_eq!(label(window, "dimensions").as_deref(), Some("375 × 195"));
         assert!(window.try_find("snapped-right").is_none());
     });
+}
+
+#[gpui_kit::test]
+fn freeform_reports_the_outline_in_physical_pixels(cx: &mut TestAppContext) {
+    let opened = open_built(cx, (400.0, 300.0), 1.5, |o| o.with_mode(Mode::Freeform));
+    update(cx, &opened, |window, cx| {
+        assert!(
+            label(window, "mode-hint")
+                .unwrap()
+                .starts_with("Draw around")
+        );
+        // Space does not leave Freeform.
+        window.press("space", cx);
+        window.drag(point(px(20.0), px(30.0)), point(px(120.0), px(80.0)), cx);
+    });
+    let events = opened.events.borrow();
+    let [OverlayEvent::Shape(outline)] = events.as_slice() else {
+        panic!("expected one shape, got {events:?}");
+    };
+    assert!(outline.len() >= 3);
+    assert_eq!(outline.first(), Some(&(30.0, 45.0)));
+    assert_eq!(outline.last(), Some(&(180.0, 120.0)));
+}
+
+#[gpui_kit::test]
+fn a_freeform_scribble_too_small_to_capture_is_ignored(cx: &mut TestAppContext) {
+    let opened = open_built(cx, (400.0, 300.0), 1.0, |o| o.with_mode(Mode::Freeform));
+    update(cx, &opened, |window, cx| {
+        window.drag(point(px(50.0), px(50.0)), point(px(51.0), px(50.0)), cx);
+    });
+    assert!(opened.events.borrow().is_empty());
 }

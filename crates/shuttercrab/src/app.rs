@@ -1030,6 +1030,7 @@ async fn capture(
         }
         CaptureTarget::Area => Mode::Area,
         CaptureTarget::Window => Mode::Window,
+        CaptureTarget::Freeform => Mode::Freeform,
     };
     let (frame, event) = select(state, frame, include_cursor, mode, false, pressed, cx).await?;
     let info = frame.monitor().clone();
@@ -1042,6 +1043,12 @@ async fn capture(
             return Ok(());
         }
         OverlayEvent::Selected(rect) => state.capture.screenshot(&frame, rect).await,
+        OverlayEvent::Shape(outline) => {
+            state
+                .capture
+                .screenshot_shape(&frame, outline.to_vec())
+                .await
+        }
         OverlayEvent::Display => state.capture.screenshot(&frame, whole(&frame)).await,
         OverlayEvent::Window { hwnd, visible } => {
             let include_cursor = state.settings.borrow().include_cursor;
@@ -1242,14 +1249,16 @@ async fn record(
     }
     let (region, info) = match target {
         CaptureTarget::Display => (None, monitor_info(state, monitor).await?),
-        CaptureTarget::Area | CaptureTarget::Window => {
+        // A window or a freeform shape is recorded as an area.
+        CaptureTarget::Area | CaptureTarget::Window | CaptureTarget::Freeform => {
             let first = state.capture.freeze_monitor(monitor, false).await?;
             let (frame, event) = select(state, first, false, Mode::Area, true, pressed, cx).await?;
             let region = match event {
                 OverlayEvent::Selected(rect) => Some(rect),
                 OverlayEvent::Display => None,
                 OverlayEvent::Window { visible, .. } => Some(visible),
-                OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) => {
+                // Area mode draws no shapes.
+                OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) | OverlayEvent::Shape(_) => {
                     log::info!("recording cancelled");
                     return Ok(());
                 }
@@ -2585,7 +2594,7 @@ mod tests {
             adapter: String::new(),
         };
         let rect = bar_rect(&monitor);
-        assert_eq!((rect.width, rect.height), (468, 198));
-        assert_eq!((rect.x, rect.y), (3840 + (3840 - 468) / 2, 36));
+        assert_eq!((rect.width, rect.height), (612, 198));
+        assert_eq!((rect.x, rect.y), (3840 + (3840 - 612) / 2, 36));
     }
 }

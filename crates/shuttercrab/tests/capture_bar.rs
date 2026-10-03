@@ -55,6 +55,7 @@ fn opens_on_the_last_target_and_enter_takes_it(cx: &mut TestAppContext) {
             "target-area",
             "target-window",
             "target-display",
+            "target-freeform",
             "mode-screenshot",
         ] {
             assert!(window.try_find(id).is_some(), "{id}");
@@ -78,11 +79,13 @@ fn arrows_and_tab_move_the_selection_and_wrap(cx: &mut TestAppContext) {
     update(cx, &opened, |window, cx| window.press("tab", cx));
     assert_eq!(selected(cx, &opened), CaptureTarget::Display);
     update(cx, &opened, |window, cx| window.press("right", cx));
+    assert_eq!(selected(cx, &opened), CaptureTarget::Freeform);
+    update(cx, &opened, |window, cx| window.press("right", cx));
     assert_eq!(selected(cx, &opened), CaptureTarget::Area);
     update(cx, &opened, |window, cx| window.press("left", cx));
-    assert_eq!(selected(cx, &opened), CaptureTarget::Display);
+    assert_eq!(selected(cx, &opened), CaptureTarget::Freeform);
     update(cx, &opened, |window, cx| window.press("shift-tab", cx));
-    assert_eq!(selected(cx, &opened), CaptureTarget::Window);
+    assert_eq!(selected(cx, &opened), CaptureTarget::Display);
     assert!(opened.events.borrow().is_empty());
 }
 
@@ -92,6 +95,7 @@ fn letters_choose_directly(cx: &mut TestAppContext) {
         ("a", CaptureTarget::Area),
         ("w", CaptureTarget::Window),
         ("d", CaptureTarget::Display),
+        ("f", CaptureTarget::Freeform),
     ] {
         let opened = open(cx, CaptureTarget::Area);
         update(cx, &opened, |window, cx| window.press(key, cx));
@@ -142,7 +146,8 @@ fn r_and_s_switch_modes_and_record_skips_window(cx: &mut TestAppContext) {
     update(cx, &opened, |window, _| {
         assert!(window.try_find("mode-record").is_some());
     });
-    // Recordings are of an area or a display: Window is passed over.
+    // Recordings are of an area or a display: Window and Freeform are
+    // passed over.
     update(cx, &opened, |window, cx| window.press("r", cx));
     assert_eq!(mode(cx), CaptureMode::Record);
     assert_eq!(selected(cx, &opened), CaptureTarget::Area);

@@ -55,7 +55,7 @@ impl CaptureMode {
     /// Whether `target` can be captured this way: recordings are of an
     /// area or a display (PRD §7.7).
     pub fn offers(self, target: CaptureTarget) -> bool {
-        self == Self::Screenshot || target != CaptureTarget::Window
+        self == Self::Screenshot || matches!(target, CaptureTarget::Area | CaptureTarget::Display)
     }
 }
 
@@ -67,41 +67,47 @@ pub enum CaptureTarget {
     Area,
     Window,
     Display,
+    /// Drawn around by hand; screenshots only.
+    Freeform,
 }
 
 impl CaptureTarget {
-    pub const ALL: [CaptureTarget; 3] = [Self::Area, Self::Window, Self::Display];
+    pub const ALL: [CaptureTarget; 4] = [Self::Area, Self::Window, Self::Display, Self::Freeform];
 
-    fn label(self) -> &'static str {
+    pub fn label(self) -> &'static str {
         match self {
             Self::Area => "Area",
             Self::Window => "Window",
             Self::Display => "Display",
+            Self::Freeform => "Freeform",
         }
     }
 
     /// The letter that picks it from the keyboard.
-    fn key(self) -> &'static str {
+    pub fn key(self) -> &'static str {
         match self {
             Self::Area => "a",
             Self::Window => "w",
             Self::Display => "d",
+            Self::Freeform => "f",
         }
     }
 
-    fn icon(self) -> IconName {
+    pub fn icon(self) -> IconName {
         match self {
             Self::Area => IconName::SquareDashed,
             Self::Window => IconName::AppWindow,
             Self::Display => IconName::Monitor,
+            Self::Freeform => IconName::Lasso,
         }
     }
 
-    fn id(self) -> &'static str {
+    pub fn id(self) -> &'static str {
         match self {
             Self::Area => "target-area",
             Self::Window => "target-window",
             Self::Display => "target-display",
+            Self::Freeform => "target-freeform",
         }
     }
 }
@@ -114,7 +120,7 @@ pub enum CaptureBarEvent {
 }
 
 /// The bar's size in logical pixels.
-pub const BAR_WIDTH: f32 = 312.0;
+pub const BAR_WIDTH: f32 = 408.0;
 pub const BAR_HEIGHT: f32 = 132.0;
 
 pub struct CaptureBar {

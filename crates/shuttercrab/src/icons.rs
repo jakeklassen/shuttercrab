@@ -1,5 +1,6 @@
 //! The icons Shuttercrab draws, embedded: GPUI Kit's component icons plus the
-//! few Lucide icons the Capture Bar and the recording controls use.
+//! few Lucide icons the main window, the Capture Bar and the recording
+//! controls use.
 
 use gpui_kit::{AssetSource, SharedString, assets::icon_assets};
 use std::borrow::Cow;
@@ -15,7 +16,16 @@ icon_assets!(
         X,
         Square,
         RotateCcw,
-        Trash
+        Trash,
+        Lasso,
+        Timer,
+        TimerOff,
+        Plus,
+        ArrowLeft,
+        ChevronDown,
+        FolderOpen,
+        Settings,
+        Power
     ]
 );
 
@@ -59,6 +69,15 @@ mod tests {
             IconName::Pause,
             IconName::Play,
             IconName::Ellipsis,
+            IconName::Lasso,
+            IconName::Timer,
+            IconName::TimerOff,
+            IconName::Plus,
+            IconName::ArrowLeft,
+            IconName::ChevronDown,
+            IconName::FolderOpen,
+            IconName::Settings,
+            IconName::Power,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

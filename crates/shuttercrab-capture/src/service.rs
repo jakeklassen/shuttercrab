@@ -12,6 +12,7 @@ use crate::{
     color::{ColorMode, Highlights, SCREENSHOT_ANCHOR},
     display,
     gpu::{Gpu, SdrConverter},
+    shape,
 };
 use futures::channel::oneshot;
 use std::{
@@ -215,6 +216,7 @@ enum Request {
     Monitors(oneshot::Sender<Result<Vec<MonitorInfo>>>),
     Freeze(MonitorId, bool, oneshot::Sender<Result<FrozenFrame>>),
     Screenshot(u64, PhysicalRect, oneshot::Sender<Result<Screenshot>>),
+    Shape(u64, Vec<(f32, f32)>, oneshot::Sender<Result<Screenshot>>),
     Window(isize, bool, oneshot::Sender<Result<Screenshot>>),
     Release(u64),
 }
@@ -289,6 +291,18 @@ impl Capture {
     ) -> impl Future<Output = Result<Screenshot>> + use<> {
         let (reply, answer) = oneshot::channel();
         self.ask(Request::Screenshot(frame.id, region, reply), answer)
+    }
+
+    /// Cut the inside of `outline` (physical pixels relative to the frame's
+    /// monitor, closed automatically) out of `frame`: its bounding box, with
+    /// everything outside the outline transparent.
+    pub fn screenshot_shape(
+        &self,
+        frame: &FrozenFrame,
+        outline: Vec<(f32, f32)>,
+    ) -> impl Future<Output = Result<Screenshot>> + use<> {
+        let (reply, answer) = oneshot::channel();
+        self.ask(Request::Shape(frame.id, outline, reply), answer)
     }
 
     /// Capture the top-level window `hwnd` directly (PRD §7.3): its own
@@ -374,7 +388,10 @@ impl Service {
                     let _ = reply.send(frozen);
                 }
                 Request::Screenshot(id, region, reply) => {
-                    let _ = reply.send(self.screenshot(id, region));
+                    let _ = reply.send(self.screenshot(id, region, None));
+                }
+                Request::Shape(id, outline, reply) => {
+                    let _ = reply.send(self.shape(id, &outline));
                 }
                 Request::Window(hwnd, include_cursor, reply) => {
                     let captured = retry_once(
@@ -603,15 +620,19 @@ impl Service {
         Ok(&self.gpus[&key])
     }
 
-    fn screenshot(&self, id: u64, region: PhysicalRect) -> Result<Screenshot> {
-        let frame = self.frames.get(&id).ok_or_else(|| {
-            CaptureError::new(
-                CaptureErrorCode::InvalidRegion,
-                "The frozen screen was already released",
-                id,
-            )
-        })?;
-        let rgba = crop_bgra_to_rgba(&frame.bgra, frame.width, frame.height, region)?;
+    /// Cut `region` out of frame `id`; with `outline` (relative to the
+    /// region), clear everything outside it.
+    fn screenshot(
+        &self,
+        id: u64,
+        region: PhysicalRect,
+        outline: Option<&[(f32, f32)]>,
+    ) -> Result<Screenshot> {
+        let frame = self.frame(id)?;
+        let mut rgba = crop_bgra_to_rgba(&frame.bgra, frame.width, frame.height, region)?;
+        if let Some(outline) = outline {
+            shape::mask_outside(&mut rgba, region.width, region.height, outline);
+        }
         let png = encode_png(region.width, region.height, &rgba)?;
         Ok(Screenshot {
             width: region.width,
@@ -619,6 +640,33 @@ impl Service {
             rgba: Arc::new(rgba),
             png: Arc::new(png),
         })
+    }
+
+    fn frame(&self, id: u64) -> Result<&StoredFrame> {
+        self.frames.get(&id).ok_or_else(|| {
+            CaptureError::new(
+                CaptureErrorCode::InvalidRegion,
+                "The frozen screen was already released",
+                id,
+            )
+        })
+    }
+
+    fn shape(&self, id: u64, outline: &[(f32, f32)]) -> Result<Screenshot> {
+        let frame = self.frame(id)?;
+        let Some((x, y, width, height)) = shape::bounds(outline, frame.width, frame.height) else {
+            return Err(CaptureError::new(
+                CaptureErrorCode::InvalidRegion,
+                "The outline is empty or outside the screen",
+                format!("{} points", outline.len()),
+            ));
+        };
+        let region = PhysicalRect::new(x, y, width, height);
+        let relative: Vec<_> = outline
+            .iter()
+            .map(|&(px, py)| (px - x as f32, py - y as f32))
+            .collect();
+        self.screenshot(id, region, Some(&relative))
     }
 
     fn capture_window(&mut self, hwnd: isize, include_cursor: bool) -> Result<Screenshot> {

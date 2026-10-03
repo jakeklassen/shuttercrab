@@ -12,6 +12,7 @@ pub mod png_io;
 pub mod raw;
 pub mod record;
 pub mod service;
+pub mod shape;
 
 pub use service::{
     Capture, CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect,

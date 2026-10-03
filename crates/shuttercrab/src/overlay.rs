@@ -16,9 +16,10 @@ use crate::selection::{
 use gpui_kit::{
     Bounds, Context, CursorStyle, EventEmitter, FocusHandle, Hsla, InteractiveElement as _,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, TestSupportExt as _, Window,
-    div, hsla, img, point, prelude::FluentBuilder as _, px, rgb,
+    ObjectFit, ParentElement as _, PathBuilder, Pixels, Point, Render, RenderImage, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    TestSupportExt as _, Window, canvas, div, hsla, img, point, prelude::FluentBuilder as _, px,
+    rgb,
 };
 use shuttercrab_capture::PhysicalRect;
 use std::{cell::Cell, rc::Rc, sync::Arc};
@@ -54,10 +55,12 @@ impl OverlayFrame {
 }
 
 /// What the user did with the overlay.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum OverlayEvent {
     /// A region of the frozen monitor, physical pixels relative to it.
     Selected(PhysicalRect),
+    /// A freeform outline, physical pixels relative to the monitor.
+    Shape(Arc<[(f32, f32)]>),
     /// A window, and the part of it visible on this monitor (physical
     /// pixels relative to the monitor) in case it cannot be captured
     /// directly.
@@ -78,6 +81,8 @@ pub enum OverlayEvent {
 pub enum Mode {
     Area,
     Window,
+    /// Draw around what to capture.
+    Freeform,
 }
 
 /// What a click in Window mode would capture.
@@ -103,6 +108,8 @@ pub struct SelectionOverlay {
     dragging: bool,
     /// Where the pointer went down in Window mode.
     pressed: bool,
+    /// The outline being drawn in Freeform mode, logical pixels.
+    outline: Vec<Point<Pixels>>,
     /// Choosing an area to record: Area mode only.
     recording: bool,
     focus: FocusHandle,
@@ -135,6 +142,7 @@ impl SelectionOverlay {
             end_stuck: Stuck::default(),
             dragging: false,
             pressed: false,
+            outline: Vec::new(),
             recording: false,
             focus,
         }
@@ -263,6 +271,8 @@ impl SelectionOverlay {
         let mode = match self.mode.get() {
             Mode::Area => Mode::Window,
             Mode::Window => Mode::Area,
+            // Freeform was chosen on purpose; Space leaves it.
+            Mode::Freeform => return,
         };
         self.mode.set(mode);
         self.drag = None;
@@ -289,8 +299,28 @@ impl SelectionOverlay {
                 self.dragging = true;
             }
             Mode::Window => self.pressed = true,
+            Mode::Freeform => {
+                self.outline = vec![event.position];
+                self.dragging = true;
+            }
         }
         cx.notify();
+    }
+
+    /// The outline drawn so far, closed, as physical pixels relative to the
+    /// monitor; `None` if it encloses too little to capture.
+    fn shape(&self) -> Option<Arc<[(f32, f32)]>> {
+        let scale = self.frame.scale;
+        let points: Vec<(f32, f32)> = self
+            .outline
+            .iter()
+            .map(|p| (f32::from(p.x) * scale, f32::from(p.y) * scale))
+            .collect();
+        let (mut lo, mut hi) = ((f32::MAX, f32::MAX), (f32::MIN, f32::MIN));
+        for &(x, y) in &points {
+            (lo.0, lo.1, hi.0, hi.1) = (lo.0.min(x), lo.1.min(y), hi.0.max(x), hi.1.max(y));
+        }
+        (points.len() >= 3 && hi.0 - lo.0 >= 2.0 && hi.1 - lo.1 >= 2.0).then(|| points.into())
     }
 
     fn on_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
@@ -307,6 +337,17 @@ impl SelectionOverlay {
             }
             // The highlight follows the pointer.
             Mode::Window => cx.notify(),
+            Mode::Freeform => {
+                // A point every logical pixel or so is plenty.
+                let far = |last: &Point<Pixels>| {
+                    let (dx, dy) = (event.position.x - last.x, event.position.y - last.y);
+                    f32::from(dx).abs() + f32::from(dy).abs() >= 1.0
+                };
+                if self.dragging && self.outline.last().is_none_or(far) {
+                    self.outline.push(event.position);
+                    cx.notify();
+                }
+            }
         }
     }
 
@@ -326,6 +367,17 @@ impl SelectionOverlay {
                     Some(rect) => cx.emit(OverlayEvent::Selected(rect)),
                     // A click without a drag selects nothing; keep waiting.
                     None => self.drag = None,
+                }
+            }
+            Mode::Freeform => {
+                if !std::mem::take(&mut self.dragging) {
+                    return;
+                }
+                self.outline.push(event.position);
+                match self.shape() {
+                    Some(outline) => cx.emit(OverlayEvent::Shape(outline)),
+                    // Too small to capture; keep waiting.
+                    None => self.outline.clear(),
                 }
             }
             // Capture on release, so the button-up does not reach the
@@ -441,12 +493,55 @@ impl SelectionOverlay {
             .collect()
     }
 
+    /// The outline being drawn: white over a dark edge, so it shows on any
+    /// background, with a faint line back to where it started.
+    fn outline_view(outline: &[Point<Pixels>]) -> impl IntoElement + use<> {
+        let points = outline.to_vec();
+        canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                if points.len() < 2 {
+                    return;
+                }
+                let path = |width: f32, closed: bool| {
+                    let mut builder = PathBuilder::stroke(px(width));
+                    builder.move_to(points[0]);
+                    for p in &points[1..] {
+                        builder.line_to(*p);
+                    }
+                    if closed {
+                        builder.line_to(points[0]);
+                    }
+                    builder.build().ok()
+                };
+                if let Some(edge) = path(4.0, false) {
+                    window.paint_path(edge, hsla(0.0, 0.0, 0.0, 0.6));
+                }
+                if let Some(line) = path(2.0, false) {
+                    window.paint_path(line, gpui_kit::white());
+                }
+                let closing = [points[points.len() - 1], points[0]];
+                let mut back = PathBuilder::stroke(px(1.));
+                back.move_to(closing[0]);
+                back.line_to(closing[1]);
+                if let Ok(back) = back.build() {
+                    window.paint_path(back, hsla(0.0, 0.0, 1.0, 0.5));
+                }
+            },
+        )
+        .absolute()
+        .left_0()
+        .top_0()
+        .size_full()
+    }
+
     /// A short hint at the top: what the mouse does and how to switch.
     fn hint(&self, window: &Window) -> impl IntoElement {
         let text: SharedString = match self.mode.get() {
             Mode::Area if self.recording => "Drag to record an area  ·  Esc: cancel",
             Mode::Area => "Drag to capture an area  ·  Space: window  ·  Esc: cancel",
             Mode::Window => "Click a window to capture it, or the desktop for the whole display  ·  Space: area  ·  Esc: cancel",
+            Mode::Freeform => "Draw around what to capture  ·  Esc: cancel",
         }
         .into();
         // In Window mode a click on the hint itself captures nothing. (An
@@ -497,7 +592,7 @@ impl Render for SelectionOverlay {
             .size_full()
             .relative()
             .cursor(match self.mode.get() {
-                Mode::Area => CursorStyle::Crosshair,
+                Mode::Area | Mode::Freeform => CursorStyle::Crosshair,
                 Mode::Window => CursorStyle::PointingHand,
             })
             .on_key_down(cx.listener(Self::on_key_down))
@@ -541,6 +636,11 @@ impl Render for SelectionOverlay {
                         .children(self.snap_markers(b))
                         .child(Self::label("dimensions", label, b, window));
                 }
+            }
+            Mode::Freeform => {
+                root = root
+                    .children(self.dimming(None, window))
+                    .child(Self::outline_view(&self.outline));
             }
             // With several monitors, the highlight follows the pointer: the
             // others only dim.

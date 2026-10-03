@@ -60,7 +60,7 @@ copy runs at a time.
 
 | Keys | Does |
 |---|---|
-| **Ctrl+Alt+C** or click the tray icon | Open the Capture Bar: **S**creenshot or **R**ecord, then **A**rea, **W**indow or **D**isplay (click, arrow keys and Enter, or the letter). It starts on your last choice |
+| **Ctrl+Alt+C** or click the tray icon | Open the Capture Bar: **S**creenshot or **R**ecord, then **A**rea, **W**indow, **D**isplay or **F**reeform (click, arrow keys and Enter, or the letter). It starts on your last choice |
 | **Ctrl+Alt+S** | Straight to an area: freeze every monitor, drag on any of them, release to copy. Edges snap to nearby windows |
 | **Space** while selecting | Switch to Window mode: click a window to capture it, or the desktop for the whole display. Space again returns to Area |
 | Escape or right-click | Cancel the selection |
