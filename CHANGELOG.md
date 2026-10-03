@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.5](https://github.com/jakeklassen/shuttercrab/compare/v0.1.4...v0.1.5) - 2026-10-03
+
+### Performance
+
+- Much less memory while you choose what to capture. With two 4K monitors, the selection screen used to peak at about 770 MB for the second or two it was open; it now peaks at about 270–300 MB, and Shuttercrab goes back to about 90 MB afterwards as before. Each frozen screen is now held once instead of twice, the Freeform line no longer needs screen-sized drawing buffers, and the UI toolkit no longer allocates them for windows that never use them.
 ## [0.1.4](https://github.com/jakeklassen/shuttercrab/compare/v0.1.3...v0.1.4) - 2026-10-03
 
 ### Changed
