@@ -11,8 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- show the version on the main window, and Restart to update there
-
+- The main window shows which version is running, quietly, at the bottom. When a newer release has downloaded, that line becomes a Restart to update button (or press U), as well as the item in the tray menu.
 ## [0.1.5](https://github.com/jakeklassen/shuttercrab/compare/v0.1.4...v0.1.5) - 2026-10-03
 
 ### Performance
