@@ -419,7 +419,6 @@ impl SettingsWindow {
     fn general(&self) -> SettingPage {
         let hooks = self.hooks.clone();
         let (startup_get, startup_set) = (hooks.clone(), hooks.clone());
-        let folder = hooks.clone();
         SettingPage::new("General")
             .default_open(true)
             .group(
@@ -453,26 +452,11 @@ impl SettingsWindow {
                             .description("Press it again to stop."),
                     ),
             )
-            .group(
-                SettingGroup::new()
-                    .item(heading("Where screenshots go", None))
-                    .item(SettingItem::new(
-                        "Copy to the clipboard",
-                        self.switch(|s| s.copy_to_clipboard, |s, v| s.copy_to_clipboard = v),
-                    ))
-                    .item(SettingItem::new(
-                        "Save to the folder",
-                        self.switch(|s| s.auto_save, |s, v| s.auto_save = v),
-                    ))
-                    .item(SettingItem::new(
-                        "Folder",
-                        SettingField::render(move |_, _, _| folder_row(folder.clone(), Folder::Screenshots)),
-                    )),
-            )
     }
 
     fn screenshot(&self) -> SettingPage {
         let (read, write) = (self.hooks.clone(), self.hooks.clone());
+        let folder = self.hooks.clone();
         let durations = [3u32, 6, 10, 20]
             .map(|s| {
                 (
@@ -499,6 +483,27 @@ impl SettingsWindow {
                         )
                         .description("Area selections hold to nearby window edges."),
                     ),
+            )
+            .group(
+                SettingGroup::new()
+                    .item(heading("Where screenshots go", None))
+                    .item(SettingItem::new(
+                        "Copy to the clipboard",
+                        self.switch(|s| s.copy_to_clipboard, |s, v| s.copy_to_clipboard = v),
+                    ))
+                    .item(
+                        SettingItem::new(
+                            "Save to the folder",
+                            self.switch(|s| s.auto_save, |s, v| s.auto_save = v),
+                        )
+                        .description("When off, screenshots go to the clipboard only."),
+                    )
+                    .item(SettingItem::new(
+                        "Folder",
+                        SettingField::render(move |_, _, _| {
+                            folder_row(folder.clone(), Folder::Screenshots)
+                        }),
+                    )),
             )
             .group(
                 SettingGroup::new()
