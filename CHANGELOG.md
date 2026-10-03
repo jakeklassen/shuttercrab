@@ -11,13 +11,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- a taskbar button, and settings on the first run
-- show the selection overlay on every monitor
+- Screenshots and recordings work on every monitor. Area and Window cover all your screens, not only the one under the pointer, and Space switches them all between Area and Window.
+- A taskbar button. Click it to open the Capture Bar. Turn it off in Settings, under General; the tray icon stays either way.
+- The first time Shuttercrab starts, it opens Settings.
 
 ### Fixed
 
-- *(settings)* move where screenshots go to the Screenshot page
-
+- In Window mode, clicking the hint at the top no longer captures the window behind it.
+- "Where screenshots go" moved to the Screenshot page in Settings, beside the other screenshot settings.
 ## [0.1.0](https://github.com/jakeklassen/shuttercrab/releases/tag/v0.1.0) - 2026-10-02
 
 The first release.
