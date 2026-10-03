@@ -154,7 +154,45 @@ MB graphics): it is what keeps the overlay within PRD §22.2's 150 ms.
 Sampled every 100 ms, the peak is while the selection overlay is open:
 about 476 MB for about a second, then back to about 97 MB. That is GPUI's
 full-screen 4K window (its window-sized render targets, the largest a 4×
-multisampled one); see [Known issues](#known-issues).
+multisampled one); fixed 2026-10-03, below.
+
+### The overlay's memory peak
+
+Measured 2026-10-03 with `tmp\overlaymem.ps1` (release builds; both 4K
+monitors at 150%, HDR on; the request starts on display 2 and display 1's
+overlay follows; private memory sampled every 50 ms; each overlay held
+open about 2.5 s; the owner hands-off). Once the overlay covered every
+monitor, its peak had nearly doubled:
+
+| Peak private memory | 0.1.4 | Fixed |
+|---|---|---|
+| Idle | 88 MB | 88 MB |
+| Area overlay open | 771 MB | 337 MB |
+| Window overlay open | 736 MB | 303 MB |
+| Freeform, drawing | 738 MB | 336 MB |
+| After each capture | 89–90 MB | 89–92 MB |
+
+What did it, in the order measured:
+
+- GPUI made two window-sized path textures for every window, one 4×
+  multisampled (about 166 MB at 4K), drawn into or not. They are now made
+  only when a window draws a path (`vendor/gpui-pre-windows`). Area and
+  Window: 771 → 369 MB.
+- The Freeform outline was a GPUI path, so its overlay made them anyway. It
+  is now drawn as dots a pixel apart. Freeform: 493 → 339 MB.
+- The frozen screen was held twice per monitor, by the capture service (to
+  cut from) and by the overlay (to show). The service now hands its pixels
+  over, and the screenshot is cut from the overlay's copy on a background
+  thread. Rust heap with the overlays open: 129 → 66 MB, one 4K screen per
+  monitor; Area 369 → 337 MB.
+- GPUI's swap chains have two buffers instead of three (33 MB each per
+  full-screen 4K window). This one made no difference to private memory
+  that the sampling could see.
+
+What remains per monitor is what showing a frozen 4K screen needs: the
+pixels (33 MB), their texture, and the window's two buffers. The graphics
+memory counter peaks at about 310–375 MB with both overlays open, and
+returns to 39 MB after.
 
 ### The blank frame after the keyboard hand-back, re-checked
 
@@ -1337,13 +1375,10 @@ Accepted for now by the owner, to revisit in Milestone 5 (hardening).
 - ~~Memory kept after the first recordings~~ (found and fixed 2026-10-01):
   GPUI now trims after a window closes and recording runs in a helper
   process; see Milestone 5, "Memory pass: before and after".
-- **A brief memory peak while the selection overlay is open** (found
-  2026-10-01). About 476 MB private for about a second, back to about 97
-  MB once it closes: GPUI's full-screen 4K window and its window-sized
-  render targets, the largest a 4× multisampled texture for drawing paths,
-  allocated whether or not the window draws any. Try allocating the path
-  textures only when a scene has paths, in `vendor/gpui-pre-windows` (the
-  alternative noted in the upstream draft).
+- ~~A brief memory peak while the selection overlay is open~~ (found
+  2026-10-01, fixed 2026-10-03). With the overlay on both monitors it had
+  reached about 770 MB; now about 300–340 MB. See Milestone 5, "The
+  overlay's memory peak".
 - ~~Thumbnail pointer polling~~ (noted and fixed 2026-10-01). The
   thumbnail checked the pointer ten times a second. It now follows the
   window's hover state, which GPUI keeps from Windows' own enter and leave
