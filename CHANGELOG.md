@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.3](https://github.com/jakeklassen/shuttercrab/compare/v0.1.2...v0.1.3) - 2026-10-03
+
+### Added
+
+- A main window, after Snipping Tool's. Start a capture with New (N), pick a screenshot or a recording (S, R) and what to capture: an area, a window, a display or a freeform shape (A, W, D, F). The window hides while you capture and comes back afterwards. Settings, the screenshots folder and Quit are in the ⋯ menu, and Settings opens in the same window.
+- Freeform screenshots: draw around what to capture, and everything outside the shape is transparent. Also F in the Capture Bar.
+- A delay for screenshots started from the window: 3, 5 or 10 seconds (T).
 ## [0.1.2](https://github.com/jakeklassen/shuttercrab/compare/v0.1.1...v0.1.2) - 2026-10-03
 
 ### Changed
