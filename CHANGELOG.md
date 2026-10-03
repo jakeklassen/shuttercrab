@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.4](https://github.com/jakeklassen/shuttercrab/compare/v0.1.3...v0.1.4) - 2026-10-03
+
+### Added
+
+- clicking the tray icon opens the main window
+
+### Fixed
+
+- open the main window from the tray menu
+
 ## [0.1.3](https://github.com/jakeklassen/shuttercrab/compare/v0.1.2...v0.1.3) - 2026-10-03
 
 ### Added
