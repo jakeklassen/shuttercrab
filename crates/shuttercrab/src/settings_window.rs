@@ -422,25 +422,16 @@ impl SettingsWindow {
         SettingPage::new("General")
             .default_open(true)
             .group(
-                SettingGroup::new()
-                    .item(heading("Startup", None))
-                    .item(
-                        SettingItem::new(
-                            "Start Shuttercrab when you sign in",
-                            SettingField::switch(
-                                move |_| (startup_get.launch_at_startup)(),
-                                move |value, _| (startup_set.set_launch_at_startup)(value),
-                            ),
-                        )
-                        .description("Shuttercrab waits quietly until you capture."),
+                SettingGroup::new().item(heading("Startup", None)).item(
+                    SettingItem::new(
+                        "Start Shuttercrab when you sign in",
+                        SettingField::switch(
+                            move |_| (startup_get.launch_at_startup)(),
+                            move |value, _| (startup_set.set_launch_at_startup)(value),
+                        ),
                     )
-                    .item(
-                        SettingItem::new(
-                            "Show Shuttercrab on the taskbar",
-                            self.switch(|s| s.show_in_taskbar, |s, v| s.show_in_taskbar = v),
-                        )
-                        .description("Click it to open the Capture Bar. The tray icon is always there."),
-                    ),
+                    .description("It starts in the tray, without opening this window."),
+                ),
             )
             .group(
                 SettingGroup::new()

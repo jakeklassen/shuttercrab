@@ -17,6 +17,10 @@ use windows::{
 const RUN_KEY: &str = r"Software\Microsoft\Windows\CurrentVersion\Run";
 const NAME: &str = "Shuttercrab";
 
+/// On the command line of a start at sign-in: start in the tray, without
+/// opening the window.
+pub const BACKGROUND_FLAG: &str = "--background";
+
 /// Whether Shuttercrab starts when the user signs in.
 pub fn launch_at_startup() -> bool {
     entry(NAME).is_some()
@@ -26,10 +30,26 @@ pub fn launch_at_startup() -> bool {
 pub fn set_launch_at_startup(enabled: bool) -> Result<()> {
     if enabled {
         let exe = std::env::current_exe().context("no path for this executable")?;
-        set_entry(NAME, &format!("\"{}\"", exe.display()))
+        set_entry(NAME, &format!("\"{}\" {BACKGROUND_FLAG}", exe.display()))
     } else {
         remove_entry(NAME)
     }
+}
+
+/// Add [`BACKGROUND_FLAG`] to a startup entry written without it (by 0.1.1
+/// and earlier), keeping the program it starts. Returns whether it did.
+pub fn add_background_flag() -> Result<bool> {
+    match entry(NAME) {
+        Some(command) if !command.ends_with(BACKGROUND_FLAG) => {
+            set_entry(NAME, &with_background_flag(&command))?;
+            Ok(true)
+        }
+        _ => Ok(false),
+    }
+}
+
+fn with_background_flag(command: &str) -> String {
+    format!("{} {BACKGROUND_FLAG}", command.trim_end())
 }
 
 fn entry(name: &str) -> Option<String> {
@@ -110,5 +130,15 @@ mod tests {
         assert_eq!(entry(&name), None);
         // Removing twice is fine.
         remove_entry(&name).unwrap();
+    }
+
+    #[test]
+    fn an_old_entry_gains_the_background_flag_and_keeps_its_program() {
+        assert_eq!(
+            with_background_flag(
+                r#""C:\Users\a\AppData\Local\Shuttercrab\current\shuttercrab.exe""#
+            ),
+            r#""C:\Users\a\AppData\Local\Shuttercrab\current\shuttercrab.exe" --background"#
+        );
     }
 }

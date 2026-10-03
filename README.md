@@ -53,12 +53,15 @@ To run it from the source instead:
 mise exec -- cargo run --release -p shuttercrab
 ```
 
-Shuttercrab runs in the tray with no window. Only one copy runs at a time.
+Starting Shuttercrab opens its window (for now, its settings). Closing the
+window leaves Shuttercrab running in the tray; the tray menu's Settings
+opens it again. Started at sign-in, it starts in the tray only. Only one
+copy runs at a time.
 
 | Keys | Does |
 |---|---|
 | **Ctrl+Alt+C** or click the tray icon | Open the Capture Bar: **S**creenshot or **R**ecord, then **A**rea, **W**indow or **D**isplay (click, arrow keys and Enter, or the letter). It starts on your last choice |
-| **Ctrl+Alt+S** | Straight to an area: freeze the monitor under the pointer, drag, release to copy. Edges snap to nearby windows |
+| **Ctrl+Alt+S** | Straight to an area: freeze every monitor, drag on any of them, release to copy. Edges snap to nearby windows |
 | **Space** while selecting | Switch to Window mode: click a window to capture it, or the desktop for the whole display. Space again returns to Area |
 | Escape or right-click | Cancel the selection |
 | **Ctrl+Alt+R** | Record an area (drag it); again to stop |

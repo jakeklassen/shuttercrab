@@ -7,7 +7,7 @@ use shuttercrab::{
     settings::{self, Loaded, Settings},
 };
 use shuttercrab_capture::{Capture, display::windows_build};
-use shuttercrab_platform::{Hotkey, Platform, Tray};
+use shuttercrab_platform::{Hotkey, Platform, Tray, startup};
 use std::path::PathBuf;
 
 /// Keeps settings and logs in this folder instead of the user's, for tests.
@@ -29,7 +29,7 @@ fn main() {
     velopack::VelopackApp::build()
         .on_before_uninstall_fast_callback(|_| {
             // Don't leave a startup entry pointing at a deleted program.
-            let _ = shuttercrab_platform::startup::set_launch_at_startup(false);
+            let _ = startup::set_launch_at_startup(false);
         })
         .run();
     // Release builds have no console; print to the terminal that started us.
@@ -42,6 +42,9 @@ fn main() {
         shuttercrab_platform::signal_running_instance();
         return;
     };
+    // Started by Windows at sign-in: the tray only. Every other start opens
+    // the window, like any app.
+    let background = std::env::args().any(|a| a == startup::BACKGROUND_FLAG);
     let data_dir = std::env::var_os(DATA_DIR_VARIABLE).map(PathBuf::from);
     let log_dir = match &data_dir {
         Some(dir) => Some(dir.join("logs")),
@@ -95,6 +98,11 @@ fn main() {
     };
     if let Some(path) = &settings_path {
         log::info!("settings in {}", path.display());
+    }
+    match startup::add_background_flag() {
+        Ok(true) => log::info!("the startup entry now starts Shuttercrab in the tray"),
+        Ok(false) => {}
+        Err(e) => log::warn!("could not update the startup entry: {e:#}"),
     }
     // Screenshots written only for the thumbnail to open or drag.
     let removed = shuttercrab::files::remove_old(
@@ -222,7 +230,7 @@ fn main() {
                     settings_path,
                     log_dir: log_file.as_ref().and_then(|f| f.parent().map(Into::into)),
                     updates,
-                    first_run,
+                    open_window: !background,
                 },
                 events,
                 cx,

@@ -258,8 +258,8 @@ pub struct Shuttercrab {
     pub log_dir: Option<PathBuf>,
     /// Updates from GitHub Releases; `None` when not installed by Velopack.
     pub updates: Option<Arc<dyn UpdateBackend>>,
-    /// No settings existed before this start: show the settings window.
-    pub first_run: bool,
+    /// Open the window at once: every start but one at sign-in.
+    pub open_window: bool,
 }
 
 struct State {
@@ -538,9 +538,10 @@ enum Busy {
 
 /// Start handling platform events. Call once, inside the GPUI application.
 pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, cx: &mut App) {
-    // Shuttercrab lives in the tray and has no main window. GPUI's default on
-    // Windows quits when the last window closes, which would end the app
-    // the moment a selection finishes, before the clipboard is written.
+    // Shuttercrab keeps running in the tray when its window closes. GPUI's
+    // default on Windows quits when the last window closes, which would end
+    // the app then, or the moment a selection finishes, before the
+    // clipboard is written.
     cx.set_quit_mode(QuitMode::Explicit);
     let state = Rc::new(State {
         capture: shuttercrab.capture,
@@ -561,13 +562,10 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         undo_generation: Cell::new(0),
     });
     watch_for_updates(&state, cx);
-    state
-        .platform
-        .set_taskbar_button(state.settings.borrow().show_in_taskbar);
-    let first_run = shuttercrab.first_run;
+    let open_window = shuttercrab.open_window;
     cx.spawn(async move |cx| {
-        // Something to see the first time, and the place to change it.
-        if first_run {
+        // Shuttercrab's window, on the taskbar like any app's, until closed.
+        if open_window {
             open_settings(&state, cx);
         }
         heap::log_memory_soon("idle after start", cx);
@@ -579,7 +577,6 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                 }
                 PlatformEvent::Hotkey(CAPTURE_BAR_HOTKEY)
                 | PlatformEvent::TrayActivated
-                | PlatformEvent::TaskbarClicked
                 | PlatformEvent::TrayCommand(MENU_CAPTURE_BAR) => {
                     start(&state, Start::CaptureBar, None, cx)
                 }
@@ -619,11 +616,9 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     );
                     state.refresh_tray_menu();
                 }
-                // Closing the taskbar button closes Shuttercrab, as closing
-                // any app's window does.
-                PlatformEvent::Hotkey(QUIT_HOTKEY)
-                | PlatformEvent::TrayCommand(MENU_QUIT)
-                | PlatformEvent::TaskbarClosed => quit(&state, cx).await,
+                PlatformEvent::Hotkey(QUIT_HOTKEY) | PlatformEvent::TrayCommand(MENU_QUIT) => {
+                    quit(&state, cx).await
+                }
                 PlatformEvent::TrayCommand(MENU_UPDATE) => restart_to_update(&state, cx).await,
                 // Starting Shuttercrab again (say, from the Start menu) shows its
                 // settings: something visible, and the way to change it.
@@ -855,9 +850,6 @@ fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
             let settings = changed.settings.borrow().clone();
             changed.save(&settings, cx.background_executor());
             changed.refresh_tray_menu();
-            changed
-                .platform
-                .set_taskbar_button(settings.show_in_taskbar);
             log::info!("settings changed");
         }),
         pause_hotkeys: Rc::new(move || {
