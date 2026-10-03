@@ -33,6 +33,10 @@ USAGE
       M is a list index or a device name such as DISPLAY1; default: the
       monitor under the pointer when the capture starts.
 
+  capture-spike window HWND OUT.png
+      Capture one window, and nothing else on screen, through the app's window
+      capture (converted to SDR as the app would). HWND is decimal or 0x hex.
+
   capture-spike convert SOURCE.fp16 OUT.png [--highlights tonemap|clip]
                         [--anchor peak|pNN|BRIGHTNESS]
       Re-run the transform on a saved FP16 frame. --anchor picks what sets an
@@ -117,6 +121,7 @@ fn run() -> Result<()> {
     match args.command().as_deref() {
         Some("list") => list(args),
         Some("capture") => capture(args),
+        Some("window") => window(args),
         Some("convert") => convert(args),
         Some("compare") => compare(args),
         Some("transfer") => transfer(args),
@@ -220,6 +225,26 @@ fn capture(mut args: Args) -> Result<()> {
     let dir = out.join(format!("{label}-{}", snapshot::timestamp()));
     let shot = snapshot::take(monitor.as_deref(), &dir, highlights)?;
     print_snapshot(&shot);
+    Ok(())
+}
+
+fn window(mut args: Args) -> Result<()> {
+    let hwnd = args.positional("HWND")?;
+    let out = PathBuf::from(args.positional("OUT.png")?);
+    args.finish()?;
+    let hwnd = match hwnd.strip_prefix("0x") {
+        Some(hex) => isize::from_str_radix(hex, 16)?,
+        None => hwnd.parse()?,
+    };
+    let capture = shuttercrab_capture::Capture::start()?;
+    let shot = futures::executor::block_on(capture.capture_window(hwnd, false))?;
+    std::fs::write(&out, shot.png.as_slice())?;
+    println!(
+        "{}x{} window saved to {}",
+        shot.width,
+        shot.height,
+        out.display()
+    );
     Ok(())
 }
 
