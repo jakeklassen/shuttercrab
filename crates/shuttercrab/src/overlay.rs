@@ -16,10 +16,9 @@ use crate::selection::{
 use gpui_kit::{
     Bounds, Context, CursorStyle, EventEmitter, FocusHandle, Hsla, InteractiveElement as _,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, ParentElement as _, PathBuilder, Pixels, Point, Render, RenderImage, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
-    TestSupportExt as _, Window, canvas, div, hsla, img, point, prelude::FluentBuilder as _, px,
-    rgb,
+    ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, TestSupportExt as _, Window,
+    canvas, div, fill, hsla, img, point, prelude::FluentBuilder as _, px, rgb, size,
 };
 use shuttercrab_capture::PhysicalRect;
 use std::{cell::Cell, rc::Rc, sync::Arc};
@@ -120,6 +119,33 @@ impl EventEmitter<OverlayEvent> for SelectionOverlay {}
 /// Dimming over everything outside the selection.
 fn dim() -> Hsla {
     hsla(0.0, 0.0, 0.0, 0.4)
+}
+
+/// Points along the polyline through `points`, `every` logical pixels
+/// apart (and each of `points`), for drawing it as dots.
+fn trail(points: &[Point<Pixels>], every: f32) -> Vec<Point<Pixels>> {
+    let mut out = Vec::with_capacity(points.len() * 2);
+    for pair in points.windows(2) {
+        let (a, b) = (pair[0], pair[1]);
+        let (dx, dy) = (f32::from(b.x - a.x), f32::from(b.y - a.y));
+        let steps = ((dx.hypot(dy) / every).ceil() as usize).max(1);
+        for i in 0..steps {
+            let t = i as f32 / steps as f32;
+            out.push(point(a.x + px(dx * t), a.y + px(dy * t)));
+        }
+    }
+    out.extend(points.last());
+    out
+}
+
+/// A round dot of `diameter` logical pixels centred on `at`.
+fn dot(at: Point<Pixels>, diameter: f32, color: Hsla) -> gpui_kit::PaintQuad {
+    let r = px(diameter / 2.);
+    fill(
+        Bounds::new(point(at.x - r, at.y - r), size(px(diameter), px(diameter))),
+        color,
+    )
+    .corner_radii(r)
 }
 
 /// Shuttercrab's accent, for the Window-mode highlight.
@@ -494,38 +520,29 @@ impl SelectionOverlay {
     }
 
     /// The outline being drawn: white over a dark edge, so it shows on any
-    /// background, with a faint line back to where it started.
+    /// background, with a faint dotted line back to where it started.
+    ///
+    /// Drawn as round dots a pixel apart, not as a GPUI path: a path makes
+    /// the window allocate screen-sized path textures, one of them 4×
+    /// multisampled, which on a 4K monitor is over 160 MB for a thin line.
     fn outline_view(outline: &[Point<Pixels>]) -> impl IntoElement + use<> {
         let points = outline.to_vec();
         canvas(
             |_, _, _| {},
             move |_, _, window, _| {
-                if points.len() < 2 {
+                let (Some(first), Some(last)) = (points.first(), points.last()) else {
                     return;
-                }
-                let path = |width: f32, closed: bool| {
-                    let mut builder = PathBuilder::stroke(px(width));
-                    builder.move_to(points[0]);
-                    for p in &points[1..] {
-                        builder.line_to(*p);
-                    }
-                    if closed {
-                        builder.line_to(points[0]);
-                    }
-                    builder.build().ok()
                 };
-                if let Some(edge) = path(4.0, false) {
-                    window.paint_path(edge, hsla(0.0, 0.0, 0.0, 0.6));
+                let line = trail(&points, 1.0);
+                for (diameter, color) in
+                    [(4.0, hsla(0.0, 0.0, 0.0, 0.35)), (2.0, gpui_kit::white())]
+                {
+                    for p in &line {
+                        window.paint_quad(dot(*p, diameter, color));
+                    }
                 }
-                if let Some(line) = path(2.0, false) {
-                    window.paint_path(line, gpui_kit::white());
-                }
-                let closing = [points[points.len() - 1], points[0]];
-                let mut back = PathBuilder::stroke(px(1.));
-                back.move_to(closing[0]);
-                back.line_to(closing[1]);
-                if let Ok(back) = back.build() {
-                    window.paint_path(back, hsla(0.0, 0.0, 1.0, 0.5));
+                for p in trail(&[*last, *first], 4.0) {
+                    window.paint_quad(dot(p, 1.5, hsla(0.0, 0.0, 1.0, 0.5)));
                 }
             },
         )
@@ -676,5 +693,21 @@ impl Render for SelectionOverlay {
             }
         }
         root.child(self.hint(window))
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_trail_has_a_point_every_step_and_ends_on_the_last_point() {
+        let trail = trail(&[point(px(0.), px(0.)), point(px(3.), px(4.))], 1.0);
+        // A 5-pixel segment: five steps, then its end.
+        assert_eq!(trail.len(), 6);
+        assert_eq!(trail[0], point(px(0.), px(0.)));
+        assert_eq!(trail[1], point(px(0.6), px(0.8)));
+        assert_eq!(trail[5], point(px(3.), px(4.)));
+        assert!(super::trail(&[], 1.0).is_empty());
     }
 }
