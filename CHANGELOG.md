@@ -9,10 +9,10 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.1.2](https://github.com/jakeklassen/shuttercrab/compare/v0.1.1...v0.1.2) - 2026-10-03
 
-### Fixed
+### Changed
 
-- start with a window, like any app
-
+- Starting Shuttercrab opens its window (for now, its settings), so it's on the taskbar as well as in the tray. Closing the window leaves Shuttercrab running in the tray; Settings in the tray menu opens it again. This replaces 0.1.1's separate taskbar button.
+- Started at sign-in, Shuttercrab starts in the tray without opening its window.
 ## [0.1.1](https://github.com/jakeklassen/shuttercrab/compare/v0.1.0...v0.1.1) - 2026-10-03
 
 ### Added
