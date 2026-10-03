@@ -13,6 +13,7 @@ pub mod files;
 pub mod heap;
 pub mod icons;
 pub mod logging;
+pub mod main_window;
 pub mod overlay;
 pub mod popup;
 pub mod record_bar;

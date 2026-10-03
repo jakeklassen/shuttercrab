@@ -53,10 +53,12 @@ To run it from the source instead:
 mise exec -- cargo run --release -p shuttercrab
 ```
 
-Starting Shuttercrab opens its window (for now, its settings). Closing the
-window leaves Shuttercrab running in the tray; the tray menu's Settings
-opens it again. Started at sign-in, it starts in the tray only. Only one
-copy runs at a time.
+Starting Shuttercrab opens its window: **N** (or New) starts a capture,
+**S** or **R** picks screenshot or recording, **A**, **W**, **D** or **F**
+the target, **T** the delay, and **,** opens Settings in the same window.
+The window hides while you capture. Closing it leaves Shuttercrab running
+in the tray; the tray menu's Settings opens it again. Started at sign-in,
+it starts in the tray only. Only one copy runs at a time.
 
 | Keys | Does |
 |---|---|

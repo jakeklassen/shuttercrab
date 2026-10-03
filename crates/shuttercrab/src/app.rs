@@ -18,6 +18,7 @@ use crate::{
     capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent, CaptureMode, CaptureTarget},
     countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
     files, heap,
+    main_window::{self, MainHooks, MainWindow, Page},
     overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     popup::{self, Activation},
     record_bar::{
@@ -28,7 +29,7 @@ use crate::{
     recording::{self, Clock},
     selection::ScreenWindow,
     settings::{self, Settings},
-    settings_window::{Diagnostics, Hooks, SettingsWindow},
+    settings_window::{Diagnostics, Hooks},
     thumbnail::{self, Thumbnail, ThumbnailEvent},
     update::{self, UpdateBackend},
 };
@@ -38,9 +39,7 @@ use futures::{
 };
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, AsyncApp, BackgroundExecutor, Bounds, Entity, QuitMode,
-    TitlebarOptions, WindowBounds, WindowKind, WindowOptions,
-    component::{Root, Theme},
-    px, size,
+    TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, component::Root,
 };
 use shuttercrab_capture::{
     Capture, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot, monitor_under_pointer,
@@ -270,8 +269,11 @@ struct State {
     update_ready: RefCell<Option<String>>,
     settings: Rc<RefCell<Settings>>,
     log_dir: Option<PathBuf>,
-    /// The settings window, while it is open.
-    settings_window: RefCell<Option<AnyWindowHandle>>,
+    /// The main window, while it is open.
+    main_window: RefCell<Option<(AnyWindowHandle, Entity<MainWindow>)>>,
+    /// The main window, hidden while a capture it started is chosen and
+    /// taken (or recorded); shown again when that is over.
+    hidden_main: Cell<Option<isize>>,
     /// What clicking the latest notification opens, if anything.
     notified: RefCell<Option<PathBuf>>,
     settings_path: Option<PathBuf>,
@@ -454,10 +456,22 @@ impl State {
         self.platform.set_tray_menu(menu);
     }
 
+    /// Show the main window again if a capture it started hid it, once
+    /// nothing is being chosen or recorded.
+    fn show_hidden_main(&self) {
+        if self.busy.get() == Busy::Idle
+            && self.recording.borrow().is_none()
+            && let Some(hwnd) = self.hidden_main.take()
+        {
+            platform_window::show_normal(hwnd);
+        }
+    }
+
     /// A recording started, ended, or opened or closed an undo window:
     /// update the tray menu, and register the hotkeys that apply now.
     fn recording_changed(&self, cx: &AsyncApp) {
         self.refresh_tray_menu();
+        self.show_hidden_main();
         let registering = self.platform.set_hotkeys(self.hotkeys());
         // Nothing waits for the answer; a taken hotkey is only logged.
         cx.background_executor()
@@ -551,7 +565,8 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         settings: Rc::new(RefCell::new(shuttercrab.settings)),
         settings_path: shuttercrab.settings_path,
         log_dir: shuttercrab.log_dir,
-        settings_window: RefCell::new(None),
+        main_window: RefCell::new(None),
+        hidden_main: Cell::new(None),
         notified: RefCell::new(None),
         busy: Cell::new(Busy::Idle),
         next: Cell::new(None),
@@ -566,7 +581,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
     cx.spawn(async move |cx| {
         // Shuttercrab's window, on the taskbar like any app's, until closed.
         if open_window {
-            open_settings(&state, cx);
+            open_main(&state, Page::Home, cx);
         }
         heap::log_memory_soon("idle after start", cx);
         let mut events = events;
@@ -607,7 +622,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     }
                 }
                 PlatformEvent::TrayCommand(MENU_OPEN_FOLDER) => open_folder(&state, cx),
-                PlatformEvent::TrayCommand(MENU_SETTINGS) => open_settings(&state, cx),
+                PlatformEvent::TrayCommand(MENU_SETTINGS) => open_main(&state, Page::Settings, cx),
                 PlatformEvent::TrayCommand(MENU_AUTO_SAVE) => {
                     let settings = state.update_settings(|s| s.auto_save = !s.auto_save, cx);
                     log::info!(
@@ -621,10 +636,10 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                 }
                 PlatformEvent::TrayCommand(MENU_UPDATE) => restart_to_update(&state, cx).await,
                 // Starting Shuttercrab again (say, from the Start menu) shows its
-                // settings: something visible, and the way to change it.
+                // window, as starting any running app does.
                 PlatformEvent::AnotherInstance => {
-                    log::info!("Shuttercrab was started again; showing its settings");
-                    open_settings(&state, cx);
+                    log::info!("Shuttercrab was started again; showing its window");
+                    open_main(&state, Page::Home, cx);
                 }
                 // Like clicking the thumbnail: open the screenshot.
                 PlatformEvent::NotificationClicked => {
@@ -759,8 +774,9 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
             state.notify(failure.title(), failure.message, None);
         }
         state.busy.set(Busy::Idle);
-        if let Some((what, delay)) = state.next.take() {
-            start(&state, what, delay, cx);
+        match state.next.take() {
+            Some((what, delay)) => start(&state, what, delay, cx),
+            None => state.show_hidden_main(),
         }
         heap::log_memory_soon("after a capture request", cx);
     })
@@ -777,12 +793,22 @@ fn open_folder(state: &State, cx: &mut AsyncApp) {
     cx.update(|cx| cx.open_with_system(&dir));
 }
 
-/// Open the settings window, or bring it forward if it is open.
-fn open_settings(state: &Rc<State>, cx: &mut AsyncApp) {
-    let open = *state.settings_window.borrow();
-    if let Some(window) = open
+/// Open the main window on `page`, or bring it forward on `page` if it is
+/// open. Settings is a page of it, so Shuttercrab has one window.
+fn open_main(state: &Rc<State>, page: Page, cx: &mut AsyncApp) {
+    let open = state.main_window.borrow().clone();
+    if let Some((window, view)) = open
         && window
-            .update(cx, |_, window, _| window.activate_window())
+            .update(cx, |_, window, cx| {
+                view.update(cx, |view, cx| view.show(page, window, cx));
+                // Restored if minimised, and brought forward; but left hidden
+                // while a capture it started is being taken.
+                if state.hidden_main.get().is_none()
+                    && let Some(hwnd) = popup::raw_hwnd(window)
+                {
+                    platform_window::show_normal(hwnd);
+                }
+            })
             .is_ok()
     {
         return;
@@ -790,17 +816,21 @@ fn open_settings(state: &Rc<State>, cx: &mut AsyncApp) {
     let state = state.clone();
     cx.spawn(async move |cx| {
         let monitors = state.capture.list_monitors().await.unwrap_or_default();
-        let hooks = Rc::new(settings_hooks(&state, monitors));
-        let resume = hooks.apply_hotkeys.clone();
+        let hooks = Rc::new(main_hooks(&state, monitors));
+        let resume = hooks.settings.apply_hotkeys.clone();
+        let closing = state.clone();
+        // The view, out of the window's builder.
+        let out = Rc::new(RefCell::new(None));
+        let slot = out.clone();
+        let size = match page {
+            Page::Home => main_window::HOME_SIZE,
+            Page::Settings => main_window::SETTINGS_SIZE,
+        };
         let opened = cx.update(|cx| {
             let options = WindowOptions {
-                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(
-                    None,
-                    size(px(880.), px(640.)),
-                    cx,
-                ))),
+                window_bounds: Some(WindowBounds::Windowed(Bounds::centered(None, size, cx))),
                 titlebar: Some(TitlebarOptions {
-                    title: Some("Shuttercrab Settings".into()),
+                    title: Some("Shuttercrab".into()),
                     ..Default::default()
                 }),
                 focus: true,
@@ -809,22 +839,29 @@ fn open_settings(state: &Rc<State>, cx: &mut AsyncApp) {
                 ..Default::default()
             };
             cx.open_window(options, move |window, cx| {
-                Theme::sync_system_appearance(Some(window), cx);
-                // The title bar's close button: re-register the hotkeys (closing
-                // mid-recording must not leave them paused), and close the way
-                // Escape does. GPUI's own close logs errors as the window goes.
+                main_window::apply_theme(window, cx);
+                // The title bar's close button: re-register the hotkeys
+                // (closing while a new one is being typed must not leave them
+                // paused), and close; Shuttercrab stays in the tray. GPUI's
+                // own close logs errors as the window goes.
                 window.on_window_should_close(cx, move |window, cx| {
                     drop(resume());
+                    closing.main_window.replace(None);
                     popup::close_window(window, cx);
                     false
                 });
-                let view = cx.new(|cx| SettingsWindow::new(hooks, window, cx));
+                let view = cx.new(|cx| {
+                    let mut view = MainWindow::new(hooks, window, cx);
+                    view.show(page, window, cx);
+                    view
+                });
+                slot.replace(Some(view.clone()));
                 cx.new(|cx| Root::new(view, window, cx))
             })
         });
-        match opened {
-            Ok(window) => {
-                log::info!("settings window opened");
+        match opened.map(|window| (window, out.borrow_mut().take())) {
+            Ok((window, Some(view))) => {
+                log::info!("main window opened");
                 let hwnd = window
                     .update(cx, |_, window, _| popup::raw_hwnd(window))
                     .ok()
@@ -832,12 +869,63 @@ fn open_settings(state: &Rc<State>, cx: &mut AsyncApp) {
                 if let Some(hwnd) = hwnd {
                     platform_window::show_normal(hwnd);
                 }
-                state.settings_window.replace(Some(window.into()));
+                state.main_window.replace(Some((window.into(), view)));
             }
-            Err(e) => log::error!("could not open the settings window: {e:#}"),
+            Ok((_, None)) => log::error!("the main window opened without its view"),
+            Err(e) => log::error!("could not open the main window: {e:#}"),
         }
     })
     .detach();
+}
+
+/// The main window's way to start a capture: hide the window, wait for it
+/// to be gone (and for the screenshot delay), then capture. The window comes
+/// back when the capture, or the recording, is over.
+fn start_from_main(
+    state: &Rc<State>,
+    mode: CaptureMode,
+    target: CaptureTarget,
+    window: &Window,
+    cx: &mut App,
+) {
+    if state.busy.get() != Busy::Idle {
+        log::info!("{mode:?} ignored: a capture is already open");
+        return;
+    }
+    if let Some(hwnd) = popup::raw_hwnd(window) {
+        platform_window::hide(hwnd);
+        state.hidden_main.set(Some(hwnd));
+    }
+    let (what, wait) = match mode {
+        CaptureMode::Screenshot => (
+            Start::Screenshot(target),
+            Duration::from_secs(state.settings.borrow().delay().into()),
+        ),
+        // Recordings have their own countdown, over the chosen area.
+        CaptureMode::Record => (Start::Record(target), Duration::ZERO),
+    };
+    let state = state.clone();
+    cx.spawn(async move |cx| start(&state, what, Some(TRAY_DELAY + wait), cx))
+        .detach();
+}
+
+/// How the main window reaches the rest of Shuttercrab.
+fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
+    let (capture, folder, quitting) = (state.clone(), state.clone(), state.clone());
+    MainHooks {
+        settings: Rc::new(settings_hooks(state, monitors)),
+        capture: Rc::new(move |mode, target, window, cx| {
+            start_from_main(&capture, mode, target, window, cx)
+        }),
+        open_folder: Rc::new(move |cx| {
+            let state = folder.clone();
+            cx.spawn(async move |cx| open_folder(&state, cx)).detach();
+        }),
+        quit: Rc::new(move |cx| {
+            let state = quitting.clone();
+            cx.spawn(async move |cx| quit(&state, cx).await).detach();
+        }),
+    }
 }
 
 /// How the settings window reaches the rest of Shuttercrab.

@@ -1,7 +1,7 @@
-//! The settings window (PRD §26): General, Screenshot, Recording and
-//! Diagnostics pages. Every change applies at once; there is no Save
-//! button. The whole window works from the keyboard: Tab between controls,
-//! Space or Enter to use them, Escape to close.
+//! The settings (PRD §26): General, Screenshot, Recording and Diagnostics
+//! pages, shown as a page of the main window. Every change applies at once;
+//! there is no Save button. It all works from the keyboard: Tab between
+//! controls, Space or Enter to use them, Escape to go back.
 //!
 //! The window reaches the rest of Shuttercrab only through [`Hooks`], so it
 //! can be tested on its own.
@@ -371,12 +371,18 @@ impl Render for HotkeyField {
     }
 }
 
+/// What Escape does in place of closing.
+type Escape = Rc<dyn Fn(&mut Window, &mut App)>;
+
 /// The settings window's content.
 pub struct SettingsWindow {
     hooks: Rc<Hooks>,
     /// A field for every hotkey, in [`HotkeyKind::ALL`] order.
     hotkeys: Vec<Entity<HotkeyField>>,
     focus: FocusHandle,
+    /// What Escape does instead of closing the window, when the settings
+    /// are a page of a larger window.
+    on_escape: Option<Escape>,
 }
 
 impl SettingsWindow {
@@ -390,7 +396,14 @@ impl SettingsWindow {
             hooks,
             hotkeys,
             focus,
+            on_escape: None,
         }
+    }
+
+    /// Escape calls `f` rather than closing the window.
+    pub fn on_escape(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
+        self.on_escape = Some(Rc::new(f));
+        self
     }
 
     /// The field for `kind`, as a setting.
@@ -875,7 +888,10 @@ impl Render for SettingsWindow {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let recording = this.hotkeys.iter().any(|f| f.read(cx).is_recording());
                 if event.keystroke.key == "escape" && !recording {
-                    crate::popup::close_window(window, cx);
+                    match this.on_escape.clone() {
+                        Some(back) => back(window, cx),
+                        None => crate::popup::close_window(window, cx),
+                    }
                 }
             }))
             .child(

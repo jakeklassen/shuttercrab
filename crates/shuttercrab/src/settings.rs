@@ -36,7 +36,11 @@ pub struct Settings {
     pub snap_to_windows: bool,
     /// Draw the pointer into screenshots (PRD §15: off by default).
     pub include_cursor: bool,
-    /// What the Capture Bar offers first: the last mode and target used.
+    /// Seconds to wait before a screenshot started from the main window;
+    /// one of [`DELAY_CHOICES`].
+    pub screenshot_delay: u32,
+    /// What the Capture Bar and the main window offer first: the last mode
+    /// and target used.
     pub last_mode: CaptureMode,
     pub last_target: CaptureTarget,
     /// Show a thumbnail in the corner after each screenshot.
@@ -86,6 +90,7 @@ impl Default for Settings {
             record_cursor: true,
             record_fps: 30,
             recording_countdown: 0,
+            screenshot_delay: 0,
             notify_after_recording: true,
             confirm_discard: true,
             undo_seconds: 10,
@@ -126,7 +131,21 @@ impl Settings {
 /// The countdowns the settings offer, in seconds; 0 is none.
 pub const COUNTDOWN_CHOICES: [u32; 3] = [0, 3, 5];
 
+/// The delays a screenshot from the main window can wait, in seconds; 0 is
+/// none.
+pub const DELAY_CHOICES: [u32; 4] = [0, 3, 5, 10];
+
 impl Settings {
+    /// The delay before a screenshot from the main window: one of
+    /// [`DELAY_CHOICES`], none if the file says otherwise.
+    pub fn delay(&self) -> u32 {
+        if DELAY_CHOICES.contains(&self.screenshot_delay) {
+            self.screenshot_delay
+        } else {
+            0
+        }
+    }
+
     /// The countdown before recording: one of [`COUNTDOWN_CHOICES`], none
     /// if the file says otherwise.
     pub fn countdown(&self) -> u32 {
