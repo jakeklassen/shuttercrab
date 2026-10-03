@@ -5,6 +5,10 @@
 //! (or the whole display over the desktop) for a click to capture. The
 //! overlay only reports what the user chose; the app closes it and takes
 //! the screenshot.
+//!
+//! The app opens one overlay on every monitor. They share their mode, so
+//! Space on any of them switches them all, and in Window mode only the one
+//! with the pointer highlights anything.
 
 use crate::selection::{
     Drag, ScreenWindow, Snapping, Stuck, dimensions, snap, to_logical, window_at,
@@ -14,10 +18,10 @@ use gpui_kit::{
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, TestSupportExt as _, Window,
-    div, hsla, img, point, px, rgb,
+    div, hsla, img, point, prelude::FluentBuilder as _, px, rgb,
 };
 use shuttercrab_capture::PhysicalRect;
-use std::sync::Arc;
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 /// An edge catches the pointer within this many logical pixels…
 const SNAP_CATCH: f32 = 10.0;
@@ -64,6 +68,9 @@ pub enum OverlayEvent {
     /// The whole monitor.
     Display,
     Cancelled,
+    /// Not a choice: Space switched the shared mode, so the other monitors'
+    /// overlays need redrawing.
+    ModeChanged(Mode),
 }
 
 /// How the pointer picks what to capture.
@@ -85,7 +92,10 @@ pub struct SelectionOverlay {
     /// Windows on this monitor, front to back.
     windows: Vec<ScreenWindow>,
     snap: bool,
-    mode: Mode,
+    /// Shared with the other monitors' overlays, if there are any.
+    mode: Rc<Cell<Mode>>,
+    /// One of several overlays, one per monitor.
+    shared: bool,
     drag: Option<Drag>,
     /// The edges the drag's start and end are held to.
     start_stuck: Stuck,
@@ -118,7 +128,8 @@ impl SelectionOverlay {
             frame,
             windows: Vec::new(),
             snap: false,
-            mode: Mode::Area,
+            mode: Rc::new(Cell::new(Mode::Area)),
+            shared: false,
             drag: None,
             start_stuck: Stuck::default(),
             end_stuck: Stuck::default(),
@@ -133,7 +144,14 @@ impl SelectionOverlay {
     /// an area (PRD §7.7), so Space does not switch to Window mode.
     pub fn for_recording(mut self) -> Self {
         self.recording = true;
-        self.mode = Mode::Area;
+        self.mode.set(Mode::Area);
+        self
+    }
+
+    /// One of several overlays, one per monitor, all switched by `mode`.
+    pub fn sharing_mode(mut self, mode: Rc<Cell<Mode>>) -> Self {
+        self.mode = mode;
+        self.shared = true;
         self
     }
 
@@ -146,13 +164,13 @@ impl SelectionOverlay {
     }
 
     /// Start in `mode` rather than Area.
-    pub fn with_mode(mut self, mode: Mode) -> Self {
-        self.mode = mode;
+    pub fn with_mode(self, mode: Mode) -> Self {
+        self.mode.set(mode);
         self
     }
 
     pub fn mode(&self) -> Mode {
-        self.mode
+        self.mode.get()
     }
 
     /// The current selection in physical pixels, if there is one.
@@ -242,12 +260,14 @@ impl SelectionOverlay {
         if self.dragging || self.recording {
             return;
         }
-        self.mode = match self.mode {
+        let mode = match self.mode.get() {
             Mode::Area => Mode::Window,
             Mode::Window => Mode::Area,
         };
+        self.mode.set(mode);
         self.drag = None;
         self.pressed = false;
+        cx.emit(OverlayEvent::ModeChanged(mode));
         cx.notify();
     }
 
@@ -260,7 +280,7 @@ impl SelectionOverlay {
     }
 
     fn on_left_down(&mut self, event: &MouseDownEvent, _: &mut Window, cx: &mut Context<Self>) {
-        match self.mode {
+        match self.mode.get() {
             Mode::Area => {
                 let (start, stuck) = self.snapped(event.position, Stuck::default());
                 self.drag = Some(Drag::at(start));
@@ -274,7 +294,7 @@ impl SelectionOverlay {
     }
 
     fn on_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        match self.mode {
+        match self.mode.get() {
             Mode::Area => {
                 if self.dragging {
                     let (end, stuck) = self.snapped(event.position, self.end_stuck);
@@ -291,7 +311,7 @@ impl SelectionOverlay {
     }
 
     fn on_left_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        match self.mode {
+        match self.mode.get() {
             Mode::Area => {
                 if !self.dragging {
                     return;
@@ -423,12 +443,17 @@ impl SelectionOverlay {
 
     /// A short hint at the top: what the mouse does and how to switch.
     fn hint(&self, window: &Window) -> impl IntoElement {
-        let text: SharedString = match self.mode {
+        let text: SharedString = match self.mode.get() {
             Mode::Area if self.recording => "Drag to record an area  ·  Esc: cancel",
             Mode::Area => "Drag to capture an area  ·  Space: window  ·  Esc: cancel",
-            Mode::Window => "Click a window, or the desktop for the whole display  ·  Space: area  ·  Esc: cancel",
+            Mode::Window => "Click a window to capture it, or the desktop for the whole display  ·  Space: area  ·  Esc: cancel",
         }
         .into();
+        // In Window mode a click on the hint itself captures nothing. (An
+        // Area drag may start or end over it.)
+        let window_mode = self.mode.get() == Mode::Window;
+        let ignore =
+            |_: &MouseDownEvent, _: &mut Window, cx: &mut gpui_kit::App| cx.stop_propagation();
         let viewport = window.viewport_size();
         div()
             .id("mode-hint")
@@ -443,6 +468,12 @@ impl SelectionOverlay {
             .justify_center()
             .child(
                 div()
+                    .id("mode-hint-text")
+                    .when(window_mode, |d| {
+                        d.on_mouse_down(MouseButton::Left, ignore)
+                            .cursor(CursorStyle::Arrow)
+                    })
+                    .test_support()
                     .px_3()
                     .py_1()
                     .rounded_md()
@@ -465,7 +496,7 @@ impl Render for SelectionOverlay {
             .track_focus(&self.focus)
             .size_full()
             .relative()
-            .cursor(match self.mode {
+            .cursor(match self.mode.get() {
                 Mode::Area => CursorStyle::Crosshair,
                 Mode::Window => CursorStyle::PointingHand,
             })
@@ -485,7 +516,7 @@ impl Render for SelectionOverlay {
                     .size_full()
                     .object_fit(ObjectFit::Fill),
             );
-        match self.mode {
+        match self.mode.get() {
             Mode::Area => {
                 let selection = self.selection();
                 let hole = selection.map(|r| to_logical(r, scale));
@@ -510,6 +541,11 @@ impl Render for SelectionOverlay {
                         .children(self.snap_markers(b))
                         .child(Self::label("dimensions", label, b, window));
                 }
+            }
+            // With several monitors, the highlight follows the pointer: the
+            // others only dim.
+            Mode::Window if self.shared && !window.is_window_hovered() => {
+                root = root.children(self.dimming(None, window));
             }
             Mode::Window => {
                 let target = self.target_at(window.mouse_position());

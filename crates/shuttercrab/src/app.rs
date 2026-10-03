@@ -1,8 +1,8 @@
 //! The screenshot flows (PRD §7.2–7.5). The Capture Bar hotkey or the tray
 //! icon opens the Capture Bar, which asks for Area, Window or Display; the
-//! screenshot hotkey goes straight to Area. Area and Window freeze the
-//! monitor under the pointer and show the overlay; Display captures the
-//! monitor at once. The PNG goes to the clipboard and, with auto-save on,
+//! screenshot hotkey goes straight to Area. Area and Window freeze every
+//! monitor and show the overlay on each, the one under the pointer first;
+//! Display captures the monitor under the pointer at once. The PNG goes to the clipboard and, with auto-save on,
 //! the output folder.
 //!
 //! Recording (PRD §7.7) starts from the Capture Bar's Record mode or the
@@ -33,7 +33,9 @@ use crate::{
     update::{self, UpdateBackend},
 };
 use chrono::{Local, NaiveDateTime};
-use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
+use futures::{
+    FutureExt as _, Stream, StreamExt as _, channel::mpsc::UnboundedReceiver, stream::SelectAll,
+};
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, AsyncApp, BackgroundExecutor, Bounds, Entity, QuitMode,
     TitlebarOptions, WindowBounds, WindowKind, WindowOptions,
@@ -1005,12 +1007,14 @@ async fn capture(
         .capture
         .freeze_monitor(monitor, include_cursor)
         .await?;
-    let (width, height) = frame.size();
-    let whole = PhysicalRect::new(0, 0, width, height);
+    let whole = |frame: &FrozenFrame| {
+        let (width, height) = frame.size();
+        PhysicalRect::new(0, 0, width, height)
+    };
     let mode = match target {
         CaptureTarget::Display => {
             state.busy.set(Busy::Finishing);
-            let shot = state.capture.screenshot(&frame, whole).await;
+            let shot = state.capture.screenshot(&frame, whole(&frame)).await;
             let info = frame.monitor().clone();
             // Cut: the frozen screen can go (PRD §23).
             drop(frame);
@@ -1019,18 +1023,18 @@ async fn capture(
         CaptureTarget::Area => Mode::Area,
         CaptureTarget::Window => Mode::Window,
     };
+    let (frame, event) = select(state, frame, include_cursor, mode, false, pressed, cx).await?;
     let info = frame.monitor().clone();
-    let event = select(state, &frame, mode, false, pressed, cx).await?;
     let released = Instant::now();
     // The overlay is gone: a new request can wait for this one.
     state.busy.set(Busy::Finishing);
     let shot = match event {
-        OverlayEvent::Cancelled => {
+        OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) => {
             log::info!("selection cancelled");
             return Ok(());
         }
         OverlayEvent::Selected(rect) => state.capture.screenshot(&frame, rect).await,
-        OverlayEvent::Display => state.capture.screenshot(&frame, whole).await,
+        OverlayEvent::Display => state.capture.screenshot(&frame, whole(&frame)).await,
         OverlayEvent::Window { hwnd, visible } => {
             let include_cursor = state.settings.borrow().include_cursor;
             match state.capture.capture_window(hwnd, include_cursor).await {
@@ -1049,68 +1053,174 @@ async fn capture(
     deliver(state, shot?, &info, released, taken_at, cx).await
 }
 
-/// Show the selection overlay over `frame`, in `mode` or, with
+/// Show the selection overlay on every monitor, in `mode` or, with
 /// `recording`, to choose an area to record, and wait for the choice.
+/// `first` is the monitor under the pointer, frozen: its overlay comes up
+/// first and takes the keyboard, then the other monitors are frozen (with
+/// the pointer as `include_cursor` says) and covered. Returns the frame of
+/// the monitor the choice was made on, and the choice; the other frames
+/// are released.
 async fn select(
     state: &State,
-    frame: &FrozenFrame,
+    first: FrozenFrame,
+    include_cursor: bool,
     mode: Mode,
     recording: bool,
     pressed: Instant,
     cx: &mut AsyncApp,
-) -> Result<OverlayEvent, Failure> {
+) -> Result<(FrozenFrame, OverlayEvent), Failure> {
     let frozen = pressed.elapsed();
+    let mode = Rc::new(Cell::new(mode));
+    let snap = state.settings.borrow().snap_to_windows;
+    let open = |frame: &FrozenFrame, activation, cx: &mut AsyncApp| {
+        open_overlay(frame, mode.clone(), recording, snap, activation, cx)
+    };
+    let (popup, outcome) = open(&first, Activation::Take, cx)?;
+    log::info!(
+        "overlay up {} ms after the request (freeze {} ms)",
+        pressed.elapsed().as_millis(),
+        frozen.as_millis()
+    );
+    let first_id = first.monitor().id;
+    let mut popups = vec![popup];
+    let mut frames = vec![first];
+    let mut events = SelectAll::new();
+    events.push(tagged(0, outcome));
+
+    let others = state.capture.list_monitors().await.unwrap_or_else(|e| {
+        log::warn!("could not list the other monitors: {e}");
+        Vec::new()
+    });
+    let mut chosen = None;
+    for monitor in others.into_iter().filter(|m| m.id != first_id) {
+        chosen = settled(&mut events, &popups, cx);
+        if chosen.is_some() {
+            break;
+        }
+        let frame = match state
+            .capture
+            .freeze_monitor(monitor.id, include_cursor)
+            .await
+        {
+            Ok(frame) => frame,
+            Err(e) => {
+                log::warn!("could not freeze {}: {e}", monitor.device_name);
+                continue;
+            }
+        };
+        match open(&frame, Activation::OnClick, cx) {
+            Ok((popup, outcome)) => {
+                events.push(tagged(frames.len(), outcome));
+                popups.push(popup);
+                frames.push(frame);
+            }
+            Err(failure) => log::warn!("{}", failure.detail),
+        }
+    }
+    if popups.len() > 1 {
+        log::info!(
+            "overlays on {} monitors {} ms after the request",
+            popups.len(),
+            pressed.elapsed().as_millis()
+        );
+    }
+
+    let chosen = match chosen.or_else(|| settled(&mut events, &popups, cx)) {
+        Some(chosen) => chosen,
+        None => loop {
+            match events.next().await {
+                Some((_, OverlayEvent::ModeChanged(_))) => refresh_all(&popups, cx),
+                Some(chosen) => break chosen,
+                None => break (0, OverlayEvent::Cancelled),
+            }
+        },
+    };
+    for popup in popups {
+        popup.close(cx);
+    }
+    let (index, event) = chosen;
+    Ok((frames.swap_remove(index), event))
+}
+
+/// Open the selection overlay over `frame`, sharing `mode` with the other
+/// monitors' overlays.
+fn open_overlay(
+    frame: &FrozenFrame,
+    mode: Rc<Cell<Mode>>,
+    recording: bool,
+    snap: bool,
+    activation: Activation,
+    cx: &mut AsyncApp,
+) -> Result<(popup::Popup, UnboundedReceiver<OverlayEvent>), Failure> {
     let info = frame.monitor().clone();
     let (width, height) = frame.size();
     let windows = screen_windows(info.bounds);
-    let snap_to_windows = state.settings.borrow().snap_to_windows;
     let overlay_frame = OverlayFrame::from_bgra(
         width,
         height,
         info.scale_factor,
         frame.preview_bgra().to_vec(),
     );
-    let (overlay, outcome) = popup::open(
-        &info,
-        info.bounds,
-        Activation::Take,
-        cx,
-        move |window, cx| {
-            cx.new(|cx| {
-                let overlay = SelectionOverlay::new(overlay_frame, window, cx)
-                    .with_windows(windows, snap_to_windows)
-                    .with_mode(mode);
-                if recording {
-                    overlay.for_recording()
-                } else {
-                    overlay
-                }
-            })
-        },
-    )
+    let (overlay, outcome) = popup::open(&info, info.bounds, activation, cx, move |window, cx| {
+        cx.new(|cx| {
+            let overlay = SelectionOverlay::new(overlay_frame, window, cx)
+                .with_windows(windows, snap)
+                .sharing_mode(mode);
+            if recording {
+                overlay.for_recording()
+            } else {
+                overlay
+            }
+        })
+    })
     .map_err(|e| Failure::new("Could not open the selection screen.", e))?;
     // A screenshot's own screen is frozen before the overlay appears, but a
     // recording may be running (PRD §13.5), or about to start as it goes.
     if let Some(hwnd) = overlay.hwnd() {
         exclude_from_capture(hwnd, "selection overlay");
     }
-    log::info!(
-        "overlay up {} ms after the request (freeze {} ms)",
-        pressed.elapsed().as_millis(),
-        frozen.as_millis()
-    );
-    let mut outcome = outcome;
-    let event = outcome.next().await.unwrap_or(OverlayEvent::Cancelled);
-    overlay.close(cx);
-    Ok(event)
+    Ok((overlay, outcome))
+}
+
+/// One overlay's events, with the overlay's index.
+fn tagged(
+    index: usize,
+    events: UnboundedReceiver<OverlayEvent>,
+) -> impl Stream<Item = (usize, OverlayEvent)> + Unpin {
+    events.map(move |event| (index, event))
+}
+
+/// The choice, if one of the overlays has made it already. A mode change
+/// on the way redraws them all.
+fn settled<S>(
+    events: &mut SelectAll<S>,
+    popups: &[popup::Popup],
+    cx: &mut AsyncApp,
+) -> Option<(usize, OverlayEvent)>
+where
+    S: Stream<Item = (usize, OverlayEvent)> + Unpin,
+{
+    while let Some(Some(event)) = events.next().now_or_never() {
+        match event {
+            (_, OverlayEvent::ModeChanged(_)) => refresh_all(popups, cx),
+            chosen => return Some(chosen),
+        }
+    }
+    None
+}
+
+fn refresh_all(popups: &[popup::Popup], cx: &mut AsyncApp) {
+    for popup in popups {
+        popup.refresh(cx);
+    }
 }
 
 /// The recording controls' distance from the recorded area, logical pixels.
 const CONTROLS_GAP: f32 = 12.0;
 
-/// Record `target` on `monitor`: choose the area on a frozen frame of it,
-/// show the controls, then start the recorder. It runs until
-/// [`stop_recording`] or [`discard_recording`].
+/// Record `target`: all of `monitor`, or an area chosen on frozen frames of
+/// every monitor, `monitor` first. Show the controls, then start the
+/// recorder. It runs until [`stop_recording`] or [`discard_recording`].
 async fn record(
     state: &Rc<State>,
     target: CaptureTarget,
@@ -1125,12 +1235,13 @@ async fn record(
     let (region, info) = match target {
         CaptureTarget::Display => (None, monitor_info(state, monitor).await?),
         CaptureTarget::Area | CaptureTarget::Window => {
-            let frame = state.capture.freeze_monitor(monitor, false).await?;
-            let region = match select(state, &frame, Mode::Area, true, pressed, cx).await? {
+            let first = state.capture.freeze_monitor(monitor, false).await?;
+            let (frame, event) = select(state, first, false, Mode::Area, true, pressed, cx).await?;
+            let region = match event {
                 OverlayEvent::Selected(rect) => Some(rect),
                 OverlayEvent::Display => None,
                 OverlayEvent::Window { visible, .. } => Some(visible),
-                OverlayEvent::Cancelled => {
+                OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) => {
                     log::info!("recording cancelled");
                     return Ok(());
                 }
@@ -1138,6 +1249,8 @@ async fn record(
             (region, frame.monitor().clone())
         }
     };
+    // The area may be on another monitor than the one first under the pointer.
+    let monitor = info.id;
     // The border shows what will be recorded: grey until recording starts.
     let countdown = state.settings.borrow().countdown();
     let waiting = if countdown > 0 {

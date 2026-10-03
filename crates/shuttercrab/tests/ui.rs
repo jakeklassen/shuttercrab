@@ -14,7 +14,10 @@ use shuttercrab::{
     selection::ScreenWindow,
 };
 use shuttercrab_capture::PhysicalRect;
-use std::{cell::RefCell, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    rc::Rc,
+};
 
 /// A frozen monitor of `logical` size at `scale`, and the events it emits.
 struct Opened {
@@ -211,7 +214,45 @@ fn space_switches_between_area_and_window(cx: &mut TestAppContext) {
     });
     update(cx, &opened, |window, cx| window.press("space", cx));
     assert_eq!(mode(cx, &opened), Mode::Area);
-    assert!(opened.events.borrow().is_empty());
+    // Each switch is announced, for the other monitors' overlays.
+    assert_eq!(
+        *opened.events.borrow(),
+        [
+            OverlayEvent::ModeChanged(Mode::Window),
+            OverlayEvent::ModeChanged(Mode::Area)
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn space_on_one_monitor_switches_them_all(cx: &mut TestAppContext) {
+    let shared = Rc::new(Cell::new(Mode::Area));
+    let (one, two) = (shared.clone(), shared.clone());
+    let first = open_built(cx, (400.0, 300.0), 1.5, move |o| o.sharing_mode(one));
+    let second = open_built(cx, (300.0, 200.0), 1.0, move |o| o.sharing_mode(two));
+    update(cx, &first, |window, cx| window.press("space", cx));
+    assert_eq!(mode(cx, &second), Mode::Window);
+    update(cx, &second, |window, _| {
+        assert!(
+            label(window, "mode-hint")
+                .unwrap()
+                .starts_with("Click a window")
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn clicking_the_hint_captures_nothing(cx: &mut TestAppContext) {
+    let windows = vec![win(7, 0, 0, 600, 450)];
+    let opened = open_with(cx, (400.0, 300.0), 1.5, windows, false);
+    update(cx, &opened, |window, cx| {
+        window.press("space", cx);
+        window.click("mode-hint-text", cx);
+    });
+    assert_eq!(
+        *opened.events.borrow(),
+        [OverlayEvent::ModeChanged(Mode::Window)]
+    );
 }
 
 #[gpui_kit::test]
@@ -276,10 +317,13 @@ fn clicking_a_window_captures_it_with_its_visible_part(cx: &mut TestAppContext) 
     });
     assert_eq!(
         *opened.events.borrow(),
-        [OverlayEvent::Window {
-            hwnd: 7,
-            visible: PhysicalRect::new(500, 300, 100, 150)
-        }]
+        [
+            OverlayEvent::ModeChanged(Mode::Window),
+            OverlayEvent::Window {
+                hwnd: 7,
+                visible: PhysicalRect::new(500, 300, 100, 150)
+            }
+        ]
     );
 }
 
@@ -289,9 +333,16 @@ fn clicking_the_desktop_captures_the_display(cx: &mut TestAppContext) {
     let opened = open_with(cx, (400.0, 300.0), 1.5, windows, false);
     update(cx, &opened, |window, cx| {
         window.press("space", cx);
-        window.click_at("overlay", point(px(20.0), px(20.0)), cx);
+        // Clear of the hint at the top.
+        window.click_at("overlay", point(px(20.0), px(150.0)), cx);
     });
-    assert_eq!(*opened.events.borrow(), [OverlayEvent::Display]);
+    assert_eq!(
+        *opened.events.borrow(),
+        [
+            OverlayEvent::ModeChanged(Mode::Window),
+            OverlayEvent::Display
+        ]
+    );
 }
 
 #[gpui_kit::test]

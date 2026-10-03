@@ -43,6 +43,11 @@ impl Popup {
         self.hwnd
     }
 
+    /// Redraw the popup, after something its view reads changed elsewhere.
+    pub fn refresh(&self, cx: &mut AsyncApp) {
+        let _ = self.window.update(cx, |_, window, _| window.refresh());
+    }
+
     /// Hide the popup at once and remove it a moment later. GPUI handles the
     /// deactivation that hiding causes on a later turn of the main thread,
     /// and logs "window not found" if the window is gone by then.
