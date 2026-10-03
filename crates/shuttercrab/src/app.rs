@@ -43,7 +43,8 @@ use gpui_kit::{
     TitlebarOptions, Window, WindowBounds, WindowKind, WindowOptions, component::Root,
 };
 use shuttercrab_capture::{
-    Capture, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot, monitor_under_pointer,
+    Capture, CaptureError, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot, cut,
+    cut_shape, monitor_under_pointer,
     record::{RecordOptions, RecordingSummary},
 };
 use shuttercrab_platform::{
@@ -1111,41 +1112,35 @@ async fn capture(
         .capture
         .freeze_monitor(monitor, include_cursor)
         .await?;
-    let whole = |frame: &FrozenFrame| {
-        let (width, height) = frame.size();
-        PhysicalRect::new(0, 0, width, height)
-    };
     let mode = match target {
         CaptureTarget::Display => {
             state.busy.set(Busy::Finishing);
-            let shot = state.capture.screenshot(&frame, whole(&frame)).await;
             let info = frame.monitor().clone();
-            // Cut: the frozen screen can go (PRD §23).
-            drop(frame);
+            let (width, height) = frame.size();
+            let whole = PhysicalRect::new(0, 0, width, height);
+            // Cut, then the frozen screen goes with the task (PRD §23).
+            let shot = cx
+                .background_spawn(async move { cut(frame.bgra(), width, height, whole) })
+                .await;
             return deliver(state, shot?, &info, pressed, taken_at, cx).await;
         }
         CaptureTarget::Area => Mode::Area,
         CaptureTarget::Window => Mode::Window,
         CaptureTarget::Freeform => Mode::Freeform,
     };
-    let (frame, event) = select(state, frame, include_cursor, mode, false, pressed, cx).await?;
-    let info = frame.monitor().clone();
+    let (frozen, event) = select(state, frame, include_cursor, mode, false, pressed, cx).await?;
     let released = Instant::now();
     // The overlay is gone: a new request can wait for this one.
     state.busy.set(Busy::Finishing);
+    let whole = PhysicalRect::new(0, 0, frozen.frame.width, frozen.frame.height);
     let shot = match event {
         OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) => {
             log::info!("selection cancelled");
             return Ok(());
         }
-        OverlayEvent::Selected(rect) => state.capture.screenshot(&frame, rect).await,
-        OverlayEvent::Shape(outline) => {
-            state
-                .capture
-                .screenshot_shape(&frame, outline.to_vec())
-                .await
-        }
-        OverlayEvent::Display => state.capture.screenshot(&frame, whole(&frame)).await,
+        OverlayEvent::Selected(rect) => frozen.cut(Cut::Region(rect), cx).await,
+        OverlayEvent::Shape(outline) => frozen.cut(Cut::Shape(outline), cx).await,
+        OverlayEvent::Display => frozen.cut(Cut::Region(whole), cx).await,
         OverlayEvent::Window { hwnd, visible } => {
             let include_cursor = state.settings.borrow().include_cursor;
             match state.capture.capture_window(hwnd, include_cursor).await {
@@ -1154,23 +1149,60 @@ async fn capture(
                 // the window is the next best thing.
                 Err(e) => {
                     log::warn!("direct window capture failed, cutting it from the screen: {e}");
-                    state.capture.screenshot(&frame, visible).await
+                    frozen.cut(Cut::Region(visible), cx).await
                 }
             }
         }
     };
+    let info = frozen.info.clone();
     // Cut: the frozen screen can go before the copying and saving (PRD §23).
-    drop(frame);
+    drop(frozen);
     deliver(state, shot?, &info, released, taken_at, cx).await
+}
+
+/// A frozen monitor, as its overlay shows it. The overlay's image is the
+/// screen's only copy; the screenshot is cut from it.
+struct Frozen {
+    info: MonitorInfo,
+    frame: OverlayFrame,
+}
+
+/// What to cut out of a frozen monitor.
+enum Cut {
+    Region(PhysicalRect),
+    Shape(Arc<[(f32, f32)]>),
+}
+
+impl Frozen {
+    /// Take `frame`'s pixels for the overlay, without a copy.
+    fn new(frame: FrozenFrame) -> Self {
+        let info = frame.monitor().clone();
+        let (width, height) = frame.size();
+        let frame = OverlayFrame::from_bgra(width, height, info.scale_factor, frame.into_bgra());
+        Self { info, frame }
+    }
+
+    /// Cut `what` out and encode it, off the UI thread.
+    async fn cut(&self, what: Cut, cx: &AsyncApp) -> Result<Screenshot, CaptureError> {
+        let frame = self.frame.clone();
+        cx.background_spawn(async move {
+            let (bgra, width, height) = (frame.bgra(), frame.width, frame.height);
+            match what {
+                Cut::Region(region) => cut(bgra, width, height, region),
+                Cut::Shape(outline) => cut_shape(bgra, width, height, &outline),
+            }
+        })
+        .await
+    }
 }
 
 /// Show the selection overlay on every monitor, in `mode` or, with
 /// `recording`, to choose an area to record, and wait for the choice.
 /// `first` is the monitor under the pointer, frozen: its overlay comes up
 /// first and takes the keyboard, then the other monitors are frozen (with
-/// the pointer as `include_cursor` says) and covered. Returns the frame of
-/// the monitor the choice was made on, and the choice; the other frames
-/// are released.
+/// the pointer as `include_cursor` says) and covered. Returns the monitor
+/// the choice was made on, and the choice; the other frozen screens are
+/// released.
 async fn select(
     state: &State,
     first: FrozenFrame,
@@ -1179,20 +1211,21 @@ async fn select(
     recording: bool,
     pressed: Instant,
     cx: &mut AsyncApp,
-) -> Result<(FrozenFrame, OverlayEvent), Failure> {
+) -> Result<(Frozen, OverlayEvent), Failure> {
     let frozen = pressed.elapsed();
     let mode = Rc::new(Cell::new(mode));
     let snap = state.settings.borrow().snap_to_windows;
-    let open = |frame: &FrozenFrame, activation, cx: &mut AsyncApp| {
+    let open = |frame: &Frozen, activation, cx: &mut AsyncApp| {
         open_overlay(frame, mode.clone(), recording, snap, activation, cx)
     };
+    let first = Frozen::new(first);
     let (popup, outcome) = open(&first, Activation::Take, cx)?;
     log::info!(
         "overlay up {} ms after the request (freeze {} ms)",
         pressed.elapsed().as_millis(),
         frozen.as_millis()
     );
-    let first_id = first.monitor().id;
+    let first_id = first.info.id;
     let mut popups = vec![popup];
     let mut frames = vec![first];
     let mut events = SelectAll::new();
@@ -1213,7 +1246,7 @@ async fn select(
             .freeze_monitor(monitor.id, include_cursor)
             .await
         {
-            Ok(frame) => frame,
+            Ok(frame) => Frozen::new(frame),
             Err(e) => {
                 log::warn!("could not freeze {}: {e}", monitor.device_name);
                 continue;
@@ -1235,7 +1268,6 @@ async fn select(
             pressed.elapsed().as_millis()
         );
     }
-
     let chosen = match chosen.or_else(|| settled(&mut events, &popups, cx)) {
         Some(chosen) => chosen,
         None => loop {
@@ -1256,22 +1288,17 @@ async fn select(
 /// Open the selection overlay over `frame`, sharing `mode` with the other
 /// monitors' overlays.
 fn open_overlay(
-    frame: &FrozenFrame,
+    frozen: &Frozen,
     mode: Rc<Cell<Mode>>,
     recording: bool,
     snap: bool,
     activation: Activation,
     cx: &mut AsyncApp,
 ) -> Result<(popup::Popup, UnboundedReceiver<OverlayEvent>), Failure> {
-    let info = frame.monitor().clone();
-    let (width, height) = frame.size();
+    let info = frozen.info.clone();
     let windows = screen_windows(info.bounds);
-    let overlay_frame = OverlayFrame::from_bgra(
-        width,
-        height,
-        info.scale_factor,
-        frame.preview_bgra().to_vec(),
-    );
+    // Shared, not copied: the frozen screen exists once.
+    let overlay_frame = frozen.frame.clone();
     let (overlay, outcome) = popup::open(&info, info.bounds, activation, cx, move |window, cx| {
         cx.new(|cx| {
             let overlay = SelectionOverlay::new(overlay_frame, window, cx)
@@ -1359,7 +1386,7 @@ async fn record(
                     return Ok(());
                 }
             };
-            (region, frame.monitor().clone())
+            (region, frame.info)
         }
     };
     // The area may be on another monitor than the one first under the pointer.

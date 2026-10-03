@@ -16,5 +16,5 @@ pub mod shape;
 
 pub use service::{
     Capture, CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect,
-    Screenshot, monitor_under_pointer, unpremultiply_bgra,
+    Screenshot, cut, cut_shape, monitor_under_pointer, unpremultiply_bgra,
 };

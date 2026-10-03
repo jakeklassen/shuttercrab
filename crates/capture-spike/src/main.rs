@@ -421,7 +421,7 @@ fn shots(mut args: Args) -> Result<()> {
         print_memory(&format!("frozen {shot}"));
         let (width, height) = frame.size();
         let whole = PhysicalRect::new(0, 0, width, height);
-        let screenshot = futures::executor::block_on(capture.screenshot(&frame, whole))?;
+        let screenshot = shuttercrab_capture::cut(frame.bgra(), width, height, whole)?;
         print_memory(&format!("holding shot {shot} ({width}x{height})"));
         drop(screenshot);
         drop(frame);

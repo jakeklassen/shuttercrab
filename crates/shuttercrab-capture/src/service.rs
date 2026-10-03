@@ -133,16 +133,17 @@ impl std::error::Error for CaptureError {}
 
 pub type Result<T> = std::result::Result<T, CaptureError>;
 
-/// One monitor, captured and converted to SDR, held until dropped.
+/// One monitor, captured and converted to SDR. Its pixels are the only copy:
+/// the service keeps none, so whoever shows the frozen screen can take them
+/// (see [`FrozenFrame::into_bgra`]) and cut the screenshot from them with
+/// [`cut`] or [`cut_shape`].
 pub struct FrozenFrame {
-    id: u64,
     monitor: MonitorInfo,
     width: u32,
     height: u32,
-    preview: Arc<Vec<u8>>,
+    bgra: Vec<u8>,
     frame_peak: f32,
     hdr_regions: usize,
-    release: Sender<Request>,
 }
 
 impl FrozenFrame {
@@ -158,8 +159,13 @@ impl FrozenFrame {
     /// The converted image, tightly packed BGRA8 (the order GPUI's
     /// `RenderImage` takes), top row first. The screenshot is cut from
     /// exactly these pixels.
-    pub fn preview_bgra(&self) -> &Arc<Vec<u8>> {
-        &self.preview
+    pub fn bgra(&self) -> &[u8] {
+        &self.bgra
+    }
+
+    /// The pixels themselves, without a copy.
+    pub fn into_bgra(self) -> Vec<u8> {
+        self.bgra
     }
 
     /// Peak of the frame over SDR white; above 1 means HDR content.
@@ -176,16 +182,9 @@ impl FrozenFrame {
 impl fmt::Debug for FrozenFrame {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         f.debug_struct("FrozenFrame")
-            .field("id", &self.id)
             .field("monitor", &self.monitor.device_name)
             .field("size", &(self.width, self.height))
             .finish()
-    }
-}
-
-impl Drop for FrozenFrame {
-    fn drop(&mut self) {
-        let _ = self.release.send(Request::Release(self.id));
     }
 }
 
@@ -215,10 +214,7 @@ enum Request {
     WarmUp,
     Monitors(oneshot::Sender<Result<Vec<MonitorInfo>>>),
     Freeze(MonitorId, bool, oneshot::Sender<Result<FrozenFrame>>),
-    Screenshot(u64, PhysicalRect, oneshot::Sender<Result<Screenshot>>),
-    Shape(u64, Vec<(f32, f32)>, oneshot::Sender<Result<Screenshot>>),
     Window(isize, bool, oneshot::Sender<Result<Screenshot>>),
-    Release(u64),
 }
 
 /// A handle to the capture service thread. Cloning is cheap.
@@ -231,10 +227,9 @@ impl Capture {
     /// Start the service thread.
     pub fn start() -> Result<Self> {
         let (requests, inbox) = channel::<Request>();
-        let own = requests.clone();
         std::thread::Builder::new()
             .name("shuttercrab-capture".into())
-            .spawn(move || Service::new(own).run(inbox))
+            .spawn(move || Service::new().run(inbox))
             .map_err(|e| {
                 CaptureError::new(
                     CaptureErrorCode::CaptureUnavailable,
@@ -282,29 +277,6 @@ impl Capture {
         self.ask(Request::Freeze(monitor, include_cursor, reply), answer)
     }
 
-    /// Cut `region` (physical pixels relative to the frame's monitor) out of
-    /// `frame` and encode it as PNG.
-    pub fn screenshot(
-        &self,
-        frame: &FrozenFrame,
-        region: PhysicalRect,
-    ) -> impl Future<Output = Result<Screenshot>> + use<> {
-        let (reply, answer) = oneshot::channel();
-        self.ask(Request::Screenshot(frame.id, region, reply), answer)
-    }
-
-    /// Cut the inside of `outline` (physical pixels relative to the frame's
-    /// monitor, closed automatically) out of `frame`: its bounding box, with
-    /// everything outside the outline transparent.
-    pub fn screenshot_shape(
-        &self,
-        frame: &FrozenFrame,
-        outline: Vec<(f32, f32)>,
-    ) -> impl Future<Output = Result<Screenshot>> + use<> {
-        let (reply, answer) = oneshot::channel();
-        self.ask(Request::Shape(frame.id, outline, reply), answer)
-    }
-
     /// Capture the top-level window `hwnd` directly (PRD §7.3): its own
     /// content, including parts covered by other windows, converted to SDR
     /// for the monitor it is mostly on. Rounded corners stay transparent.
@@ -331,6 +303,65 @@ pub fn monitor_under_pointer() -> Option<MonitorId> {
     (!monitor.is_invalid()).then_some(MonitorId(monitor.0 as u64))
 }
 
+/// Cut `region` (physical pixels) out of a frozen screen's pixels (`bgra`,
+/// `width` × `height`, as [`FrozenFrame::bgra`] gives them) and encode it as
+/// PNG. Takes some milliseconds: call it off the UI thread.
+pub fn cut(bgra: &[u8], width: u32, height: u32, region: PhysicalRect) -> Result<Screenshot> {
+    cut_masked(bgra, width, height, region, None)
+}
+
+/// Cut the inside of `outline` (physical pixels, closed automatically) out
+/// of a frozen screen's pixels: its bounding box, with everything outside
+/// the outline transparent. Takes some milliseconds: call it off the UI
+/// thread.
+pub fn cut_shape(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    outline: &[(f32, f32)],
+) -> Result<Screenshot> {
+    let Some((x, y, w, h)) = shape::bounds(outline, width, height) else {
+        return Err(CaptureError::new(
+            CaptureErrorCode::InvalidRegion,
+            "The outline is empty or outside the screen",
+            format!("{} points", outline.len()),
+        ));
+    };
+    let relative: Vec<_> = outline
+        .iter()
+        .map(|&(px, py)| (px - x as f32, py - y as f32))
+        .collect();
+    cut_masked(
+        bgra,
+        width,
+        height,
+        PhysicalRect::new(x, y, w, h),
+        Some(&relative),
+    )
+}
+
+/// Cut `region`; with `outline` (relative to the region), clear everything
+/// outside it.
+fn cut_masked(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    region: PhysicalRect,
+    outline: Option<&[(f32, f32)]>,
+) -> Result<Screenshot> {
+    let mut rgba = crop_bgra_to_rgba(bgra, width, height, region)?;
+    if let Some(outline) = outline {
+        shape::mask_outside(&mut rgba, region.width, region.height, outline);
+    }
+    let png = encode_png(region.width, region.height, &rgba)?;
+    Ok(Screenshot {
+        width: region.width,
+        height: region.height,
+        rgba: Arc::new(rgba),
+        png: Arc::new(png),
+    })
+}
+
 fn stopped() -> CaptureError {
     CaptureError {
         code: CaptureErrorCode::CaptureUnavailable,
@@ -339,27 +370,15 @@ fn stopped() -> CaptureError {
     }
 }
 
-struct StoredFrame {
-    width: u32,
-    height: u32,
-    bgra: Arc<Vec<u8>>,
-}
-
 struct Service {
-    requests: Sender<Request>,
     /// Device and shaders per adapter, created on first use.
     gpus: HashMap<String, (Gpu, SdrConverter)>,
-    frames: HashMap<u64, StoredFrame>,
-    next_id: u64,
 }
 
 impl Service {
-    fn new(requests: Sender<Request>) -> Self {
+    fn new() -> Self {
         Self {
-            requests,
             gpus: HashMap::new(),
-            frames: HashMap::new(),
-            next_id: 1,
         }
     }
 
@@ -387,12 +406,6 @@ impl Service {
                     self.trim();
                     let _ = reply.send(frozen);
                 }
-                Request::Screenshot(id, region, reply) => {
-                    let _ = reply.send(self.screenshot(id, region, None));
-                }
-                Request::Shape(id, outline, reply) => {
-                    let _ = reply.send(self.shape(id, &outline));
-                }
                 Request::Window(hwnd, include_cursor, reply) => {
                     let captured = retry_once(
                         &mut self,
@@ -401,9 +414,6 @@ impl Service {
                     );
                     self.trim();
                     let _ = reply.send(captured);
-                }
-                Request::Release(id) => {
-                    self.frames.remove(&id);
                 }
             }
         }
@@ -549,17 +559,6 @@ impl Service {
             ));
         }
 
-        let id = self.next_id;
-        self.next_id += 1;
-        let preview = Arc::new(bgra);
-        self.frames.insert(
-            id,
-            StoredFrame {
-                width,
-                height,
-                bgra: preview.clone(),
-            },
-        );
         log::debug!(
             "froze {} ({}x{}, {}) in {} ms",
             monitor.device_name,
@@ -569,14 +568,12 @@ impl Service {
             started.elapsed().as_millis()
         );
         Ok(FrozenFrame {
-            id,
             monitor: describe(monitor),
             width,
             height,
-            preview,
+            bgra,
             frame_peak,
             hdr_regions,
-            release: self.requests.clone(),
         })
     }
 
@@ -618,55 +615,6 @@ impl Service {
             self.gpus.insert(key.clone(), (gpu, converter));
         }
         Ok(&self.gpus[&key])
-    }
-
-    /// Cut `region` out of frame `id`; with `outline` (relative to the
-    /// region), clear everything outside it.
-    fn screenshot(
-        &self,
-        id: u64,
-        region: PhysicalRect,
-        outline: Option<&[(f32, f32)]>,
-    ) -> Result<Screenshot> {
-        let frame = self.frame(id)?;
-        let mut rgba = crop_bgra_to_rgba(&frame.bgra, frame.width, frame.height, region)?;
-        if let Some(outline) = outline {
-            shape::mask_outside(&mut rgba, region.width, region.height, outline);
-        }
-        let png = encode_png(region.width, region.height, &rgba)?;
-        Ok(Screenshot {
-            width: region.width,
-            height: region.height,
-            rgba: Arc::new(rgba),
-            png: Arc::new(png),
-        })
-    }
-
-    fn frame(&self, id: u64) -> Result<&StoredFrame> {
-        self.frames.get(&id).ok_or_else(|| {
-            CaptureError::new(
-                CaptureErrorCode::InvalidRegion,
-                "The frozen screen was already released",
-                id,
-            )
-        })
-    }
-
-    fn shape(&self, id: u64, outline: &[(f32, f32)]) -> Result<Screenshot> {
-        let frame = self.frame(id)?;
-        let Some((x, y, width, height)) = shape::bounds(outline, frame.width, frame.height) else {
-            return Err(CaptureError::new(
-                CaptureErrorCode::InvalidRegion,
-                "The outline is empty or outside the screen",
-                format!("{} points", outline.len()),
-            ));
-        };
-        let region = PhysicalRect::new(x, y, width, height);
-        let relative: Vec<_> = outline
-            .iter()
-            .map(|&(px, py)| (px - x as f32, py - y as f32))
-            .collect();
-        self.screenshot(id, region, Some(&relative))
     }
 
     fn capture_window(&mut self, hwnd: isize, include_cursor: bool) -> Result<Screenshot> {

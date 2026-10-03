@@ -28,7 +28,8 @@ const SNAP_CATCH: f32 = 10.0;
 /// …and holds it until the pointer is this far away.
 const SNAP_RELEASE: f32 = 24.0;
 
-/// The frozen monitor as the overlay shows it.
+/// The frozen monitor as the overlay shows it. Its pixels are the frozen
+/// screen's only copy, and the screenshot is cut from them too.
 #[derive(Clone)]
 pub struct OverlayFrame {
     /// Physical pixels.
@@ -50,6 +51,11 @@ impl OverlayFrame {
             scale,
             image: Arc::new(RenderImage::new([image::Frame::new(buffer)])),
         }
+    }
+
+    /// The pixels, as given to [`OverlayFrame::from_bgra`].
+    pub fn bgra(&self) -> &[u8] {
+        self.image.as_bytes(0).unwrap_or_default()
     }
 }
 

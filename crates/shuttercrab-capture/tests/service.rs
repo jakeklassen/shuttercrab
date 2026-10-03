@@ -7,7 +7,7 @@
 #![cfg(windows)]
 
 use futures::executor::block_on;
-use shuttercrab_capture::{Capture, PhysicalRect, monitor_under_pointer};
+use shuttercrab_capture::{Capture, PhysicalRect, cut, monitor_under_pointer};
 use std::time::Instant;
 
 #[test]
@@ -39,10 +39,10 @@ fn freezes_and_cuts_a_screenshot() {
             (w, h),
             (frame.monitor().bounds.width, frame.monitor().bounds.height)
         );
-        assert_eq!(frame.preview_bgra().len(), (w * h * 4) as usize);
+        assert_eq!(frame.bgra().len(), (w * h * 4) as usize);
         let region = PhysicalRect::new(10, 20, 640, 360);
         let started = Instant::now();
-        let shot = block_on(capture.screenshot(&frame, region)).unwrap();
+        let shot = cut(frame.bgra(), w, h, region).unwrap();
         println!(
             "attempt {attempt}: froze {}x{} in {:?} (peak {:.2}, {} HDR regions); cut + PNG in {:?}, {} bytes",
             w,
@@ -55,10 +55,10 @@ fn freezes_and_cuts_a_screenshot() {
         );
         assert_eq!((shot.width, shot.height), (640, 360));
         // The screenshot is exactly the preview's pixels.
-        let bgra = frame.preview_bgra();
+        let bgra = frame.bgra();
         let i = ((20 * w + 10) * 4) as usize;
         assert_eq!(&shot.rgba[..3], [bgra[i + 2], bgra[i + 1], bgra[i]]);
-        assert!(block_on(capture.screenshot(&frame, PhysicalRect::new(0, 0, w + 1, 1))).is_err());
+        assert!(cut(bgra, w, h, PhysicalRect::new(0, 0, w + 1, 1)).is_err());
         drop(frame);
     }
 }
