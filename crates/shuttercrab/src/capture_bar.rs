@@ -1,6 +1,6 @@
 //! The Capture Bar (PRD §7.5): a small bar at the top of the screen that
 //! asks whether to take a screenshot or record, and of what. It opens from
-//! its own hotkey or the tray icon, remembers the last choice, works from
+//! its own hotkey or the tray menu, remembers the last choice, works from
 //! the keyboard, and disappears as soon as a target is chosen.
 
 use gpui_kit::{

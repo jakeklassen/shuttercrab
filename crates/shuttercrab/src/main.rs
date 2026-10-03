@@ -168,7 +168,7 @@ fn main() {
         if conflict.id != QUIT_HOTKEY {
             notices.push((
                 format!("{} is in use", conflict.hotkey),
-                "Another app owns this hotkey. Click the Shuttercrab tray icon to capture instead."
+                "Another app owns this hotkey. Click the Shuttercrab tray icon and capture from its window instead."
                     .to_string(),
             ));
         }

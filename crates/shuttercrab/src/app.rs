@@ -1,9 +1,10 @@
-//! The screenshot flows (PRD §7.2–7.5). The Capture Bar hotkey or the tray
-//! icon opens the Capture Bar, which asks for Area, Window or Display; the
-//! screenshot hotkey goes straight to Area. Area and Window freeze every
-//! monitor and show the overlay on each, the one under the pointer first;
-//! Display captures the monitor under the pointer at once. The PNG goes to the clipboard and, with auto-save on,
-//! the output folder.
+//! The screenshot flows (PRD §7.2–7.5). The Capture Bar hotkey opens the
+//! Capture Bar, which asks for Area, Window, Display or Freeform; the main
+//! window asks the same, and clicking the tray icon opens that window. The
+//! screenshot hotkey goes straight to Area. Area, Window and Freeform freeze
+//! every monitor and show the overlay on each, the one under the pointer
+//! first; Display captures the monitor under the pointer at once. The PNG
+//! goes to the clipboard and, with auto-save on, the output folder.
 //!
 //! Recording (PRD §7.7) starts from the Capture Bar's Record mode or the
 //! recording hotkey: the same overlay chooses the area, then the recorder
@@ -595,7 +596,6 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     start(&state, Start::Screenshot(CaptureTarget::Area), None, cx)
                 }
                 PlatformEvent::Hotkey(CAPTURE_BAR_HOTKEY)
-                | PlatformEvent::TrayActivated
                 | PlatformEvent::TrayCommand(MENU_CAPTURE_BAR) => {
                     start(&state, Start::CaptureBar, None, cx)
                 }
@@ -626,7 +626,10 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     }
                 }
                 PlatformEvent::TrayCommand(MENU_OPEN_FOLDER) => open_folder(&state, cx),
-                PlatformEvent::TrayCommand(MENU_OPEN) => open_main(&state, Page::Home, cx),
+                // Clicking the tray icon opens the window, as in any tray app.
+                PlatformEvent::TrayActivated | PlatformEvent::TrayCommand(MENU_OPEN) => {
+                    open_main(&state, Page::Home, cx)
+                }
                 PlatformEvent::TrayCommand(MENU_SETTINGS) => open_main(&state, Page::Settings, cx),
                 PlatformEvent::TrayCommand(MENU_AUTO_SAVE) => {
                     let settings = state.update_settings(|s| s.auto_save = !s.auto_save, cx);

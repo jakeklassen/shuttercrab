@@ -62,13 +62,14 @@ it starts in the tray only. Only one copy runs at a time.
 
 | Keys | Does |
 |---|---|
-| **Ctrl+Alt+C** or click the tray icon | Open the Capture Bar: **S**creenshot or **R**ecord, then **A**rea, **W**indow, **D**isplay or **F**reeform (click, arrow keys and Enter, or the letter). It starts on your last choice |
+| **Ctrl+Alt+C** | Open the Capture Bar: **S**creenshot or **R**ecord, then **A**rea, **W**indow, **D**isplay or **F**reeform (click, arrow keys and Enter, or the letter). It starts on your last choice |
 | **Ctrl+Alt+S** | Straight to an area: freeze every monitor, drag on any of them, release to copy. Edges snap to nearby windows |
 | **Space** while selecting | Switch to Window mode: click a window to capture it, or the desktop for the whole display. Space again returns to Area |
 | Escape or right-click | Cancel the selection |
 | **Ctrl+Alt+R** | Record an area (drag it); again to stop |
 | While recording | **Ctrl+Alt+P** pause and resume, **Ctrl+Alt+N** restart, **Ctrl+Alt+D** discard (each asks first unless turned off in Settings; then **Ctrl+Alt+Z** undoes) |
-| Right-click the tray icon | Settings…, open the screenshots folder, turn saving on or off, quit |
+| Click the tray icon | Open the Shuttercrab window |
+| Right-click the tray icon | Open Shuttercrab, capture, Settings…, open the screenshots folder, turn saving on or off, quit |
 | Start Shuttercrab again | Opens its settings window |
 | Ctrl+Alt+Shift+Q | Quit (for development) |
 
