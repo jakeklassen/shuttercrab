@@ -17,6 +17,7 @@ pub mod logging;
 pub mod main_window;
 pub mod overlay;
 pub mod palette;
+pub mod pixels;
 pub mod popup;
 pub mod record_bar;
 pub mod recorder_process;

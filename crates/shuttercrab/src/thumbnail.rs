@@ -167,14 +167,7 @@ pub fn soften(picture: &Picture, look: DragLook) -> Picture {
 
 /// A scaled-down screenshot as an image GPUI can draw.
 pub fn render_image(picture: &Picture) -> Arc<RenderImage> {
-    let mut bgra = picture.rgba.clone();
-    // GPUI draws BGRA.
-    for px in bgra.as_chunks_mut::<4>().0 {
-        px.swap(0, 2);
-    }
-    let buffer = image::RgbaImage::from_raw(picture.width, picture.height, bgra)
-        .expect("the buffer matches its size");
-    Arc::new(RenderImage::new([image::Frame::new(buffer)]))
+    crate::pixels::render_image(&picture.rgba, picture.width, picture.height)
 }
 
 pub struct Thumbnail {

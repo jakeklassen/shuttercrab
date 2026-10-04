@@ -25,7 +25,9 @@ icon_assets!(
         ChevronDown,
         FolderOpen,
         Settings,
-        Power
+        Power,
+        Copy,
+        Save
     ]
 );
 
@@ -78,6 +80,8 @@ mod tests {
             IconName::FolderOpen,
             IconName::Settings,
             IconName::Power,
+            IconName::Copy,
+            IconName::Save,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

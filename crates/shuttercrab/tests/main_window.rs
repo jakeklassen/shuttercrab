@@ -9,13 +9,14 @@ use gpui_kit::{
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
-    main_window::{HOME_SIZE, MainHooks, MainWindow, Page},
+    main_window::{HOME_SIZE, MainHooks, MainWindow, Page, Shot},
     settings::Settings,
     settings_window::{Diagnostics, Hooks},
 };
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
+    sync::Arc,
 };
 
 /// What the fake hooks saw.
@@ -25,6 +26,10 @@ struct Seen {
     folders: Cell<u32>,
     quits: Cell<u32>,
     restarts: Cell<u32>,
+    copies: Cell<u32>,
+    saves: Cell<u32>,
+    /// The client sizes the window was fitted to, physical pixels.
+    fits: RefCell<Vec<(u32, u32)>>,
     /// The version the fake updater has ready, if any.
     update: RefCell<Option<String>>,
 }
@@ -42,6 +47,7 @@ fn open(cx: &mut TestAppContext) -> Opened {
     let seen = Rc::new(Seen::default());
     let (s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone());
     let (s4, s5) = (seen.clone(), seen.clone());
+    let (s6, s7, s8) = (seen.clone(), seen.clone(), seen.clone());
     let hooks = Rc::new(MainHooks {
         settings: Rc::new(Hooks {
             settings: settings.clone(),
@@ -58,6 +64,9 @@ fn open(cx: &mut TestAppContext) -> Opened {
         quit: Rc::new(move |_| s3.quits.set(s3.quits.get() + 1)),
         update_ready: Rc::new(move || s4.update.borrow().clone()),
         restart_to_update: Rc::new(move |_| s5.restarts.set(s5.restarts.get() + 1)),
+        copy: Rc::new(move |_, _| s6.copies.set(s6.copies.get() + 1)),
+        save_as: Rc::new(move |_, _| s7.saves.set(s7.saves.get() + 1)),
+        fit_window: Rc::new(move |_, _, width, height| s8.fits.borrow_mut().push((width, height))),
     });
     let out = Rc::new(RefCell::new(None));
     let slot = out.clone();
@@ -228,4 +237,78 @@ fn the_version_shows_until_an_update_is_ready_then_u_restarts(cx: &mut TestAppCo
     press(cx, &opened, &["u"]);
     update(cx, &opened, |window, cx| window.click("update", cx));
     assert_eq!(opened.seen.restarts.get(), 2);
+}
+
+/// A plain grey screenshot of `width` × `height` pixels.
+fn shot(width: u32, height: u32) -> Shot {
+    let rgba = vec![128; (width * height * 4) as usize];
+    Shot {
+        image: shuttercrab::pixels::render_image(&rgba, width, height),
+        png: Arc::new(Vec::new()),
+        taken_at: chrono::NaiveDate::from_ymd_opt(2026, 10, 4)
+            .unwrap()
+            .and_hms_opt(10, 30, 0)
+            .unwrap(),
+    }
+}
+
+#[gpui_kit::test]
+fn a_screenshot_shows_with_copy_and_save_as(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    // Nothing to copy or save before a screenshot is shown.
+    press(cx, &opened, &["ctrl-c", "ctrl-s"]);
+    assert_eq!((opened.seen.copies.get(), opened.seen.saves.get()), (0, 0));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("hint").is_some());
+        assert!(window.try_find("copy").is_none());
+    });
+
+    let mut scale = 1.;
+    update(cx, &opened, |window, cx| {
+        scale = window.scale_factor();
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(2400, 1600), window, cx));
+    });
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("canvas").is_some());
+        assert!(window.try_find("hint").is_none());
+    });
+    // Sized for the screenshot at full size, plus the toolbar, the footer,
+    // the padding and the border.
+    let expected = |logical: f32| (logical * scale).ceil() as u32;
+    assert_eq!(
+        opened.seen.fits.borrow().last().copied(),
+        Some((
+            expected(2400. / scale + 34.),
+            expected(1600. / scale + 34. + 59. + 32.)
+        ))
+    );
+
+    press(cx, &opened, &["ctrl-c", "ctrl-s"]);
+    update(cx, &opened, |window, cx| {
+        window.click("copy", cx);
+        window.click("save-as", cx);
+    });
+    assert_eq!((opened.seen.copies.get(), opened.seen.saves.get()), (2, 2));
+    // The capture keys still work with a screenshot shown.
+    press(cx, &opened, &["n"]);
+    assert_eq!(opened.seen.captures.borrow().len(), 1);
+}
+
+#[gpui_kit::test]
+fn a_small_screenshot_keeps_the_home_size(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    let mut scale = 1.;
+    update(cx, &opened, |window, cx| {
+        scale = window.scale_factor();
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(40, 30), window, cx));
+    });
+    let home = |side: gpui_kit::Pixels| (f32::from(side) * scale).ceil() as u32;
+    assert_eq!(
+        opened.seen.fits.borrow().last().copied(),
+        Some((home(HOME_SIZE.width), home(HOME_SIZE.height)))
+    );
 }

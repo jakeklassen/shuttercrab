@@ -3,9 +3,15 @@
 //! Settings, the folder and Quit. Settings open as a page of the same
 //! window, so Shuttercrab only ever has one window on the taskbar.
 //!
+//! Like Snipping Tool, it shows a screenshot after it is taken: one started
+//! from the window, or one whose thumbnail was clicked. The window sizes
+//! itself to show it at full size where the screen allows, and the toolbar
+//! gains Copy and Save as.
+//!
 //! Everything has a key: N or Enter starts a capture, S and R pick the
 //! mode, A, W, D and F the target, T steps through the delays, comma opens
-//! Settings, O the folder, Ctrl+Q quits. Escape closes a menu, or goes back
+//! Settings, O the folder, Ctrl+Q quits; with a screenshot shown, Ctrl+C
+//! copies it and Ctrl+S saves it as. Escape closes a menu, or goes back
 //! from Settings. At the bottom, quietly, the version running; once a newer
 //! release is downloaded, Restart to update (U) in its place.
 //!
@@ -18,18 +24,19 @@ use crate::{
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, Settings},
     settings_window::{Hooks, SettingsWindow},
 };
+use chrono::NaiveDateTime;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent, ParentElement as _, Pixels, Render,
-    Role, SharedString, Size, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _,
-    Window,
+    RenderImage, Role, SharedString, Size, StatefulInteractiveElement as _, Styled as _,
+    TestSupportExt as _, Window,
     assets::IconName,
     component::{Icon, Theme, ThemeMode},
-    deferred, div,
+    deferred, div, img,
     prelude::FluentBuilder as _,
     px, rgb,
 };
-use std::rc::Rc;
+use std::{rc::Rc, sync::Arc};
 
 /// The window's size on each page, logical pixels.
 pub const HOME_SIZE: Size<Pixels> = Size {
@@ -41,8 +48,37 @@ pub const SETTINGS_SIZE: Size<Pixels> = Size {
     height: px(690.),
 };
 
+/// The toolbar's and the footer's heights, logical pixels: fixed, so the
+/// window can be sized around a screenshot.
+const TOOLBAR_HEIGHT: f32 = 59.;
+const FOOTER_HEIGHT: f32 = 32.;
+/// The space around a screenshot, logical pixels.
+const CANVAS_PADDING: f32 = 16.;
+
 /// Starts a capture of a mode and target.
 pub type CaptureHook = Rc<dyn Fn(CaptureMode, CaptureTarget, &mut Window, &mut App)>;
+
+/// Acts on the screenshot shown.
+pub type ShotHook = Rc<dyn Fn(&Shot, &mut App)>;
+
+/// A screenshot the window shows.
+#[derive(Clone)]
+pub struct Shot {
+    /// Its pixels, as GPUI draws them.
+    pub image: Arc<RenderImage>,
+    /// The same image as a PNG file, for saving.
+    pub png: Arc<Vec<u8>>,
+    /// When it was taken, which names its file.
+    pub taken_at: NaiveDateTime,
+}
+
+impl Shot {
+    /// Its size, physical pixels.
+    pub fn size(&self) -> (u32, u32) {
+        let size = self.image.size(0);
+        (size.width.0 as u32, size.height.0 as u32)
+    }
+}
 
 /// What the window needs from the rest of Shuttercrab.
 pub struct MainHooks {
@@ -57,7 +93,17 @@ pub struct MainHooks {
     pub update_ready: Rc<dyn Fn() -> Option<String>>,
     /// Quit so the downloaded release is applied, and start again.
     pub restart_to_update: Rc<dyn Fn(&mut App)>,
+    /// Copy the screenshot shown to the clipboard.
+    pub copy: ShotHook,
+    /// Ask where to save the screenshot shown, and save it there.
+    pub save_as: ShotHook,
+    /// Size the window's client area to this many physical pixels, as far
+    /// as its monitor allows.
+    pub fit_window: FitHook,
 }
+
+/// Sizes the window's client area, physical pixels: width, height.
+pub type FitHook = Rc<dyn Fn(&mut Window, &mut App, u32, u32)>;
 
 /// What the window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -139,6 +185,8 @@ pub struct MainWindow {
     menu: Option<Menu>,
     /// The highlighted item of the open menu.
     highlighted: usize,
+    /// The screenshot shown on the home page, if any.
+    shot: Option<Shot>,
     focus: FocusHandle,
 }
 
@@ -152,12 +200,52 @@ impl MainWindow {
             settings: None,
             menu: None,
             highlighted: 0,
+            shot: None,
             focus,
         }
     }
 
     pub fn page(&self) -> Page {
         self.page
+    }
+
+    /// The screenshot shown, if any.
+    pub fn shot(&self) -> Option<&Shot> {
+        self.shot.as_ref()
+    }
+
+    /// Show `shot` on the home page, in place of any shown before, and size
+    /// the window around it.
+    pub fn show_shot(&mut self, shot: Shot, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(previous) = self.shot.replace(shot) {
+            // GPUI keeps every image it has drawn until told otherwise.
+            let _ = window.drop_image(previous.image);
+        }
+        self.page = Page::Home;
+        self.settings = None;
+        self.menu = None;
+        self.fit_home(window, cx);
+        window.focus(&self.focus, cx);
+        cx.notify();
+    }
+
+    /// Size the window for the home page: the toolbar and the hint, or the
+    /// screenshot shown at full size.
+    fn fit_home(&self, window: &mut Window, cx: &mut App) {
+        let Some(shot) = &self.shot else {
+            window.resize(HOME_SIZE);
+            return;
+        };
+        let scale = window.scale_factor();
+        let (width, height) = shot.size();
+        // A screenshot pixel per screen pixel, plus the padding and a
+        // one-pixel border on each side.
+        let around = 2. * (CANVAS_PADDING + 1.);
+        let width = (width as f32 / scale + around).max(f32::from(HOME_SIZE.width));
+        let height = (height as f32 / scale + around + TOOLBAR_HEIGHT + FOOTER_HEIGHT)
+            .max(f32::from(HOME_SIZE.height));
+        let physical = |logical: f32| (logical * scale).ceil() as u32;
+        (self.hooks.fit_window)(window, cx, physical(width), physical(height));
     }
 
     /// Show `page`, sizing the window to it.
@@ -170,7 +258,7 @@ impl MainWindow {
         match page {
             Page::Home => {
                 self.settings = None;
-                window.resize(HOME_SIZE);
+                self.fit_home(window, cx);
                 window.focus(&self.focus, cx);
             }
             Page::Settings => {
@@ -252,6 +340,18 @@ impl MainWindow {
         cx.notify();
     }
 
+    fn copy(&mut self, cx: &mut Context<Self>) {
+        if let Some(shot) = &self.shot {
+            (self.hooks.copy)(shot, cx);
+        }
+    }
+
+    fn save_as(&mut self, cx: &mut Context<Self>) {
+        if let Some(shot) = &self.shot {
+            (self.hooks.save_as)(shot, cx);
+        }
+    }
+
     fn toggle_menu(&mut self, menu: Menu, cx: &mut Context<Self>) {
         self.menu = (self.menu != Some(menu)).then_some(menu);
         self.highlighted = match menu {
@@ -299,8 +399,11 @@ impl MainWindow {
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
         if keystroke.modifiers.control {
-            if key == "q" {
-                (self.hooks.quit)(cx);
+            match key {
+                "q" => (self.hooks.quit)(cx),
+                "c" => self.copy(cx),
+                "s" => self.save_as(cx),
+                _ => {}
             }
             return;
         }
@@ -498,6 +601,36 @@ impl MainWindow {
         }))
     }
 
+    /// A toolbar button for the screenshot shown: an icon and its key.
+    fn shot_button(
+        id: &'static str,
+        label: &'static str,
+        icon: IconName,
+        key: &'static str,
+        cx: &mut Context<Self>,
+        action: fn(&mut Self, &mut Context<Self>),
+    ) -> impl IntoElement + use<> {
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .test_support()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .h(px(40.))
+            .px_2p5()
+            .rounded_md()
+            .hover(|s| s.bg(hover()))
+            .cursor_pointer()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(move |this, _: &MouseUpEvent, _, cx| action(this, cx)),
+            )
+            .child(Icon::new(icon).size(px(18.)))
+            .child(Self::key_hint(key))
+    }
+
     /// A toolbar button that opens `menu` below it.
     fn menu_button<C: IntoElement>(
         &self,
@@ -666,10 +799,11 @@ impl MainWindow {
             .role(Role::Toolbar)
             .test_support()
             .flex()
+            .flex_none()
             .items_center()
             .gap_2()
+            .h(px(TOOLBAR_HEIGHT))
             .px_3()
-            .py_3()
             .border_b_1()
             .border_color(border())
             .child(self.new_button(cx))
@@ -678,7 +812,53 @@ impl MainWindow {
             .child(self.targets(cx))
             .child(self.delay_button(cx))
             .child(div().flex_1())
+            .when(self.shot.is_some(), |d| {
+                d.child(Self::shot_button(
+                    "copy",
+                    "Copy",
+                    IconName::Copy,
+                    "Ctrl+C",
+                    cx,
+                    Self::copy,
+                ))
+                .child(Self::shot_button(
+                    "save-as",
+                    "Save as",
+                    IconName::Save,
+                    "Ctrl+S",
+                    cx,
+                    Self::save_as,
+                ))
+            })
             .child(self.more_button(cx))
+    }
+
+    /// The screenshot shown: at full size, a screenshot pixel per screen
+    /// pixel, or scaled down to fit the window, never up.
+    fn canvas(shot: &Shot, window: &Window) -> impl IntoElement + use<> {
+        let scale = window.scale_factor();
+        let (width, height) = shot.size();
+        let (width, height) = (width as f32 / scale, height as f32 / scale);
+        let viewport = window.viewport_size();
+        let around = 2. * (CANVAS_PADDING + 1.);
+        let room_width = f32::from(viewport.width) - around;
+        let room_height = f32::from(viewport.height) - around - TOOLBAR_HEIGHT - FOOTER_HEIGHT;
+        let fit = (room_width / width).min(room_height / height).clamp(0., 1.);
+        div()
+            .id("canvas")
+            .test_support()
+            .flex_1()
+            .min_h_0()
+            .flex()
+            .items_center()
+            .justify_center()
+            .child(
+                div().border_1().border_color(border()).child(
+                    img(shot.image.clone())
+                        .w(px(width * fit))
+                        .h(px(height * fit)),
+                ),
+            )
     }
 
     fn hint(&self) -> impl IntoElement + use<> {
@@ -726,7 +906,13 @@ impl MainWindow {
     /// its place, once a newer release is downloaded, a way to restart into
     /// it.
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let footer = div().flex().justify_center().pb_3().text_xs();
+        let footer = div()
+            .flex()
+            .flex_none()
+            .justify_center()
+            .items_start()
+            .h(px(FOOTER_HEIGHT))
+            .text_xs();
         match (self.hooks.update_ready)() {
             Some(version) => {
                 let label = SharedString::from(format!("Restart to update to {version}"));
@@ -820,7 +1006,7 @@ impl MainWindow {
 }
 
 impl Render for MainWindow {
-    fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
+    fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let root = div()
             .id("main-window")
             .role(Role::Pane)
@@ -847,7 +1033,10 @@ impl Render for MainWindow {
             (Page::Settings, Some(settings)) => root.child(self.settings_page(settings, cx)),
             _ => root
                 .child(self.toolbar(cx))
-                .child(self.hint())
+                .map(|d| match &self.shot {
+                    Some(shot) => d.child(Self::canvas(shot, window)),
+                    None => d.child(self.hint()),
+                })
                 .child(self.footer(cx)),
         }
     }

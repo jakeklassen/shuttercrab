@@ -170,6 +170,45 @@ pub fn work_area(hmonitor: u64) -> Option<(i32, i32, u32, u32)> {
     })
 }
 
+/// Resize a normal window so its client area is `width` × `height`
+/// physical pixels, or as much of that as its monitor's work area holds.
+/// It keeps its centre, moved only as far as needed to stay on that
+/// monitor. Works on a hidden window too.
+pub fn fit_client_area(hwnd: isize, width: u32, height: u32) -> Result<()> {
+    use windows::Win32::{
+        Graphics::Gdi::{
+            GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
+        },
+        UI::WindowsAndMessaging::{GetWindowRect, SWP_NOZORDER},
+    };
+    let hwnd = HWND(hwnd as _);
+    let (mut window, mut client) = (RECT::default(), RECT::default());
+    let mut monitor = MONITORINFO {
+        cbSize: size_of::<MONITORINFO>() as u32,
+        ..Default::default()
+    };
+    unsafe {
+        GetWindowRect(hwnd, &mut window).context("GetWindowRect failed")?;
+        GetClientRect(hwnd, &mut client).context("GetClientRect failed")?;
+        GetMonitorInfoW(
+            MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST),
+            &mut monitor,
+        )
+        .ok()
+        .context("GetMonitorInfoW failed")?;
+    }
+    // The title bar and borders around the client area.
+    let frame_width = (window.right - window.left) - client.right;
+    let frame_height = (window.bottom - window.top) - client.bottom;
+    let work = monitor.rcWork;
+    let w = (width as i32 + frame_width).min(work.right - work.left);
+    let h = (height as i32 + frame_height).min(work.bottom - work.top);
+    let x = ((window.left + window.right) / 2 - w / 2).clamp(work.left, work.right - w);
+    let y = ((window.top + window.bottom) / 2 - h / 2).clamp(work.top, work.bottom - h);
+    unsafe { SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) }
+        .context("SetWindowPos failed")
+}
+
 /// Show the window normally and bring it to the front. A launcher's "start
 /// hidden" or "start minimised" applies to a process's first window shown
 /// the usual way; this overrides it.

@@ -21,12 +21,14 @@
 //!
 //! - `tray`: the hotkey and menu ids, which hotkeys apply when, and the
 //!   tray menu.
-//! - `windows`: the main window, with its Settings page.
+//! - `windows`: the main window, with its Settings page and the screenshot
+//!   it shows.
 //! - `screenshot`: the Capture Bar, freezing the monitors, and the
 //!   selection overlay.
 //! - `recording`: recording, its countdown, border and controls, and
 //!   Restart, Discard and Undo.
-//! - `delivery`: copying and saving a screenshot, and its thumbnail.
+//! - `delivery`: copying and saving a screenshot, then showing it in the
+//!   window or as a thumbnail.
 //! - `failure`: what a failure tells the user and the log.
 
 mod delivery;
@@ -36,6 +38,7 @@ mod screenshot;
 mod tray;
 mod windows;
 
+use delivery::show_file_in_main;
 pub use delivery::thumbnail_rect;
 pub use failure::Failure;
 pub use screenshot::bar_rect;
@@ -333,19 +336,29 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     log::info!("Shuttercrab was started again; showing its window");
                     open_main(&state, Page::Home, cx);
                 }
-                // Like clicking the thumbnail: open the screenshot.
-                PlatformEvent::NotificationClicked => {
-                    let opens = state.notified.borrow().clone();
-                    if let Some(path) = opens {
-                        cx.update(|cx| cx.open_with_system(&path));
-                    }
-                }
+                PlatformEvent::NotificationClicked => notification_clicked(&state, cx),
                 PlatformEvent::DisplaysChanged => displays_changed(&state),
                 PlatformEvent::Hotkey(_) | PlatformEvent::TrayCommand(_) => {}
             }
         }
     })
     .detach();
+}
+
+/// Open what the latest notification is about, like clicking the
+/// thumbnail: a screenshot shows in the window; a recording opens in the
+/// system's player.
+fn notification_clicked(state: &Rc<State>, cx: &mut AsyncApp) {
+    let opens = state.notified.borrow().clone();
+    match opens {
+        Some(path) if path.extension().is_some_and(|e| e == "png") => {
+            let state = state.clone();
+            cx.spawn(async move |cx| show_file_in_main(&state, path, cx).await)
+                .detach();
+        }
+        Some(path) => cx.update(|cx| cx.open_with_system(&path)),
+        None => {}
+    }
 }
 
 /// Look for a newer release now and every few hours, in the background,
@@ -473,7 +486,9 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
         state.busy.set(Busy::Idle);
         match state.next.take() {
             Some((what, delay)) => start(&state, what, delay, cx),
-            None => state.show_hidden_main(),
+            // In a task of its own, so the window is shown after it has
+            // been sized for the screenshot, which waits for its own task.
+            None => cx.spawn(async move |_| state.show_hidden_main()).detach(),
         }
         heap::log_memory_soon("after a capture request", cx);
     })

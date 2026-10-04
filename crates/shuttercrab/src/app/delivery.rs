@@ -1,9 +1,12 @@
 //! A finished screenshot: copied and saved as the settings say, then shown
-//! as a thumbnail that opens it or drags it out.
+//! in the main window if it was taken from there, or as a thumbnail that
+//! opens it in the window or drags it out.
 
-use super::{State, failure::Failure, screenshot::exclude_from_capture};
+use super::{State, failure::Failure, screenshot::exclude_from_capture, windows::show_in_main};
 use crate::{
     files,
+    main_window::Shot,
+    pixels,
     popup::{self, Activation},
     thumbnail::{self, Thumbnail, ThumbnailEvent},
 };
@@ -39,6 +42,9 @@ pub(super) async fn deliver(
 ) -> Result<(), Failure> {
     let settings = state.settings.borrow().clone();
     let (width, height) = (shot.width, shot.height);
+    // Taken from the main window, which comes back showing it, as Snipping
+    // Tool does; otherwise the thumbnail shows it.
+    let in_window = state.hidden_main.get().is_some();
 
     // Start the file write and the thumbnail image first; they run while
     // the clipboard is written. All three share the screenshot's buffers.
@@ -47,11 +53,10 @@ pub(super) async fn deliver(
         cx.background_executor()
             .spawn(async move { files::save_screenshot(&dir, taken_at, &png) })
     });
-    let scaled = settings
-        .show_thumbnail
+    let scaled = (settings.show_thumbnail && !in_window)
         .then(|| scale_for_thumbnail(shot.rgba.clone(), (width, height), monitor, cx));
-    // Kept for the thumbnail: without auto-save, it writes a temporary file
-    // only if it is opened or dragged.
+    // Kept for the window or the thumbnail: without auto-save, the thumbnail
+    // writes a temporary file only if it is dragged.
     let png = shot.png.clone();
     let rgba = shot.rgba.clone();
     let copied = if settings.copy_to_clipboard {
@@ -87,10 +92,24 @@ pub(super) async fn deliver(
     // the thumbnail is then its only copy.
     let copy_failed = matches!(copied, Some(Err(_)));
     let rescued = copy_failed && saved_path.is_none();
-    let thumbnail = settings.show_thumbnail || copy_failed;
-    let result = outcome(copied, saved, &settings.output_dir());
+    let thumbnail = !in_window && (settings.show_thumbnail || copy_failed);
+    let result = outcome(copied, saved, &settings.output_dir(), in_window);
 
-    if thumbnail {
+    if in_window {
+        let image = cx
+            .background_executor()
+            .spawn(async move { pixels::render_image(&rgba, width, height) })
+            .await;
+        show_in_main(
+            state,
+            Shot {
+                image,
+                png,
+                taken_at,
+            },
+            cx,
+        );
+    } else if thumbnail {
         let picture = match scaled {
             Some(task) => task.await,
             None => scale_for_thumbnail(rgba, (width, height), monitor, cx).await,
@@ -110,6 +129,7 @@ pub(super) async fn deliver(
             picture,
             size: (width, height),
             file,
+            taken_at,
             monitor: monitor.clone(),
             seconds,
         };
@@ -150,15 +170,21 @@ fn scale_for_thumbnail(
 }
 
 /// What to tell the user about copying (`copied`) and saving (`saved`) to
-/// `folder`; `None` is a step the settings turned off. PRD §24: say what
-/// happened and what to do; the causes go to the log.
+/// `folder`; `None` is a step the settings turned off. `in_window`: the
+/// main window shows the screenshot, rather than the thumbnail. PRD §24:
+/// say what happened and what to do; the causes go to the log.
 fn outcome(
     copied: Option<anyhow::Result<()>>,
     saved: Option<anyhow::Result<PathBuf>>,
     folder: &Path,
+    in_window: bool,
 ) -> Result<(), Failure> {
     let busy = "Another app is holding the clipboard.";
-    let in_thumbnail = "It's in the thumbnail: click to open it, or drag it out.";
+    let in_thumbnail = if in_window {
+        "It's in Shuttercrab's window: Ctrl+C copies it, Ctrl+S saves it."
+    } else {
+        "It's in the thumbnail: click to open it, or drag it out."
+    };
     let unwritable = format!(
         "Could not save to {}. Check the folder in Settings.",
         folder.display()
@@ -192,8 +218,22 @@ fn outcome(
     }
 }
 
+/// Show the screenshot saved at `path` in the main window, as clicking its
+/// notification does in Snipping Tool.
+pub(super) async fn show_file_in_main(state: &Rc<State>, path: PathBuf, cx: &mut AsyncApp) {
+    // Only Save as uses the time, to suggest a name; the file's is close.
+    let taken_at = std::fs::metadata(&path)
+        .and_then(|m| m.modified())
+        .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
+        .unwrap_or_else(|_| chrono::Local::now().naive_local());
+    match CaptureFile::Saved(path).shot(taken_at, cx).await {
+        Ok(shot) => show_in_main(state, shot, cx),
+        Err(e) => log::error!("{e}"),
+    }
+}
+
 /// The file behind a thumbnail: saved already, or written to the temporary
-/// folder the first time it is opened or dragged.
+/// folder the first time it is dragged.
 enum CaptureFile {
     Saved(PathBuf),
     Unsaved {
@@ -203,6 +243,36 @@ enum CaptureFile {
 }
 
 impl CaptureFile {
+    /// The screenshot, ready for the main window to show: its PNG, read
+    /// back from the file if it was saved, and decoded.
+    async fn shot(&self, taken_at: NaiveDateTime, cx: &mut AsyncApp) -> Result<Shot, String> {
+        let png = match self {
+            CaptureFile::Saved(path) => {
+                let path = path.clone();
+                let read = cx
+                    .background_executor()
+                    .spawn(async move { std::fs::read(&path) })
+                    .await;
+                Arc::new(read.map_err(|e| format!("Could not read the screenshot: {e}"))?)
+            }
+            CaptureFile::Unsaved { png, .. } => png.clone(),
+        };
+        let decoding = png.clone();
+        let image = cx
+            .background_executor()
+            .spawn(async move {
+                let (rgba, width, height) = pixels::decode_png(&decoding)?;
+                anyhow::Ok(pixels::render_image(&rgba, width, height))
+            })
+            .await
+            .map_err(|e| format!("Could not read the screenshot: {e:#}"))?;
+        Ok(Shot {
+            image,
+            png,
+            taken_at,
+        })
+    }
+
     async fn path(&mut self, cx: &mut AsyncApp) -> Result<PathBuf, String> {
         match self {
             CaptureFile::Saved(path) => Ok(path.clone()),
@@ -229,6 +299,7 @@ struct PendingThumbnail {
     /// The screenshot's size, physical pixels.
     size: (u32, u32),
     file: CaptureFile,
+    taken_at: NaiveDateTime,
     monitor: MonitorInfo,
     seconds: u32,
 }
@@ -256,6 +327,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             picture,
             size,
             mut file,
+            taken_at,
             monitor,
             seconds,
         } = pending;
@@ -292,11 +364,13 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
 
         while let Some(event) = events.next().await {
             match event {
+                // Shown in Shuttercrab's window, as Snipping Tool opens a
+                // snip from its notification.
                 ThumbnailEvent::Open => {
-                    match file.path(cx).await {
-                        Ok(path) => {
-                            log::info!("thumbnail: opening the screenshot");
-                            cx.update(|cx| cx.open_with_system(&path));
+                    match file.shot(taken_at, cx).await {
+                        Ok(shot) => {
+                            log::info!("thumbnail: showing the screenshot in the window");
+                            show_in_main(&state, shot, cx);
                         }
                         Err(e) => log::error!("{e}"),
                     }
@@ -354,7 +428,7 @@ mod tests {
         let folder = Path::new(r"C:\Shots");
         let copy_failed = || Some(Err(anyhow::anyhow!("OpenClipboard: access denied")));
         let saved = Some(Ok(PathBuf::from(r"C:\Shots\a.png")));
-        let failure = outcome(copy_failed(), saved, folder).unwrap_err();
+        let failure = outcome(copy_failed(), saved, folder, false).unwrap_err();
         assert!(
             failure
                 .message
@@ -363,8 +437,13 @@ mod tests {
         assert!(failure.message.contains("in the thumbnail"));
         assert_eq!(failure.detail, "copy: OpenClipboard: access denied");
 
-        let failure =
-            outcome(copy_failed(), Some(Err(anyhow::anyhow!("denied"))), folder).unwrap_err();
+        let failure = outcome(
+            copy_failed(),
+            Some(Err(anyhow::anyhow!("denied"))),
+            folder,
+            false,
+        )
+        .unwrap_err();
         assert!(failure.message.contains(r"Could not save to C:\Shots."));
     }
 
@@ -372,9 +451,9 @@ mod tests {
     fn steps_that_worked_or_were_off_are_not_failures() {
         let folder = Path::new(r"C:\Shots");
         let saved = || Some(Ok(PathBuf::from(r"C:\Shots\a.png")));
-        assert!(outcome(Some(Ok(())), saved(), folder).is_ok());
-        assert!(outcome(None, saved(), folder).is_ok());
-        assert!(outcome(Some(Ok(())), None, folder).is_ok());
-        assert!(outcome(None, None, folder).is_ok());
+        assert!(outcome(Some(Ok(())), saved(), folder, false).is_ok());
+        assert!(outcome(None, saved(), folder, false).is_ok());
+        assert!(outcome(Some(Ok(())), None, folder, false).is_ok());
+        assert!(outcome(None, None, folder, false).is_ok());
     }
 }

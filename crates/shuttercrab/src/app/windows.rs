@@ -7,8 +7,9 @@ use super::{
 };
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
-    main_window::{self, MainHooks, MainWindow, Page},
-    popup,
+    files,
+    main_window::{self, MainHooks, MainWindow, Page, Shot},
+    pixels, popup,
     settings_window::{Diagnostics, Hooks},
 };
 use gpui_kit::{
@@ -17,7 +18,7 @@ use gpui_kit::{
 };
 use shuttercrab_capture::MonitorInfo;
 use shuttercrab_platform::window as platform_window;
-use std::{cell::RefCell, rc::Rc, time::Duration};
+use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
 pub(super) fn open_folder(state: &State, cx: &mut AsyncApp) {
     let dir = state.settings.borrow().output_dir();
@@ -32,21 +33,37 @@ pub(super) fn open_folder(state: &State, cx: &mut AsyncApp) {
 /// Open the main window on `page`, or bring it forward on `page` if it is
 /// open. Settings is a page of it, so Shuttercrab has one window.
 pub(super) fn open_main(state: &Rc<State>, page: Page, cx: &mut AsyncApp) {
+    open_window(state, page, None, cx);
+}
+
+/// Show `shot` in the main window, opening it if needed, as Snipping Tool
+/// shows a new snip.
+pub(super) fn show_in_main(state: &Rc<State>, shot: Shot, cx: &mut AsyncApp) {
+    open_window(state, Page::Home, Some(shot), cx);
+}
+
+/// Open the main window, or bring it forward, on `page` or showing `shot`.
+fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut AsyncApp) {
     let open = state.main_window.borrow().clone();
     if let Some((window, view)) = open
-        && window
-            .update(cx, |_, window, cx| {
-                view.update(cx, |view, cx| view.show(page, window, cx));
-                // Restored if minimised, and brought forward; but left hidden
-                // while a capture it started is being taken.
-                if state.hidden_main.get().is_none()
-                    && let Some(hwnd) = popup::raw_hwnd(window)
-                {
-                    platform_window::show_normal(hwnd);
-                }
-            })
-            .is_ok()
+        && let Ok(hwnd) = window.update(cx, |_, window, cx| {
+            view.update(cx, |view, cx| match shot.take() {
+                Some(shot) => view.show_shot(shot, window, cx),
+                None => view.show(page, window, cx),
+            });
+            popup::raw_hwnd(window)
+        })
     {
+        // Restored if minimised, and brought forward; but left hidden while
+        // a capture it started is being taken. In a task of its own: after
+        // this update, which the window's activation would interrupt, and
+        // after the window is sized for a screenshot.
+        if state.hidden_main.get().is_none()
+            && let Some(hwnd) = hwnd
+        {
+            cx.spawn(async move |_| platform_window::show_normal(hwnd))
+                .detach();
+        }
         return;
     }
     let state = state.clone();
@@ -88,7 +105,10 @@ pub(super) fn open_main(state: &Rc<State>, page: Page, cx: &mut AsyncApp) {
                 });
                 let view = cx.new(|cx| {
                     let mut view = MainWindow::new(hooks, window, cx);
-                    view.show(page, window, cx);
+                    match shot {
+                        Some(shot) => view.show_shot(shot, window, cx),
+                        None => view.show(page, window, cx),
+                    }
                     view
                 });
                 slot.replace(Some(view.clone()));
@@ -149,6 +169,7 @@ fn start_from_main(
 fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
     let (capture, folder, quitting) = (state.clone(), state.clone(), state.clone());
     let (ready, restarting) = (state.clone(), state.clone());
+    let (copying, saving) = (state.clone(), state.clone());
     MainHooks {
         settings: Rc::new(settings_hooks(state, monitors)),
         capture: Rc::new(move |mode, target, window, cx| {
@@ -168,7 +189,87 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
             cx.spawn(async move |cx| restart_to_update(&state, cx).await)
                 .detach();
         }),
+        copy: Rc::new(move |shot, cx| copy_shot(&copying, shot, cx)),
+        save_as: Rc::new(move |shot, cx| save_shot_as(&saving, shot, cx)),
+        fit_window: Rc::new(|window, cx, width, height| {
+            let Some(hwnd) = popup::raw_hwnd(window) else {
+                return;
+            };
+            // After this update, as GPUI resizes its own windows: Windows
+            // reports the new size to GPUI at once, and GPUI is still busy
+            // updating this window now.
+            cx.foreground_executor()
+                .spawn(async move {
+                    if let Err(e) = platform_window::fit_client_area(hwnd, width, height) {
+                        log::warn!("could not size the window: {e:#}");
+                    }
+                })
+                .detach();
+        }),
     }
+}
+
+/// Copy the screenshot the main window shows to the clipboard.
+fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) {
+    let (state, png, image) = (state.clone(), shot.png.clone(), shot.image.clone());
+    let (width, height) = shot.size();
+    cx.spawn(async move |cx| {
+        let rgba = cx
+            .background_executor()
+            .spawn(async move { pixels::rgba(&image) })
+            .await;
+        let copied = state
+            .platform
+            .copy_image(png, Arc::new(rgba), width, height)
+            .await;
+        match copied {
+            Ok(()) => log::info!("{width}×{height} screenshot copied from the window"),
+            Err(e) => {
+                log::error!("copy: {e:#}");
+                state.notify(
+                    "Could not copy the screenshot",
+                    "Another app is holding the clipboard. Try again in a moment.",
+                    None,
+                );
+            }
+        }
+    })
+    .detach();
+}
+
+/// Ask where to save the screenshot the main window shows, starting in the
+/// screenshots folder with its usual name, and save it there.
+fn save_shot_as(state: &Rc<State>, shot: &Shot, cx: &mut App) {
+    let dir = state.settings.borrow().output_dir();
+    // The dialog opens in the folder only if it exists.
+    let _ = std::fs::create_dir_all(&dir);
+    let chosen = cx.prompt_for_new_path(&dir, Some(&files::capture_name(shot.taken_at)));
+    let (state, png) = (state.clone(), shot.png.clone());
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(mut path))) = chosen.await else {
+            return;
+        };
+        if path.extension().is_none() {
+            path.set_extension("png");
+        }
+        let target = path.clone();
+        let written = cx
+            .background_executor()
+            .spawn(async move { std::fs::write(&target, &*png) })
+            .await;
+        match written {
+            Ok(()) => log::info!("saved the screenshot as {}", path.display()),
+            Err(e) => {
+                log::error!("could not save {}: {e}", path.display());
+                state.notify(
+                    "Could not save the screenshot",
+                    format!("{} could not be written: {e}", path.display()),
+                    None,
+                );
+            }
+        }
+    })
+    .detach();
 }
 
 /// How the settings window reaches the rest of Shuttercrab.
