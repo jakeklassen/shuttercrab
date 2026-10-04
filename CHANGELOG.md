@@ -7,6 +7,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.9](https://github.com/jakeklassen/shuttercrab/compare/v0.1.8...v0.1.9) - 2026-10-04
+
+### Fixed
+
+- Restart to update could fail over and over, coming back on the old version with the update still on offer. It happened when something opened from Shuttercrab, such as Photos showing a screenshot, was still running, even in the background after its window closed. Shuttercrab no longer starts programs inside its own install folder, so they can't get in the way. Updating to this version still needs anything you opened from Shuttercrab closed first, Photos included.
 ## [0.1.8](https://github.com/jakeklassen/shuttercrab/compare/v0.1.7...v0.1.8) - 2026-10-04
 
 ### Changed
