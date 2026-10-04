@@ -20,6 +20,11 @@ use shuttercrab_capture::MonitorInfo;
 use shuttercrab_platform::window as platform_window;
 use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
 
+/// The most of the screen's width and height the main window takes for a
+/// big screenshot, which is then scaled down to fit. Like Snipping Tool,
+/// the window stays a comfortable size however big the screenshot.
+const MAX_SCREEN_SHARE: f32 = 0.5;
+
 pub(super) fn open_folder(state: &State, cx: &mut AsyncApp) {
     let dir = state.settings.borrow().output_dir();
     if let Err(e) = std::fs::create_dir_all(&dir) {
@@ -200,7 +205,9 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
             // updating this window now.
             cx.foreground_executor()
                 .spawn(async move {
-                    if let Err(e) = platform_window::fit_client_area(hwnd, width, height) {
+                    let fitted =
+                        platform_window::fit_client_area(hwnd, width, height, MAX_SCREEN_SHARE);
+                    if let Err(e) = fitted {
                         log::warn!("could not size the window: {e:#}");
                     }
                 })
