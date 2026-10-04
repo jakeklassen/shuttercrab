@@ -272,6 +272,10 @@ pub fn print_snapshot(shot: &snapshot::Snapshot) {
     println!("Saved {}", shot.dir.display());
 }
 
+#[expect(
+    clippy::too_many_lines,
+    reason = "a test command: its options, the recording, then what it measured, in order"
+)]
 fn record(mut args: Args) -> Result<()> {
     use shuttercrab_capture::{
         MonitorId, PhysicalRect,

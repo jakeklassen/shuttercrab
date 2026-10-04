@@ -12,6 +12,12 @@ license = "MIT OR Apache-2.0"
 [workspace.lints.rust]
 unsafe_op_in_unsafe_fn = "deny"
 
+[workspace.lints.clippy]
+# Long functions hide their steps; the threshold is in clippy.toml.
+too_many_lines = "warn"
+# Every lint exception says why.
+allow_attributes_without_reason = "warn"
+
 # Debug builds of GPUI and the text stack render slowly. Optimize them while
 # the workspace's own crates stay quick, debuggable debug builds.
 [profile.dev.package]

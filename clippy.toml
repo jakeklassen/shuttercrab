@@ -1,0 +1,3 @@
+# Functions longer than this hide their steps; split them into named ones.
+# Declarative UI builders come close, which is why it is not lower.
+too-many-lines-threshold = 100

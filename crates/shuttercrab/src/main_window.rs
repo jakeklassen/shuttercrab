@@ -375,7 +375,10 @@ impl MainWindow {
 
     /// One item of a segmented control: an icon and its key, underlined in
     /// coral when chosen, dimmed when not `offered`.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is one part of the segment, named at the call; a struct would only repeat the names"
+    )]
     fn segment<F: Fn(&mut Self, &mut Context<Self>) + 'static>(
         id: &'static str,
         label: &'static str,

@@ -293,6 +293,10 @@ fn discover_scenes(dir: &Path) -> Vec<String> {
 
 /// Analyse a finished gate directory and write `summary.md`. With no
 /// `scenes`, every scene in the directory is analysed.
+#[expect(
+    clippy::too_many_lines,
+    reason = "writes summary.md section by section, in the order it reads"
+)]
 pub fn report(dir: &Path, scenes: Option<&[String]>) -> Result<String> {
     let scenes: Vec<String> = match scenes {
         Some(s) => s.to_vec(),
