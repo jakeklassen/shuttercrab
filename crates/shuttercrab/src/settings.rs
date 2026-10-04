@@ -4,7 +4,7 @@
 //! fields removed by hand) still loads. A file that cannot be parsed is kept
 //! as `settings.json.bad` rather than overwritten.
 
-use crate::capture_bar::{CaptureMode, CaptureTarget};
+use crate::capture_choice::{CaptureMode, CaptureTarget};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};

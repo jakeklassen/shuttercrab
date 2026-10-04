@@ -17,14 +17,14 @@
 //! asked; the app does it and tells the bar what to show.
 
 use crate::{
-    capture_bar::{muted, recording, surface, tile},
+    palette::{border, hover, muted, paused, recording, surface, tile},
     recording::{Clock, clock},
 };
 use gpui_kit::{
     AnyElement, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
     KeyDownEvent, MouseButton, MouseUpEvent, ParentElement as _, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, assets::IconName,
-    component::Icon, div, prelude::FluentBuilder as _, px, rgb,
+    component::Icon, div, prelude::FluentBuilder as _, px,
 };
 use std::{
     cell::Cell,
@@ -91,16 +91,6 @@ pub fn next_redraw(clock: Clock, now: Instant) -> Duration {
     }
     let into = clock.elapsed(now).subsec_nanos();
     SECOND - Duration::from_nanos(into.into()) + Duration::from_millis(5)
-}
-
-/// The amber of a paused recording.
-fn paused() -> Hsla {
-    rgb(0xF5A524).into()
-}
-
-/// Discard's muted red.
-fn danger() -> Hsla {
-    rgb(0xE5484D).into()
 }
 
 pub struct RecordBar {
@@ -262,7 +252,7 @@ impl RecordBar {
             .px_2()
             .rounded_md()
             .bg(tile())
-            .hover(|s| s.bg(rgb(0x353535)))
+            .hover(|s| s.bg(hover()))
             .cursor_pointer()
             .text_sm()
             .text_color(color)
@@ -377,7 +367,7 @@ impl RecordBar {
                         IconName::Trash,
                         "Discard",
                         self.hint("D", &keys.discard),
-                        danger(),
+                        recording(),
                         cx,
                         RecordBarEvent::Discard,
                     ),
@@ -415,7 +405,7 @@ impl RecordBar {
                         icon,
                         label,
                         self.hint(letter, chord),
-                        danger(),
+                        recording(),
                         cx,
                         RecordBarEvent::Confirm,
                     ),
@@ -436,7 +426,7 @@ impl RecordBar {
                     IconName::Trash,
                     "Discard now",
                     self.hint("Enter", &keys.discard),
-                    danger(),
+                    recording(),
                     cx,
                     RecordBarEvent::Confirm,
                 ),
@@ -469,7 +459,7 @@ impl Render for RecordBar {
             .px_3()
             .bg(surface())
             .border_1()
-            .border_color(rgb(0x3A3A3A))
+            .border_color(border())
             .child(div().flex_none().size(px(10.)).rounded_full().bg(dot))
             .child(
                 div()

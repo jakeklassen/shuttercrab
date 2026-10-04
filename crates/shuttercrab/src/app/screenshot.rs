@@ -4,7 +4,8 @@
 
 use super::{Busy, State, delivery::deliver, failure::Failure, recording::record};
 use crate::{
-    capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent, CaptureMode, CaptureTarget},
+    capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent},
+    capture_choice::{CaptureMode, CaptureTarget},
     overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     popup::{self, Activation},
     selection::ScreenWindow,

@@ -6,7 +6,7 @@ use super::{
     tray::{TRAY_DELAY, hotkeys},
 };
 use crate::{
-    capture_bar::{CaptureMode, CaptureTarget},
+    capture_choice::{CaptureMode, CaptureTarget},
     main_window::{self, MainHooks, MainWindow, Page},
     popup,
     settings_window::{Diagnostics, Hooks},

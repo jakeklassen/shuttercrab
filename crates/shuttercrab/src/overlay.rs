@@ -10,6 +10,7 @@
 //! Space on any of them switches them all, and in Window mode only the one
 //! with the pointer highlights anything.
 
+use crate::palette::accent;
 use crate::selection::{
     Drag, ScreenWindow, Snapping, Stuck, dimensions, snap, to_logical, window_at,
 };
@@ -18,7 +19,7 @@ use gpui_kit::{
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, StyledImage as _, TestSupportExt as _, Window,
-    canvas, div, fill, hsla, img, point, prelude::FluentBuilder as _, px, rgb, size,
+    canvas, div, fill, hsla, img, point, prelude::FluentBuilder as _, px, size,
 };
 use shuttercrab_capture::PhysicalRect;
 use std::{cell::Cell, rc::Rc, sync::Arc};
@@ -152,11 +153,6 @@ fn dot(at: Point<Pixels>, diameter: f32, color: Hsla) -> gpui_kit::PaintQuad {
         color,
     )
     .corner_radii(r)
-}
-
-/// Shuttercrab's accent, for the Window-mode highlight.
-fn accent() -> Hsla {
-    rgb(0x1F6FEB).into()
 }
 
 impl SelectionOverlay {

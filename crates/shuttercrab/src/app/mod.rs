@@ -47,7 +47,7 @@ pub use tray::{
 };
 
 use crate::{
-    capture_bar::CaptureTarget,
+    capture_choice::CaptureTarget,
     heap,
     main_window::{MainWindow, Page},
     popup,

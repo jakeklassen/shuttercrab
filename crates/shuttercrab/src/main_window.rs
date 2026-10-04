@@ -13,7 +13,8 @@
 //! so it can be tested on its own.
 
 use crate::{
-    capture_bar::{CaptureMode, CaptureTarget, muted, recording, surface, tile},
+    capture_choice::{CaptureMode, CaptureTarget},
+    palette::{border, coral, hover, muted, recording, surface, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, Settings},
     settings_window::{Hooks, SettingsWindow},
 };
@@ -106,19 +107,6 @@ impl More {
             More::Quit => IconName::Power,
         }
     }
-}
-
-/// Shuttercrab's coral, the main window's accent.
-fn coral() -> Hsla {
-    rgb(0xE8603C).into()
-}
-
-fn border() -> Hsla {
-    rgb(0x3A3A3A).into()
-}
-
-fn hover() -> Hsla {
-    rgb(0x353535).into()
 }
 
 /// Give the theme the window's own colours, so the Settings page matches

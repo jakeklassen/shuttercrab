@@ -3,11 +3,11 @@
 //! at once, Escape cancels. It is excluded from capture and gone before the
 //! first frame.
 
-use crate::capture_bar::{muted, surface};
+use crate::palette::{border, muted, surface};
 use gpui_kit::{
     Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    TestSupportExt as _, Window, div, px, rgb,
+    TestSupportExt as _, Window, div, px,
 };
 use std::time::Duration;
 
@@ -99,7 +99,7 @@ impl Render for Countdown {
             .gap_2()
             .bg(surface())
             .border_1()
-            .border_color(rgb(0x3A3A3A))
+            .border_color(border())
             .child(
                 div()
                     .text_size(px(88.))

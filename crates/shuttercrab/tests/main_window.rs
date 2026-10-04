@@ -8,7 +8,7 @@ use gpui_kit::{
     App, AppContext as _, Entity, TestAppContext, Window, component::Root, test::TestWindowExt as _,
 };
 use shuttercrab::{
-    capture_bar::{CaptureMode, CaptureTarget},
+    capture_choice::{CaptureMode, CaptureTarget},
     main_window::{HOME_SIZE, MainHooks, MainWindow, Page},
     settings::Settings,
     settings_window::{Diagnostics, Hooks},

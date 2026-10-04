@@ -6,6 +6,7 @@
 //! It never takes the keyboard, so Ctrl+V straight after a capture still
 //! pastes into the application the user was in.
 
+use crate::palette::{border, surface};
 use gpui_kit::{
     Context, EventEmitter, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
     MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, Pixels, Point, Render,
@@ -316,9 +317,9 @@ impl Render for Thumbnail {
             .size_full()
             .relative()
             .p(px(PADDING))
-            .bg(rgb(0x202020))
+            .bg(surface())
             .border_1()
-            .border_color(rgb(0x3A3A3A))
+            .border_color(border())
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_down))
             .on_mouse_move(cx.listener(Self::on_move))

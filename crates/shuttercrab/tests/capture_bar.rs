@@ -8,8 +8,9 @@ use gpui_kit::{
     App, AppContext as _, TestAppContext, VisualTestContext, Window, WindowHandle, px, size,
     test::TestWindowExt as _,
 };
-use shuttercrab::capture_bar::{
-    BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent, CaptureMode, CaptureTarget,
+use shuttercrab::{
+    capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent},
+    capture_choice::{CaptureMode, CaptureTarget},
 };
 use std::{cell::RefCell, rc::Rc};
 

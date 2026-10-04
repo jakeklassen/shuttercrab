@@ -8,7 +8,7 @@ use super::{
     screenshot::{exclude_from_capture, monitor_info, select},
 };
 use crate::{
-    capture_bar::CaptureTarget,
+    capture_choice::CaptureTarget,
     countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
     files, heap,
     overlay::{Mode, OverlayEvent},

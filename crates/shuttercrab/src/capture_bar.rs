@@ -3,114 +3,16 @@
 //! its own hotkey or the tray menu, remembers the last choice, works from
 //! the keyboard, and disappears as soon as a target is chosen.
 
-use gpui_kit::{
-    Context, EventEmitter, FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyDownEvent,
-    MouseButton, MouseUpEvent, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, assets::IconName,
-    component::Icon, div, prelude::FluentBuilder as _, px, rgb,
+use crate::{
+    capture_choice::{CaptureMode, CaptureTarget},
+    palette::{accent, border, hover, muted, recording, surface, tile},
 };
-use serde::{Deserialize, Serialize};
-
-/// Whether the bar takes a screenshot or starts a recording.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CaptureMode {
-    #[default]
-    Screenshot,
-    Record,
-}
-
-impl CaptureMode {
-    const ALL: [CaptureMode; 2] = [Self::Screenshot, Self::Record];
-
-    fn label(self) -> &'static str {
-        match self {
-            Self::Screenshot => "Screenshot",
-            Self::Record => "Record",
-        }
-    }
-
-    /// The letter that switches to it from the keyboard.
-    fn key(self) -> &'static str {
-        match self {
-            Self::Screenshot => "s",
-            Self::Record => "r",
-        }
-    }
-
-    fn icon(self) -> IconName {
-        match self {
-            Self::Screenshot => IconName::Camera,
-            Self::Record => IconName::Video,
-        }
-    }
-
-    fn id(self) -> &'static str {
-        match self {
-            Self::Screenshot => "mode-screenshot",
-            Self::Record => "mode-record",
-        }
-    }
-
-    /// Whether `target` can be captured this way: recordings are of an
-    /// area or a display (PRD §7.7).
-    pub fn offers(self, target: CaptureTarget) -> bool {
-        self == Self::Screenshot || matches!(target, CaptureTarget::Area | CaptureTarget::Display)
-    }
-}
-
-/// What a screenshot or recording captures.
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
-#[serde(rename_all = "lowercase")]
-pub enum CaptureTarget {
-    #[default]
-    Area,
-    Window,
-    Display,
-    /// Drawn around by hand; screenshots only.
-    Freeform,
-}
-
-impl CaptureTarget {
-    pub const ALL: [CaptureTarget; 4] = [Self::Area, Self::Window, Self::Display, Self::Freeform];
-
-    pub fn label(self) -> &'static str {
-        match self {
-            Self::Area => "Area",
-            Self::Window => "Window",
-            Self::Display => "Display",
-            Self::Freeform => "Freeform",
-        }
-    }
-
-    /// The letter that picks it from the keyboard.
-    pub fn key(self) -> &'static str {
-        match self {
-            Self::Area => "a",
-            Self::Window => "w",
-            Self::Display => "d",
-            Self::Freeform => "f",
-        }
-    }
-
-    pub fn icon(self) -> IconName {
-        match self {
-            Self::Area => IconName::SquareDashed,
-            Self::Window => IconName::AppWindow,
-            Self::Display => IconName::Monitor,
-            Self::Freeform => IconName::Lasso,
-        }
-    }
-
-    pub fn id(self) -> &'static str {
-        match self {
-            Self::Area => "target-area",
-            Self::Window => "target-window",
-            Self::Display => "target-display",
-            Self::Freeform => "target-freeform",
-        }
-    }
-}
+use gpui_kit::{
+    Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
+    MouseButton, MouseUpEvent, ParentElement as _, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, component::Icon,
+    div, prelude::FluentBuilder as _, px,
+};
 
 /// What the user did with the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -131,22 +33,6 @@ pub struct CaptureBar {
 }
 
 impl EventEmitter<CaptureBarEvent> for CaptureBar {}
-
-pub(crate) fn surface() -> Hsla {
-    rgb(0x202020).into()
-}
-
-pub(crate) fn tile() -> Hsla {
-    rgb(0x2B2B2B).into()
-}
-
-pub(crate) fn muted() -> Hsla {
-    rgb(0x9D9D9D).into()
-}
-
-pub(crate) fn accent() -> Hsla {
-    rgb(0x1F6FEB).into()
-}
 
 impl CaptureBar {
     /// A bar with `selected` highlighted: the last target used.
@@ -309,12 +195,10 @@ impl CaptureBar {
             .bg(tile())
             .when(!offered, |d| d.opacity(0.4))
             .when(offered, |d| {
-                d.hover(|s| s.bg(rgb(0x353535)))
-                    .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| this.choose(target, cx)),
-                    )
+                d.hover(|s| s.bg(hover())).cursor_pointer().on_mouse_up(
+                    MouseButton::Left,
+                    cx.listener(move |this, _: &MouseUpEvent, _, cx| this.choose(target, cx)),
+                )
             })
             .child(
                 Icon::new(target.icon())
@@ -339,11 +223,6 @@ impl CaptureBar {
     }
 }
 
-/// The red of a recording in progress.
-pub(crate) fn recording() -> Hsla {
-    rgb(0xE5484D).into()
-}
-
 impl Render for CaptureBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -360,7 +239,7 @@ impl Render for CaptureBar {
             .p_3()
             .bg(surface())
             .border_1()
-            .border_color(rgb(0x3A3A3A))
+            .border_color(border())
             .child(
                 div()
                     .flex()
