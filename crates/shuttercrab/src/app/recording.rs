@@ -19,8 +19,9 @@ use crate::{
     },
     recorder_process::RecorderProcess,
     recording::{self, Clock},
+    settings::Settings,
 };
-use chrono::Local;
+use chrono::{Local, NaiveDateTime};
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{AppContext as _, AsyncApp, Entity};
 use shuttercrab_capture::{
@@ -33,7 +34,7 @@ use shuttercrab_platform::{
 };
 use std::{
     cell::{Cell, RefCell},
-    path::PathBuf,
+    path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
 };
@@ -196,27 +197,10 @@ pub(super) async fn record(
         log::info!("already recording; the new request is ignored");
         return Ok(());
     }
-    let (region, info) = match target {
-        CaptureTarget::Display => (None, monitor_info(state, monitor).await?),
-        // A window or a freeform shape is recorded as an area.
-        CaptureTarget::Area | CaptureTarget::Window | CaptureTarget::Freeform => {
-            let first = state.capture.freeze_monitor(monitor, false).await?;
-            let (frame, event) = select(state, first, false, Mode::Area, true, pressed, cx).await?;
-            let region = match event {
-                OverlayEvent::Selected(rect) => Some(rect),
-                OverlayEvent::Display => None,
-                OverlayEvent::Window { visible, .. } => Some(visible),
-                // Area mode draws no shapes.
-                OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) | OverlayEvent::Shape(_) => {
-                    log::info!("recording cancelled");
-                    return Ok(());
-                }
-            };
-            (region, frame.info)
-        }
+    let Some((region, info)) = choose_area(state, target, monitor, pressed, cx).await? else {
+        log::info!("recording cancelled");
+        return Ok(());
     };
-    // The area may be on another monitor than the one first under the pointer.
-    let monitor = info.id;
     // The border shows what will be recorded: grey until recording starts.
     let countdown = state.settings.borrow().countdown();
     let waiting = if countdown > 0 {
@@ -232,16 +216,7 @@ pub(super) async fn record(
     let chosen = Instant::now();
     let clock = Rc::new(Cell::new(Clock::new(chosen)));
     // The controls come first, so they are excluded before the first frame.
-    let keys = {
-        let settings = state.settings.borrow();
-        RecordKeys {
-            pause: settings.pause_hotkey.clone(),
-            stop: settings.record_hotkey.clone(),
-            restart: settings.restart_hotkey.clone(),
-            discard: settings.discard_hotkey.clone(),
-            undo: settings.undo_hotkey.clone(),
-        }
-    };
+    let keys = record_keys(&state.settings.borrow());
     let (controls, requests) = match open_controls(&info, region, clock.clone(), keys, cx) {
         Some((controls, requests)) => (Some(controls), Some(requests)),
         None => (None, None),
@@ -249,36 +224,24 @@ pub(super) async fn record(
 
     let settings = state.settings.borrow().clone();
     let dir = settings.recording_dir();
-    let (fps, include_cursor) = (settings.record_fps(), settings.record_cursor);
+    let options = RecordOptions {
+        // The area may be on another monitor than the one first under the
+        // pointer.
+        monitor: info.id,
+        region,
+        fps: settings.record_fps(),
+        include_cursor: settings.record_cursor,
+        // `start_take` names the file.
+        path: PathBuf::new(),
+    };
     let started_at = Local::now().naive_local();
     let started = cx
         .background_executor()
-        .spawn(async move {
-            let path = files::new_recording(&dir, started_at).map_err(|e| {
-                Failure::new(
-                    format!(
-                        "Could not save to {}. Check the folder in Settings.",
-                        dir.display()
-                    ),
-                    format!("{e:#}"),
-                )
-            })?;
-            let options = RecordOptions {
-                monitor,
-                region,
-                fps,
-                include_cursor,
-                path: files::partial_path(&path),
-            };
-            let recorder = RecorderProcess::start(options.clone()).map_err(|e| {
-                Failure::new("Could not start recording.", format!("recorder: {e:#}"))
-            })?;
-            Ok::<_, Failure>((recorder, path, options))
-        })
+        .spawn(async move { start_take(&dir, started_at, options) })
         .await
         .map_err(Failure::of_recording);
-    let (recorder, path, options) = match started {
-        Ok(started) => started,
+    let take = match started {
+        Ok(take) => take,
         Err(failure) => {
             if let Some(controls) = controls {
                 controls.popup.close(cx);
@@ -287,27 +250,119 @@ pub(super) async fn record(
         }
     };
     log::info!(
-        "recording {} at {fps} fps, {} ms after the choice",
+        "recording {} at {} fps, {} ms after the choice",
         match region {
             Some(r) => format!("{}×{} at {},{}", r.width, r.height, r.x, r.y),
             None => "the display".to_string(),
         },
+        take.options.fps,
         chosen.elapsed().as_millis()
     );
     clock.set(Clock::new(Instant::now()));
-    let mut recorder = recorder;
-    let ended = recorder.ended();
-    let watched = path.clone();
     let recording = Recording {
-        recorder: Some(recorder),
-        path,
-        options,
+        recorder: Some(take.recorder),
+        path: take.path,
+        options: take.options,
         clock,
         controls,
         asking: None,
         discarded: None,
         frame,
     };
+    begin(state, recording, requests, cx);
+    Ok(())
+}
+
+/// What to record for `target`: the region (`None` for all of the monitor)
+/// and its monitor. `None` when the user cancels the selection.
+async fn choose_area(
+    state: &Rc<State>,
+    target: CaptureTarget,
+    monitor: MonitorId,
+    pressed: Instant,
+    cx: &mut AsyncApp,
+) -> Result<Option<(Option<PhysicalRect>, MonitorInfo)>, Failure> {
+    match target {
+        CaptureTarget::Display => Ok(Some((None, monitor_info(state, monitor).await?))),
+        // A window or a freeform shape is recorded as an area.
+        CaptureTarget::Area | CaptureTarget::Window | CaptureTarget::Freeform => {
+            let first = state.capture.freeze_monitor(monitor, false).await?;
+            let (frame, event) = select(state, first, false, Mode::Area, true, pressed, cx).await?;
+            let region = match event {
+                OverlayEvent::Selected(rect) => Some(rect),
+                OverlayEvent::Display => None,
+                OverlayEvent::Window { visible, .. } => Some(visible),
+                // Area mode draws no shapes.
+                OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) | OverlayEvent::Shape(_) => {
+                    return Ok(None);
+                }
+            };
+            Ok(Some((region, frame.info)))
+        }
+    }
+}
+
+/// The controls' key hints, from the hotkey settings.
+fn record_keys(settings: &Settings) -> RecordKeys {
+    RecordKeys {
+        pause: settings.pause_hotkey.clone(),
+        stop: settings.record_hotkey.clone(),
+        restart: settings.restart_hotkey.clone(),
+        discard: settings.discard_hotkey.clone(),
+        undo: settings.undo_hotkey.clone(),
+    }
+}
+
+/// A take that has started.
+struct Take {
+    recorder: RecorderProcess,
+    /// The file's final name; until the take is finished it is written to
+    /// [`files::partial_path`] of it.
+    path: PathBuf,
+    options: RecordOptions,
+}
+
+/// Start a take of what `options` say, into a new file in `dir` named for
+/// `started_at`; that file replaces `options.path`. Blocks while the
+/// helper process starts, so it runs off the main thread.
+fn start_take(
+    dir: &Path,
+    started_at: NaiveDateTime,
+    options: RecordOptions,
+) -> Result<Take, Failure> {
+    let path = files::new_recording(dir, started_at).map_err(|e| {
+        Failure::new(
+            format!(
+                "Could not save to {}. Check the folder in Settings.",
+                dir.display()
+            ),
+            format!("{e:#}"),
+        )
+    })?;
+    let options = RecordOptions {
+        path: files::partial_path(&path),
+        ..options
+    };
+    let recorder = RecorderProcess::start(options.clone())
+        .map_err(|e| Failure::new("Could not start recording.", format!("recorder: {e:#}")))?;
+    Ok(Take {
+        recorder,
+        path,
+        options,
+    })
+}
+
+/// Make `recording` the one in progress: show its clock and colour, tell
+/// the tray, handle the controls' `requests`, and watch for the take ending
+/// by itself.
+fn begin(
+    state: &Rc<State>,
+    mut recording: Recording,
+    requests: Option<UnboundedReceiver<RecordBarEvent>>,
+    cx: &mut AsyncApp,
+) {
+    let ended = recording.recorder.as_mut().and_then(RecorderProcess::ended);
+    let watched = recording.path.clone();
     recording.refresh_controls(cx);
     recording.color_frame_for_clock();
     state.recording.replace(Some(recording));
@@ -316,7 +371,6 @@ pub(super) async fn record(
         handle_controls(state.clone(), requests, cx);
     }
     watch_recording(state, ended, watched, cx);
-    Ok(())
 }
 
 /// Show the recording controls next to `region` (physical pixels relative
@@ -897,62 +951,32 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
     let restarted = cx
         .background_executor()
         .spawn(async move {
-            let finished = recorder.stop();
-            if let Err(e) = &finished {
-                log::warn!("the replaced take did not stop cleanly: {e:#}");
-            }
-            let kept = keep_previous && finished.is_ok();
-            if !kept {
-                let _ = std::fs::remove_file(&options.path);
-            }
-            let path = files::new_recording(&dir, started_at)?;
-            let options = RecordOptions {
-                path: files::partial_path(&path),
-                ..options
-            };
-            let recorder = RecorderProcess::start(options.clone())?;
-            anyhow::Ok((recorder, path, options, kept))
+            let kept = finish_replaced_take(recorder, &options.path, keep_previous);
+            start_take(&dir, started_at, options).map(|take| (take, kept))
         })
         .await;
     let mut slot = state.recording.borrow_mut();
     match (restarted, slot.as_mut()) {
-        (Ok((mut recorder, path, options, kept)), Some(recording)) => {
-            let ended = recorder.ended();
-            let watched = path.clone();
-            let previous = std::mem::replace(&mut recording.path, path);
-            recording.options = options;
-            recording.recorder = Some(recorder);
+        (Ok((mut take, kept)), Some(recording)) => {
+            let ended = take.recorder.ended();
+            let watched = take.path.clone();
+            let previous = std::mem::replace(&mut recording.path, take.path);
+            recording.options = take.options;
+            recording.recorder = Some(take.recorder);
             recording.clock.set(Clock::new(Instant::now()));
             let view = recording.view();
             drop(slot);
             log::info!("recording restarted");
-            let until = Instant::now() + state.settings.borrow().undo_window();
-            if kept {
-                let generation = state.next_generation();
-                state.previous_take.replace(Some(PreviousTake {
-                    path: previous,
-                    generation,
-                }));
-                forget_previous_take_later(
-                    state,
-                    generation,
-                    until.saturating_duration_since(Instant::now()),
-                    cx,
-                );
-            }
-            show(view, cx, |bar, cx| {
-                bar.offer_previous(kept.then_some(until), cx);
-                bar.notice("Restarted", Duration::from_secs(2), cx);
-            });
+            offer_replaced_take(state, previous, kept, view, cx);
             state.recording_changed(cx);
             watch_recording(state, ended, watched, cx);
         }
         // Shuttercrab quit while restarting: the new recording is not wanted.
-        (Ok((recorder, ..)), None) => {
+        (Ok((take, _)), None) => {
             drop(slot);
             cx.background_executor()
                 .spawn(async move {
-                    if let Ok(summary) = recorder.stop() {
+                    if let Ok(summary) = take.recorder.stop() {
                         let _ = std::fs::remove_file(summary.path);
                     }
                 })
@@ -965,12 +989,59 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
                 recording.close_controls(cx);
             }
             state.recording_changed(cx);
-            let failure = Failure::new("Could not restart recording.", format!("restart: {e:#}"))
-                .of_recording();
+            let failure = Failure::new(
+                "Could not restart recording.",
+                format!("restart: {}", e.detail),
+            )
+            .of_recording();
             log::error!("{}", failure.detail);
             state.notify(failure.title(), failure.message, None);
         }
     }
+}
+
+/// Stop the take a restart replaces, written to `partial`. Its file is
+/// kept when `keep_previous` and it finished cleanly, and deleted
+/// otherwise. Returns whether it was kept.
+fn finish_replaced_take(recorder: RecorderProcess, partial: &Path, keep_previous: bool) -> bool {
+    let finished = recorder.stop();
+    if let Err(e) = &finished {
+        log::warn!("the replaced take did not stop cleanly: {e:#}");
+    }
+    let kept = keep_previous && finished.is_ok();
+    if !kept {
+        let _ = std::fs::remove_file(partial);
+    }
+    kept
+}
+
+/// After a restart, say so in the controls. A `kept` take, whose final name
+/// is `previous`, is offered to Undo until its undo window closes.
+fn offer_replaced_take(
+    state: &Rc<State>,
+    previous: PathBuf,
+    kept: bool,
+    view: Option<Entity<RecordBar>>,
+    cx: &mut AsyncApp,
+) {
+    let until = Instant::now() + state.settings.borrow().undo_window();
+    if kept {
+        let generation = state.next_generation();
+        state.previous_take.replace(Some(PreviousTake {
+            path: previous,
+            generation,
+        }));
+        forget_previous_take_later(
+            state,
+            generation,
+            until.saturating_duration_since(Instant::now()),
+            cx,
+        );
+    }
+    show(view, cx, |bar, cx| {
+        bar.offer_previous(kept.then_some(until), cx);
+        bar.notice("Restarted", Duration::from_secs(2), cx);
+    });
 }
 
 /// Delete the take a restart replaced once its undo window closes, unless
