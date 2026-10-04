@@ -227,7 +227,10 @@ impl RecordBar {
     }
 
     /// A button: an icon, a label and its key hint.
-    #[allow(clippy::too_many_arguments)]
+    #[expect(
+        clippy::too_many_arguments,
+        reason = "each is one part of the button, named at the call; a struct would only repeat the names"
+    )]
     fn button(
         &self,
         id: &'static str,
@@ -308,130 +311,131 @@ impl RecordBar {
     }
 
     fn buttons(&self, now: Instant, cx: &mut Context<Self>) -> Vec<AnyElement> {
-        let white = gpui_kit::white();
-        let keys = self.keys.clone();
         match self.mode {
-            BarMode::Controls => {
-                let (icon, label) = if self.clock.get().is_paused() {
-                    (IconName::Play, "Resume")
-                } else {
-                    (IconName::Pause, "Pause")
-                };
-                // Just after a restart, keeping the previous take takes
-                // Restart's place.
-                let third = if self.offering(now) {
-                    self.button(
-                        "record-keep-previous",
-                        IconName::Undo,
-                        "Keep previous take",
-                        self.hint("Z", &keys.undo),
-                        white,
-                        cx,
-                        RecordBarEvent::Undo,
-                    )
-                } else {
-                    self.button(
-                        "record-restart",
-                        IconName::RotateCcw,
-                        "Restart",
-                        self.hint("N", &keys.restart),
-                        white,
-                        cx,
-                        RecordBarEvent::Restart,
-                    )
-                };
-                vec![
-                    self.button(
-                        "record-pause",
-                        icon,
-                        label,
-                        self.hint("P", &keys.pause),
-                        white,
-                        cx,
-                        RecordBarEvent::TogglePause,
-                    ),
-                    self.button(
-                        "record-stop",
-                        IconName::Square,
-                        "Stop",
-                        self.hint("S", &keys.stop),
-                        white,
-                        cx,
-                        RecordBarEvent::Stop,
-                    ),
-                    third,
-                    // Set apart, at the end.
-                    div().w(px(4.)).into_any_element(),
-                    self.button(
-                        "record-discard",
-                        IconName::Trash,
-                        "Discard",
-                        self.hint("D", &keys.discard),
-                        recording(),
-                        cx,
-                        RecordBarEvent::Discard,
-                    ),
-                ]
-            }
-            BarMode::Confirm(action, _) => {
-                let (id, icon, label, letter, chord) = match action {
-                    Destructive::Discard => (
-                        "record-confirm",
-                        IconName::Trash,
-                        "Discard",
-                        "Enter",
-                        keys.discard.as_str(),
-                    ),
-                    Destructive::Restart => (
-                        "record-confirm",
-                        IconName::RotateCcw,
-                        "Restart",
-                        "Enter",
-                        keys.restart.as_str(),
-                    ),
-                };
-                vec![
-                    self.button(
-                        "record-keep",
-                        IconName::Play,
-                        "Keep recording",
-                        self.hint("Esc", &keys.pause),
-                        white,
-                        cx,
-                        RecordBarEvent::Cancel,
-                    ),
-                    self.button(
-                        id,
-                        icon,
-                        label,
-                        self.hint(letter, chord),
-                        recording(),
-                        cx,
-                        RecordBarEvent::Confirm,
-                    ),
-                ]
-            }
-            BarMode::Discarded { .. } => vec![
-                self.button(
-                    "record-undo",
-                    IconName::Undo,
-                    "Undo",
-                    self.hint("Z", &keys.undo),
-                    white,
-                    cx,
-                    RecordBarEvent::Undo,
-                ),
-                self.button(
-                    "record-discard-now",
-                    IconName::Trash,
-                    "Discard now",
-                    self.hint("Enter", &keys.discard),
-                    recording(),
-                    cx,
-                    RecordBarEvent::Confirm,
-                ),
-            ],
+            BarMode::Controls => self.control_buttons(now, cx),
+            BarMode::Confirm(action, _) => self.confirm_buttons(action, cx),
+            BarMode::Discarded { .. } => self.discarded_buttons(cx),
         }
+    }
+
+    /// While recording: Pause, Stop, Restart, and Discard set apart.
+    fn control_buttons(&self, now: Instant, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let (white, keys) = (gpui_kit::white(), &self.keys);
+        let (icon, label) = if self.clock.get().is_paused() {
+            (IconName::Play, "Resume")
+        } else {
+            (IconName::Pause, "Pause")
+        };
+        // Just after a restart, keeping the previous take takes Restart's
+        // place.
+        let third = if self.offering(now) {
+            self.button(
+                "record-keep-previous",
+                IconName::Undo,
+                "Keep previous take",
+                self.hint("Z", &keys.undo),
+                white,
+                cx,
+                RecordBarEvent::Undo,
+            )
+        } else {
+            self.button(
+                "record-restart",
+                IconName::RotateCcw,
+                "Restart",
+                self.hint("N", &keys.restart),
+                white,
+                cx,
+                RecordBarEvent::Restart,
+            )
+        };
+        vec![
+            self.button(
+                "record-pause",
+                icon,
+                label,
+                self.hint("P", &keys.pause),
+                white,
+                cx,
+                RecordBarEvent::TogglePause,
+            ),
+            self.button(
+                "record-stop",
+                IconName::Square,
+                "Stop",
+                self.hint("S", &keys.stop),
+                white,
+                cx,
+                RecordBarEvent::Stop,
+            ),
+            third,
+            // Set apart, at the end.
+            div().w(px(4.)).into_any_element(),
+            self.button(
+                "record-discard",
+                IconName::Trash,
+                "Discard",
+                self.hint("D", &keys.discard),
+                recording(),
+                cx,
+                RecordBarEvent::Discard,
+            ),
+        ]
+    }
+
+    /// Asking before `action` throws the take away: keep recording, or go
+    /// ahead.
+    fn confirm_buttons(&self, action: Destructive, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let keys = &self.keys;
+        let (icon, label, chord) = match action {
+            Destructive::Discard => (IconName::Trash, "Discard", keys.discard.as_str()),
+            Destructive::Restart => (IconName::RotateCcw, "Restart", keys.restart.as_str()),
+        };
+        vec![
+            self.button(
+                "record-keep",
+                IconName::Play,
+                "Keep recording",
+                self.hint("Esc", &keys.pause),
+                gpui_kit::white(),
+                cx,
+                RecordBarEvent::Cancel,
+            ),
+            self.button(
+                "record-confirm",
+                icon,
+                label,
+                self.hint("Enter", chord),
+                recording(),
+                cx,
+                RecordBarEvent::Confirm,
+            ),
+        ]
+    }
+
+    /// After a discard, while it can still be undone.
+    fn discarded_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let keys = &self.keys;
+        vec![
+            self.button(
+                "record-undo",
+                IconName::Undo,
+                "Undo",
+                self.hint("Z", &keys.undo),
+                gpui_kit::white(),
+                cx,
+                RecordBarEvent::Undo,
+            ),
+            self.button(
+                "record-discard-now",
+                IconName::Trash,
+                "Discard now",
+                self.hint("Enter", &keys.discard),
+                recording(),
+                cx,
+                RecordBarEvent::Confirm,
+            ),
+        ]
     }
 }
 
