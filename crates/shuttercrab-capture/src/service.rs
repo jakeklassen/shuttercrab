@@ -451,25 +451,12 @@ impl Service {
     }
 
     fn monitors(&self) -> Result<Vec<MonitorInfo>> {
-        let monitors = display::enumerate().map_err(|e| {
-            CaptureError::new(
-                CaptureErrorCode::CaptureUnavailable,
-                "Could not list monitors",
-                e,
-            )
-        })?;
-        Ok(monitors.iter().map(describe).collect())
+        Ok(list_monitors()?.iter().map(describe).collect())
     }
 
     fn freeze(&mut self, id: MonitorId, include_cursor: bool) -> Result<FrozenFrame> {
         let started = Instant::now();
-        let monitors = display::enumerate().map_err(|e| {
-            CaptureError::new(
-                CaptureErrorCode::CaptureUnavailable,
-                "Could not list monitors",
-                e,
-            )
-        })?;
+        let monitors = list_monitors()?;
         let monitor = monitors
             .iter()
             .find(|m| m.hmonitor.0 as u64 == id.0)
@@ -480,101 +467,26 @@ impl Service {
                     format!("{id:?}"),
                 )
             })?;
-        let white_scale = monitor.white_scale().map_err(|e| {
-            CaptureError::new(
-                CaptureErrorCode::CaptureUnavailable,
-                "Could not read the display's SDR white level",
-                e,
-            )
-        })?;
+        let white_scale = white_scale(monitor)?;
         let (gpu, converter) = self.gpu_for(monitor)?;
-        let unavailable = |e: anyhow::Error| {
-            classify(
-                e,
-                CaptureErrorCode::CaptureUnavailable,
-                "Could not capture the screen",
-            )
-        };
-
-        // SDR monitors take the desktop as it is (PRD §9.5); Advanced Color
-        // monitors go through the FP16 path and the transform.
-        let (width, height, bgra, frame_peak, hdr_regions) = match monitor.color_mode {
-            ColorMode::Sdr => {
-                let frame = capture::capture_monitor(
-                    gpu,
-                    monitor.hmonitor,
-                    PixelFormat::Bgra8,
-                    include_cursor,
+        let frame =
+            capture_desktop(gpu, converter, monitor, white_scale, include_cursor).map_err(|e| {
+                classify(
+                    e,
+                    CaptureErrorCode::CaptureUnavailable,
+                    "Could not capture the screen",
                 )
-                .map_err(unavailable)?;
-                let mut bgra = gpu.read_back(&frame.texture).map_err(unavailable)?;
-                for px in bgra.as_chunks_mut::<4>().0 {
-                    px[3] = 255;
-                }
-                (frame.width, frame.height, bgra, 1.0, 0)
-            }
-            ColorMode::Wcg | ColorMode::Hdr => {
-                let frame = capture::capture_monitor(
-                    gpu,
-                    monitor.hmonitor,
-                    PixelFormat::Fp16,
-                    include_cursor,
-                )
-                .map_err(unavailable)?;
-                let sdr = converter
-                    .convert_anchored(
-                        gpu,
-                        &frame.texture,
-                        white_scale,
-                        Highlights::Tonemap,
-                        SCREENSHOT_ANCHOR,
-                    )
-                    .map_err(unavailable)?;
-                let mut bgra = sdr.rgba;
-                for px in bgra.as_chunks_mut::<4>().0 {
-                    px.swap(0, 2);
-                    px[3] = 255;
-                }
-                (
-                    sdr.width,
-                    sdr.height,
-                    bgra,
-                    sdr.frame_peak,
-                    sdr.regions.len(),
-                )
-            }
-        };
-
-        // The frame and the metadata used to convert it must describe the
-        // same display state.
-        let after = display::enumerate().map_err(unavailable)?;
-        let changed = display::find(&after, &monitor.device_name)
-            .map(|now| now.state() != monitor.state())
-            .unwrap_or(true);
-        if changed {
-            return Err(CaptureError::new(
-                CaptureErrorCode::DisplayChanged,
-                "The display changed during capture; try again",
-                &monitor.device_name,
-            ));
-        }
-
+            })?;
+        ensure_unchanged(monitor)?;
         log::debug!(
             "froze {} ({}x{}, {}) in {} ms",
             monitor.device_name,
-            width,
-            height,
+            frame.width,
+            frame.height,
             monitor.color_mode.name(),
             started.elapsed().as_millis()
         );
-        Ok(FrozenFrame {
-            monitor: describe(monitor),
-            width,
-            height,
-            bgra,
-            frame_peak,
-            hdr_regions,
-        })
+        Ok(frame)
     }
 
     /// Return pooled graphics memory after a capture.
@@ -621,13 +533,7 @@ impl Service {
         let started = Instant::now();
         let window = HWND(hwnd as _);
         let nearest = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
-        let monitors = display::enumerate().map_err(|e| {
-            CaptureError::new(
-                CaptureErrorCode::CaptureUnavailable,
-                "Could not list monitors",
-                e,
-            )
-        })?;
+        let monitors = list_monitors()?;
         let monitor = monitors
             .iter()
             .find(|m| m.hmonitor == nearest)
@@ -638,13 +544,7 @@ impl Service {
                     format!("{hwnd:#x}"),
                 )
             })?;
-        let white_scale = monitor.white_scale().map_err(|e| {
-            CaptureError::new(
-                CaptureErrorCode::CaptureUnavailable,
-                "Could not read the display's SDR white level",
-                e,
-            )
-        })?;
+        let white_scale = white_scale(monitor)?;
         let (gpu, converter) = self.gpu_for(monitor)?;
         let failed = |e: anyhow::Error| {
             classify(
@@ -690,6 +590,97 @@ impl Service {
             png: Arc::new(png),
         })
     }
+}
+
+fn list_monitors() -> Result<Vec<display::Monitor>> {
+    display::enumerate().map_err(|e| {
+        CaptureError::new(
+            CaptureErrorCode::CaptureUnavailable,
+            "Could not list monitors",
+            e,
+        )
+    })
+}
+
+fn white_scale(monitor: &display::Monitor) -> Result<f32> {
+    monitor.white_scale().map_err(|e| {
+        CaptureError::new(
+            CaptureErrorCode::CaptureUnavailable,
+            "Could not read the display's SDR white level",
+            e,
+        )
+    })
+}
+
+/// One frame of `monitor`, as opaque 8-bit BGRA. SDR monitors give the
+/// desktop as it is (PRD §9.5); Advanced Color monitors go through the FP16
+/// path and the transform.
+fn capture_desktop(
+    gpu: &Gpu,
+    converter: &SdrConverter,
+    monitor: &display::Monitor,
+    white_scale: f32,
+    include_cursor: bool,
+) -> anyhow::Result<FrozenFrame> {
+    let capture = |format| capture::capture_monitor(gpu, monitor.hmonitor, format, include_cursor);
+    let (width, height, bgra, frame_peak, hdr_regions) = match monitor.color_mode {
+        ColorMode::Sdr => {
+            let frame = capture(PixelFormat::Bgra8)?;
+            let mut bgra = gpu.read_back(&frame.texture)?;
+            for px in bgra.as_chunks_mut::<4>().0 {
+                px[3] = 255;
+            }
+            (frame.width, frame.height, bgra, 1.0, 0)
+        }
+        ColorMode::Wcg | ColorMode::Hdr => {
+            let frame = capture(PixelFormat::Fp16)?;
+            let sdr = converter.convert_anchored(
+                gpu,
+                &frame.texture,
+                white_scale,
+                Highlights::Tonemap,
+                SCREENSHOT_ANCHOR,
+            )?;
+            let mut bgra = sdr.rgba;
+            for px in bgra.as_chunks_mut::<4>().0 {
+                px.swap(0, 2);
+                px[3] = 255;
+            }
+            let regions = sdr.regions.len();
+            (sdr.width, sdr.height, bgra, sdr.frame_peak, regions)
+        }
+    };
+    Ok(FrozenFrame {
+        monitor: describe(monitor),
+        width,
+        height,
+        bgra,
+        frame_peak,
+        hdr_regions,
+    })
+}
+
+/// Fail if `monitor`'s display state changed since it was looked up: the
+/// frame and the metadata used to convert it must describe the same state.
+fn ensure_unchanged(monitor: &display::Monitor) -> Result<()> {
+    let after = display::enumerate().map_err(|e| {
+        classify(
+            e,
+            CaptureErrorCode::CaptureUnavailable,
+            "Could not capture the screen",
+        )
+    })?;
+    let changed = display::find(&after, &monitor.device_name)
+        .map(|now| now.state() != monitor.state())
+        .unwrap_or(true);
+    if changed {
+        return Err(CaptureError::new(
+            CaptureErrorCode::DisplayChanged,
+            "The display changed during capture; try again",
+            &monitor.device_name,
+        ));
+    }
+    Ok(())
 }
 
 /// Run `attempt`; after a lost device or a display change, `recover` and

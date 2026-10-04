@@ -2,12 +2,19 @@
 
 use crate::gpu::Gpu;
 use anyhow::{Context, Result, bail, ensure};
-use std::time::{Duration, Instant};
+use std::{
+    sync::mpsc::Receiver,
+    time::{Duration, Instant},
+};
 use windows::{
     Foundation::TypedEventHandler,
     Graphics::{
-        Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession},
+        Capture::{
+            Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem,
+            GraphicsCaptureSession,
+        },
         DirectX::DirectXPixelFormat,
+        SizeInt32,
     },
     Win32::{
         Foundation::HWND,
@@ -138,64 +145,13 @@ fn capture_item(
             return Err(e).context("FrameArrived failed");
         }
     };
-    let result = (|| {
+    let result: Result<Frame> = (|| {
         session.SetIsCursorCaptureEnabled(include_cursor)?;
         // Cosmetic only; the border is not part of the captured image.
         let border_disabled = session.SetIsBorderRequired(false).is_ok();
         session.StartCapture().context("StartCapture failed")?;
-        let deadline = Instant::now() + Duration::from_secs(5);
-        let frame = loop {
-            match pool.TryGetNextFrame() {
-                Ok(frame) => break frame,
-                // An empty pool returns a null frame, which windows-rs
-                // surfaces as an error carrying a success code.
-                Err(e) if e.code().is_ok() => {}
-                Err(e) => return Err(e).context("TryGetNextFrame failed"),
-            }
-            let left = deadline.saturating_duration_since(Instant::now());
-            if left.is_zero() || arrival.recv_timeout(left).is_err() {
-                bail!("no frame arrived within five seconds");
-            }
-        };
-        let copy = (|| {
-            let content = frame.ContentSize()?;
-            if exact {
-                ensure!(
-                    content.Width == size.Width && content.Height == size.Height,
-                    "the monitor changed size during capture; try again"
-                );
-            }
-            let width = content.Width.min(size.Width) as u32;
-            let height = content.Height.min(size.Height) as u32;
-            ensure!(width > 0 && height > 0, "the frame is empty");
-            let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
-            let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
-            let mut desc = D3D11_TEXTURE2D_DESC::default();
-            unsafe { source.GetDesc(&mut desc) };
-            ensure!(
-                desc.Format == format.dxgi(),
-                "asked for {:?}, got {:?}",
-                format.dxgi(),
-                desc.Format
-            );
-            // The frame's texture may be larger than the content; keep only
-            // the content.
-            let texture =
-                gpu.texture(width, height, desc.Format, D3D11_BIND_SHADER_RESOURCE, None)?;
-            let region = D3D11_BOX {
-                left: 0,
-                top: 0,
-                front: 0,
-                right: width,
-                bottom: height,
-                back: 1,
-            };
-            unsafe {
-                gpu.context
-                    .CopySubresourceRegion(&texture, 0, 0, 0, 0, &source, 0, Some(&region))
-            };
-            Ok((texture, width, height))
-        })();
+        let frame = wait_for_first_frame(&pool, &arrival)?;
+        let copy = copy_frame_content(gpu, &frame, size, format, exact);
         frame.Close()?;
         let (texture, width, height) = copy?;
         Ok(Frame {
@@ -212,6 +168,74 @@ fn capture_item(
     let frame = result?;
     closed?;
     Ok(frame)
+}
+
+/// The capture's first frame, waiting up to five seconds for it.
+/// `arrival` hears from the pool's `FrameArrived` handler.
+fn wait_for_first_frame(
+    pool: &Direct3D11CaptureFramePool,
+    arrival: &Receiver<()>,
+) -> Result<Direct3D11CaptureFrame> {
+    let deadline = Instant::now() + Duration::from_secs(5);
+    loop {
+        match pool.TryGetNextFrame() {
+            Ok(frame) => return Ok(frame),
+            // An empty pool returns a null frame, which windows-rs
+            // surfaces as an error carrying a success code.
+            Err(e) if e.code().is_ok() => {}
+            Err(e) => return Err(e).context("TryGetNextFrame failed"),
+        }
+        let left = deadline.saturating_duration_since(Instant::now());
+        if left.is_zero() || arrival.recv_timeout(left).is_err() {
+            bail!("no frame arrived within five seconds");
+        }
+    }
+}
+
+/// A copy of the frame's content, with its width and height. The frame's
+/// texture may be larger than the content; only the content is kept.
+/// `size` is the capture item's size; see [`capture_item`] for `exact`.
+fn copy_frame_content(
+    gpu: &Gpu,
+    frame: &Direct3D11CaptureFrame,
+    size: SizeInt32,
+    format: PixelFormat,
+    exact: bool,
+) -> Result<(ID3D11Texture2D, u32, u32)> {
+    let content = frame.ContentSize()?;
+    if exact {
+        ensure!(
+            content.Width == size.Width && content.Height == size.Height,
+            "the monitor changed size during capture; try again"
+        );
+    }
+    let width = content.Width.min(size.Width) as u32;
+    let height = content.Height.min(size.Height) as u32;
+    ensure!(width > 0 && height > 0, "the frame is empty");
+    let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
+    let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
+    let mut desc = D3D11_TEXTURE2D_DESC::default();
+    unsafe { source.GetDesc(&mut desc) };
+    ensure!(
+        desc.Format == format.dxgi(),
+        "asked for {:?}, got {:?}",
+        format.dxgi(),
+        desc.Format
+    );
+    let texture = gpu.texture(width, height, desc.Format, D3D11_BIND_SHADER_RESOURCE, None)?;
+    let region = D3D11_BOX {
+        left: 0,
+        top: 0,
+        front: 0,
+        right: width,
+        bottom: height,
+        back: 1,
+    };
+    unsafe {
+        gpu.context
+            .CopySubresourceRegion(&texture, 0, 0, 0, 0, &source, 0, Some(&region))
+    };
+    Ok((texture, width, height))
 }
 
 /// Load and initialise Windows.Graphics.Capture without capturing anything:
