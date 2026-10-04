@@ -15,7 +15,7 @@
 use crate::{
     color::{HdrRegion, Highlights, SCREENSHOT_ANCHOR, anchor_regions},
     display,
-    gpu::{Analysis, Gpu, SdrConverter},
+    gpu::{Analysis, Gpu, VideoConverter},
     service::{MonitorId, PhysicalRect, hmonitor},
 };
 use anyhow::{Context, Result, bail, ensure};
@@ -23,11 +23,11 @@ use std::{
     path::{Path, PathBuf},
     sync::{
         Arc,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicUsize, Ordering},
         mpsc::{Receiver, Sender, channel},
     },
     thread::JoinHandle,
-    time::Duration,
+    time::{Duration, Instant},
 };
 use windows::{
     Foundation::TypedEventHandler,
@@ -88,6 +88,213 @@ pub struct RecordingSummary {
     /// Why the recording ended before it was stopped, if it did. What was
     /// recorded until then is still in the file.
     pub interrupted: Option<Interruption>,
+    /// Where each kept frame's time went, when it could be measured.
+    pub timing: Option<FrameTiming>,
+}
+
+/// Average time per kept frame in each stage of the recorder, for tuning
+/// its cost to a game (issue #15). GPU times come from timestamp queries;
+/// CPU times are wall time on the recording thread.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameTiming {
+    /// Frames with GPU times (some are lost when the GPU is slow to answer).
+    pub gpu_frames: u64,
+    /// Copying the recorded region out of the captured frame.
+    pub copy_ms: f64,
+    /// HDR analysis, tone mapping, and the copy to the converter's input.
+    pub convert_ms: f64,
+    /// RGBA → NV12 in the video processor.
+    pub nv12_ms: f64,
+    /// Frames with CPU times.
+    pub cpu_frames: u64,
+    /// The conversion call, including its wait for the analysis read-back.
+    pub cpu_convert_ms: f64,
+    /// Handing the frame to the encoder.
+    pub cpu_write_ms: f64,
+}
+
+impl std::fmt::Display for FrameTiming {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GPU per frame ({} frames): copy {:.2} ms, analysis + tone map {:.2} ms, NV12 {:.2} ms, \
+             total {:.2} ms; CPU per frame ({} frames): convert call {:.2} ms, encoder hand-off {:.2} ms",
+            self.gpu_frames,
+            self.copy_ms,
+            self.convert_ms,
+            self.nv12_ms,
+            self.copy_ms + self.convert_ms + self.nv12_ms,
+            self.cpu_frames,
+            self.cpu_convert_ms,
+            self.cpu_write_ms
+        )
+    }
+}
+
+/// Timestamp queries for one frame: the disjoint query around four stamps
+/// (before the copy, after it, after the conversion, after NV12).
+struct FrameQueries {
+    disjoint: ID3D11Query,
+    stamps: [ID3D11Query; 4],
+    pending: bool,
+}
+
+/// Collects [`FrameTiming`] without waiting on the GPU: each frame's
+/// queries are read a few frames later, when they are surely done.
+struct Timer {
+    ring: Vec<FrameQueries>,
+    next: usize,
+    sums: [f64; 3],
+    gpu_frames: u64,
+    cpu: [f64; 2],
+    cpu_frames: u64,
+}
+
+impl Timer {
+    const DEPTH: usize = 8;
+
+    fn new(gpu: &Gpu) -> Result<Self> {
+        let query = |kind| -> Result<ID3D11Query> {
+            let mut q = None;
+            unsafe {
+                gpu.device.CreateQuery(
+                    &D3D11_QUERY_DESC {
+                        Query: kind,
+                        MiscFlags: 0,
+                    },
+                    Some(&mut q),
+                )?
+            };
+            q.context("no query")
+        };
+        let ring = (0..Self::DEPTH)
+            .map(|_| {
+                Ok(FrameQueries {
+                    disjoint: query(D3D11_QUERY_TIMESTAMP_DISJOINT)?,
+                    stamps: [
+                        query(D3D11_QUERY_TIMESTAMP)?,
+                        query(D3D11_QUERY_TIMESTAMP)?,
+                        query(D3D11_QUERY_TIMESTAMP)?,
+                        query(D3D11_QUERY_TIMESTAMP)?,
+                    ],
+                    pending: false,
+                })
+            })
+            .collect::<Result<Vec<_>>>()?;
+        Ok(Self {
+            ring,
+            next: 0,
+            sums: [0.0; 3],
+            gpu_frames: 0,
+            cpu: [0.0; 2],
+            cpu_frames: 0,
+        })
+    }
+
+    /// Read the slot's results if the GPU has them; forget them if not.
+    fn collect(&mut self, context: &ID3D11DeviceContext, index: usize, wait: bool) {
+        let slot = &mut self.ring[index];
+        if !std::mem::take(&mut slot.pending) {
+            return;
+        }
+        let flags = if wait {
+            0
+        } else {
+            D3D11_ASYNC_GETDATA_DONOTFLUSH.0 as u32
+        };
+        let read_disjoint = || {
+            let mut data = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
+            let ok = unsafe {
+                context.GetData(
+                    &slot.disjoint,
+                    Some((&mut data as *mut D3D11_QUERY_DATA_TIMESTAMP_DISJOINT).cast()),
+                    size_of::<D3D11_QUERY_DATA_TIMESTAMP_DISJOINT>() as u32,
+                    flags,
+                )
+            };
+            (ok.is_ok() && data.Frequency != 0).then_some(data)
+        };
+        let mut data = read_disjoint();
+        if wait {
+            for _ in 0..50 {
+                if data.is_some() {
+                    break;
+                }
+                std::thread::sleep(Duration::from_millis(2));
+                data = read_disjoint();
+            }
+        }
+        let Some(data) = data.filter(|d| !d.Disjoint.as_bool()) else {
+            return;
+        };
+        let mut ticks = [0u64; 4];
+        for (stamp, tick) in slot.stamps.iter().zip(ticks.iter_mut()) {
+            let ok = unsafe {
+                context.GetData(
+                    stamp,
+                    Some((tick as *mut u64).cast()),
+                    size_of::<u64>() as u32,
+                    flags,
+                )
+            };
+            if ok.is_err() || *tick == 0 {
+                return;
+            }
+        }
+        let ms = |a: u64, b: u64| b.saturating_sub(a) as f64 * 1000.0 / data.Frequency as f64;
+        self.sums[0] += ms(ticks[0], ticks[1]);
+        self.sums[1] += ms(ticks[1], ticks[2]);
+        self.sums[2] += ms(ticks[2], ticks[3]);
+        self.gpu_frames += 1;
+    }
+
+    /// Start a frame: reuse the oldest slot, reading it first.
+    fn begin(&mut self, context: &ID3D11DeviceContext) -> usize {
+        let index = self.next;
+        self.next = (self.next + 1) % Self::DEPTH;
+        self.collect(context, index, false);
+        let slot = &mut self.ring[index];
+        unsafe {
+            context.Begin(&slot.disjoint);
+            context.End(&slot.stamps[0]);
+        }
+        index
+    }
+
+    fn stamp(&self, context: &ID3D11DeviceContext, index: usize, which: usize) {
+        unsafe { context.End(&self.ring[index].stamps[which]) };
+    }
+
+    fn end(
+        &mut self,
+        context: &ID3D11DeviceContext,
+        index: usize,
+        cpu_convert: Duration,
+        cpu_write: Duration,
+    ) {
+        let slot = &mut self.ring[index];
+        unsafe { context.End(&slot.disjoint) };
+        slot.pending = true;
+        self.cpu[0] += cpu_convert.as_secs_f64() * 1000.0;
+        self.cpu[1] += cpu_write.as_secs_f64() * 1000.0;
+        self.cpu_frames += 1;
+    }
+
+    fn finish(mut self, context: &ID3D11DeviceContext) -> FrameTiming {
+        for index in 0..Self::DEPTH {
+            self.collect(context, index, true);
+        }
+        let per = |sum: f64, n: u64| if n == 0 { 0.0 } else { sum / n as f64 };
+        FrameTiming {
+            gpu_frames: self.gpu_frames,
+            copy_ms: per(self.sums[0], self.gpu_frames),
+            convert_ms: per(self.sums[1], self.gpu_frames),
+            nv12_ms: per(self.sums[2], self.gpu_frames),
+            cpu_frames: self.cpu_frames,
+            cpu_convert_ms: per(self.cpu[0], self.cpu_frames),
+            cpu_write_ms: per(self.cpu[1], self.cpu_frames),
+        }
+    }
 }
 
 /// Why a recording ended by itself.
@@ -289,6 +496,12 @@ pub fn attached(monitor: MonitorId) -> bool {
 /// 100-nanosecond units, Media Foundation's and Windows.Graphics.Capture's.
 const TICKS_PER_SECOND: i64 = 10_000_000;
 
+/// Run the HDR analysis on every this-many frames (15 times a second at 60
+/// fps); tone mapping uses the latest result. The exposure is smoothed over
+/// half a second anyway, and the analysis was most of the recorder's GPU
+/// work per frame (issue #15).
+const ANALYSE_EVERY: u32 = 4;
+
 /// How long a still screen goes without a repeated frame.
 const HEARTBEAT: i64 = TICKS_PER_SECOND;
 
@@ -385,7 +598,7 @@ fn record(
 struct Session {
     options: RecordOptions,
     gpu: Gpu,
-    converter: SdrConverter,
+    converter: VideoConverter,
     white_scale: f32,
     region: PhysicalRect,
     pool: Direct3D11CaptureFramePool,
@@ -421,7 +634,6 @@ impl Session {
         ensure!(!region.is_empty(), "the region is empty");
 
         let gpu = video_gpu(&monitor.adapter)?;
-        let converter = SdrConverter::new(&gpu)?;
         let (w, h) = (region.width, region.height);
         let crop = gpu.texture(
             w,
@@ -444,6 +656,7 @@ impl Session {
             D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
             None,
         )?;
+        let converter = VideoConverter::new(&gpu, &crop, &sdr, ANALYSE_EVERY)?;
         let nv12 = Nv12::new(&gpu, &rgba, w, h, options.fps)?;
         let hardware = w.min(h) >= HARDWARE_MIN_SIDE;
         let writer = Mp4Writer::new(&gpu, &options.path, w, h, options.fps, hardware)?;
@@ -515,6 +728,10 @@ impl Session {
         let mut paused: i64 = 0;
         let mut last: Option<(i64, usize)> = None;
         let (mut frames, mut dropped_busy, mut skipped_rate) = (0u64, 0u64, 0u64);
+        // Measuring costs a few queries per frame and never waits.
+        let mut timer = Timer::new(&self.gpu)
+            .inspect_err(|e| log::debug!("no frame timing: {e:#}"))
+            .ok();
         // A failure ends the loop, not the recording: what was written is
         // still finished into a file.
         let mut interrupted = None;
@@ -591,16 +808,38 @@ impl Session {
                                 frame.Close()?;
                                 continue;
                             }
-                            self.copy_region(&frame)?;
-                            frame.Close()?;
+                            // Before the copy: a frame that cannot be encoded
+                            // costs nothing.
                             let Some(slot) = self.nv12.free_slot() else {
                                 dropped_busy += 1;
+                                frame.Close()?;
                                 continue;
                             };
+                            let context = self.gpu.context.clone();
+                            let measured = timer.as_mut().map(|t| t.begin(&context));
+                            self.copy_region(&frame)?;
+                            frame.Close()?;
+                            if let (Some(t), Some(i)) = (&timer, measured) {
+                                t.stamp(&context, i, 1);
+                            }
+                            let started = Instant::now();
                             self.convert(time)?;
+                            let cpu_convert = started.elapsed();
+                            if let (Some(t), Some(i)) = (&timer, measured) {
+                                t.stamp(&context, i, 2);
+                            }
                             self.nv12.convert(&self.gpu, slot)?;
+                            if let (Some(t), Some(i)) = (&timer, measured) {
+                                // Before the hand-off: the encoder works on the
+                                // same queue from its own thread.
+                                t.stamp(&context, i, 3);
+                            }
                             let time = last.map_or(time, |(previous, _)| time.max(previous + 1));
+                            let started = Instant::now();
                             self.writer.write(&self.nv12, slot, time, period)?;
+                            if let (Some(t), Some(i)) = (&mut timer, measured) {
+                                t.end(&context, i, cpu_convert, started.elapsed());
+                            }
                             last = Some((time, slot));
                             frames += 1;
                         }
@@ -646,8 +885,10 @@ impl Session {
             None => return Err(why(anyhow::anyhow!("no frame was captured"))),
         };
         self.stop_capture();
+        let timing = timer.map(|t| t.finish(&self.gpu.context));
         let hardware_encoder = self.writer.finish().map_err(why)?;
         Ok(RecordingSummary {
+            timing,
             path: self.options.path.clone(),
             width: self.region.width,
             height: self.region.height,
@@ -733,12 +974,10 @@ impl Session {
     /// HDR → SDR into `rgba`, with steady exposure.
     fn convert(&mut self, time: i64) -> Result<()> {
         let exposure = &mut self.exposure;
-        self.converter.convert_into(
+        self.converter.convert(
             &self.gpu,
-            &self.crop,
             self.white_scale,
             Highlights::Tonemap,
-            &self.sdr,
             |analysis| exposure.apply(analysis, time),
         )?;
         unsafe { self.gpu.context.CopyResource(&self.rgba, &self.sdr) };
@@ -797,8 +1036,10 @@ struct Nv12 {
 struct Slot {
     texture: ID3D11Texture2D,
     view: ID3D11VideoProcessorOutputView,
-    /// With the encoder; cleared when Media Foundation releases the sample.
-    busy: Arc<AtomicBool>,
+    /// Samples of it the encoder still holds: a repeated frame (a still
+    /// screen, the stop) can be with it more than once. Counted off as Media
+    /// Foundation releases them.
+    busy: Arc<AtomicUsize>,
     release: IMFAsyncCallback,
 }
 
@@ -870,7 +1111,7 @@ impl Nv12 {
                     },
                     Some(&mut view),
                 )?;
-                let busy = Arc::new(AtomicBool::new(false));
+                let busy = Arc::new(AtomicUsize::new(0));
                 slots.push(Slot {
                     texture,
                     view: view.context("no output view")?,
@@ -905,7 +1146,7 @@ impl Nv12 {
     fn free_slot(&self) -> Option<usize> {
         self.slots
             .iter()
-            .position(|s| !s.busy.load(Ordering::Acquire))
+            .position(|s| s.busy.load(Ordering::Acquire) == 0)
     }
 
     fn convert(&self, _gpu: &Gpu, slot: usize) -> Result<()> {
@@ -926,9 +1167,9 @@ impl Nv12 {
     }
 }
 
-/// Clears a slot's busy flag when Media Foundation releases its sample.
+/// Counts a use of a slot off when Media Foundation releases its sample.
 #[implement(IMFAsyncCallback)]
-struct Released(Arc<AtomicBool>);
+struct Released(Arc<AtomicUsize>);
 
 impl IMFAsyncCallback_Impl for Released_Impl {
     fn GetParameters(&self, _: *mut u32, _: *mut u32) -> windows::core::Result<()> {
@@ -936,7 +1177,7 @@ impl IMFAsyncCallback_Impl for Released_Impl {
     }
 
     fn Invoke(&self, _: Ref<IMFAsyncResult>) -> windows::core::Result<()> {
-        self.0.store(false, Ordering::Release);
+        self.0.fetch_sub(1, Ordering::AcqRel);
         Ok(())
     }
 }
@@ -1006,9 +1247,9 @@ impl Mp4Writer {
             sample.AddBuffer(&buffer)?;
             sample.SetSampleTime(time)?;
             sample.SetSampleDuration(duration)?;
-            slot.busy.store(true, Ordering::Release);
+            slot.busy.fetch_add(1, Ordering::AcqRel);
             if let Err(e) = self.writer.WriteSample(self.stream, &sample) {
-                slot.busy.store(false, Ordering::Release);
+                slot.busy.fetch_sub(1, Ordering::AcqRel);
                 return Err(e).context("WriteSample failed");
             }
         }

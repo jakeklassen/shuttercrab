@@ -379,6 +379,9 @@ fn record(mut args: Args) -> Result<()> {
             },
             summary.path.display()
         );
+        if let Some(timing) = &summary.timing {
+            println!("  {timing}");
+        }
         if repeat > 1 {
             // What the take left behind, once Windows has had a moment.
             std::thread::sleep(Duration::from_secs(2));

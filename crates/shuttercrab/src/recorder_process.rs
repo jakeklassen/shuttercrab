@@ -151,6 +151,7 @@ impl From<Summary> for RecordingSummary {
                 Why::DiskFull => Interruption::DiskFull,
                 Why::Failed(m) => Interruption::Failed(m),
             }),
+            timing: None,
         }
     }
 }
@@ -482,6 +483,7 @@ mod tests {
             paused: Duration::from_secs(10),
             hardware_encoder: true,
             interrupted: Some(Interruption::Failed("disk".into())),
+            timing: None,
         };
         let line = serde_json::to_string(&Reply::Finished(summary.clone().into())).unwrap();
         let Reply::Finished(back) = serde_json::from_str(&line).unwrap() else {

@@ -482,6 +482,321 @@ impl SdrConverter {
     }
 }
 
+/// Read-backs of the analysis that can be in flight at once.
+const STAGING: usize = 3;
+
+/// [`SdrConverter`] for a recording: the same passes over one source and
+/// one output, with every resource made once, the HDR analysis run only
+/// every few frames, and its result read a frame or two later without
+/// waiting for the GPU (issue #15). Tone mapping runs on every frame, with
+/// the regions of the latest analysis that has come back.
+///
+/// The cost of the delay: a window of HDR content that moves is tone
+/// mapped where it was a few frames earlier, for those frames.
+pub struct VideoConverter {
+    classify: ID3D11ComputeShader,
+    tile_stats: ID3D11ComputeShader,
+    convert: ID3D11ComputeShader,
+    width: u32,
+    height: u32,
+    tiles_x: u32,
+    tiles_y: u32,
+    source_srv: ID3D11ShaderResourceView,
+    output_uav: ID3D11UnorderedAccessView,
+    classes_srv: ID3D11ShaderResourceView,
+    classes_uav: ID3D11UnorderedAccessView,
+    stats: ID3D11Buffer,
+    stats_uav: ID3D11UnorderedAccessView,
+    staging: [ID3D11Buffer; STAGING],
+    /// Staging buffers holding an analysis not yet read, oldest first.
+    in_flight: std::collections::VecDeque<usize>,
+    params: ID3D11Buffer,
+    /// What `params` holds now: white scale and highlight mode.
+    params_now: Option<(f32, u32)>,
+    regions: ID3D11Buffer,
+    /// Whether any analysis has come back yet.
+    analysed: bool,
+    frames: u64,
+    every: u64,
+}
+
+impl VideoConverter {
+    /// Convert `source` (FP16 scRGB) into `output` (32-bit, as for
+    /// [`SdrConverter::convert_into`]), analysing every `every` frames.
+    pub fn new(
+        gpu: &Gpu,
+        source: &ID3D11Texture2D,
+        output: &ID3D11Texture2D,
+        every: u32,
+    ) -> Result<Self> {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { source.GetDesc(&mut desc) };
+        ensure!(
+            desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT,
+            "expected an FP16 scRGB texture, got {:?}",
+            desc.Format
+        );
+        let (width, height) = (desc.Width, desc.Height);
+        let (tiles_x, tiles_y) = (width.div_ceil(TILE), height.div_ceil(TILE));
+        let tile_count = tiles_x * tiles_y;
+        let classes = gpu.texture(
+            width,
+            height,
+            DXGI_FORMAT_R8_UNORM,
+            D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
+            None,
+        )?;
+        let stats = structured_buffer(gpu, tile_count, size_of::<GpuTileStat>() as u32)?;
+        let stats_uav = buffer_uav(gpu, &stats, tile_count)?;
+        let bytes = tile_count * size_of::<GpuTileStat>() as u32;
+        let staging = [
+            staging_buffer(gpu, bytes)?,
+            staging_buffer(gpu, bytes)?,
+            staging_buffer(gpu, bytes)?,
+        ];
+        Ok(Self {
+            classify: compile(gpu, s!("classify"))?,
+            tile_stats: compile(gpu, s!("tile_stats"))?,
+            convert: compile(gpu, s!("convert"))?,
+            width,
+            height,
+            tiles_x,
+            tiles_y,
+            source_srv: srv(gpu, source)?,
+            output_uav: packed_uav(gpu, output)?,
+            classes_srv: srv(gpu, &classes)?,
+            classes_uav: uav(gpu, &classes)?,
+            stats,
+            stats_uav,
+            staging,
+            in_flight: std::collections::VecDeque::with_capacity(STAGING),
+            params: default_buffer(gpu, size_of::<Params>() as u32)?,
+            params_now: None,
+            regions: default_buffer(gpu, size_of::<RegionParams>() as u32)?,
+            analysed: false,
+            frames: 0,
+            every: every.max(1) as u64,
+        })
+    }
+
+    /// Convert the source as it is now. `anchor` adjusts each analysis that
+    /// comes back before its regions are used. Returns whether one did.
+    pub fn convert(
+        &mut self,
+        gpu: &Gpu,
+        white_scale: f32,
+        mode: Highlights,
+        anchor: impl FnOnce(&mut Analysis),
+    ) -> Result<bool> {
+        ensure!(
+            white_scale.is_finite() && white_scale > 0.0,
+            "invalid SDR white scale {white_scale}"
+        );
+        let ctx = &gpu.context;
+        let highlight_mode = match mode {
+            Highlights::Tonemap => 0,
+            Highlights::Clip => 1,
+        };
+        if self.params_now != Some((white_scale, highlight_mode)) {
+            let params = Params {
+                white_scale,
+                width: self.width,
+                height: self.height,
+                tiles_x: self.tiles_x,
+                tiles_y: self.tiles_y,
+                highlight_mode,
+                unused: [0; 2],
+            };
+            unsafe {
+                ctx.UpdateSubresource(&self.params, 0, None, (&raw const params).cast(), 0, 0)
+            };
+            self.params_now = Some((white_scale, highlight_mode));
+        }
+        let pass = |shader: &ID3D11ComputeShader,
+                    inputs: [Option<ID3D11ShaderResourceView>; 2],
+                    outputs: [Option<ID3D11UnorderedAccessView>; 3],
+                    buffers: [Option<ID3D11Buffer>; 2],
+                    groups: (u32, u32)| unsafe {
+            ctx.CSSetUnorderedAccessViews(0, 3, Some([None, None, None].as_ptr()), None);
+            ctx.CSSetShaderResources(0, Some(&[None, None]));
+            ctx.CSSetShader(shader, None);
+            ctx.CSSetConstantBuffers(0, Some(&buffers));
+            ctx.CSSetShaderResources(0, Some(&inputs));
+            ctx.CSSetUnorderedAccessViews(0, 3, Some(outputs.as_ptr()), None);
+            ctx.Dispatch(groups.0, groups.1, 1);
+        };
+
+        // Analyse every few frames, while a staging buffer is free.
+        let due = self.frames.is_multiple_of(self.every) || !self.analysed;
+        if due && self.in_flight.len() < STAGING {
+            let free = (0..STAGING)
+                .find(|i| !self.in_flight.contains(i))
+                .expect("fewer in flight than there are buffers");
+            pass(
+                &self.classify,
+                [Some(self.source_srv.clone()), None],
+                [Some(self.classes_uav.clone()), None, None],
+                [Some(self.params.clone()), None],
+                (self.width.div_ceil(8), self.height.div_ceil(8)),
+            );
+            pass(
+                &self.tile_stats,
+                [
+                    Some(self.source_srv.clone()),
+                    Some(self.classes_srv.clone()),
+                ],
+                [None, None, Some(self.stats_uav.clone())],
+                [Some(self.params.clone()), None],
+                (self.tiles_x, self.tiles_y),
+            );
+            unsafe { ctx.CopyResource(&self.staging[free], &self.stats) };
+            self.in_flight.push_back(free);
+        }
+
+        // Take the newest analysis that has come back. Only the first one is
+        // waited for, so the first frames are not converted blind.
+        let mut came_back = None;
+        while let Some(&oldest) = self.in_flight.front() {
+            let wait = !self.analysed && came_back.is_none();
+            match read_staging::<GpuTileStat>(
+                gpu,
+                &self.staging[oldest],
+                self.tiles_x * self.tiles_y,
+                wait,
+            )? {
+                Some(tiles) => {
+                    self.in_flight.pop_front();
+                    came_back = Some(tiles);
+                }
+                None => break,
+            }
+        }
+        let analysed = came_back.is_some();
+        if let Some(stats) = came_back {
+            let tiles: Vec<TileStats> = stats
+                .into_iter()
+                .map(|t| TileStats {
+                    peak: t.peak,
+                    non_sdr: t.non_sdr,
+                    extended: t.extended,
+                    min_x: t.min_x,
+                    min_y: t.min_y,
+                    max_x: t.max_x,
+                    max_y: t.max_y,
+                })
+                .collect();
+            let frame_peak = tiles.iter().fold(0.0f32, |a, t| a.max(t.peak));
+            let regions = find_regions(&tiles, self.tiles_x, self.tiles_y);
+            let mut analysis = Analysis {
+                tiles,
+                tiles_x: self.tiles_x,
+                regions,
+                frame_peak,
+            };
+            anchor(&mut analysis);
+            let mut region_params = RegionParams {
+                count: analysis.regions.len() as u32,
+                unused: [0; 3],
+                rects: [[0; 4]; MAX_REGIONS],
+                peaks: [0.0; MAX_REGIONS],
+            };
+            for (i, r) in analysis.regions.iter().enumerate() {
+                region_params.rects[i] = [r.x0, r.y0, r.x1, r.y1];
+                region_params.peaks[i] = r.peak;
+            }
+            unsafe {
+                ctx.UpdateSubresource(
+                    &self.regions,
+                    0,
+                    None,
+                    (&raw const region_params).cast(),
+                    0,
+                    0,
+                )
+            };
+            self.analysed = true;
+        }
+
+        pass(
+            &self.convert,
+            [Some(self.source_srv.clone()), None],
+            [None, Some(self.output_uav.clone()), None],
+            [Some(self.params.clone()), Some(self.regions.clone())],
+            (self.width.div_ceil(8), self.height.div_ceil(8)),
+        );
+        unsafe {
+            ctx.CSSetUnorderedAccessViews(0, 3, Some([None, None, None].as_ptr()), None);
+            ctx.CSSetShaderResources(0, Some(&[None, None]));
+            ctx.CSSetShader(None, None);
+        }
+        self.frames += 1;
+        Ok(analysed)
+    }
+}
+
+/// A constant buffer updated with `UpdateSubresource`.
+fn default_buffer(gpu: &Gpu, bytes: u32) -> Result<ID3D11Buffer> {
+    let mut buffer = None;
+    unsafe {
+        gpu.device.CreateBuffer(
+            &D3D11_BUFFER_DESC {
+                ByteWidth: bytes.next_multiple_of(16),
+                Usage: D3D11_USAGE_DEFAULT,
+                BindFlags: D3D11_BIND_CONSTANT_BUFFER.0 as u32,
+                ..Default::default()
+            },
+            None,
+            Some(&mut buffer),
+        )?;
+    }
+    buffer.context("CreateBuffer returned no constant buffer")
+}
+
+fn staging_buffer(gpu: &Gpu, bytes: u32) -> Result<ID3D11Buffer> {
+    let mut buffer = None;
+    unsafe {
+        gpu.device.CreateBuffer(
+            &D3D11_BUFFER_DESC {
+                ByteWidth: bytes,
+                Usage: D3D11_USAGE_STAGING,
+                CPUAccessFlags: D3D11_CPU_ACCESS_READ.0 as u32,
+                ..Default::default()
+            },
+            None,
+            Some(&mut buffer),
+        )?;
+    }
+    buffer.context("CreateBuffer returned no staging buffer")
+}
+
+/// The `count` values in a staging buffer, or `None` if the GPU has not
+/// finished writing them and `wait` is false.
+fn read_staging<T: Copy>(
+    gpu: &Gpu,
+    staging: &ID3D11Buffer,
+    count: u32,
+    wait: bool,
+) -> Result<Option<Vec<T>>> {
+    let flags = if wait {
+        0
+    } else {
+        D3D11_MAP_FLAG_DO_NOT_WAIT.0 as u32
+    };
+    let mut map = D3D11_MAPPED_SUBRESOURCE::default();
+    match unsafe {
+        gpu.context
+            .Map(staging, 0, D3D11_MAP_READ, flags, Some(&mut map))
+    } {
+        Ok(()) => {}
+        Err(e) if e.code() == DXGI_ERROR_WAS_STILL_DRAWING => return Ok(None),
+        Err(e) => return Err(e).context("reading the analysis back"),
+    }
+    let values =
+        unsafe { std::slice::from_raw_parts(map.pData.cast::<T>(), count as usize).to_vec() };
+    unsafe { gpu.context.Unmap(staging, 0) };
+    Ok(Some(values))
+}
+
 /// What the analysis passes found in a frame: the per-tile summary and the
 /// HDR regions built from it.
 pub struct Analysis {
