@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/jakeklassen/shuttercrab/compare/v0.1.9...v0.1.10) - 2026-10-04
+
+### Added
+
+- show every screenshot in the main window, and fix Edit in Paint
+- Edit in Paint, Open with and Show in folder for a shown screenshot
+- zoom and move a screenshot in the main window
+- keep the window to half the screen for a big screenshot
+- show a screenshot in the main window, with Copy and Save as
+
 ## [0.1.9](https://github.com/jakeklassen/shuttercrab/compare/v0.1.8...v0.1.9) - 2026-10-04
 
 ### Fixed
