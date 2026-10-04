@@ -17,13 +17,16 @@ use crate::{
 };
 use anyhow::{Context, Result, ensure};
 use std::{
-    sync::mpsc::{Receiver, Sender},
+    sync::mpsc::{Receiver, RecvTimeoutError, Sender},
     time::{Duration, Instant},
 };
 use windows::{
     Foundation::TypedEventHandler,
     Graphics::{
-        Capture::{Direct3D11CaptureFramePool, GraphicsCaptureItem, GraphicsCaptureSession},
+        Capture::{
+            Direct3D11CaptureFrame, Direct3D11CaptureFramePool, GraphicsCaptureItem,
+            GraphicsCaptureSession,
+        },
         DirectX::DirectXPixelFormat,
         SizeInt32,
     },
@@ -166,169 +169,190 @@ impl Session {
         })
     }
 
+    /// Record until stopped, then finish the file. A failure ends the
+    /// recording, not the file: what was written is still finished.
     pub(super) fn run(&mut self, inbox: &Receiver<Event>) -> Result<RecordingSummary> {
-        let period = TICKS_PER_SECOND / self.options.fps as i64;
-        // One clock throughout: frames carry their capture time in QPC
-        // ticks (100 ns), and pauses and the stop are measured on it too.
-        // The output timeline starts when recording starts.
-        let origin = qpc_ticks();
-        let mut paused_since: Option<i64> = None;
-        let mut paused: i64 = 0;
-        let mut last: Option<(i64, usize)> = None;
-        let (mut frames, mut dropped_busy, mut skipped_rate) = (0u64, 0u64, 0u64);
+        let mut timeline = Timeline::start(self.options.fps);
+        let mut counts = Counts::default();
         // Measuring costs a few queries per frame and never waits.
         let mut timer = Timer::new(&self.gpu)
             .inspect_err(|e| log::debug!("no frame timing: {e:#}"))
             .ok();
-        // A failure ends the loop, not the recording: what was written is
-        // still finished into a file.
-        let mut interrupted = None;
+        let interrupted = self.record_until_stopped(inbox, &mut timeline, &mut counts, &mut timer);
+        self.finish(timeline, counts, timer, interrupted)
+    }
+
+    /// Handle events until the recording is stopped or interrupted; returns
+    /// why it was interrupted, if it was.
+    fn record_until_stopped(
+        &mut self,
+        inbox: &Receiver<Event>,
+        timeline: &mut Timeline,
+        counts: &mut Counts,
+        timer: &mut Option<Timer>,
+    ) -> Option<Interruption> {
+        let interrupted = |e: anyhow::Error| {
+            log::error!("recording interrupted: {e:#}");
+            Some(Interruption::from_error(&e))
+        };
         loop {
             // Sleep until the next still-screen repeat is due, or for good
             // while paused or before the first frame: frames and requests
             // wake the loop themselves.
-            let next = match (paused_since, last) {
-                (None, Some((previous, _))) => {
-                    let due = previous + HEARTBEAT - (qpc_ticks() - origin - paused);
-                    Some(Duration::from_nanos(due.max(10_000) as u64 * 100))
-                }
-                _ => None,
-            };
-            let received = match next {
+            let received = match timeline.until_repeat_due() {
                 Some(wait) => inbox.recv_timeout(wait),
-                None => inbox
-                    .recv()
-                    .map_err(|_| std::sync::mpsc::RecvTimeoutError::Disconnected),
+                None => inbox.recv().map_err(|_| RecvTimeoutError::Disconnected),
             };
             let event = match received {
                 Ok(event) => event,
-                // A still screen delivers no frames. Repeat the last one
-                // every second, so the video can be seeked and edited.
-                Err(std::sync::mpsc::RecvTimeoutError::Timeout) => {
-                    if paused_since.is_none()
-                        && let Some((previous, slot)) = last
-                    {
-                        let now = qpc_ticks() - origin - paused;
-                        if now - previous >= HEARTBEAT {
-                            if let Err(e) = self.writer.write(&self.nv12, slot, now, period) {
-                                interrupted = Some(Interruption::from_error(&e));
-                                log::error!("recording interrupted: {e:#}");
-                                break;
-                            }
-                            last = Some((now, slot));
-                            frames += 1;
-                        }
+                Err(RecvTimeoutError::Timeout) => {
+                    if let Err(e) = self.repeat_last_frame(timeline, counts) {
+                        return interrupted(e);
                     }
                     continue;
                 }
-                Err(_) => Event::Stop,
+                Err(RecvTimeoutError::Disconnected) => Event::Stop,
             };
             match event {
-                Event::Pause => {
-                    paused_since.get_or_insert_with(qpc_ticks);
-                }
-                Event::Resume => {
-                    if let Some(since) = paused_since.take() {
-                        paused += qpc_ticks() - since;
-                    }
-                }
-                Event::Stop => break,
+                Event::Pause => timeline.pause(),
+                Event::Resume => timeline.resume(),
+                Event::Stop => return None,
                 Event::DisplayGone => {
                     log::warn!("recording interrupted: the display went away");
-                    interrupted = Some(Interruption::DisplayGone);
-                    break;
+                    return Some(Interruption::DisplayGone);
                 }
                 Event::DisplayChanged => self.reread_white_scale(),
                 Event::Frame => {
-                    // Take every frame that is ready; the pool holds two.
-                    let taken = (|| -> Result<()> {
-                        while let Some(frame) = next_frame(&self.pool)? {
-                            let captured = frame.SystemRelativeTime()?.Duration;
-                            if paused_since.is_some() {
-                                frame.Close()?;
-                                continue;
-                            }
-                            let time = (captured - origin - paused).max(0);
-                            if let Some((previous, _)) = last
-                                && time < previous + period * 9 / 10
-                            {
-                                skipped_rate += 1;
-                                frame.Close()?;
-                                continue;
-                            }
-                            // Before the copy: a frame that cannot be encoded
-                            // costs nothing.
-                            let Some(slot) = self.nv12.free_slot() else {
-                                dropped_busy += 1;
-                                frame.Close()?;
-                                continue;
-                            };
-                            let context = self.gpu.context.clone();
-                            let measured = timer.as_mut().map(|t| t.begin(&context));
-                            self.copy_region(&frame)?;
-                            frame.Close()?;
-                            if let (Some(t), Some(i)) = (&timer, measured) {
-                                t.stamp(&context, i, 1);
-                            }
-                            let started = Instant::now();
-                            self.convert(time)?;
-                            let cpu_convert = started.elapsed();
-                            if let (Some(t), Some(i)) = (&timer, measured) {
-                                t.stamp(&context, i, 2);
-                            }
-                            self.nv12.convert(&self.gpu, slot)?;
-                            if let (Some(t), Some(i)) = (&timer, measured) {
-                                // Before the hand-off: the encoder works on the
-                                // same queue from its own thread.
-                                t.stamp(&context, i, 3);
-                            }
-                            let time = last.map_or(time, |(previous, _)| time.max(previous + 1));
-                            let started = Instant::now();
-                            self.writer.write(&self.nv12, slot, time, period)?;
-                            if let (Some(t), Some(i)) = (&mut timer, measured) {
-                                t.end(&context, i, cpu_convert, started.elapsed());
-                            }
-                            last = Some((time, slot));
-                            frames += 1;
-                        }
-                        Ok(())
-                    })();
-                    if let Err(e) = taken {
-                        interrupted = Some(Interruption::from_error(&e));
-                        log::error!("recording interrupted: {e:#}");
-                        break;
+                    if let Err(e) = self.take_ready_frames(timeline, counts, timer) {
+                        return interrupted(e);
                     }
                 }
             }
         }
-        if let Some(since) = paused_since.take() {
-            paused += qpc_ticks() - since;
+    }
+
+    /// A still screen delivers no frames: repeat the last one every second,
+    /// so the video can be seeked and edited.
+    fn repeat_last_frame(&mut self, timeline: &mut Timeline, counts: &mut Counts) -> Result<()> {
+        if timeline.is_paused() {
+            return Ok(());
         }
+        let Some((previous, slot)) = timeline.last_written else {
+            return Ok(());
+        };
+        let now = timeline.now();
+        if now - previous >= HEARTBEAT {
+            self.writer.write(&self.nv12, slot, now, timeline.period)?;
+            timeline.last_written = Some((now, slot));
+            counts.frames += 1;
+        }
+        Ok(())
+    }
+
+    /// Take every frame that is ready (the pool holds two), and encode the
+    /// ones the recording keeps.
+    fn take_ready_frames(
+        &mut self,
+        timeline: &mut Timeline,
+        counts: &mut Counts,
+        timer: &mut Option<Timer>,
+    ) -> Result<()> {
+        while let Some(frame) = next_frame(&self.pool)? {
+            let captured = frame.SystemRelativeTime()?.Duration;
+            if timeline.is_paused() {
+                frame.Close()?;
+                continue;
+            }
+            let time = timeline.output_time(captured);
+            if timeline.too_soon(time) {
+                counts.skipped_rate += 1;
+                frame.Close()?;
+                continue;
+            }
+            // Before the copy: a frame that cannot be encoded costs nothing.
+            let Some(slot) = self.nv12.free_slot() else {
+                counts.dropped_busy += 1;
+                frame.Close()?;
+                continue;
+            };
+            self.encode_frame(&frame, time, slot, timeline, timer)?;
+            counts.frames += 1;
+        }
+        Ok(())
+    }
+
+    /// Copy, convert and hand one captured frame to the encoder at `time`,
+    /// timing each stage if `timer` is measuring.
+    fn encode_frame(
+        &mut self,
+        frame: &Direct3D11CaptureFrame,
+        time: i64,
+        slot: usize,
+        timeline: &mut Timeline,
+        timer: &mut Option<Timer>,
+    ) -> Result<()> {
+        let context = self.gpu.context.clone();
+        let measured = timer.as_mut().map(|t| t.begin(&context));
+        let stamp = |timer: &Option<Timer>, stage| {
+            if let (Some(t), Some(i)) = (timer, measured) {
+                t.stamp(&context, i, stage);
+            }
+        };
+        self.copy_region(frame)?;
+        frame.Close()?;
+        stamp(timer, 1);
+        let started = Instant::now();
+        self.convert(time)?;
+        let cpu_convert = started.elapsed();
+        stamp(timer, 2);
+        self.nv12.convert(&self.gpu, slot)?;
+        // Before the hand-off: the encoder works on the same queue from its
+        // own thread.
+        stamp(timer, 3);
+        let time = timeline
+            .last_written
+            .map_or(time, |(previous, _)| time.max(previous + 1));
+        let started = Instant::now();
+        self.writer.write(&self.nv12, slot, time, timeline.period)?;
+        if let (Some(t), Some(i)) = (timer.as_mut(), measured) {
+            t.end(&context, i, cpu_convert, started.elapsed());
+        }
+        timeline.last_written = Some((time, slot));
+        Ok(())
+    }
+
+    /// Repeat the last frame at the stop, so the video lasts until then, and
+    /// finish the file.
+    fn finish(
+        &mut self,
+        mut timeline: Timeline,
+        mut counts: Counts,
+        timer: Option<Timer>,
+        interrupted: Option<Interruption>,
+    ) -> Result<RecordingSummary> {
+        timeline.resume();
+        let period = timeline.period;
         let why = |e: anyhow::Error| match &interrupted {
             Some(i) => e.context(format!("after the recording was interrupted ({i:?})")),
             None => e,
         };
-        // Repeat the last frame at the stop, so the video lasts until then.
-        let end = qpc_ticks() - origin - paused;
-        let paused = Duration::from_nanos(paused.max(0) as u64 * 100);
-        let duration = match last {
+        let end = timeline.now();
+        let duration = match timeline.last_written {
             Some((time, slot)) => {
                 let end = end.max(time + period);
-                if end - period > time {
-                    // Not after a failure: the encoder may be what failed.
-                    if interrupted.is_none() {
-                        self.writer
-                            .write(&self.nv12, slot, end - period, period)
-                            .map_err(why)?;
-                        frames += 1;
-                    }
+                // Not after a failure: the encoder may be what failed.
+                if end - period > time && interrupted.is_none() {
+                    self.writer
+                        .write(&self.nv12, slot, end - period, period)
+                        .map_err(why)?;
+                    counts.frames += 1;
                 }
                 let end = if interrupted.is_some() {
                     time + period
                 } else {
                     end
                 };
-                Duration::from_nanos((end as u64) * 100)
+                ticks_to_duration(end)
             }
             None => return Err(why(anyhow::anyhow!("no frame was captured"))),
         };
@@ -340,11 +364,11 @@ impl Session {
             path: self.options.path.clone(),
             width: self.region.width,
             height: self.region.height,
-            frames,
-            dropped_busy,
-            skipped_rate,
+            frames: counts.frames,
+            dropped_busy: counts.dropped_busy,
+            skipped_rate: counts.skipped_rate,
             duration,
-            paused,
+            paused: ticks_to_duration(timeline.paused_ticks),
             hardware_encoder,
             interrupted,
         })
@@ -470,4 +494,94 @@ fn video_gpu(adapter: &windows::Win32::Graphics::Dxgi::IDXGIAdapter1) -> Result<
         .context("D3D11CreateDevice (video) failed")?;
     }
     Gpu::from_device(device.context("no device")?, context.context("no context")?)
+}
+
+/// The recording's clock: Windows' capture time in 100 ns ticks (QPC), with
+/// paused time taken out, starting at zero when recording starts. Frames,
+/// pauses and the stop are all measured on it.
+struct Timeline {
+    /// When recording started, QPC ticks.
+    origin: i64,
+    /// One frame at the recording's rate, ticks.
+    period: i64,
+    /// While paused: when the pause began, QPC ticks.
+    paused_since: Option<i64>,
+    /// Time spent paused so far, ticks.
+    paused_ticks: i64,
+    /// The last frame written: its time on this clock, and the NV12 slot
+    /// that holds it (to repeat it on a still screen and at the stop).
+    last_written: Option<(i64, usize)>,
+}
+
+impl Timeline {
+    fn start(fps: u32) -> Self {
+        Self {
+            origin: qpc_ticks(),
+            period: TICKS_PER_SECOND / fps as i64,
+            paused_since: None,
+            paused_ticks: 0,
+            last_written: None,
+        }
+    }
+
+    fn is_paused(&self) -> bool {
+        self.paused_since.is_some()
+    }
+
+    fn pause(&mut self) {
+        self.paused_since.get_or_insert_with(qpc_ticks);
+    }
+
+    fn resume(&mut self) {
+        if let Some(since) = self.paused_since.take() {
+            self.paused_ticks += qpc_ticks() - since;
+        }
+    }
+
+    /// Now, on this clock.
+    fn now(&self) -> i64 {
+        qpc_ticks() - self.origin - self.paused_ticks
+    }
+
+    /// When a frame captured at `captured` (QPC ticks) falls on this clock.
+    fn output_time(&self, captured: i64) -> i64 {
+        (captured - self.origin - self.paused_ticks).max(0)
+    }
+
+    /// Whether a frame at `time` comes too soon after the last one written
+    /// for the frame rate. Nine tenths of a period counts as on time, so
+    /// frames that arrive with a little jitter are kept.
+    fn too_soon(&self, time: i64) -> bool {
+        self.last_written
+            .is_some_and(|(previous, _)| time < previous + self.period * 9 / 10)
+    }
+
+    /// How long until the last frame is due to be repeated (a still screen
+    /// delivers none); `None` to wait for events alone, while paused or
+    /// before the first frame.
+    fn until_repeat_due(&self) -> Option<Duration> {
+        match (self.paused_since, self.last_written) {
+            (None, Some((previous, _))) => {
+                let due = previous + HEARTBEAT - self.now();
+                Some(ticks_to_duration(due.max(10_000)))
+            }
+            _ => None,
+        }
+    }
+}
+
+/// What a recording did with the frames Windows delivered.
+#[derive(Default)]
+struct Counts {
+    /// Written to the file, repeats included.
+    frames: u64,
+    /// Dropped because every encoder texture was busy.
+    dropped_busy: u64,
+    /// Skipped because they came faster than the frame rate.
+    skipped_rate: u64,
+}
+
+/// 100 ns ticks as a `Duration` (none if negative).
+fn ticks_to_duration(ticks: i64) -> Duration {
+    Duration::from_nanos(ticks.max(0) as u64 * 100)
 }
