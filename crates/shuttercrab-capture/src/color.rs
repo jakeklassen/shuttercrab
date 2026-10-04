@@ -275,87 +275,135 @@ pub const REGION_SHARE: u32 = 4;
 /// The shader holds at most this many regions; beyond that they are merged.
 pub const MAX_REGIONS: usize = 32;
 
+/// The HDR regions in a `tiles_x` × `tiles_y` grid of tile statistics, by
+/// the rules on [`TileStats`].
 pub fn find_regions(stats: &[TileStats], tiles_x: u32, tiles_y: u32) -> Vec<HdrRegion> {
-    let (tw, th) = (tiles_x as i64, tiles_y as i64);
-    let index = |x: i64, y: i64| (y * tw + x) as usize;
     let qualifies: Vec<bool> = stats
         .iter()
         .map(|s| s.extended > 0 || s.non_sdr * REGION_SHARE >= TILE * TILE)
         .collect();
-    let grown: Vec<bool> = (0..th)
-        .flat_map(|y| (0..tw).map(move |x| (x, y)))
-        .map(|(x, y)| {
-            (-1..=1).any(|dy| {
-                (-1..=1).any(|dx| {
-                    let (nx, ny) = (x + dx, y + dy);
-                    (0..tw).contains(&nx) && (0..th).contains(&ny) && qualifies[index(nx, ny)]
-                })
-            })
-        })
+    let grown = grow(&qualifies, tiles_x, tiles_y);
+    let regions = connected_areas(&grown, tiles_x, tiles_y)
+        .iter()
+        .filter_map(|area| area_region(area, stats, &qualifies))
         .collect();
-    let mut seen = vec![false; stats.len()];
-    let mut regions = Vec::new();
-    for start in 0..stats.len() {
-        if !grown[start] || seen[start] {
+    merge_if_too_many(regions)
+}
+
+/// The four tiles beside a tile.
+const BESIDE: [(i64, i64); 4] = [(-1, 0), (1, 0), (0, -1), (0, 1)];
+/// The eight tiles around a tile.
+const AROUND: [(i64, i64); 8] = [
+    (-1, -1),
+    (0, -1),
+    (1, -1),
+    (-1, 0),
+    (1, 0),
+    (-1, 1),
+    (0, 1),
+    (1, 1),
+];
+
+/// The indices of the tiles at `offsets` from tile `i` that are on the grid.
+fn neighbours(
+    i: usize,
+    tiles_x: u32,
+    tiles_y: u32,
+    offsets: &'static [(i64, i64)],
+) -> impl Iterator<Item = usize> {
+    let (tw, th) = (tiles_x as i64, tiles_y as i64);
+    let (x, y) = (i as i64 % tw, i as i64 / tw);
+    offsets.iter().filter_map(move |&(dx, dy)| {
+        let (nx, ny) = (x + dx, y + dy);
+        ((0..tw).contains(&nx) && (0..th).contains(&ny)).then_some((ny * tw + nx) as usize)
+    })
+}
+
+/// The qualifying tiles grown by one tile in every direction, which joins
+/// the pieces of one image or video.
+fn grow(qualifies: &[bool], tiles_x: u32, tiles_y: u32) -> Vec<bool> {
+    (0..qualifies.len())
+        .map(|i| qualifies[i] || neighbours(i, tiles_x, tiles_y, &AROUND).any(|j| qualifies[j]))
+        .collect()
+}
+
+/// The areas of side-by-side `marked` tiles, each as its tiles' indices.
+fn connected_areas(marked: &[bool], tiles_x: u32, tiles_y: u32) -> Vec<Vec<usize>> {
+    let mut seen = vec![false; marked.len()];
+    let mut areas = Vec::new();
+    for start in 0..marked.len() {
+        if !marked[start] || seen[start] {
             continue;
         }
         seen[start] = true;
+        let mut area = Vec::new();
         let mut stack = vec![start];
-        let (mut extended, mut peak) = (false, 0.0f32);
-        let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
         while let Some(i) = stack.pop() {
-            let s = &stats[i];
-            if qualifies[i] {
-                extended |= s.extended > 0;
-                peak = peak.max(s.peak);
-            }
-            // The box takes every tile of the area, so the one-pixel border is
-            // trimmed evenly whichever tiles it falls in.
-            if s.min_x <= s.max_x {
-                (x0, y0, x1, y1) = (
-                    x0.min(s.min_x),
-                    y0.min(s.min_y),
-                    x1.max(s.max_x),
-                    y1.max(s.max_y),
-                );
-            }
-            let (x, y) = (i as i64 % tw, i as i64 / tw);
-            for (dx, dy) in [(-1, 0), (1, 0), (0, -1), (0, 1)] {
-                let (nx, ny) = (x + dx, y + dy);
-                if (0..tw).contains(&nx) && (0..th).contains(&ny) {
-                    let j = index(nx, ny);
-                    if grown[j] && !seen[j] {
-                        seen[j] = true;
-                        stack.push(j);
-                    }
+            area.push(i);
+            for j in neighbours(i, tiles_x, tiles_y, &BESIDE) {
+                if marked[j] && !seen[j] {
+                    seen[j] = true;
+                    stack.push(j);
                 }
             }
         }
-        if !extended || x0 > x1 {
-            continue;
-        }
-        if x1 - x0 >= 2 && y1 - y0 >= 2 {
-            (x0, y0, x1, y1) = (x0 + 1, y0 + 1, x1 - 1, y1 - 1);
-        }
-        regions.push(HdrRegion {
-            x0,
-            y0,
-            x1,
-            y1,
-            peak,
-        });
+        areas.push(area);
     }
-    if regions.len() > MAX_REGIONS {
-        let merged = regions.iter().fold(regions[0], |a, r| HdrRegion {
-            x0: a.x0.min(r.x0),
-            y0: a.y0.min(r.y0),
-            x1: a.x1.max(r.x1),
-            y1: a.y1.max(r.y1),
-            peak: a.peak.max(r.peak),
-        });
-        regions = vec![merged];
+    areas
+}
+
+/// The region an area of tiles holds: the bounding box of its non-SDR
+/// pixels, less the one-pixel ring of SDR pixels the 3×3 rule marks around
+/// them. `None` when no qualifying tile holds a pixel above SDR white.
+fn area_region(area: &[usize], stats: &[TileStats], qualifies: &[bool]) -> Option<HdrRegion> {
+    let (mut extended, mut peak) = (false, 0.0f32);
+    let (mut x0, mut y0, mut x1, mut y1) = (u32::MAX, u32::MAX, 0, 0);
+    for &i in area {
+        let s = &stats[i];
+        if qualifies[i] {
+            extended |= s.extended > 0;
+            peak = peak.max(s.peak);
+        }
+        // The box takes every tile of the area, so the one-pixel border is
+        // trimmed evenly whichever tiles it falls in.
+        if s.min_x <= s.max_x {
+            (x0, y0, x1, y1) = (
+                x0.min(s.min_x),
+                y0.min(s.min_y),
+                x1.max(s.max_x),
+                y1.max(s.max_y),
+            );
+        }
     }
-    regions
+    if !extended || x0 > x1 {
+        return None;
+    }
+    if x1 - x0 >= 2 && y1 - y0 >= 2 {
+        (x0, y0, x1, y1) = (x0 + 1, y0 + 1, x1 - 1, y1 - 1);
+    }
+    Some(HdrRegion {
+        x0,
+        y0,
+        x1,
+        y1,
+        peak,
+    })
+}
+
+/// `regions`, or one region around them all when there are more than the
+/// shader holds ([`MAX_REGIONS`]).
+fn merge_if_too_many(regions: Vec<HdrRegion>) -> Vec<HdrRegion> {
+    if regions.len() <= MAX_REGIONS {
+        return regions;
+    }
+    let merged = regions.iter().fold(regions[0], |a, r| HdrRegion {
+        x0: a.x0.min(r.x0),
+        y0: a.y0.min(r.y0),
+        x1: a.x1.max(r.x1),
+        y1: a.y1.max(r.y1),
+        peak: a.peak.max(r.peak),
+    });
+    vec![merged]
 }
 
 /// Output level up to which HDR content stays linear after its gain.
