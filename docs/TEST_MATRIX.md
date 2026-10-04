@@ -1380,8 +1380,29 @@ All three pass, and the owner watched the takes: they look right. A first
 fullscreen take was spoiled by another program's full-screen window taking
 the screen (a 1 s gap and 8 s frozen), not by Shuttercrab, and was retaken.
 
-Still to test: Cyberpunk 2077 (HDR, a full GPU) and Batman: Arkham Origins
-(true exclusive fullscreen).
+### Cyberpunk 2077 (HDR10, a full GPU), 2026-10-03 and 04
+
+Its built-in benchmark (4K, ray tracing Ultra, DLSS Auto, HDR10 PQ,
+borderless; the GPU at about 98%), not recording and recording 85 s at
+60 fps; issue #15:
+
+| | Average fps | Min fps | Cost | Distinct frames in the 64 s benchmark (of 3,840) |
+|---|---|---|---|---|
+| Not recording (4 runs) | 107.33, 107.11, 106.77 | 94–96 | — | — |
+| Recording, `c44f7c1` | 96.74, 96.27, 96.53 | 86–87 | -9.6% | ~3,600 |
+| Recording, analysis 15 times a second (`82ad044`) | **98.78** | **88.61** | **-7.5%** | 3,550 |
+| OBS 32, Display Capture (Windows 10 method), NVENC H.264 CBR 50 Mbit/s, single pass, preview off | 96.20 | 85.67 | -9.9% | 3,593 |
+
+The recorder's GPU time per frame under that load (timestamp queries):
+the HDR analysis and tone mapping fell from 2.45 to 0.31 ms; the copy out
+of the captured frame is 0.15–0.47 ms. OBS misses frames at the same rate:
+the missing ~6–8% is Windows' delivery to any capture when the GPU is full.
+HDR10 converts well (neon without clipping, shadow detail kept). Asking
+Windows for frames no closer than 3/4 of a frame period
+(`MinUpdateInterval`) made recordings worse (2,716 frames) and was
+reverted.
+
+Still to test: Batman: Arkham Origins (true exclusive fullscreen).
 
 ## Known issues
 
