@@ -18,7 +18,7 @@ use gpui_kit::{
 };
 use shuttercrab_capture::MonitorInfo;
 use shuttercrab_platform::window as platform_window;
-use std::{cell::RefCell, rc::Rc, sync::Arc, time::Duration};
+use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, time::Duration};
 
 /// The most of the screen's width and height the main window takes for a
 /// big screenshot, which is then scaled down to fit. Like Snipping Tool,
@@ -175,14 +175,18 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
     let (capture, folder, quitting) = (state.clone(), state.clone(), state.clone());
     let (ready, restarting) = (state.clone(), state.clone());
     let (copying, saving) = (state.clone(), state.clone());
+    let (painting, opening) = (state.clone(), state.clone());
     MainHooks {
         settings: Rc::new(settings_hooks(state, monitors)),
         capture: Rc::new(move |mode, target, window, cx| {
             start_from_main(&capture, mode, target, window, cx)
         }),
-        open_folder: Rc::new(move |cx| {
-            let state = folder.clone();
-            cx.spawn(async move |cx| open_folder(&state, cx)).detach();
+        open_folder: Rc::new(move |shot, cx| match shot.and_then(|s| s.saved.as_ref()) {
+            Some(path) => cx.reveal_path(path),
+            None => {
+                let state = folder.clone();
+                cx.spawn(async move |cx| open_folder(&state, cx)).detach();
+            }
         }),
         quit: Rc::new(move |cx| {
             let state = quitting.clone();
@@ -196,6 +200,20 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
         }),
         copy: Rc::new(move |shot, cx| copy_shot(&copying, shot, cx)),
         save_as: Rc::new(move |shot, cx| save_shot_as(&saving, shot, cx)),
+        edit_in_paint: Rc::new(move |shot, cx| {
+            open_shot_file(&painting, shot, cx, |path| {
+                shuttercrab_platform::open::edit_in_paint(path).map_err(|e| {
+                    log::error!("{e:#}");
+                    "Paint could not be started. Is it installed?"
+                })
+            })
+        }),
+        open_with: Rc::new(move |shot, cx| {
+            open_shot_file(&opening, shot, cx, |path| {
+                shuttercrab_platform::open::open_with(path);
+                Ok(())
+            })
+        }),
         fit_window: Rc::new(|window, cx, width, height| {
             let Some(hwnd) = popup::raw_hwnd(window) else {
                 return;
@@ -239,6 +257,47 @@ fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) {
                     None,
                 );
             }
+        }
+    })
+    .detach();
+}
+
+/// Hand the screenshot the main window shows to another program, through
+/// `open`: its file in the screenshots folder, or, if it was not saved
+/// there, one written to the temporary folder for it. `open` may answer
+/// with a message for the user.
+fn open_shot_file(
+    state: &Rc<State>,
+    shot: &Shot,
+    cx: &mut App,
+    open: impl FnOnce(&Path) -> Result<(), &'static str> + 'static,
+) {
+    let (state, saved, png, taken_at) = (
+        state.clone(),
+        shot.saved.clone(),
+        shot.png.clone(),
+        shot.taken_at,
+    );
+    cx.spawn(async move |cx| {
+        let path = match saved {
+            Some(path) => Ok(path),
+            None => {
+                cx.background_executor()
+                    .spawn(
+                        async move { files::save_screenshot(&files::temp_dir(), taken_at, &png) },
+                    )
+                    .await
+            }
+        };
+        let opened = match path {
+            Ok(path) => open(&path),
+            Err(e) => {
+                log::error!("could not write the screenshot: {e:#}");
+                Err("The screenshot could not be written to a file.")
+            }
+        };
+        if let Err(message) = opened {
+            state.notify("Could not open the screenshot", message, None);
         }
     })
     .detach();

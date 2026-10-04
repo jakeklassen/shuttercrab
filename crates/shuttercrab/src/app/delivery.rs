@@ -106,6 +106,7 @@ pub(super) async fn deliver(
                 image,
                 png,
                 taken_at,
+                saved: saved_path.clone(),
             },
             cx,
         );
@@ -246,6 +247,10 @@ impl CaptureFile {
     /// The screenshot, ready for the main window to show: its PNG, read
     /// back from the file if it was saved, and decoded.
     async fn shot(&self, taken_at: NaiveDateTime, cx: &mut AsyncApp) -> Result<Shot, String> {
+        let saved = match self {
+            CaptureFile::Saved(path) => Some(path.clone()),
+            CaptureFile::Unsaved { .. } => None,
+        };
         let png = match self {
             CaptureFile::Saved(path) => {
                 let path = path.clone();
@@ -270,6 +275,7 @@ impl CaptureFile {
             image,
             png,
             taken_at,
+            saved,
         })
     }
 

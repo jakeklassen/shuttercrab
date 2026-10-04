@@ -5,8 +5,9 @@
 //!
 //! Like Snipping Tool, it shows a screenshot after it is taken: one started
 //! from the window, or one whose thumbnail was clicked. The window sizes
-//! itself to show it at full size where the screen allows, and the toolbar
-//! gains Copy and Save as.
+//! itself to show it at full size where the screen allows, the toolbar
+//! gains the zoom, Copy and Save as, and the ⋯ menu Edit in Paint (E) and
+//! Open with; its folder item shows a saved screenshot's file.
 //!
 //! Everything has a key: N or Enter starts a capture, S and R pick the
 //! mode, A, W, D and F the target, T steps through the delays, comma opens
@@ -40,7 +41,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     px, rgb,
 };
-use std::{rc::Rc, sync::Arc};
+use std::{path::PathBuf, rc::Rc, sync::Arc};
 
 /// The window's size on each page, logical pixels.
 pub const HOME_SIZE: Size<Pixels> = Size {
@@ -51,6 +52,10 @@ pub const SETTINGS_SIZE: Size<Pixels> = Size {
     width: px(880.),
     height: px(690.),
 };
+
+/// The window's least width with a screenshot shown, logical pixels: room
+/// for the toolbar's zoom, Copy and Save as too.
+pub const SHOT_MIN_WIDTH: f32 = 880.;
 
 /// The toolbar's and the footer's heights, logical pixels: fixed, so the
 /// window can be sized around a screenshot.
@@ -63,6 +68,9 @@ pub type CaptureHook = Rc<dyn Fn(CaptureMode, CaptureTarget, &mut Window, &mut A
 /// Acts on the screenshot shown.
 pub type ShotHook = Rc<dyn Fn(&Shot, &mut App)>;
 
+/// Opens the screenshots folder, given the screenshot shown, if any.
+pub type FolderHook = Rc<dyn Fn(Option<&Shot>, &mut App)>;
+
 /// A screenshot the window shows.
 #[derive(Clone)]
 pub struct Shot {
@@ -72,6 +80,8 @@ pub struct Shot {
     pub png: Arc<Vec<u8>>,
     /// When it was taken, which names its file.
     pub taken_at: NaiveDateTime,
+    /// Its file in the screenshots folder, if it was saved there.
+    pub saved: Option<PathBuf>,
 }
 
 impl Shot {
@@ -89,7 +99,9 @@ pub struct MainHooks {
     /// Start a capture: `mode` of `target`, after the delay the settings
     /// name. The app hides the window meanwhile.
     pub capture: CaptureHook,
-    pub open_folder: Rc<dyn Fn(&mut App)>,
+    /// Open the screenshots folder, with the screenshot shown selected if
+    /// it was saved there.
+    pub open_folder: FolderHook,
     pub quit: Rc<dyn Fn(&mut App)>,
     /// A downloaded release's version, waiting for a restart, if any.
     pub update_ready: Rc<dyn Fn() -> Option<String>>,
@@ -99,6 +111,10 @@ pub struct MainHooks {
     pub copy: ShotHook,
     /// Ask where to save the screenshot shown, and save it there.
     pub save_as: ShotHook,
+    /// Open the screenshot shown in Paint.
+    pub edit_in_paint: ShotHook,
+    /// Ask which program should open the screenshot shown, and open it.
+    pub open_with: ShotHook,
     /// Size the window's client area to this many physical pixels, as far
     /// as its monitor allows.
     pub fit_window: FitHook,
@@ -126,16 +142,37 @@ enum Menu {
 enum More {
     Settings,
     OpenFolder,
+    /// With a screenshot shown, as the rest below.
+    EditInPaint,
+    OpenWith,
     Quit,
 }
 
 impl More {
-    const ALL: [More; 3] = [More::Settings, More::OpenFolder, More::Quit];
+    /// The items, with or without a screenshot shown.
+    fn items(shot: bool) -> &'static [More] {
+        if shot {
+            &[
+                More::Settings,
+                More::OpenFolder,
+                More::EditInPaint,
+                More::OpenWith,
+                More::Quit,
+            ]
+        } else {
+            &[More::Settings, More::OpenFolder, More::Quit]
+        }
+    }
 
-    fn label(self) -> &'static str {
+    /// `saved`: a screenshot shown, saved in the folder, which opens with
+    /// it selected.
+    fn label(self, saved: bool) -> &'static str {
         match self {
             More::Settings => "Settings",
+            More::OpenFolder if saved => "Show in folder",
             More::OpenFolder => "Open screenshots folder",
+            More::EditInPaint => "Edit in Paint",
+            More::OpenWith => "Open with…",
             More::Quit => "Quit Shuttercrab",
         }
     }
@@ -144,6 +181,8 @@ impl More {
         match self {
             More::Settings => ",",
             More::OpenFolder => "O",
+            More::EditInPaint => "E",
+            More::OpenWith => "",
             More::Quit => "Ctrl+Q",
         }
     }
@@ -152,6 +191,8 @@ impl More {
         match self {
             More::Settings => IconName::Settings,
             More::OpenFolder => IconName::FolderOpen,
+            More::EditInPaint => IconName::Brush,
+            More::OpenWith => IconName::AppWindow,
             More::Quit => IconName::Power,
         }
     }
@@ -243,7 +284,7 @@ impl MainWindow {
         let (width, height) = shot.size();
         // A screenshot pixel per screen pixel, plus the margin on each side.
         let around = 2. * shot_view::MARGIN;
-        let width = (width as f32 / scale + around).max(f32::from(HOME_SIZE.width));
+        let width = (width as f32 / scale + around).max(SHOT_MIN_WIDTH);
         let height = (height as f32 / scale + around + TOOLBAR_HEIGHT + FOOTER_HEIGHT)
             .max(f32::from(HOME_SIZE.height));
         let physical = |logical: f32| (logical * scale).ceil() as u32;
@@ -343,14 +384,17 @@ impl MainWindow {
     }
 
     fn copy(&mut self, cx: &mut Context<Self>) {
-        if let Some(shot) = self.shot() {
-            (self.hooks.copy)(shot, cx);
-        }
+        self.with_shot(cx, |hooks| &hooks.copy);
     }
 
     fn save_as(&mut self, cx: &mut Context<Self>) {
+        self.with_shot(cx, |hooks| &hooks.save_as);
+    }
+
+    /// Call the hook `which` picks with the screenshot shown, if any.
+    fn with_shot(&self, cx: &mut App, which: impl FnOnce(&MainHooks) -> &ShotHook) {
         if let Some(shot) = self.shot() {
-            (self.hooks.save_as)(shot, cx);
+            which(&self.hooks)(shot, cx);
         }
     }
 
@@ -369,7 +413,7 @@ impl MainWindow {
     fn menu_len(&self, menu: Menu) -> usize {
         match menu {
             Menu::Delay => self.delay().1.len(),
-            Menu::More => More::ALL.len(),
+            Menu::More => More::items(self.shown.is_some()).len(),
         }
     }
 
@@ -377,7 +421,9 @@ impl MainWindow {
         self.menu = None;
         match item {
             More::Settings => self.show(Page::Settings, window, cx),
-            More::OpenFolder => (self.hooks.open_folder)(cx),
+            More::OpenFolder => (self.hooks.open_folder)(self.shot(), cx),
+            More::EditInPaint => self.with_shot(cx, |hooks| &hooks.edit_in_paint),
+            More::OpenWith => self.with_shot(cx, |hooks| &hooks.open_with),
             More::Quit => (self.hooks.quit)(cx),
         }
         cx.notify();
@@ -390,7 +436,10 @@ impl MainWindow {
                 self.menu = None;
                 self.set_delay(choices[self.highlighted.min(choices.len() - 1)], cx);
             }
-            Menu::More => self.choose_more(More::ALL[self.highlighted], window, cx),
+            Menu::More => {
+                let items = More::items(self.shown.is_some());
+                self.choose_more(items[self.highlighted.min(items.len() - 1)], window, cx)
+            }
         }
     }
 
@@ -437,6 +486,7 @@ impl MainWindow {
             "t" => self.step_delay(cx),
             "," => self.choose_more(More::Settings, window, cx),
             "o" => self.choose_more(More::OpenFolder, window, cx),
+            "e" => self.choose_more(More::EditInPaint, window, cx),
             "u" if (self.hooks.update_ready)().is_some() => (self.hooks.restart_to_update)(cx),
             _ => {
                 if let Some(target) = CaptureTarget::ALL.into_iter().find(|t| t.key() == key) {
@@ -689,10 +739,13 @@ impl MainWindow {
                     .map(|s| (seconds(*s), String::new(), None, *s == now))
                     .collect()
             }
-            Menu::More => More::ALL
-                .iter()
-                .map(|m| (m.label().into(), m.key().into(), Some(m.icon()), false))
-                .collect(),
+            Menu::More => {
+                let saved = self.shot().is_some_and(|shot| shot.saved.is_some());
+                More::items(self.shown.is_some())
+                    .iter()
+                    .map(|m| (m.label(saved).into(), m.key().into(), Some(m.icon()), false))
+                    .collect()
+            }
         };
         let right = menu == Menu::More;
         div()

@@ -28,7 +28,8 @@ icon_assets!(
         Power,
         Copy,
         Save,
-        ZoomIn
+        ZoomIn,
+        Brush
     ]
 );
 
@@ -84,6 +85,7 @@ mod tests {
             IconName::Copy,
             IconName::Save,
             IconName::ZoomIn,
+            IconName::Brush,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

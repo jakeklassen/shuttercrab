@@ -9,7 +9,7 @@ use gpui_kit::{
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
-    main_window::{HOME_SIZE, MainHooks, MainWindow, Page, Shot},
+    main_window::{HOME_SIZE, MainHooks, MainWindow, Page, SHOT_MIN_WIDTH, Shot},
     settings::Settings,
     settings_window::{Diagnostics, Hooks},
 };
@@ -28,6 +28,8 @@ struct Seen {
     restarts: Cell<u32>,
     copies: Cell<u32>,
     saves: Cell<u32>,
+    paints: Cell<u32>,
+    opens: Cell<u32>,
     /// The client sizes the window was fitted to, physical pixels.
     fits: RefCell<Vec<(u32, u32)>>,
     /// The version the fake updater has ready, if any.
@@ -42,12 +44,18 @@ struct Opened {
 }
 
 fn open(cx: &mut TestAppContext) -> Opened {
+    open_sized(cx, HOME_SIZE)
+}
+
+/// The window at `size`: the test window keeps it, whatever the app asks.
+fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -> Opened {
     cx.update(gpui_kit::init);
     let settings = Rc::new(RefCell::new(Settings::default()));
     let seen = Rc::new(Seen::default());
     let (s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone());
     let (s4, s5) = (seen.clone(), seen.clone());
     let (s6, s7, s8) = (seen.clone(), seen.clone(), seen.clone());
+    let (s9, s10) = (seen.clone(), seen.clone());
     let hooks = Rc::new(MainHooks {
         settings: Rc::new(Hooks {
             settings: settings.clone(),
@@ -60,17 +68,19 @@ fn open(cx: &mut TestAppContext) -> Opened {
             diagnostics: Diagnostics::default(),
         }),
         capture: Rc::new(move |mode, target, _, _| s1.captures.borrow_mut().push((mode, target))),
-        open_folder: Rc::new(move |_| s2.folders.set(s2.folders.get() + 1)),
+        open_folder: Rc::new(move |_, _| s2.folders.set(s2.folders.get() + 1)),
         quit: Rc::new(move |_| s3.quits.set(s3.quits.get() + 1)),
         update_ready: Rc::new(move || s4.update.borrow().clone()),
         restart_to_update: Rc::new(move |_| s5.restarts.set(s5.restarts.get() + 1)),
         copy: Rc::new(move |_, _| s6.copies.set(s6.copies.get() + 1)),
         save_as: Rc::new(move |_, _| s7.saves.set(s7.saves.get() + 1)),
+        edit_in_paint: Rc::new(move |_, _| s9.paints.set(s9.paints.get() + 1)),
+        open_with: Rc::new(move |_, _| s10.opens.set(s10.opens.get() + 1)),
         fit_window: Rc::new(move |_, _, width, height| s8.fits.borrow_mut().push((width, height))),
     });
     let out = Rc::new(RefCell::new(None));
     let slot = out.clone();
-    let handle = cx.open_window(HOME_SIZE, move |window, cx| {
+    let handle = cx.open_window(size, move |window, cx| {
         let view = cx.new(|cx| MainWindow::new(hooks, window, cx));
         slot.replace(Some(view.clone()));
         Root::new(view, window, cx)
@@ -249,6 +259,7 @@ fn shot(width: u32, height: u32) -> Shot {
             .unwrap()
             .and_hms_opt(10, 30, 0)
             .unwrap(),
+        saved: None,
     }
 }
 
@@ -298,7 +309,7 @@ fn a_screenshot_shows_with_copy_and_save_as(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_small_screenshot_keeps_the_home_size(cx: &mut TestAppContext) {
-    let opened = open(cx);
+    let opened = open_sized(cx, shot_size());
     let mut scale = 1.;
     update(cx, &opened, |window, cx| {
         scale = window.scale_factor();
@@ -306,11 +317,18 @@ fn a_small_screenshot_keeps_the_home_size(cx: &mut TestAppContext) {
             .view
             .update(cx, |view, cx| view.show_shot(shot(40, 30), window, cx));
     });
-    let home = |side: gpui_kit::Pixels| (f32::from(side) * scale).ceil() as u32;
+    let physical = |side: f32| (side * scale).ceil() as u32;
     assert_eq!(
         opened.seen.fits.borrow().last().copied(),
-        Some((home(HOME_SIZE.width), home(HOME_SIZE.height)))
+        Some((
+            physical(SHOT_MIN_WIDTH),
+            physical(f32::from(HOME_SIZE.height))
+        ))
     );
+    // Wide enough for the whole toolbar.
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("more").is_some_and(|e| e.visible()));
+    });
 }
 
 #[gpui_kit::test]
@@ -346,4 +364,69 @@ fn ctrl_keys_zoom_the_screenshot(cx: &mut TestAppContext) {
     assert_eq!(zoom(cx).as_deref(), Some("100%"));
     update(cx, &opened, |window, cx| window.click("zoom", cx));
     assert_eq!(zoom(cx), Some(fitted));
+}
+
+#[gpui_kit::test]
+fn the_menu_offers_paint_and_open_with_for_a_screenshot(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    let labels = |cx: &mut TestAppContext| {
+        let mut labels = Vec::new();
+        update(cx, &opened, |window, cx| window.click("more", cx));
+        update(cx, &opened, |window, _| {
+            for i in 0..6 {
+                if let Some(label) = window
+                    .try_find(gpui_kit::SharedString::from(format!("more-{i}")))
+                    .and_then(|e| e.label().map(|l| l.to_string()))
+                {
+                    labels.push(label);
+                }
+            }
+        });
+        press(cx, &opened, &["escape"]);
+        labels
+    };
+    assert_eq!(
+        labels(cx),
+        ["Settings", "Open screenshots folder", "Quit Shuttercrab"]
+    );
+    // E does nothing without a screenshot.
+    press(cx, &opened, &["e"]);
+    assert_eq!(opened.seen.paints.get(), 0);
+
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    assert_eq!(
+        labels(cx),
+        [
+            "Settings",
+            "Open screenshots folder",
+            "Edit in Paint",
+            "Open with…",
+            "Quit Shuttercrab"
+        ]
+    );
+    press(cx, &opened, &["e"]);
+    update(cx, &opened, |window, cx| window.click("more", cx));
+    update(cx, &opened, |window, cx| window.click("more-3", cx));
+    assert_eq!((opened.seen.paints.get(), opened.seen.opens.get()), (1, 1));
+
+    // A saved screenshot is shown in its folder.
+    update(cx, &opened, |window, cx| {
+        let saved = Shot {
+            saved: Some(std::path::PathBuf::from(r"C:\Shots\a.png")),
+            ..shot(800, 600)
+        };
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(saved, window, cx));
+    });
+    assert_eq!(labels(cx)[1], "Show in folder");
+}
+
+/// The window's least size with a screenshot shown.
+fn shot_size() -> gpui_kit::Size<gpui_kit::Pixels> {
+    gpui_kit::size(gpui_kit::px(SHOT_MIN_WIDTH), HOME_SIZE.height)
 }
