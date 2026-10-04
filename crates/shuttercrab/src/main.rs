@@ -53,7 +53,11 @@ fn main() {
     // Started by Windows at sign-in: the tray only. Every other start opens
     // the window, like any app.
     let background = std::env::args().any(|a| a == startup::BACKGROUND_FLAG);
-    let data_dir = std::env::var_os(DATA_DIR_VARIABLE).map(PathBuf::from);
+    // Resolved before leaving the folder it may be relative to.
+    let data_dir = std::env::var_os(DATA_DIR_VARIABLE)
+        .map(PathBuf::from)
+        .map(|dir| std::path::absolute(&dir).unwrap_or(dir));
+    leave_install_folder();
     let log_file = start_logging(data_dir.as_deref());
 
     let settings_path = match &data_dir {
@@ -113,6 +117,21 @@ fn main() {
                 cx,
             );
         });
+}
+
+/// Work from the user's folder instead of the one Shuttercrab is installed
+/// in. Programs Shuttercrab opens, such as the viewer a thumbnail opens,
+/// inherit its working directory, and while any of them stays open in the
+/// install folder, the updater cannot replace that folder: every update
+/// fails until they close.
+fn leave_install_folder() {
+    let Some(home) = std::env::var_os("USERPROFILE") else {
+        return;
+    };
+    if let Err(e) = std::env::set_current_dir(&home) {
+        // Logging starts later; this is only a risk to updating.
+        eprintln!("could not leave the install folder: {e}");
+    }
 }
 
 /// Start the log, in `data_dir` when one is given. Returns the log file, if
