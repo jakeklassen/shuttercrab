@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/jakeklassen/shuttercrab/compare/v0.1.7...v0.1.8) - 2026-10-04
+
+### Other
+
+- give each of the recording controls' modes its own buttons
+- give the capture choices and the shared colours their own modules
+- name the phases of starting and restarting a recording
+- give startup's steps names
+- name the recorder's startup steps and its error policies
+- name the thumbnail's pictures and pixel conversion for what they are
+- separate a screenshot's delivery from what it tells the user
+- split app.rs into modules by responsibility
+- split HDR region detection into its stages
+- name the steps of capturing a frame and freezing a monitor
+- share the GPU conversion steps and explain the unsafe read-backs
+- break the recording loop into named steps
+- split record.rs into modules
+
 ## [0.1.7](https://github.com/jakeklassen/shuttercrab/compare/v0.1.6...v0.1.7) - 2026-10-04
 
 ### Performance
