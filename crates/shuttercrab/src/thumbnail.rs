@@ -40,15 +40,17 @@ pub enum ThumbnailEvent {
 }
 
 /// The card's image size, logical pixels, for a `width` × `height` capture:
-/// scaled down to fit, never up, and at least [`MIN_SIDE`] on each side.
+/// scaled down to fit [`MAX_WIDTH`] × [`MAX_HEIGHT`] if larger, then each
+/// side raised to at least [`MIN_SIDE`].
 pub fn image_size(width: u32, height: u32) -> (f32, f32) {
     let (w, h) = (width.max(1) as f32, height.max(1) as f32);
     let fit = (MAX_WIDTH / w).min(MAX_HEIGHT / h).min(1.0);
     ((w * fit).max(MIN_SIDE), (h * fit).max(MIN_SIDE))
 }
 
-/// A screenshot scaled down for the thumbnail: straight-alpha RGBA8.
-pub struct Small {
+/// A screenshot scaled down for the thumbnail, or its drag image:
+/// straight-alpha RGBA8.
+pub struct Picture {
     pub width: u32,
     pub height: u32,
     pub rgba: Vec<u8>,
@@ -57,7 +59,13 @@ pub struct Small {
 /// Tightly packed straight-alpha RGBA, scaled down to at most `max_width` ×
 /// `max_height` physical pixels. Reads `rgba` in place: only the small
 /// picture is allocated.
-pub fn scale_down(rgba: &[u8], width: u32, height: u32, max_width: u32, max_height: u32) -> Small {
+pub fn scale_down(
+    rgba: &[u8],
+    width: u32,
+    height: u32,
+    max_width: u32,
+    max_height: u32,
+) -> Picture {
     let full = image::ImageBuffer::<image::Rgba<u8>, &[u8]>::from_raw(width, height, rgba)
         .expect("the buffer matches its size");
     let fit = (max_width as f32 / width as f32)
@@ -72,7 +80,7 @@ pub fn scale_down(rgba: &[u8], width: u32, height: u32, max_width: u32, max_heig
     } else {
         image::imageops::thumbnail(&full, w, h).into_raw()
     };
-    Small {
+    Picture {
         width: w,
         height: h,
         rgba,
@@ -85,7 +93,7 @@ pub fn scale_down(rgba: &[u8], width: u32, height: u32, max_width: u32, max_heig
 /// half inside and half outside (a blurred edge, not an inner shadow), at
 /// `opacity` overall.
 #[derive(Clone, Copy, Debug, PartialEq)]
-pub struct Soft {
+pub struct DragLook {
     pub softness: f32,
     pub opacity: f32,
     /// How far along each side the corner curve reaches, physical pixels.
@@ -98,7 +106,7 @@ const SQUIRCLE: f32 = 4.0;
 
 /// The owner's choice (2026-09-28): sharp, 90% opaque, a 20-pixel soft
 /// edge, squircle corners.
-pub const DRAG_LOOK: Soft = Soft {
+pub const DRAG_LOOK: DragLook = DragLook {
     softness: 20.0,
     opacity: 0.9,
     corner: 32.0,
@@ -121,19 +129,19 @@ fn outline_distance(px: f32, py: f32, w: f32, h: f32, corner: f32) -> f32 {
 
 /// `small` with a soft squircle outline, on a canvas grown by the outer
 /// half of the softness; edge pixels continue outward as they fade.
-pub fn soften(small: &Small, soft: Soft) -> Small {
-    let r = soft.softness.max(0.0) / 2.0;
+pub fn soften(picture: &Picture, look: DragLook) -> Picture {
+    let r = look.softness.max(0.0) / 2.0;
     let pad = r.ceil() as u32;
-    let (w, h) = (small.width, small.height);
+    let (w, h) = (picture.width, picture.height);
     let (width, height) = (w + 2 * pad, h + 2 * pad);
-    let opacity = soft.opacity.clamp(0.0, 1.0);
+    let opacity = look.opacity.clamp(0.0, 1.0);
     let mut rgba = Vec::with_capacity((width * height * 4) as usize);
     for y in 0..height {
         for x in 0..width {
             // Position relative to the picture, pixel centres.
             let px = x as f32 - pad as f32 + 0.5;
             let py = y as f32 - pad as f32 + 0.5;
-            let outside = outline_distance(px, py, w as f32, h as f32, soft.corner);
+            let outside = outline_distance(px, py, w as f32, h as f32, look.corner);
             let cover = if r > 0.0 {
                 let t = ((r - outside) / (2.0 * r)).clamp(0.0, 1.0);
                 t * t * (3.0 - 2.0 * t)
@@ -144,12 +152,12 @@ pub fn soften(small: &Small, soft: Soft) -> Small {
             };
             let sx = (px.floor() as i64).clamp(0, w as i64 - 1) as u32;
             let sy = (py.floor() as i64).clamp(0, h as i64 - 1) as u32;
-            let src = &small.rgba[((sy * w + sx) * 4) as usize..][..4];
+            let src = &picture.rgba[((sy * w + sx) * 4) as usize..][..4];
             let a = (src[3] as f32 * cover * opacity).round() as u8;
             rgba.extend_from_slice(&[src[0], src[1], src[2], a]);
         }
     }
-    Small {
+    Picture {
         width,
         height,
         rgba,
@@ -157,13 +165,13 @@ pub fn soften(small: &Small, soft: Soft) -> Small {
 }
 
 /// A scaled-down screenshot as an image GPUI can draw.
-pub fn render_image(small: &Small) -> Arc<RenderImage> {
-    let mut bgra = small.rgba.clone();
+pub fn render_image(picture: &Picture) -> Arc<RenderImage> {
+    let mut bgra = picture.rgba.clone();
     // GPUI draws BGRA.
     for px in bgra.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
-    let buffer = image::RgbaImage::from_raw(small.width, small.height, bgra)
+    let buffer = image::RgbaImage::from_raw(picture.width, picture.height, bgra)
         .expect("the buffer matches its size");
     Arc::new(RenderImage::new([image::Frame::new(buffer)]))
 }
@@ -362,14 +370,14 @@ mod tests {
 
     #[test]
     fn softening_blurs_the_outline_but_keeps_the_picture_sharp() {
-        let small = Small {
+        let picture = Picture {
             width: 40,
             height: 20,
             rgba: vec![255; 40 * 20 * 4],
         };
         let soft = soften(
-            &small,
-            Soft {
+            &picture,
+            DragLook {
                 softness: 6.0,
                 opacity: 0.9,
                 corner: 0.0,

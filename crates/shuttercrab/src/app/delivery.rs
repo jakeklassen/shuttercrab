@@ -91,7 +91,7 @@ pub(super) async fn deliver(
     let result = outcome(copied, saved, &settings.output_dir());
 
     if thumbnail {
-        let small = match scaled {
+        let picture = match scaled {
             Some(task) => task.await,
             None => scale_for_thumbnail(rgba, (width, height), monitor, cx).await,
         };
@@ -107,7 +107,7 @@ pub(super) async fn deliver(
             settings.thumbnail_seconds
         };
         let pending = PendingThumbnail {
-            small,
+            picture,
             size: (width, height),
             file,
             monitor: monitor.clone(),
@@ -141,7 +141,7 @@ fn scale_for_thumbnail(
     (width, height): (u32, u32),
     monitor: &MonitorInfo,
     cx: &AsyncApp,
-) -> Task<thumbnail::Small> {
+) -> Task<thumbnail::Picture> {
     let (w, h) = thumbnail::image_size(width, height);
     let scale = monitor.scale_factor;
     let (max_w, max_h) = ((w * scale).ceil() as u32, (h * scale).ceil() as u32);
@@ -225,7 +225,7 @@ impl CaptureFile {
 /// A thumbnail about to be shown.
 struct PendingThumbnail {
     /// The screenshot scaled down: the card's picture and the drag image.
-    small: thumbnail::Small,
+    picture: thumbnail::Picture,
     /// The screenshot's size, physical pixels.
     size: (u32, u32),
     file: CaptureFile,
@@ -253,7 +253,7 @@ pub fn thumbnail_rect(work: PhysicalRect, scale: f32, size: (u32, u32)) -> Physi
 fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp) {
     cx.spawn(async move |cx| {
         let PendingThumbnail {
-            small,
+            picture,
             size,
             mut file,
             monitor,
@@ -263,8 +263,8 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             .map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h))
             .unwrap_or(monitor.bounds);
         let rect = thumbnail_rect(work, monitor.scale_factor, size);
-        let image = thumbnail::render_image(&small);
-        let drag_picture = thumbnail::soften(&small, thumbnail::DRAG_LOOK);
+        let image = thumbnail::render_image(&picture);
+        let drag_picture = thumbnail::soften(&picture, thumbnail::DRAG_LOOK);
         let opened = popup::open(&monitor, rect, Activation::Never, cx, move |_, cx| {
             cx.new(|cx| Thumbnail::new(image, seconds, cx))
         });

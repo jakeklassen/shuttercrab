@@ -659,7 +659,7 @@ impl Service {
                     capture::capture_window(gpu, window, PixelFormat::Bgra8, include_cursor)
                         .map_err(failed)?;
                 let bgra = gpu.read_back(&frame.texture).map_err(failed)?;
-                (frame.width, frame.height, unpremultiply_bgra(&bgra))
+                (frame.width, frame.height, premultiplied_bgra_to_rgba(&bgra))
             }
             ColorMode::Wcg | ColorMode::Hdr => {
                 let frame = capture::capture_window(gpu, window, PixelFormat::Fp16, include_cursor)
@@ -746,7 +746,7 @@ fn classify(e: anyhow::Error, code: CaptureErrorCode, message: &str) -> CaptureE
 }
 
 /// Premultiplied BGRA8 (what the compositor delivers) to straight RGBA8.
-pub fn unpremultiply_bgra(bgra: &[u8]) -> Vec<u8> {
+pub fn premultiplied_bgra_to_rgba(bgra: &[u8]) -> Vec<u8> {
     let mut rgba = Vec::with_capacity(bgra.len());
     for px in bgra.as_chunks::<4>().0 {
         let [b, g, r, a] = *px;
@@ -968,7 +968,7 @@ mod tests {
         // BGRA: opaque, half-covered 100 (premultiplied to 50), transparent.
         let bgra = [10, 20, 30, 255, 50, 50, 50, 128, 7, 7, 7, 0];
         assert_eq!(
-            unpremultiply_bgra(&bgra),
+            premultiplied_bgra_to_rgba(&bgra),
             [30, 20, 10, 255, 100, 100, 100, 128, 0, 0, 0, 0]
         );
     }
