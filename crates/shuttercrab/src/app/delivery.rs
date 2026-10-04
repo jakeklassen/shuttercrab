@@ -2,7 +2,12 @@
 //! in the main window if it was taken from there, or as a thumbnail that
 //! opens it in the window or drags it out.
 
-use super::{State, failure::Failure, screenshot::exclude_from_capture, windows::show_in_main};
+use super::{
+    State,
+    failure::Failure,
+    screenshot::exclude_from_capture,
+    windows::{Focus, show_in_main},
+};
 use crate::{
     files,
     main_window::Shot,
@@ -43,8 +48,10 @@ pub(super) async fn deliver(
     let settings = state.settings.borrow().clone();
     let (width, height) = (shot.width, shot.height);
     // Taken from the main window, which comes back showing it, as Snipping
-    // Tool does; otherwise the thumbnail shows it.
-    let in_window = state.hidden_main.get().is_some();
+    // Tool does; or shown there anyway, as the settings say. The thumbnail
+    // is for screenshots taken elsewhere.
+    let from_window = state.hidden_main.get().is_some();
+    let in_window = from_window || settings.show_in_window;
 
     // Start the file write and the thumbnail image first; they run while
     // the clipboard is written. All three share the screenshot's buffers.
@@ -53,7 +60,7 @@ pub(super) async fn deliver(
         cx.background_executor()
             .spawn(async move { files::save_screenshot(&dir, taken_at, &png) })
     });
-    let scaled = (settings.show_thumbnail && !in_window)
+    let scaled = (settings.show_thumbnail && !from_window)
         .then(|| scale_for_thumbnail(shot.rgba.clone(), (width, height), monitor, cx));
     // Kept for the window or the thumbnail: without auto-save, the thumbnail
     // writes a temporary file only if it is dragged.
@@ -87,30 +94,19 @@ pub(super) async fn deliver(
     }
 
     let saved_path = saved.as_ref().and_then(|r| r.as_ref().ok().cloned());
-    // A failed copy shows the thumbnail even when thumbnails are off, so the
-    // screenshot can still be opened or dragged out. Without a saved file,
-    // the thumbnail is then its only copy.
+    // A failed copy shows the thumbnail even when thumbnails are off, unless
+    // the window shows the screenshot, so it can still be opened or dragged
+    // out. Without a saved file, the thumbnail is then its only copy.
     let copy_failed = matches!(copied, Some(Err(_)));
     let rescued = copy_failed && saved_path.is_none();
-    let thumbnail = !in_window && (settings.show_thumbnail || copy_failed);
+    let thumbnail = !from_window && (settings.show_thumbnail || (copy_failed && !in_window));
     let result = outcome(copied, saved, &settings.output_dir(), in_window);
 
     if in_window {
-        let image = cx
-            .background_executor()
-            .spawn(async move { pixels::render_image(&rgba, width, height) })
-            .await;
-        show_in_main(
-            state,
-            Shot {
-                image,
-                png,
-                taken_at,
-                saved: saved_path.clone(),
-            },
-            cx,
-        );
-    } else if thumbnail {
+        let shot = (png.clone(), taken_at, saved_path.clone());
+        show_in_window(state, rgba.clone(), (width, height), shot, from_window, cx).await;
+    }
+    if thumbnail {
         let picture = match scaled {
             Some(task) => task.await,
             None => scale_for_thumbnail(rgba, (width, height), monitor, cx).await,
@@ -153,6 +149,36 @@ pub(super) async fn deliver(
         );
     }
     Ok(())
+}
+
+/// Show the screenshot in the main window: its pixels, `width` × `height`,
+/// with its PNG, when it was taken and where it was saved. Taken from the
+/// window (`from_window`), it comes back with the keyboard; taken
+/// elsewhere, the keyboard stays where it was, to paste.
+async fn show_in_window(
+    state: &Rc<State>,
+    rgba: Arc<Vec<u8>>,
+    (width, height): (u32, u32),
+    (png, taken_at, saved): (Arc<Vec<u8>>, NaiveDateTime, Option<PathBuf>),
+    from_window: bool,
+    cx: &mut AsyncApp,
+) {
+    let image = cx
+        .background_executor()
+        .spawn(async move { pixels::render_image(&rgba, width, height) })
+        .await;
+    let shot = Shot {
+        image,
+        png,
+        taken_at,
+        saved,
+    };
+    let focus = if from_window {
+        Focus::Take
+    } else {
+        Focus::Leave
+    };
+    show_in_main(state, shot, focus, cx);
 }
 
 /// The screenshot scaled down to the thumbnail's size on `monitor`, on a
@@ -228,7 +254,7 @@ pub(super) async fn show_file_in_main(state: &Rc<State>, path: PathBuf, cx: &mut
         .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
         .unwrap_or_else(|_| chrono::Local::now().naive_local());
     match CaptureFile::Saved(path).shot(taken_at, cx).await {
-        Ok(shot) => show_in_main(state, shot, cx),
+        Ok(shot) => show_in_main(state, shot, Focus::Take, cx),
         Err(e) => log::error!("{e}"),
     }
 }
@@ -376,7 +402,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
                     match file.shot(taken_at, cx).await {
                         Ok(shot) => {
                             log::info!("thumbnail: showing the screenshot in the window");
-                            show_in_main(&state, shot, cx);
+                            show_in_main(&state, shot, Focus::Take, cx);
                         }
                         Err(e) => log::error!("{e}"),
                     }

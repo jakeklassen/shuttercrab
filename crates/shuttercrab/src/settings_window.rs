@@ -522,6 +522,10 @@ impl SettingsWindow {
                 SettingGroup::new()
                     .item(heading("After a capture", None))
                     .item(SettingItem::new(
+                        "Show screenshots in Shuttercrab's window",
+                        self.switch(|s| s.show_in_window, |s, v| s.show_in_window = v),
+                    ))
+                    .item(SettingItem::new(
                         "Show a thumbnail",
                         self.switch(|s| s.show_thumbnail, |s, v| s.show_thumbnail = v),
                     ))

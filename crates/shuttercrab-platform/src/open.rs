@@ -1,6 +1,6 @@
 //! Opening a file in another program: Paint, or one the user picks.
 
-use anyhow::{Context, Result};
+use anyhow::Result;
 use std::path::Path;
 use windows::{
     Win32::{
@@ -11,12 +11,20 @@ use windows::{
 };
 
 /// Open `path` in Paint. Windows' Paint answers to `mspaint`, the old and
-/// the new alike.
+/// the new alike. The new one's `mspaint` is an app execution alias, which
+/// only the shell can start (`CreateProcess` refuses it), so the shell
+/// starts it.
 pub fn edit_in_paint(path: &Path) -> Result<()> {
-    std::process::Command::new("mspaint")
-        .arg(path)
-        .spawn()
-        .context("could not start Paint")?;
+    use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
+    let file = HSTRING::from("mspaint");
+    let quoted = HSTRING::from(format!("\"{}\"", path.display()));
+    let started = unsafe { ShellExecuteW(None, None, &file, &quoted, None, SW_SHOWNORMAL) };
+    // ShellExecuteW reports success as a value above 32.
+    anyhow::ensure!(
+        started.0 as isize > 32,
+        "could not start Paint (ShellExecute error {})",
+        started.0 as isize
+    );
     Ok(())
 }
 

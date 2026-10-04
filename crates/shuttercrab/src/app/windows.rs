@@ -38,17 +38,40 @@ pub(super) fn open_folder(state: &State, cx: &mut AsyncApp) {
 /// Open the main window on `page`, or bring it forward on `page` if it is
 /// open. Settings is a page of it, so Shuttercrab has one window.
 pub(super) fn open_main(state: &Rc<State>, page: Page, cx: &mut AsyncApp) {
-    open_window(state, page, None, cx);
+    open_window(state, page, None, Focus::Take, cx);
 }
 
 /// Show `shot` in the main window, opening it if needed, as Snipping Tool
 /// shows a new snip.
-pub(super) fn show_in_main(state: &Rc<State>, shot: Shot, cx: &mut AsyncApp) {
-    open_window(state, Page::Home, Some(shot), cx);
+pub(super) fn show_in_main(state: &Rc<State>, shot: Shot, focus: Focus, cx: &mut AsyncApp) {
+    open_window(state, Page::Home, Some(shot), focus, cx);
+}
+
+/// Whether the main window takes the keyboard when it comes forward.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Focus {
+    Take,
+    /// It stays with the active window: after a screenshot taken there,
+    /// to paste it.
+    Leave,
+}
+
+/// Bring the window forward, with the keyboard or without.
+fn bring_forward(hwnd: isize, focus: Focus) {
+    match focus {
+        Focus::Take => platform_window::show_normal(hwnd),
+        Focus::Leave => platform_window::show_without_focus(hwnd),
+    }
 }
 
 /// Open the main window, or bring it forward, on `page` or showing `shot`.
-fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut AsyncApp) {
+fn open_window(
+    state: &Rc<State>,
+    page: Page,
+    mut shot: Option<Shot>,
+    focus: Focus,
+    cx: &mut AsyncApp,
+) {
     let open = state.main_window.borrow().clone();
     if let Some((window, view)) = open
         && let Ok(hwnd) = window.update(cx, |_, window, cx| {
@@ -66,8 +89,7 @@ fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut A
         if state.hidden_main.get().is_none()
             && let Some(hwnd) = hwnd
         {
-            cx.spawn(async move |_| platform_window::show_normal(hwnd))
-                .detach();
+            cx.spawn(async move |_| bring_forward(hwnd, focus)).detach();
         }
         return;
     }
@@ -91,7 +113,7 @@ fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut A
                     title: Some("Shuttercrab".into()),
                     ..Default::default()
                 }),
-                focus: true,
+                focus: focus == Focus::Take,
                 show: true,
                 kind: WindowKind::Normal,
                 ..Default::default()
@@ -128,7 +150,7 @@ fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut A
                     .ok()
                     .flatten();
                 if let Some(hwnd) = hwnd {
-                    platform_window::show_normal(hwnd);
+                    bring_forward(hwnd, focus);
                 }
                 state.main_window.replace(Some((window.into(), view)));
             }

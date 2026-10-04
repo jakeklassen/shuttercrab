@@ -210,6 +210,27 @@ pub fn fit_client_area(hwnd: isize, width: u32, height: u32, share: f32) -> Resu
         .context("SetWindowPos failed")
 }
 
+/// Show the window, restored if minimised, above other windows but without
+/// taking the keyboard from the active one.
+pub fn show_without_focus(hwnd: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{
+        HWND_TOP, SW_SHOWNOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+    };
+    let hwnd = HWND(hwnd as _);
+    unsafe {
+        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        let _ = SetWindowPos(
+            hwnd,
+            Some(HWND_TOP),
+            0,
+            0,
+            0,
+            0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        );
+    }
+}
+
 /// Show the window normally and bring it to the front. A launcher's "start
 /// hidden" or "start minimised" applies to a process's first window shown
 /// the usual way; this overrides it.

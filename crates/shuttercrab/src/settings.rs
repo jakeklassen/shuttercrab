@@ -43,6 +43,10 @@ pub struct Settings {
     /// and target used.
     pub last_mode: CaptureMode,
     pub last_target: CaptureTarget,
+    /// Show each screenshot in Shuttercrab's window, as Snipping Tool does,
+    /// whatever started it. The window comes forward without taking the
+    /// keyboard.
+    pub show_in_window: bool,
     /// Show a thumbnail in the corner after each screenshot.
     pub show_thumbnail: bool,
     /// How long the thumbnail stays without the pointer over it.
@@ -83,6 +87,7 @@ impl Default for Settings {
             include_cursor: false,
             last_mode: CaptureMode::Screenshot,
             last_target: CaptureTarget::Area,
+            show_in_window: true,
             show_thumbnail: true,
             thumbnail_seconds: 6,
             notify_after_capture: false,
