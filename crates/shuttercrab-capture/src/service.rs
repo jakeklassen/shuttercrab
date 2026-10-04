@@ -577,7 +577,6 @@ impl Service {
         })
     }
 
-    /// Get ready to try again after a failure `retry_once` retries.
     /// Return pooled graphics memory after a capture.
     fn trim(&self) {
         for (gpu, _) in self.gpus.values() {
@@ -585,6 +584,7 @@ impl Service {
         }
     }
 
+    /// Get ready to try again after a failure `retry_once` retries.
     fn recover(&mut self, code: CaptureErrorCode) {
         if code == CaptureErrorCode::DeviceLost {
             // A reset or removed device stays unusable; start afresh.
