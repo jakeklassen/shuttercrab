@@ -25,5 +25,6 @@ pub mod recording;
 pub mod selection;
 pub mod settings;
 pub mod settings_window;
+pub mod shot_view;
 pub mod thumbnail;
 pub mod update;

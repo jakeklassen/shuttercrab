@@ -312,3 +312,38 @@ fn a_small_screenshot_keeps_the_home_size(cx: &mut TestAppContext) {
         Some((home(HOME_SIZE.width), home(HOME_SIZE.height)))
     );
 }
+
+#[gpui_kit::test]
+fn ctrl_keys_zoom_the_screenshot(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    let zoom = |cx: &mut TestAppContext| {
+        let mut label = None;
+        update(cx, &opened, |window, _| {
+            label = window
+                .try_find("zoom")
+                .and_then(|e| e.label().map(|l| l.to_string()));
+        });
+        label
+    };
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(4000, 3000), window, cx));
+    });
+    // Fitted: a big screenshot in the test window is well under full size.
+    let fitted = zoom(cx).unwrap();
+    assert_ne!(fitted, "100%");
+    press(cx, &opened, &["ctrl-1"]);
+    assert_eq!(zoom(cx).as_deref(), Some("100%"));
+    press(cx, &opened, &["ctrl-="]);
+    assert_eq!(zoom(cx).as_deref(), Some("125%"));
+    press(cx, &opened, &["ctrl--", "ctrl--"]);
+    assert_eq!(zoom(cx).as_deref(), Some("75%"));
+    press(cx, &opened, &["ctrl-0"]);
+    assert_eq!(zoom(cx), Some(fitted.clone()));
+    // The button switches between fitted and full size.
+    update(cx, &opened, |window, cx| window.click("zoom", cx));
+    assert_eq!(zoom(cx).as_deref(), Some("100%"));
+    update(cx, &opened, |window, cx| window.click("zoom", cx));
+    assert_eq!(zoom(cx), Some(fitted));
+}
