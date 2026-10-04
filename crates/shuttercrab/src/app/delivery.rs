@@ -9,10 +9,15 @@ use crate::{
 };
 use chrono::NaiveDateTime;
 use futures::StreamExt as _;
-use gpui_kit::{AppContext as _, AsyncApp};
+use gpui_kit::{AppContext as _, AsyncApp, Task};
 use shuttercrab_capture::{MonitorInfo, PhysicalRect, Screenshot};
 use shuttercrab_platform::{drag::DragImage, window as platform_window};
-use std::{path::PathBuf, rc::Rc, sync::Arc, time::Instant};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Instant,
+};
 
 /// The least time, seconds, a thumbnail stays when it is the screenshot's
 /// only copy (neither copied nor saved).
@@ -42,16 +47,11 @@ pub(super) async fn deliver(
         cx.background_executor()
             .spawn(async move { files::save_screenshot(&dir, taken_at, &png) })
     });
-    let preview = settings.show_thumbnail.then(|| {
-        let rgba = shot.rgba.clone();
-        let (w, h) = thumbnail::image_size(width, height);
-        let scale = monitor.scale_factor;
-        let (max_w, max_h) = ((w * scale).ceil() as u32, (h * scale).ceil() as u32);
-        cx.background_executor()
-            .spawn(async move { thumbnail::scale_down(&rgba, width, height, max_w, max_h) })
-    });
-    // Without auto-save, the thumbnail writes a temporary file only if it
-    // is opened or dragged.
+    let scaled = settings
+        .show_thumbnail
+        .then(|| scale_for_thumbnail(shot.rgba.clone(), (width, height), monitor, cx));
+    // Kept for the thumbnail: without auto-save, it writes a temporary file
+    // only if it is opened or dragged.
     let png = shot.png.clone();
     let rgba = shot.rgba.clone();
     let copied = if settings.copy_to_clipboard {
@@ -82,58 +82,18 @@ pub(super) async fn deliver(
     }
 
     let saved_path = saved.as_ref().and_then(|r| r.as_ref().ok().cloned());
-    // A screenshot that was neither copied nor saved is still shown, so it
-    // is never lost: the thumbnail opens it and drags it out.
+    // A failed copy shows the thumbnail even when thumbnails are off, so the
+    // screenshot can still be opened or dragged out. Without a saved file,
+    // the thumbnail is then its only copy.
     let copy_failed = matches!(copied, Some(Err(_)));
     let rescued = copy_failed && saved_path.is_none();
     let thumbnail = settings.show_thumbnail || copy_failed;
-    // PRD §24: say what happened and what to do; the causes go to the log.
-    let busy = "Another app is holding the clipboard.";
-    let in_thumbnail = "It's in the thumbnail: click to open it, or drag it out.";
-    let folder = settings.output_dir();
-    let unwritable = format!(
-        "Could not save to {}. Check the folder in Settings.",
-        folder.display()
-    );
-    let result = match (copied, saved) {
-        (Some(Err(copy)), Some(Err(save))) => Err(Failure::new(
-            format!("Could not copy or save the screenshot. {unwritable} {in_thumbnail}"),
-            format!("copy: {copy:#}; save: {save:#}"),
-        )),
-        (Some(Err(copy)), Some(Ok(_))) => Err(Failure::new(
-            format!("The screenshot was saved, but not copied. {busy} {in_thumbnail}"),
-            format!("copy: {copy:#}"),
-        )),
-        (Some(Err(copy)), None) => Err(Failure::new(
-            format!("The screenshot was not copied. {busy} {in_thumbnail}"),
-            format!("copy: {copy:#}"),
-        )),
-        (Some(Ok(())), Some(Err(save))) => Err(Failure::new(
-            format!("The screenshot was copied, but not saved. {unwritable}"),
-            format!("save: {save:#}"),
-        )),
-        (None, Some(Err(save))) => Err(Failure::new(
-            format!("The screenshot was not saved. {unwritable}"),
-            format!("save: {save:#}"),
-        )),
-        (None, None) => {
-            log::warn!("screenshot discarded: copying and saving are both off");
-            Ok(())
-        }
-        _ => Ok(()),
-    };
+    let result = outcome(copied, saved, &settings.output_dir());
 
     if thumbnail {
-        let small = match preview {
-            Some(preview) => preview.await,
-            None => {
-                let (w, h) = thumbnail::image_size(width, height);
-                let scale = monitor.scale_factor;
-                let (max_w, max_h) = ((w * scale).ceil() as u32, (h * scale).ceil() as u32);
-                cx.background_executor()
-                    .spawn(async move { thumbnail::scale_down(&rgba, width, height, max_w, max_h) })
-                    .await
-            }
+        let small = match scaled {
+            Some(task) => task.await,
+            None => scale_for_thumbnail(rgba, (width, height), monitor, cx).await,
         };
         let file = match saved_path.clone() {
             Some(path) => CaptureFile::Saved(path),
@@ -172,6 +132,64 @@ pub(super) async fn deliver(
         );
     }
     Ok(())
+}
+
+/// The screenshot scaled down to the thumbnail's size on `monitor`, on a
+/// background thread.
+fn scale_for_thumbnail(
+    rgba: Arc<Vec<u8>>,
+    (width, height): (u32, u32),
+    monitor: &MonitorInfo,
+    cx: &AsyncApp,
+) -> Task<thumbnail::Small> {
+    let (w, h) = thumbnail::image_size(width, height);
+    let scale = monitor.scale_factor;
+    let (max_w, max_h) = ((w * scale).ceil() as u32, (h * scale).ceil() as u32);
+    cx.background_executor()
+        .spawn(async move { thumbnail::scale_down(&rgba, width, height, max_w, max_h) })
+}
+
+/// What to tell the user about copying (`copied`) and saving (`saved`) to
+/// `folder`; `None` is a step the settings turned off. PRD §24: say what
+/// happened and what to do; the causes go to the log.
+fn outcome(
+    copied: Option<anyhow::Result<()>>,
+    saved: Option<anyhow::Result<PathBuf>>,
+    folder: &Path,
+) -> Result<(), Failure> {
+    let busy = "Another app is holding the clipboard.";
+    let in_thumbnail = "It's in the thumbnail: click to open it, or drag it out.";
+    let unwritable = format!(
+        "Could not save to {}. Check the folder in Settings.",
+        folder.display()
+    );
+    match (copied, saved) {
+        (Some(Err(copy)), Some(Err(save))) => Err(Failure::new(
+            format!("Could not copy or save the screenshot. {unwritable} {in_thumbnail}"),
+            format!("copy: {copy:#}; save: {save:#}"),
+        )),
+        (Some(Err(copy)), Some(Ok(_))) => Err(Failure::new(
+            format!("The screenshot was saved, but not copied. {busy} {in_thumbnail}"),
+            format!("copy: {copy:#}"),
+        )),
+        (Some(Err(copy)), None) => Err(Failure::new(
+            format!("The screenshot was not copied. {busy} {in_thumbnail}"),
+            format!("copy: {copy:#}"),
+        )),
+        (Some(Ok(())), Some(Err(save))) => Err(Failure::new(
+            format!("The screenshot was copied, but not saved. {unwritable}"),
+            format!("save: {save:#}"),
+        )),
+        (None, Some(Err(save))) => Err(Failure::new(
+            format!("The screenshot was not saved. {unwritable}"),
+            format!("save: {save:#}"),
+        )),
+        (None, None) => {
+            log::warn!("screenshot discarded: copying and saving are both off");
+            Ok(())
+        }
+        _ => Ok(()),
+    }
 }
 
 /// The file behind a thumbnail: saved already, or written to the temporary
@@ -329,5 +347,34 @@ mod tests {
         let rect = thumbnail_rect(work, 1.5, (3840, 2160));
         assert_eq!((rect.width, rect.height), (378, 221));
         assert_eq!((rect.x, rect.y), (3840 - 378 - 24, 2088 - 221 - 24));
+    }
+
+    #[test]
+    fn a_failed_copy_points_to_the_thumbnail_and_logs_the_cause() {
+        let folder = Path::new(r"C:\Shots");
+        let copy_failed = || Some(Err(anyhow::anyhow!("OpenClipboard: access denied")));
+        let saved = Some(Ok(PathBuf::from(r"C:\Shots\a.png")));
+        let failure = outcome(copy_failed(), saved, folder).unwrap_err();
+        assert!(
+            failure
+                .message
+                .starts_with("The screenshot was saved, but not copied.")
+        );
+        assert!(failure.message.contains("in the thumbnail"));
+        assert_eq!(failure.detail, "copy: OpenClipboard: access denied");
+
+        let failure =
+            outcome(copy_failed(), Some(Err(anyhow::anyhow!("denied"))), folder).unwrap_err();
+        assert!(failure.message.contains(r"Could not save to C:\Shots."));
+    }
+
+    #[test]
+    fn steps_that_worked_or_were_off_are_not_failures() {
+        let folder = Path::new(r"C:\Shots");
+        let saved = || Some(Ok(PathBuf::from(r"C:\Shots\a.png")));
+        assert!(outcome(Some(Ok(())), saved(), folder).is_ok());
+        assert!(outcome(None, saved(), folder).is_ok());
+        assert!(outcome(Some(Ok(())), None, folder).is_ok());
+        assert!(outcome(None, None, folder).is_ok());
     }
 }
