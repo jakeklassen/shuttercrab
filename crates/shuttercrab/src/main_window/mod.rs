@@ -15,30 +15,36 @@
 //! copies it, Ctrl+S saves it as, Ctrl+plus and Ctrl+minus zoom (so does
 //! Ctrl with the scroll wheel, around the pointer), Ctrl+0 fits it to the
 //! window and Ctrl+1 shows it at full size. The wheel, or a drag, moves a
-//! screenshot bigger than the window. Escape closes a menu, or goes back
+//! screenshot bigger than the window. P and H pick up the pen and the
+//! highlighter (again, or Escape, puts them down): dragging then draws,
+//! and Space+drag or Ctrl+drag moves the screenshot. Ctrl+Z and Ctrl+Y
+//! undo and redo. Escape closes a menu, or goes back
 //! from Settings. At the bottom, quietly, the version running; once a newer
 //! release is downloaded, Restart to update (U) in its place.
 //!
 //! The window reaches the rest of Shuttercrab only through [`MainHooks`],
 //! so it can be tested on its own.
 
+mod canvas;
+
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
+    markup::{Brush, Stroke, Tool},
     palette::{border, coral, hover, muted, recording, surface, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, Settings},
     settings_window::{Hooks, SettingsWindow},
-    shot_view::{self, ShotView, Xy},
+    shot_view,
 };
+use canvas::{Shown, canvas_size};
 use chrono::NaiveDateTime;
 use gpui_kit::{
-    Animation, AnimationExt as _, App, AppContext as _, Context, CursorStyle, Entity, FocusHandle,
-    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, RenderImage, Role,
-    ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement as _, Styled as _, Task,
-    TestSupportExt as _, Window,
+    Animation, AnimationExt as _, App, AppContext as _, Context, Entity, FocusHandle, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent,
+    ParentElement as _, Pixels, Render, RenderImage, Role, SharedString, Size,
+    StatefulInteractiveElement as _, Styled as _, Task, TestSupportExt as _, Window,
     assets::IconName,
     component::{Icon, Theme, ThemeMode},
-    deferred, div, img,
+    deferred, div,
     prelude::FluentBuilder as _,
     px, rgb,
 };
@@ -55,8 +61,8 @@ pub const SETTINGS_SIZE: Size<Pixels> = Size {
 };
 
 /// The window's least width with a screenshot shown, logical pixels: room
-/// for the toolbar's zoom, Copy and Save as too.
-pub const SHOT_MIN_WIDTH: f32 = 880.;
+/// for the toolbar's drawing tools, zoom, Copy and Save as too.
+pub const SHOT_MIN_WIDTH: f32 = 1100.;
 
 /// The toolbar's and the footer's heights, logical pixels: fixed, so the
 /// window can be sized around a screenshot.
@@ -89,6 +95,12 @@ pub struct Shot {
     pub taken_at: NaiveDateTime,
     /// Its file in the screenshots folder, if it was saved there.
     pub saved: Option<PathBuf>,
+    /// The scale of the screen it was taken on, if known: pen sizes are in
+    /// that screen's logical pixels.
+    pub scale: Option<f32>,
+    /// The marks drawn on it, which copying, saving and opening it
+    /// elsewhere include. `image` and `png` stay as they were taken.
+    pub marks: Vec<Stroke>,
 }
 
 impl Shot {
@@ -128,8 +140,19 @@ pub struct MainHooks {
     pub fit_window: FitHook,
 }
 
-/// Sizes the window's client area, physical pixels: width, height.
-pub type FitHook = Rc<dyn Fn(&mut Window, &mut App, u32, u32)>;
+/// Sizes the window's client area.
+pub type FitHook = Rc<dyn Fn(&mut Window, &mut App, Fit)>;
+
+/// The client area the window wants, physical pixels, and the least it
+/// can do with: the app may make it smaller to keep it a comfortable share
+/// of the screen, but not below that.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Fit {
+    pub width: u32,
+    pub height: u32,
+    pub least_width: u32,
+    pub least_height: u32,
+}
 
 /// What the window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -243,6 +266,13 @@ pub struct MainWindow {
     /// Counts copies, so the check mark's timer knows whether a later copy
     /// has started its own.
     copies: u64,
+    /// The drawing tool in hand, if any: dragging on the screenshot draws
+    /// with it rather than moving the screenshot.
+    tool: Option<Tool>,
+    pen: Brush,
+    highlighter: Brush,
+    /// Space is held: dragging moves the screenshot, whatever the tool.
+    space_held: bool,
     focus: FocusHandle,
 }
 
@@ -259,6 +289,10 @@ impl MainWindow {
             shown: None,
             copied: false,
             copies: 0,
+            tool: None,
+            pen: Brush::PEN,
+            highlighter: Brush::HIGHLIGHTER,
+            space_held: false,
             focus,
         }
     }
@@ -267,9 +301,20 @@ impl MainWindow {
         self.page
     }
 
-    /// The screenshot shown, if any.
+    /// The screenshot shown, as it was taken, if any.
     pub fn shot(&self) -> Option<&Shot> {
         self.shown.as_ref().map(|shown| &shown.shot)
+    }
+
+    /// The screenshot shown with the marks drawn on it so far, if any: what
+    /// Copy, Save as and opening it elsewhere act on.
+    pub fn marked_shot(&self) -> Option<Shot> {
+        self.shown.as_ref().map(Shown::marked)
+    }
+
+    /// The drawing tool in hand, if any.
+    pub fn tool(&self) -> Option<Tool> {
+        self.tool
     }
 
     /// Show `shot` on the home page, in place of any shown before, and size
@@ -277,8 +322,7 @@ impl MainWindow {
     pub fn show_shot(&mut self, shot: Shot, window: &mut Window, cx: &mut Context<Self>) {
         let shown = Shown::new(shot, window.scale_factor());
         if let Some(previous) = self.shown.replace(shown) {
-            // GPUI keeps every image it has drawn until told otherwise.
-            let _ = window.drop_image(previous.shot.image);
+            previous.release(window);
         }
         self.page = Page::Home;
         self.settings = None;
@@ -297,13 +341,19 @@ impl MainWindow {
         };
         let scale = window.scale_factor();
         let (width, height) = shot.size();
+        let least = (SHOT_MIN_WIDTH, f32::from(HOME_SIZE.height));
         // A screenshot pixel per screen pixel, plus the margin on each side.
         let around = 2. * shot_view::MARGIN;
-        let width = (width as f32 / scale + around).max(SHOT_MIN_WIDTH);
-        let height = (height as f32 / scale + around + TOOLBAR_HEIGHT + FOOTER_HEIGHT)
-            .max(f32::from(HOME_SIZE.height));
+        let width = (width as f32 / scale + around).max(least.0);
+        let height = (height as f32 / scale + around + TOOLBAR_HEIGHT + FOOTER_HEIGHT).max(least.1);
         let physical = |logical: f32| (logical * scale).ceil() as u32;
-        (self.hooks.fit_window)(window, cx, physical(width), physical(height));
+        let fit = Fit {
+            width: physical(width),
+            height: physical(height),
+            least_width: physical(least.0),
+            least_height: physical(least.1),
+        };
+        (self.hooks.fit_window)(window, cx, fit);
     }
 
     /// Show `page`, sizing the window to it.
@@ -401,10 +451,10 @@ impl MainWindow {
     /// Copy the screenshot shown; once it is on the clipboard, Copy shows a
     /// check mark for a moment, as Snipping Tool's does.
     fn copy(&mut self, cx: &mut Context<Self>) {
-        let Some(shot) = self.shot() else {
+        let Some(shot) = self.marked_shot() else {
             return;
         };
-        let done = (self.hooks.copy)(shot, cx);
+        let done = (self.hooks.copy)(&shot, cx);
         cx.spawn(async move |this, cx| {
             if !done.await {
                 return;
@@ -435,8 +485,8 @@ impl MainWindow {
 
     /// Call the hook `which` picks with the screenshot shown, if any.
     fn with_shot(&self, cx: &mut App, which: impl FnOnce(&MainHooks) -> &ShotHook) {
-        if let Some(shot) = self.shot() {
-            which(&self.hooks)(shot, cx);
+        if let Some(shot) = self.marked_shot() {
+            which(&self.hooks)(&shot, cx);
         }
     }
 
@@ -500,6 +550,9 @@ impl MainWindow {
                 "1" => self.zoom(window, cx, |view, canvas| view.zoom_to(1., None, canvas)),
                 "c" => self.copy(cx),
                 "s" => self.save_as(cx),
+                "z" if keystroke.modifiers.shift => self.redo(window, cx),
+                "z" => self.undo(window, cx),
+                "y" => self.redo(window, cx),
                 _ => {}
             }
             return;
@@ -522,6 +575,10 @@ impl MainWindow {
             }
         }
         match key {
+            "p" => self.take_tool(Tool::Pen, cx),
+            "h" => self.take_tool(Tool::Highlighter, cx),
+            "escape" => self.put_down_tool(cx),
+            "space" => self.space_held = true,
             "n" | "enter" => self.start(window, cx),
             "s" => self.set_mode(CaptureMode::Screenshot, cx),
             "r" => self.set_mode(CaptureMode::Record, cx),
@@ -958,6 +1015,7 @@ impl MainWindow {
             .child(div().w(px(1.)).h(px(28.)).bg(border()))
             .child(self.targets(cx))
             .child(self.delay_button(cx))
+            .when(self.shown.is_some(), |d| d.child(self.drawing_tools(cx)))
             .child(div().flex_1())
             .when_some(zoom, |d, zoom| d.child(Self::zoom_button(zoom, cx)))
             .when(self.shown.is_some(), |d| {
@@ -1004,115 +1062,6 @@ impl MainWindow {
             )
             .child(Icon::new(IconName::ZoomIn).size(px(18.)))
             .child(div().text_xs().child(label))
-    }
-
-    /// Change the shown screenshot's zoom or position, with the canvas's
-    /// size.
-    fn zoom(
-        &mut self,
-        window: &Window,
-        cx: &mut Context<Self>,
-        change: impl FnOnce(&mut ShotView, Xy),
-    ) {
-        if let Some(shown) = &mut self.shown {
-            change(&mut shown.view, canvas_size(window));
-            cx.notify();
-        }
-    }
-
-    /// The scroll wheel over the screenshot: with Ctrl, zoom around the
-    /// pointer; otherwise move a screenshot bigger than the window (sideways
-    /// with Shift).
-    fn on_wheel(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
-        let delta = event.delta.pixel_delta(px(WHEEL_LINE));
-        let (x, y) = (f32::from(delta.x), f32::from(delta.y));
-        let at = canvas_point(event.position);
-        self.zoom(window, cx, |view, canvas| {
-            if event.modifiers.control {
-                if y != 0. {
-                    view.step(if y > 0. { 1 } else { -1 }, Some(at), canvas);
-                }
-            } else if event.modifiers.shift && x == 0. {
-                view.pan(Xy::new(y, 0.), canvas);
-            } else {
-                view.pan(Xy::new(x, y), canvas);
-            }
-        });
-    }
-
-    /// The screenshot shown, drawn where its zoom and position put it; it
-    /// can be dragged about when it is bigger than the window.
-    fn canvas(&self, shown: &Shown, window: &Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let canvas = canvas_size(window);
-        let placed = shown.view.placement(canvas);
-        let cursor = match (shown.view.can_pan(canvas), shown.dragging.is_some()) {
-            (false, _) => CursorStyle::Arrow,
-            (true, false) => CursorStyle::OpenHand,
-            (true, true) => CursorStyle::ClosedHand,
-        };
-        div()
-            .id("canvas")
-            .test_support()
-            .relative()
-            .flex_1()
-            .min_h_0()
-            .overflow_hidden()
-            .cursor(cursor)
-            .on_scroll_wheel(cx.listener(Self::on_wheel))
-            .on_mouse_down(
-                MouseButton::Left,
-                cx.listener(|this, event: &MouseDownEvent, window, cx| {
-                    let canvas = canvas_size(window);
-                    if let Some(shown) = &mut this.shown
-                        && shown.view.can_pan(canvas)
-                    {
-                        shown.dragging = Some(canvas_point(event.position));
-                        cx.notify();
-                    }
-                }),
-            )
-            .on_mouse_move(cx.listener(|this, event: &MouseMoveEvent, window, cx| {
-                let canvas = canvas_size(window);
-                let Some(shown) = &mut this.shown else {
-                    return;
-                };
-                let Some(from) = shown.dragging else {
-                    return;
-                };
-                if event.pressed_button == Some(MouseButton::Left) {
-                    let to = canvas_point(event.position);
-                    shown
-                        .view
-                        .pan(Xy::new(to.x - from.x, to.y - from.y), canvas);
-                    shown.dragging = Some(to);
-                } else {
-                    shown.dragging = None;
-                }
-                cx.notify();
-            }))
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                    if let Some(shown) = &mut this.shown {
-                        shown.dragging = None;
-                        cx.notify();
-                    }
-                }),
-            )
-            .child(
-                // The border sits just outside the screenshot.
-                div()
-                    .absolute()
-                    .left(px(placed.origin.x - 1.))
-                    .top(px(placed.origin.y - 1.))
-                    .border_1()
-                    .border_color(border())
-                    .child(
-                        img(shown.shot.image.clone())
-                            .w(px(placed.size.x))
-                            .h(px(placed.size.y)),
-                    ),
-            )
     }
 
     fn hint(&self) -> impl IntoElement + use<> {
@@ -1259,52 +1208,6 @@ impl MainWindow {
     }
 }
 
-/// The screenshot shown, and how it sits in the canvas.
-struct Shown {
-    shot: Shot,
-    view: ShotView,
-    /// The window's scale `view` was made for: its sizes are logical.
-    scale: f32,
-    /// Where the pointer last was, in the canvas, while the screenshot is
-    /// dragged about.
-    dragging: Option<Xy>,
-}
-
-impl Shown {
-    fn new(shot: Shot, scale: f32) -> Self {
-        let (width, height) = shot.size();
-        let view = ShotView::new(Xy::new(width as f32 / scale, height as f32 / scale));
-        Self {
-            shot,
-            view,
-            scale,
-            dragging: None,
-        }
-    }
-}
-
-/// How far one notch of the scroll wheel moves the screenshot, logical
-/// pixels.
-const WHEEL_LINE: f32 = 40.;
-
-/// The canvas's size: the window less the toolbar and the footer.
-fn canvas_size(window: &Window) -> Xy {
-    let viewport = window.viewport_size();
-    Xy::new(
-        f32::from(viewport.width),
-        f32::from(viewport.height) - TOOLBAR_HEIGHT - FOOTER_HEIGHT,
-    )
-}
-
-/// A window position as a point in the canvas, which starts under the
-/// toolbar.
-fn canvas_point(position: Point<Pixels>) -> Xy {
-    Xy::new(
-        f32::from(position.x),
-        f32::from(position.y) - TOOLBAR_HEIGHT,
-    )
-}
-
 impl Render for MainWindow {
     fn render(&mut self, window: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         // Moved to a screen of another scale: the screenshot's full size
@@ -1312,7 +1215,7 @@ impl Render for MainWindow {
         if let Some(shown) = &mut self.shown
             && shown.scale != window.scale_factor()
         {
-            *shown = Shown::new(shown.shot.clone(), window.scale_factor());
+            shown.rescale(window.scale_factor());
         }
         let zoom = self
             .shown
@@ -1331,6 +1234,7 @@ impl Render for MainWindow {
             .text_color(gpui_kit::white())
             .text_sm()
             .on_key_down(cx.listener(Self::on_key_down))
+            .on_key_up(cx.listener(Self::on_key_up))
             // A press anywhere else closes an open menu.
             .on_mouse_down(
                 MouseButton::Left,

@@ -9,7 +9,7 @@ use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
     files,
     main_window::{self, MainHooks, MainWindow, Page, Shot},
-    pixels, popup,
+    markup, pixels, popup,
     settings_window::{Diagnostics, Hooks},
 };
 use gpui_kit::{
@@ -236,7 +236,7 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
                 Ok(())
             })
         }),
-        fit_window: Rc::new(|window, cx, width, height| {
+        fit_window: Rc::new(|window, cx, fit| {
             let Some(hwnd) = popup::raw_hwnd(window) else {
                 return;
             };
@@ -245,8 +245,12 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
             // updating this window now.
             cx.foreground_executor()
                 .spawn(async move {
-                    let fitted =
-                        platform_window::fit_client_area(hwnd, width, height, MAX_SCREEN_SHARE);
+                    let fitted = platform_window::fit_client_area(
+                        hwnd,
+                        (fit.width, fit.height),
+                        MAX_SCREEN_SHARE,
+                        (fit.least_width, fit.least_height),
+                    );
                     if let Err(e) = fitted {
                         log::warn!("could not size the window: {e:#}");
                     }
@@ -259,17 +263,22 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
 /// Copy the screenshot the main window shows to the clipboard.
 /// Resolves to whether it was copied.
 fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) -> Task<bool> {
-    let (state, png, image) = (state.clone(), shot.png.clone(), shot.image.clone());
+    let (state, shot) = (state.clone(), shot.clone());
     let (width, height) = shot.size();
     cx.spawn(async move |cx| {
-        let rgba = cx
+        let flattened = cx
             .background_executor()
-            .spawn(async move { pixels::rgba(&image) })
+            .spawn(async move { flatten(&shot) })
             .await;
-        let copied = state
-            .platform
-            .copy_image(png, Arc::new(rgba), width, height)
-            .await;
+        let copied = match flattened {
+            Ok((rgba, png)) => {
+                state
+                    .platform
+                    .copy_image(png, Arc::new(rgba), width, height)
+                    .await
+            }
+            Err(e) => Err(e),
+        };
         match copied {
             Ok(()) => {
                 log::info!("{width}×{height} screenshot copied from the window");
@@ -298,20 +307,18 @@ fn open_shot_file(
     cx: &mut App,
     open: impl FnOnce(&Path) -> Result<(), &'static str> + 'static,
 ) {
-    let (state, saved, png, taken_at) = (
-        state.clone(),
-        shot.saved.clone(),
-        shot.png.clone(),
-        shot.taken_at,
-    );
+    // A marked-up screenshot is never the saved file, which has no marks.
+    let saved = shot.saved.clone().filter(|_| shot.marks.is_empty());
+    let (state, shot) = (state.clone(), shot.clone());
     cx.spawn(async move |cx| {
         let path = match saved {
             Some(path) => Ok(path),
             None => {
                 cx.background_executor()
-                    .spawn(
-                        async move { files::save_screenshot(&files::temp_dir(), taken_at, &png) },
-                    )
+                    .spawn(async move {
+                        let (_, png) = flatten(&shot)?;
+                        files::save_screenshot(&files::temp_dir(), shot.taken_at, &png)
+                    })
                     .await
             }
         };
@@ -336,7 +343,7 @@ fn save_shot_as(state: &Rc<State>, shot: &Shot, cx: &mut App) {
     // The dialog opens in the folder only if it exists.
     let _ = std::fs::create_dir_all(&dir);
     let chosen = cx.prompt_for_new_path(&dir, Some(&files::capture_name(shot.taken_at)));
-    let (state, png) = (state.clone(), shot.png.clone());
+    let (state, shot) = (state.clone(), shot.clone());
     cx.spawn(async move |cx| {
         let Ok(Ok(Some(mut path))) = chosen.await else {
             return;
@@ -347,12 +354,15 @@ fn save_shot_as(state: &Rc<State>, shot: &Shot, cx: &mut App) {
         let target = path.clone();
         let written = cx
             .background_executor()
-            .spawn(async move { std::fs::write(&target, &*png) })
+            .spawn(async move {
+                let (_, png) = flatten(&shot)?;
+                anyhow::Ok(std::fs::write(&target, &*png)?)
+            })
             .await;
         match written {
             Ok(()) => log::info!("saved the screenshot as {}", path.display()),
             Err(e) => {
-                log::error!("could not save {}: {e}", path.display());
+                log::error!("could not save {}: {e:#}", path.display());
                 state.notify(
                     "Could not save the screenshot",
                     format!("{} could not be written: {e}", path.display()),
@@ -362,6 +372,19 @@ fn save_shot_as(state: &Rc<State>, shot: &Shot, cx: &mut App) {
         }
     })
     .detach();
+}
+
+/// The screenshot's pixels (straight-alpha RGBA) and its PNG file, with
+/// its marks drawn on. Without marks, the PNG is the one taken.
+fn flatten(shot: &Shot) -> anyhow::Result<(Vec<u8>, Arc<Vec<u8>>)> {
+    let rgba = pixels::rgba(&shot.image);
+    if shot.marks.is_empty() {
+        return Ok((rgba, shot.png.clone()));
+    }
+    let (width, height) = shot.size();
+    let marked = markup::draw(&rgba, width, height, &shot.marks, false);
+    let png = shuttercrab_capture::encode_png(width, height, &marked)?;
+    Ok((marked, Arc::new(png)))
 }
 
 /// How the settings window reaches the rest of Shuttercrab.

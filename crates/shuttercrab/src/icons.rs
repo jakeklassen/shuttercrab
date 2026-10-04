@@ -30,7 +30,11 @@ icon_assets!(
         Save,
         ZoomIn,
         Brush,
-        Check
+        Check,
+        Pen,
+        Highlighter,
+        Undo2,
+        Redo2
     ]
 );
 
@@ -88,6 +92,10 @@ mod tests {
             IconName::ZoomIn,
             IconName::Brush,
             IconName::Check,
+            IconName::Pen,
+            IconName::Highlighter,
+            IconName::Undo2,
+            IconName::Redo2,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

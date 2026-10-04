@@ -11,6 +11,12 @@ pub fn render_image(rgba: &[u8], width: u32, height: u32) -> Arc<RenderImage> {
     for px in bgra.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
+    bgra_image(bgra, width, height)
+}
+
+/// A `width` × `height` straight-alpha BGRA8 image, already in GPUI's
+/// channel order, as one it can draw.
+pub fn bgra_image(bgra: Vec<u8>, width: u32, height: u32) -> Arc<RenderImage> {
     let buffer =
         image::RgbaImage::from_raw(width, height, bgra).expect("the buffer matches its size");
     Arc::new(RenderImage::new([image::Frame::new(buffer)]))

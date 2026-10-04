@@ -798,7 +798,9 @@ pub fn crop_bgra_to_rgba(
     Ok(rgba)
 }
 
-fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
+/// `rgba` (straight-alpha RGBA8, `width` × `height`) as an sRGB PNG file, fast
+/// rather than small.
+pub fn encode_png(width: u32, height: u32, rgba: &[u8]) -> Result<Vec<u8>> {
     let failed = |e: png::EncodingError| {
         CaptureError::new(
             CaptureErrorCode::EncodeFailed,

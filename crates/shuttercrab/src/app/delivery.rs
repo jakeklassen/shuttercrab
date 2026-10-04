@@ -104,7 +104,17 @@ pub(super) async fn deliver(
 
     if in_window {
         let shot = (png.clone(), taken_at, saved_path.clone());
-        show_in_window(state, rgba.clone(), (width, height), shot, from_window, cx).await;
+        let scale = monitor.scale_factor;
+        show_in_window(
+            state,
+            rgba.clone(),
+            (width, height),
+            shot,
+            scale,
+            from_window,
+            cx,
+        )
+        .await;
     }
     if thumbnail {
         let picture = match scaled {
@@ -160,6 +170,7 @@ async fn show_in_window(
     rgba: Arc<Vec<u8>>,
     (width, height): (u32, u32),
     (png, taken_at, saved): (Arc<Vec<u8>>, NaiveDateTime, Option<PathBuf>),
+    scale: f32,
     from_window: bool,
     cx: &mut AsyncApp,
 ) {
@@ -172,6 +183,8 @@ async fn show_in_window(
         png,
         taken_at,
         saved,
+        scale: Some(scale),
+        marks: Vec::new(),
     };
     let focus = if from_window {
         Focus::Take
@@ -253,7 +266,7 @@ pub(super) async fn show_file_in_main(state: &Rc<State>, path: PathBuf, cx: &mut
         .and_then(|m| m.modified())
         .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
         .unwrap_or_else(|_| chrono::Local::now().naive_local());
-    match CaptureFile::Saved(path).shot(taken_at, cx).await {
+    match CaptureFile::Saved(path).shot(taken_at, None, cx).await {
         Ok(shot) => show_in_main(state, shot, Focus::Take, cx),
         Err(e) => log::error!("{e}"),
     }
@@ -272,7 +285,12 @@ enum CaptureFile {
 impl CaptureFile {
     /// The screenshot, ready for the main window to show: its PNG, read
     /// back from the file if it was saved, and decoded.
-    async fn shot(&self, taken_at: NaiveDateTime, cx: &mut AsyncApp) -> Result<Shot, String> {
+    async fn shot(
+        &self,
+        taken_at: NaiveDateTime,
+        scale: Option<f32>,
+        cx: &mut AsyncApp,
+    ) -> Result<Shot, String> {
         let saved = match self {
             CaptureFile::Saved(path) => Some(path.clone()),
             CaptureFile::Unsaved { .. } => None,
@@ -302,6 +320,8 @@ impl CaptureFile {
             png,
             taken_at,
             saved,
+            scale,
+            marks: Vec::new(),
         })
     }
 
@@ -399,7 +419,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
                 // Shown in Shuttercrab's window, as Snipping Tool opens a
                 // snip from its notification.
                 ThumbnailEvent::Open => {
-                    match file.shot(taken_at, cx).await {
+                    match file.shot(taken_at, Some(monitor.scale_factor), cx).await {
                         Ok(shot) => {
                             log::info!("thumbnail: showing the screenshot in the window");
                             show_in_main(&state, shot, Focus::Take, cx);

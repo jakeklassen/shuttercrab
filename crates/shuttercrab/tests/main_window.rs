@@ -27,6 +27,8 @@ struct Seen {
     quits: Cell<u32>,
     restarts: Cell<u32>,
     copies: Cell<u32>,
+    /// How many marks the last copied screenshot had.
+    copied_marks: Cell<usize>,
     saves: Cell<u32>,
     paints: Cell<u32>,
     opens: Cell<u32>,
@@ -72,14 +74,15 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
         quit: Rc::new(move |_| s3.quits.set(s3.quits.get() + 1)),
         update_ready: Rc::new(move || s4.update.borrow().clone()),
         restart_to_update: Rc::new(move |_| s5.restarts.set(s5.restarts.get() + 1)),
-        copy: Rc::new(move |_, _| {
+        copy: Rc::new(move |shot, _| {
             s6.copies.set(s6.copies.get() + 1);
+            s6.copied_marks.set(shot.marks.len());
             gpui_kit::Task::ready(true)
         }),
         save_as: Rc::new(move |_, _| s7.saves.set(s7.saves.get() + 1)),
         edit_in_paint: Rc::new(move |_, _| s9.paints.set(s9.paints.get() + 1)),
         open_with: Rc::new(move |_, _| s10.opens.set(s10.opens.get() + 1)),
-        fit_window: Rc::new(move |_, _, width, height| s8.fits.borrow_mut().push((width, height))),
+        fit_window: Rc::new(move |_, _, fit| s8.fits.borrow_mut().push((fit.width, fit.height))),
     });
     let out = Rc::new(RefCell::new(None));
     let slot = out.clone();
@@ -263,12 +266,14 @@ fn shot(width: u32, height: u32) -> Shot {
             .and_hms_opt(10, 30, 0)
             .unwrap(),
         saved: None,
+        scale: None,
+        marks: Vec::new(),
     }
 }
 
 #[gpui_kit::test]
 fn a_screenshot_shows_with_copy_and_save_as(cx: &mut TestAppContext) {
-    let opened = open(cx);
+    let opened = open_sized(cx, shot_size());
     // Nothing to copy or save before a screenshot is shown.
     press(cx, &opened, &["ctrl-c", "ctrl-s"]);
     assert_eq!((opened.seen.copies.get(), opened.seen.saves.get()), (0, 0));
@@ -336,7 +341,7 @@ fn a_small_screenshot_keeps_the_home_size(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn ctrl_keys_zoom_the_screenshot(cx: &mut TestAppContext) {
-    let opened = open(cx);
+    let opened = open_sized(cx, shot_size());
     let zoom = |cx: &mut TestAppContext| {
         let mut label = None;
         update(cx, &opened, |window, _| {
@@ -459,4 +464,95 @@ fn copy_shows_a_check_mark_for_a_moment(cx: &mut TestAppContext) {
         .advance_clock(std::time::Duration::from_millis(1600));
     cx.run_until_parked();
     assert_eq!(label(cx).as_deref(), Some("Copy"));
+}
+
+/// Drag across the middle of the canvas, `dx` logical pixels sideways.
+fn drag_across(cx: &mut TestAppContext, opened: &Opened, dx: f32) {
+    update(cx, opened, |window, cx| {
+        let canvas = window.find("canvas").bounds();
+        let middle = canvas.center();
+        let to = gpui_kit::point(middle.x + gpui_kit::px(dx), middle.y);
+        window.drag(middle, to, cx);
+    });
+}
+
+fn marks(cx: &mut TestAppContext, opened: &Opened) -> Vec<shuttercrab::markup::Stroke> {
+    cx.update(|cx| {
+        opened
+            .view
+            .read(cx)
+            .marked_shot()
+            .map(|shot| shot.marks)
+            .unwrap_or_default()
+    })
+}
+
+#[gpui_kit::test]
+fn the_pen_draws_and_undo_takes_it_back(cx: &mut TestAppContext) {
+    use shuttercrab::markup::{Brush, Tool};
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    // Without a tool, a drag on a screenshot that fits draws nothing.
+    drag_across(cx, &opened, 40.);
+    assert!(marks(cx, &opened).is_empty());
+
+    press(cx, &opened, &["p"]);
+    assert_eq!(cx.update(|cx| opened.view.read(cx).tool()), Some(Tool::Pen));
+    drag_across(cx, &opened, 40.);
+    let drawn = marks(cx, &opened);
+    assert_eq!(drawn.len(), 1);
+    assert_eq!(drawn[0].tool, Tool::Pen);
+    assert_eq!(drawn[0].color, Brush::PEN.color);
+    assert!(drawn[0].points.len() >= 2);
+
+    // Copy gives the screenshot with its mark.
+    press(cx, &opened, &["ctrl-c"]);
+    assert_eq!(opened.seen.copied_marks.get(), 1);
+
+    press(cx, &opened, &["ctrl-z"]);
+    assert!(marks(cx, &opened).is_empty());
+    press(cx, &opened, &["ctrl-y"]);
+    assert_eq!(marks(cx, &opened).len(), 1);
+    update(cx, &opened, |window, cx| window.click("undo", cx));
+    assert!(marks(cx, &opened).is_empty());
+    update(cx, &opened, |window, cx| window.click("redo", cx));
+    assert_eq!(marks(cx, &opened).len(), 1);
+
+    // The highlighter draws its own strokes; Escape puts the tool down.
+    press(cx, &opened, &["h"]);
+    drag_across(cx, &opened, -40.);
+    let drawn = marks(cx, &opened);
+    assert_eq!(drawn.len(), 2);
+    assert_eq!(drawn[1].tool, Tool::Highlighter);
+    press(cx, &opened, &["escape"]);
+    assert_eq!(cx.update(|cx| opened.view.read(cx).tool()), None);
+}
+
+#[gpui_kit::test]
+fn the_drawing_tools_fit_beside_the_rest_of_the_toolbar(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    update(cx, &opened, |window, _| {
+        for id in [
+            "tool-pen",
+            "tool-highlighter",
+            "undo",
+            "redo",
+            "copy",
+            "more",
+        ] {
+            assert!(
+                window.try_find(id).is_some_and(|e| e.visible()),
+                "{id} is out of view"
+            );
+        }
+    });
 }

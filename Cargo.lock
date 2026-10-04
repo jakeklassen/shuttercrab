@@ -6288,11 +6288,13 @@ dependencies = [
  "gpui-kit",
  "image",
  "log",
+ "lyon_tessellation",
  "raw-window-handle",
  "serde",
  "serde_json",
  "shuttercrab-capture",
  "shuttercrab-platform",
+ "tiny-skia",
  "velopack",
 ]
 

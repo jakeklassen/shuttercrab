@@ -172,9 +172,16 @@ pub fn work_area(hmonitor: u64) -> Option<(i32, i32, u32, u32)> {
 
 /// Resize a normal window so its client area is `width` × `height`
 /// physical pixels, with the whole window at most `share` of its monitor's
-/// work area across and down. It keeps its centre, moved only as far as
-/// needed to stay on that monitor. Works on a hidden window too.
-pub fn fit_client_area(hwnd: isize, width: u32, height: u32, share: f32) -> Result<()> {
+/// work area across and down, but its client area at least `least`
+/// (width, height) where the work area allows. It keeps its centre, moved
+/// only as far as needed to stay on that monitor. Works on a hidden window
+/// too.
+pub fn fit_client_area(
+    hwnd: isize,
+    (width, height): (u32, u32),
+    share: f32,
+    least: (u32, u32),
+) -> Result<()> {
     use windows::Win32::{
         Graphics::Gdi::{
             GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
@@ -201,9 +208,16 @@ pub fn fit_client_area(hwnd: isize, width: u32, height: u32, share: f32) -> Resu
     let frame_width = (window.right - window.left) - client.right;
     let frame_height = (window.bottom - window.top) - client.bottom;
     let work = monitor.rcWork;
-    let most = |side: i32| (side as f32 * share.clamp(0., 1.)) as i32;
-    let w = (width as i32 + frame_width).min(most(work.right - work.left));
-    let h = (height as i32 + frame_height).min(most(work.bottom - work.top));
+    // The share of the work area, but not below the least size, and never
+    // beyond the work area itself.
+    let most = |side: i32, least: i32| {
+        ((side as f32 * share.clamp(0., 1.)) as i32)
+            .max(least)
+            .min(side)
+    };
+    let (work_width, work_height) = (work.right - work.left, work.bottom - work.top);
+    let w = (width as i32 + frame_width).min(most(work_width, least.0 as i32 + frame_width));
+    let h = (height as i32 + frame_height).min(most(work_height, least.1 as i32 + frame_height));
     let x = ((window.left + window.right) / 2 - w / 2).clamp(work.left, work.right - w);
     let y = ((window.top + window.bottom) / 2 - h / 2).clamp(work.top, work.bottom - h);
     unsafe { SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) }

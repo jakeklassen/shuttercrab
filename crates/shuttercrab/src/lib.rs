@@ -15,6 +15,7 @@ pub mod heap;
 pub mod icons;
 pub mod logging;
 pub mod main_window;
+pub mod markup;
 pub mod overlay;
 pub mod palette;
 pub mod pixels;
