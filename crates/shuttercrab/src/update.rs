@@ -40,14 +40,21 @@ pub trait UpdateBackend: Send + Sync + 'static {
 /// Velopack's update manager reading GitHub Releases.
 pub struct Velopack {
     manager: UpdateManager,
+    /// The release ready to apply. Its lock is only held to put a value in
+    /// or copy it out, which cannot panic, so a poisoned lock is a bug and
+    /// panics too.
     downloaded: Arc<Mutex<Option<UpdateInfo>>>,
 }
 
 impl Velopack {
-    /// `None` when this copy was not installed by Velopack.
+    /// `None` when this copy cannot update itself: usually because Velopack
+    /// did not install it, but any failure to read the install counts.
+    /// Either way Shuttercrab runs on without updates rather than failing.
     pub fn new() -> Option<Self> {
         let source = std::env::var(SOURCE_VARIABLE).unwrap_or_else(|_| REPO_URL.into());
-        let manager = UpdateManager::new(AutoSource::new(&source), None, None).ok()?;
+        let manager = UpdateManager::new(AutoSource::new(&source), None, None)
+            .inspect_err(|e| log::info!("updates are off: {e}"))
+            .ok()?;
         Some(Self {
             manager,
             downloaded: Arc::default(),

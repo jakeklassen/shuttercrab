@@ -14,7 +14,7 @@
 //! [`RecorderProcess`] has the same methods as the in-process
 //! [`Recorder`], which [`serve`] runs inside the helper.
 
-use anyhow::{Context, Result, anyhow, bail};
+use anyhow::{Context, Result, anyhow};
 use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
 use shuttercrab_capture::{
@@ -24,8 +24,8 @@ use shuttercrab_capture::{
 use std::{
     io::{BufRead, BufReader, Write},
     path::PathBuf,
-    process::{Child, ChildStdin, Command, Stdio},
-    sync::{Mutex, mpsc},
+    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
+    sync::{Mutex, MutexGuard, PoisonError, mpsc},
     thread,
     time::Duration,
 };
@@ -207,14 +207,10 @@ impl RecorderProcess {
             .context("no log from the recording process")?;
         thread::Builder::new()
             .name("shuttercrab-recorder-log".into())
-            .spawn(move || {
-                for line in BufReader::new(errors).lines().map_while(Result::ok) {
-                    forward_log(&line);
-                }
-            })?;
+            .spawn(move || forward_logs(errors))?;
         send(&mut input, &Request::Start(options.into()))?;
 
-        let (started_tx, started_rx) = mpsc::channel::<Result<()>>();
+        let (started_tx, started_rx) = mpsc::channel();
         let (outcome_tx, outcome_rx) = mpsc::channel();
         let (ending, ended) = oneshot::channel::<()>();
         thread::Builder::new()
@@ -222,55 +218,35 @@ impl RecorderProcess {
             .spawn(move || {
                 // Dropped when this thread ends, which resolves `ended`.
                 let _ending = ending;
-                let mut started = Some(started_tx);
-                let mut outcome = None;
-                for line in BufReader::new(output).lines().map_while(Result::ok) {
-                    match serde_json::from_str::<Reply>(&line) {
-                        Ok(Reply::Started) => {
-                            if let Some(started) = started.take() {
-                                let _ = started.send(Ok(()));
-                            }
-                        }
-                        Ok(Reply::Failed(e)) => match started.take() {
-                            Some(started) => {
-                                let _ = started.send(Err(anyhow!(e)));
-                            }
-                            None => outcome = Some(Err(anyhow!(e))),
-                        },
-                        Ok(Reply::Finished(summary)) => outcome = Some(Ok(summary.into())),
-                        Err(e) => log::warn!("unreadable reply from the recorder: {e}"),
-                    }
-                }
-                let gone = || anyhow!("the recording process ended unexpectedly");
-                if let Some(started) = started {
-                    let _ = started.send(Err(gone()));
-                }
-                let _ = outcome_tx.send(outcome.unwrap_or_else(|| Err(gone())));
+                read_replies(output, started_tx, outcome_tx);
             })?;
 
-        match started_rx.recv() {
-            Ok(Ok(())) => Ok(Self {
-                child,
-                input: Mutex::new(Some(input)),
-                outcome: outcome_rx,
-                ended: Some(ended),
-            }),
-            Ok(Err(e)) => {
-                drop(input);
-                let _ = child.wait();
-                Err(e)
-            }
-            Err(_) => {
-                drop(input);
-                let _ = child.wait();
-                bail!("the recording process stopped")
-            }
+        let started = started_rx
+            .recv()
+            .unwrap_or_else(|_| Err(anyhow!("the recording process stopped")));
+        if let Err(e) = started {
+            // Closing its input makes a helper that is still running exit.
+            drop(input);
+            let _ = child.wait();
+            return Err(e);
         }
+        Ok(Self {
+            child,
+            input: Mutex::new(Some(input)),
+            outcome: outcome_rx,
+            ended: Some(ended),
+        })
+    }
+
+    /// The helper's input. A panic while it was locked left at worst a
+    /// partial line, which the helper logs and skips, so a poisoned lock is
+    /// used anyway: giving up on the pipe would leave the helper recording.
+    fn input(&self) -> MutexGuard<'_, Option<ChildStdin>> {
+        self.input.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
     fn request(&self, request: Request) {
-        if let Ok(mut input) = self.input.lock()
-            && let Some(input) = input.as_mut()
+        if let Some(input) = self.input().as_mut()
             && let Err(e) = send(input, &request)
         {
             // The helper has gone; `ended` says so.
@@ -320,7 +296,7 @@ impl RecorderProcess {
 
     /// Ask the helper to stop and close its input, once.
     fn close(&mut self) {
-        let input = self.input.get_mut().ok().and_then(Option::take);
+        let input = self.input().take();
         if let Some(mut input) = input {
             let _ = send(&mut input, &Request::Stop);
         }
@@ -332,6 +308,52 @@ impl Drop for RecorderProcess {
     fn drop(&mut self) {
         self.close();
         let _ = self.child.wait();
+    }
+}
+
+/// Read the helper's [`Reply`]s until its output ends. The first says
+/// whether the recording started, sent on `started`; the last says how it
+/// ended, sent on `outcome`. A helper that goes away first is a failure.
+///
+/// A read error ends the replies like the helper exiting does: no more will
+/// come either way. A send fails only when nobody is waiting any more (the
+/// app gave up on the recording), so those errors are ignored.
+fn read_replies(
+    output: ChildStdout,
+    started: mpsc::Sender<Result<()>>,
+    outcome: mpsc::Sender<Result<RecordingSummary>>,
+) {
+    let mut started = Some(started);
+    let mut ended = None;
+    for line in BufReader::new(output).lines().map_while(Result::ok) {
+        match serde_json::from_str::<Reply>(&line) {
+            Ok(Reply::Started) => {
+                if let Some(started) = started.take() {
+                    let _ = started.send(Ok(()));
+                }
+            }
+            Ok(Reply::Failed(e)) => match started.take() {
+                Some(started) => {
+                    let _ = started.send(Err(anyhow!(e)));
+                }
+                None => ended = Some(Err(anyhow!(e))),
+            },
+            Ok(Reply::Finished(summary)) => ended = Some(Ok(summary.into())),
+            Err(e) => log::warn!("unreadable reply from the recorder: {e}"),
+        }
+    }
+    let gone = || anyhow!("the recording process ended unexpectedly");
+    if let Some(started) = started {
+        let _ = started.send(Err(gone()));
+    }
+    let _ = outcome.send(ended.unwrap_or_else(|| Err(gone())));
+}
+
+/// The helper's log, from its standard error, into the app's log until the
+/// helper exits. A read error ends it too: the log is only for diagnosis.
+fn forward_logs(errors: ChildStderr) {
+    for line in BufReader::new(errors).lines().map_while(Result::ok) {
+        forward_log(&line);
     }
 }
 
