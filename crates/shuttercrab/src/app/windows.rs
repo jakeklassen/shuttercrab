@@ -13,8 +13,8 @@ use crate::{
     settings_window::{Diagnostics, Hooks},
 };
 use gpui_kit::{
-    App, AppContext as _, AsyncApp, Bounds, TitlebarOptions, Window, WindowBounds, WindowKind,
-    WindowOptions, component::Root,
+    App, AppContext as _, AsyncApp, Bounds, Task, TitlebarOptions, Window, WindowBounds,
+    WindowKind, WindowOptions, component::Root,
 };
 use shuttercrab_capture::MonitorInfo;
 use shuttercrab_platform::window as platform_window;
@@ -257,7 +257,8 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
 }
 
 /// Copy the screenshot the main window shows to the clipboard.
-fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) {
+/// Resolves to whether it was copied.
+fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) -> Task<bool> {
     let (state, png, image) = (state.clone(), shot.png.clone(), shot.image.clone());
     let (width, height) = shot.size();
     cx.spawn(async move |cx| {
@@ -270,7 +271,10 @@ fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) {
             .copy_image(png, Arc::new(rgba), width, height)
             .await;
         match copied {
-            Ok(()) => log::info!("{width}×{height} screenshot copied from the window"),
+            Ok(()) => {
+                log::info!("{width}×{height} screenshot copied from the window");
+                true
+            }
             Err(e) => {
                 log::error!("copy: {e:#}");
                 state.notify(
@@ -278,10 +282,10 @@ fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) {
                     "Another app is holding the clipboard. Try again in a moment.",
                     None,
                 );
+                false
             }
         }
     })
-    .detach();
 }
 
 /// Hand the screenshot the main window shows to another program, through

@@ -31,17 +31,18 @@ use crate::{
 };
 use chrono::NaiveDateTime;
 use gpui_kit::{
-    App, AppContext as _, Context, CursorStyle, Entity, FocusHandle, Hsla, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, Pixels, Point, Render, RenderImage, Role, ScrollWheelEvent, SharedString,
-    Size, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
+    Animation, AnimationExt as _, App, AppContext as _, Context, CursorStyle, Entity, FocusHandle,
+    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ParentElement as _, Pixels, Point, Render, RenderImage, Role,
+    ScrollWheelEvent, SharedString, Size, StatefulInteractiveElement as _, Styled as _, Task,
+    TestSupportExt as _, Window,
     assets::IconName,
     component::{Icon, Theme, ThemeMode},
     deferred, div, img,
     prelude::FluentBuilder as _,
     px, rgb,
 };
-use std::{path::PathBuf, rc::Rc, sync::Arc};
+use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 
 /// The window's size on each page, logical pixels.
 pub const HOME_SIZE: Size<Pixels> = Size {
@@ -67,6 +68,12 @@ pub type CaptureHook = Rc<dyn Fn(CaptureMode, CaptureTarget, &mut Window, &mut A
 
 /// Acts on the screenshot shown.
 pub type ShotHook = Rc<dyn Fn(&Shot, &mut App)>;
+
+/// Copies the screenshot shown, resolving to whether it was copied.
+pub type CopyHook = Rc<dyn Fn(&Shot, &mut App) -> Task<bool>>;
+
+/// How long Copy shows its check mark after a copy.
+const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 /// Opens the screenshots folder, given the screenshot shown, if any.
 pub type FolderHook = Rc<dyn Fn(Option<&Shot>, &mut App)>;
@@ -107,8 +114,9 @@ pub struct MainHooks {
     pub update_ready: Rc<dyn Fn() -> Option<String>>,
     /// Quit so the downloaded release is applied, and start again.
     pub restart_to_update: Rc<dyn Fn(&mut App)>,
-    /// Copy the screenshot shown to the clipboard.
-    pub copy: ShotHook,
+    /// Copy the screenshot shown to the clipboard; resolves to whether it
+    /// was copied.
+    pub copy: CopyHook,
     /// Ask where to save the screenshot shown, and save it there.
     pub save_as: ShotHook,
     /// Open the screenshot shown in Paint.
@@ -230,6 +238,11 @@ pub struct MainWindow {
     highlighted: usize,
     /// The screenshot shown on the home page, if any.
     shown: Option<Shown>,
+    /// Copy shows its check mark: the screenshot was just copied.
+    copied: bool,
+    /// Counts copies, so the check mark's timer knows whether a later copy
+    /// has started its own.
+    copies: u64,
     focus: FocusHandle,
 }
 
@@ -244,6 +257,8 @@ impl MainWindow {
             menu: None,
             highlighted: 0,
             shown: None,
+            copied: false,
+            copies: 0,
             focus,
         }
     }
@@ -383,8 +398,35 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// Copy the screenshot shown; once it is on the clipboard, Copy shows a
+    /// check mark for a moment, as Snipping Tool's does.
     fn copy(&mut self, cx: &mut Context<Self>) {
-        self.with_shot(cx, |hooks| &hooks.copy);
+        let Some(shot) = self.shot() else {
+            return;
+        };
+        let done = (self.hooks.copy)(shot, cx);
+        cx.spawn(async move |this, cx| {
+            if !done.await {
+                return;
+            }
+            let Ok(copy) = this.update(cx, |this, cx| {
+                this.copies += 1;
+                this.copied = true;
+                cx.notify();
+                this.copies
+            }) else {
+                return;
+            };
+            cx.background_executor().timer(COPIED_FOR).await;
+            // Unless a later copy is showing its own.
+            let _ = this.update(cx, |this, cx| {
+                if this.copies == copy {
+                    this.copied = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
     }
 
     fn save_as(&mut self, cx: &mut Context<Self>) {
@@ -687,6 +729,51 @@ impl MainWindow {
             .child(Self::key_hint(key))
     }
 
+    /// Copy, which turns into a check mark and "Copied", fading in, for a
+    /// moment after each copy.
+    fn copy_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (label, icon, key) = if self.copied {
+            ("Copied", IconName::Check, "Copied")
+        } else {
+            ("Copy", IconName::Copy, "Ctrl+C")
+        };
+        let content = div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .child(Icon::new(icon).size(px(18.)))
+            .child(Self::key_hint(key));
+        div()
+            .id("copy")
+            .role(Role::Button)
+            .aria_label(label)
+            .test_support()
+            .flex()
+            .items_center()
+            .h(px(40.))
+            .px_2p5()
+            .rounded_md()
+            .hover(|s| s.bg(hover()))
+            .cursor_pointer()
+            .on_mouse_up(
+                MouseButton::Left,
+                cx.listener(|this, _: &MouseUpEvent, _, cx| this.copy(cx)),
+            )
+            .map(|d| {
+                if self.copied {
+                    // A new id per copy, so each one fades in afresh.
+                    d.child(content.with_animation(
+                        SharedString::from(format!("copied-{}", self.copies)),
+                        Animation::new(Duration::from_millis(200)),
+                        |content, delta| content.opacity(delta),
+                    ))
+                    .into_any_element()
+                } else {
+                    d.child(content).into_any_element()
+                }
+            })
+    }
+
     /// A toolbar button that opens `menu` below it.
     fn menu_button<C: IntoElement>(
         &self,
@@ -874,15 +961,7 @@ impl MainWindow {
             .child(div().flex_1())
             .when_some(zoom, |d, zoom| d.child(Self::zoom_button(zoom, cx)))
             .when(self.shown.is_some(), |d| {
-                d.child(Self::shot_button(
-                    "copy",
-                    "Copy",
-                    IconName::Copy,
-                    "Ctrl+C",
-                    cx,
-                    Self::copy,
-                ))
-                .child(Self::shot_button(
+                d.child(self.copy_button(cx)).child(Self::shot_button(
                     "save-as",
                     "Save as",
                     IconName::Save,

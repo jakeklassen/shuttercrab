@@ -72,7 +72,10 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
         quit: Rc::new(move |_| s3.quits.set(s3.quits.get() + 1)),
         update_ready: Rc::new(move || s4.update.borrow().clone()),
         restart_to_update: Rc::new(move |_| s5.restarts.set(s5.restarts.get() + 1)),
-        copy: Rc::new(move |_, _| s6.copies.set(s6.copies.get() + 1)),
+        copy: Rc::new(move |_, _| {
+            s6.copies.set(s6.copies.get() + 1);
+            gpui_kit::Task::ready(true)
+        }),
         save_as: Rc::new(move |_, _| s7.saves.set(s7.saves.get() + 1)),
         edit_in_paint: Rc::new(move |_, _| s9.paints.set(s9.paints.get() + 1)),
         open_with: Rc::new(move |_, _| s10.opens.set(s10.opens.get() + 1)),
@@ -429,4 +432,31 @@ fn the_menu_offers_paint_and_open_with_for_a_screenshot(cx: &mut TestAppContext)
 /// The window's least size with a screenshot shown.
 fn shot_size() -> gpui_kit::Size<gpui_kit::Pixels> {
     gpui_kit::size(gpui_kit::px(SHOT_MIN_WIDTH), HOME_SIZE.height)
+}
+
+#[gpui_kit::test]
+fn copy_shows_a_check_mark_for_a_moment(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    let label = |cx: &mut TestAppContext| {
+        let mut label = None;
+        update(cx, &opened, |window, _| {
+            label = window
+                .try_find("copy")
+                .and_then(|e| e.label().map(|l| l.to_string()));
+        });
+        label
+    };
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    assert_eq!(label(cx).as_deref(), Some("Copy"));
+    press(cx, &opened, &["ctrl-c"]);
+    cx.run_until_parked();
+    assert_eq!(label(cx).as_deref(), Some("Copied"));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(1600));
+    cx.run_until_parked();
+    assert_eq!(label(cx).as_deref(), Some("Copy"));
 }
