@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.10](https://github.com/jakeklassen/shuttercrab/compare/v0.1.9...v0.1.10) - 2026-10-04
+
+### Added
+
+- Screenshots open in Shuttercrab's window, as in Snipping Tool. One taken from the window comes back showing it; one taken with a hotkey or the Capture Bar shows there too, without taking the keyboard from the app you're in, so you can still paste it straight away. Turn this off in Settings, under After a capture, to keep only the thumbnail. Clicking the thumbnail, or a screenshot's notification, also opens it in the window instead of Photos.
+- The window shows a screenshot at full size, or at most half the screen for a big one, scaled to fit. Zoom with Ctrl+scroll, Ctrl+plus and Ctrl+minus; Ctrl+0 fits it and Ctrl+1 shows it at full size. Scroll or drag to move around a zoomed-in screenshot.
+- Copy (Ctrl+C) and Save as (Ctrl+S) for the screenshot shown, and in the ⋯ menu Edit in Paint (E), Open with… and Show in folder.
 ## [0.1.9](https://github.com/jakeklassen/shuttercrab/compare/v0.1.8...v0.1.9) - 2026-10-04
 
 ### Fixed
