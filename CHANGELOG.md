@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.7](https://github.com/jakeklassen/shuttercrab/compare/v0.1.6...v0.1.7) - 2026-10-04
+
+### Performance
+
+- Recording costs games less. In Cyberpunk 2077's benchmark at 4K with HDR and the GPU fully loaded, recording now takes about 7.5% off the frame rate instead of about 10%, a little less than OBS on the same capture method. The recorder checks HDR content 15 times a second instead of on every frame, without waiting for the GPU.
+
+### Fixed
+
+- A repeated frame (on a still screen, or at the end of a recording) could let its texture be reused while the encoder still had it.
 ## [0.1.6](https://github.com/jakeklassen/shuttercrab/compare/v0.1.5...v0.1.6) - 2026-10-03
 
 ### Added
