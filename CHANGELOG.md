@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.8](https://github.com/jakeklassen/shuttercrab/compare/v0.1.7...v0.1.8) - 2026-10-04
+
+### Changed
+
+- Nothing you can see: this release reorganises the code so it is easier to read and change. Long functions are now short, named steps; screenshots and recordings share their HDR conversion code; and the code that reads graphics memory directly explains why that is safe. Screenshots convert to exactly the same pixels as before.
+
+### Fixed
+
+- Stopping a recording could wait forever if an earlier command to the recorder had failed partway through.
+- When Shuttercrab can't check for updates (for example, a copy that wasn't installed), the log now says why.
 ## [0.1.7](https://github.com/jakeklassen/shuttercrab/compare/v0.1.6...v0.1.7) - 2026-10-04
 
 ### Performance
