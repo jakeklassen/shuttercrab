@@ -1352,6 +1352,37 @@ Still open: a darker video scene, HDR photos, several HDR windows, and
 subtitles or controls over video (see
 [COLOR_PIPELINE.md](COLOR_PIPELINE.md#known-limits-and-expected-differences)).
 
+## Recording games (issue #11)
+
+Can today's recorder take Steam gameplay, before gameplay features are
+built on it? `tmp\gametest.ps1`: after 15 s (time to get back into the
+game; a beep marks the start), the primary monitor recorded whole for 30 s
+at 60 fps with `capture-spike record` (the app's pipeline: Windows.Graphics
+.Capture, GPU conversion, hardware H.264), then checked for frame timing,
+black stretches (`blackdetect`) and frozen ones (`freezedetect`, 0.5 s),
+and three frames looked at. The owner plays throughout; nothing of
+Shuttercrab's is on screen.
+
+### Tales of Arise (DirectX 11), 2026-10-03
+
+4K, 120 fps cap, SDR, the left monitor (RTX 4090):
+
+| | Windowed | Borderless | Fullscreen |
+|---|---|---|---|
+| Frames in 30 s | 1,796 | 1,794 | 1,797 |
+| Intervals within 10% of 16.7 ms | 100% | 99% | 100% |
+| Gaps over 1.6× | 1 (33 ms) | 0 | 0 |
+| Encoder drops | 0 | 0 | 0 |
+| Black / frozen stretches | none | none | none |
+| Game's fps overlay while recording | 120 (low 109) | 120 (low 111) | 120 (low 85, in a fight) |
+
+All three pass, and the owner watched the takes: they look right. A first
+fullscreen take was spoiled by another program's full-screen window taking
+the screen (a 1 s gap and 8 s frozen), not by Shuttercrab, and was retaken.
+
+Still to test: Cyberpunk 2077 (HDR, a full GPU) and Batman: Arkham Origins
+(true exclusive fullscreen).
+
 ## Known issues
 
 Accepted for now by the owner, to revisit in Milestone 5 (hardening).
