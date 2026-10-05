@@ -20,7 +20,7 @@ pub mod window;
 
 pub use clipboard::dibv5;
 pub use console::{attach_to_parent_terminal, detach_from_terminal};
-pub use hotkey::Hotkey;
+pub use hotkey::{Hotkey, windows_takes_print_screen};
 pub use instance::{SingleInstance, single_instance};
 
 use anyhow::{Context, Result, anyhow};

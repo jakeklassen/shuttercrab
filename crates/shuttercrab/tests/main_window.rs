@@ -62,9 +62,10 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
         settings: Rc::new(Hooks {
             settings: settings.clone(),
             changed: Rc::new(|_| {}),
-            pause_hotkeys: Rc::new(|| {}),
+            pause_hotkeys: Rc::new(|_| {}),
             apply_hotkeys: Rc::new(|| Box::pin(async { Vec::new() })),
             probe_hotkeys: Rc::new(|| Box::pin(async { Vec::new() })),
+            windows_takes_print_screen: Rc::new(|| false),
             launch_at_startup: Rc::new(|| false),
             set_launch_at_startup: Rc::new(|_| {}),
             diagnostics: Diagnostics::default(),

@@ -20,7 +20,8 @@ pub struct Hotkey {
 impl Hotkey {
     /// Parse `Ctrl+Alt+S`, `Win+Shift+F1`, `Alt+PrintScreen` and the like.
     /// Case and spaces around `+` do not matter; at least one modifier is
-    /// required so the hotkey cannot swallow ordinary typing.
+    /// required so the hotkey cannot swallow ordinary typing, except for
+    /// Print Screen, which types nothing.
     pub fn parse(text: &str) -> Result<Self> {
         let mut hotkey = Hotkey {
             ctrl: false,
@@ -42,11 +43,11 @@ impl Hotkey {
                 other => bail!("unknown modifier {other:?} in {text:?}"),
             }
         }
-        if !(hotkey.ctrl || hotkey.alt || hotkey.win) {
-            bail!("{text:?} needs Ctrl, Alt or Win");
-        }
         hotkey.key =
             virtual_key(key).ok_or_else(|| anyhow::anyhow!("unknown key {key:?} in {text:?}"))?;
+        if !(hotkey.ctrl || hotkey.alt || hotkey.win || hotkey.key == VK_SNAPSHOT.0 as u32) {
+            bail!("{text:?} needs Ctrl, Alt or Win");
+        }
         Ok(hotkey)
     }
 
@@ -90,6 +91,31 @@ impl fmt::Display for Hotkey {
     }
 }
 
+/// Whether Windows keeps Print Screen for its own Snipping Tool ("Use the
+/// Print screen key to open screen capture"). While it does, a Print
+/// Screen hotkey registers but never fires. Windows 11 has it on until the
+/// user turns it off, which is when the value is first written.
+pub fn windows_takes_print_screen() -> bool {
+    use windows::{
+        Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
+        core::w,
+    };
+    let mut value = 0u32;
+    let mut size = size_of::<u32>() as u32;
+    let read = unsafe {
+        RegGetValueW(
+            HKEY_CURRENT_USER,
+            w!(r"Control Panel\Keyboard"),
+            w!("PrintScreenKeyForSnippingEnabled"),
+            RRF_RT_REG_DWORD,
+            None,
+            Some((&raw mut value).cast()),
+            Some(&mut size),
+        )
+    };
+    read.is_err() || value != 0
+}
+
 fn virtual_key(name: &str) -> Option<u32> {
     let upper = name.to_ascii_uppercase();
     if upper.len() == 1 {
@@ -124,6 +150,14 @@ mod tests {
         assert_eq!(
             Hotkey::parse("Alt+PrintScreen").unwrap().key,
             VK_SNAPSHOT.0 as u32
+        );
+        assert_eq!(
+            Hotkey::parse("PrintScreen").unwrap().to_string(),
+            "PrintScreen"
+        );
+        assert_eq!(
+            Hotkey::parse("Shift+PrtScn").unwrap().to_string(),
+            "Shift+PrintScreen"
         );
         assert_eq!(
             Hotkey::parse("Ctrl+Alt+Shift+Q").unwrap().to_string(),

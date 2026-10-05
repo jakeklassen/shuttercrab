@@ -15,6 +15,35 @@ pub const RESTART_HOTKEY: u32 = 6;
 pub const DISCARD_HOTKEY: u32 = 7;
 pub const UNDO_HOTKEY: u32 = 8;
 
+/// While a hotkey field records, Print Screen with each mix of Ctrl, Alt
+/// and Shift is registered under these ids, as windows never see that key
+/// go down. The id's low bits say which: 1 Ctrl, 2 Alt, 4 Shift.
+const PRINT_SCREEN_HOTKEYS: std::ops::Range<u32> = 16..24;
+
+/// Print Screen, with every mix of Ctrl, Alt and Shift.
+pub fn print_screen_hotkeys() -> Vec<(u32, Hotkey)> {
+    PRINT_SCREEN_HOTKEYS
+        .filter_map(|id| Some((id, print_screen_hotkey(id)?)))
+        .collect()
+}
+
+/// The Print Screen hotkey registered under `id`, if it is one of those.
+pub fn print_screen_hotkey(id: u32) -> Option<Hotkey> {
+    PRINT_SCREEN_HOTKEYS.contains(&id).then(|| {
+        let mix = id - PRINT_SCREEN_HOTKEYS.start;
+        Hotkey {
+            ctrl: mix & 1 != 0,
+            alt: mix & 2 != 0,
+            shift: mix & 4 != 0,
+            win: false,
+            key: VK_PRINT_SCREEN,
+        }
+    })
+}
+
+/// Print Screen's Win32 virtual-key code.
+const VK_PRINT_SCREEN: u32 = 0x2C;
+
 /// Ids for the tray menu's items.
 pub const MENU_SCREENSHOT: u32 = 1;
 pub const MENU_OPEN_FOLDER: u32 = 2;

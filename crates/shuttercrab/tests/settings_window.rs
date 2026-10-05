@@ -11,9 +11,10 @@ use gpui_kit::{
 use shuttercrab::{
     app::CAPTURE_BAR_HOTKEY,
     settings::Settings,
-    settings_window::{Diagnostics, Hooks, HotkeyField, HotkeyKind, SettingsWindow},
+    settings_window::{Diagnostics, Hooks, HotkeyField, HotkeyKind, OnPrintScreen, SettingsWindow},
 };
 use shuttercrab_capture::{MonitorId, MonitorInfo, PhysicalRect};
+use shuttercrab_platform::Hotkey;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -28,6 +29,10 @@ struct Seen {
     probed: Cell<u32>,
     /// Hotkey ids the next probe reports as taken.
     taken: RefCell<Vec<u32>>,
+    /// What the recording field does with Print Screen.
+    print_screen: RefCell<Option<OnPrintScreen>>,
+    /// Whether Windows keeps Print Screen, as the window is told.
+    windows_takes_print_screen: Cell<bool>,
 }
 
 struct Opened {
@@ -41,10 +46,14 @@ fn hooks() -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
     let settings = Rc::new(RefCell::new(Settings::default()));
     let seen = Rc::new(Seen::default());
     let (s1, s2, s3, s4) = (seen.clone(), seen.clone(), seen.clone(), seen.clone());
+    let s5 = seen.clone();
     let hooks = Rc::new(Hooks {
         settings: settings.clone(),
         changed: Rc::new(move |_| s1.changed.set(s1.changed.get() + 1)),
-        pause_hotkeys: Rc::new(move || s2.paused.set(s2.paused.get() + 1)),
+        pause_hotkeys: Rc::new(move |on_print_screen| {
+            s2.paused.set(s2.paused.get() + 1);
+            s2.print_screen.replace(Some(on_print_screen));
+        }),
         apply_hotkeys: Rc::new(move || {
             s3.applied.set(s3.applied.get() + 1);
             Box::pin(async { Vec::new() })
@@ -54,6 +63,7 @@ fn hooks() -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
             let taken = std::mem::take(&mut *s4.taken.borrow_mut());
             Box::pin(async move { taken })
         }),
+        windows_takes_print_screen: Rc::new(move || s5.windows_takes_print_screen.get()),
         launch_at_startup: Rc::new(|| false),
         set_launch_at_startup: Rc::new(|_| {}),
         diagnostics: Diagnostics {
@@ -164,6 +174,63 @@ fn recording_a_hotkey_pauses_hotkeys_then_applies_the_new_one(cx: &mut TestAppCo
             label(window, "hotkey-capture-bar").as_deref(),
             Some("Ctrl+Alt+X")
         );
+    });
+}
+
+#[gpui_kit::test]
+fn print_screen_alone_can_be_a_hotkey(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    update(cx, &opened, |window, cx| {
+        window.click("hotkey-screenshot", cx)
+    });
+    // Windows never see Print Screen go down; the app passes it on.
+    let on_print_screen = opened.seen.print_screen.borrow().clone().unwrap();
+    let print_screen = Hotkey::parse("PrintScreen").unwrap();
+    update(cx, &opened, |_, cx| on_print_screen(print_screen, cx));
+    assert_eq!(opened.settings.borrow().screenshot_hotkey, "PrintScreen");
+    assert_eq!(opened.seen.changed.get(), 1);
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "hotkey-screenshot").as_deref(),
+            Some("PrintScreen")
+        );
+    });
+    // Once recorded, another press changes nothing.
+    update(cx, &opened, |_, cx| {
+        on_print_screen(Hotkey::parse("Shift+PrintScreen").unwrap(), cx)
+    });
+    assert_eq!(opened.settings.borrow().screenshot_hotkey, "PrintScreen");
+}
+
+#[gpui_kit::test]
+fn a_field_says_when_windows_keeps_print_screen(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    let note = "hotkey-screenshot-print-screen";
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find(note).is_none())
+    });
+    // Said while a new hotkey is pressed, if Windows keeps Print Screen.
+    opened.seen.windows_takes_print_screen.set(true);
+    update(cx, &opened, |window, cx| {
+        window.click("hotkey-screenshot", cx)
+    });
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find(note).is_some());
+        assert!(window.try_find("hotkey-capture-bar-print-screen").is_none());
+    });
+    // And while the hotkey is Print Screen.
+    update(cx, &opened, |window, cx| window.press("escape", cx));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find(note).is_none())
+    });
+    opened.settings.borrow_mut().screenshot_hotkey = "PrintScreen".into();
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find(note).is_some())
+    });
+    // Not once Windows lets it go.
+    opened.seen.windows_takes_print_screen.set(false);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find(note).is_none())
     });
 }
 

@@ -3,7 +3,7 @@
 
 use super::{
     Busy, Start, State, quit, restart_to_update, start,
-    tray::{TRAY_DELAY, hotkeys},
+    tray::{TRAY_DELAY, hotkeys, print_screen_hotkeys},
 };
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
@@ -378,11 +378,15 @@ fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
             changed.refresh_tray_menu();
             log::info!("settings changed");
         }),
-        pause_hotkeys: Rc::new(move || {
-            // The request is sent at once; nothing waits for the answer.
-            drop(pause.platform.set_hotkeys(Vec::new()));
+        pause_hotkeys: Rc::new(move |on_print_screen| {
+            // Print Screen is listened for here, as windows never see it go
+            // down. The request is sent at once; nothing waits for the
+            // answer.
+            pause.print_screen.replace(Some(on_print_screen));
+            drop(pause.platform.set_hotkeys(print_screen_hotkeys()));
         }),
         apply_hotkeys: Rc::new(move || {
+            apply.print_screen.take();
             let registering = apply.platform.set_hotkeys(apply.hotkeys());
             Box::pin(async move {
                 registering
@@ -396,6 +400,7 @@ fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
             })
         }),
         probe_hotkeys: Rc::new(move || {
+            probe.print_screen.take();
             let every = hotkeys(&probe.settings.borrow(), true, true);
             let registering = probe.platform.set_hotkeys(every);
             let state = probe.clone();
@@ -413,6 +418,7 @@ fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
                 taken
             })
         }),
+        windows_takes_print_screen: Rc::new(shuttercrab_platform::windows_takes_print_screen),
         launch_at_startup: Rc::new(shuttercrab_platform::startup::launch_at_startup),
         set_launch_at_startup: Rc::new(|enabled| {
             match shuttercrab_platform::startup::set_launch_at_startup(enabled) {

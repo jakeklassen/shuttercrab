@@ -31,8 +31,10 @@ pub struct Hooks {
     pub settings: Rc<RefCell<Settings>>,
     /// After any change: save the settings and refresh the tray menu.
     pub changed: Rc<dyn Fn(&mut App)>,
-    /// Unregister the global hotkeys, while a new one is being recorded.
-    pub pause_hotkeys: Rc<dyn Fn()>,
+    /// Unregister the global hotkeys, while a new one is being recorded,
+    /// and pass on Print Screen when pressed: windows never see that key go
+    /// down.
+    pub pause_hotkeys: Rc<dyn Fn(OnPrintScreen)>,
     /// Register the hotkeys the settings name. Resolves to the ids of those
     /// another application already owns.
     pub apply_hotkeys: Rc<dyn Fn() -> LocalBoxFuture<'static, Vec<u32>>>,
@@ -40,12 +42,24 @@ pub struct Hooks {
     /// while recording, then go back to the ones that apply now. Resolves
     /// to the ids another application already owns.
     pub probe_hotkeys: Rc<dyn Fn() -> LocalBoxFuture<'static, Vec<u32>>>,
+    /// Whether Windows keeps Print Screen for its Snipping Tool.
+    pub windows_takes_print_screen: Rc<dyn Fn() -> bool>,
     /// Whether Shuttercrab starts at sign-in, and a way to change it.
     pub launch_at_startup: Rc<dyn Fn() -> bool>,
     pub set_launch_at_startup: Rc<dyn Fn(bool)>,
     /// What the Diagnostics page shows.
     pub diagnostics: Diagnostics,
 }
+
+/// Shown by a hotkey field while Windows keeps Print Screen.
+const PRINT_SCREEN_HELD: &str =
+    "Windows opens Snipping Tool with Print Screen. Turn that off to use it here.";
+
+/// Where Windows' "Use the Print screen key to open screen capture" is.
+const PRINT_SCREEN_SETTING: &str = "ms-settings:devices-keyboard";
+
+/// What a recording hotkey field does with a Print Screen hotkey.
+pub type OnPrintScreen = Rc<dyn Fn(Hotkey, &mut App)>;
 
 /// Facts about this machine and this copy of Shuttercrab.
 #[derive(Clone, Debug, Default)]
@@ -157,7 +171,8 @@ pub fn hotkey_from_keys(
 ) -> Result<String, String> {
     if !(ctrl || alt || win) {
         return Err(
-            "Include Ctrl, Alt or Win, so the shortcut does not get in the way of typing.".into(),
+            "Include Ctrl, Alt or Win, so the shortcut does not get in the way of typing, or use Print Screen."
+                .into(),
         );
     }
     let mut text = String::new();
@@ -201,6 +216,10 @@ impl HotkeyField {
             }
         })
         .detach();
+        // Back from Windows' settings, say again whether it keeps Print
+        // Screen.
+        cx.observe_window_activation(window, |_, _, cx| cx.notify())
+            .detach();
         Self {
             kind,
             hooks,
@@ -214,11 +233,28 @@ impl HotkeyField {
         self.recording
     }
 
+    /// Whether to say that Windows keeps Print Screen: while a new hotkey
+    /// is pressed, or while this one uses Print Screen.
+    fn print_screen_held(&self) -> bool {
+        let uses_print_screen = self
+            .kind
+            .get(&self.hooks.settings.borrow())
+            .ends_with("PrintScreen");
+        (self.recording || uses_print_screen) && (self.hooks.windows_takes_print_screen)()
+    }
+
     fn start(&mut self, cx: &mut Context<Self>) {
         self.recording = true;
         self.message = None;
         // Otherwise pressing the current hotkey would start a capture.
-        (self.hooks.pause_hotkeys)();
+        let field = cx.entity().downgrade();
+        (self.hooks.pause_hotkeys)(Rc::new(move |hotkey, cx| {
+            let _ = field.update(cx, |field, cx| {
+                if field.recording {
+                    field.record(hotkey.to_string(), cx);
+                }
+            });
+        }));
         cx.notify();
     }
 
@@ -250,14 +286,18 @@ impl HotkeyField {
             return;
         }
         let m = &keystroke.modifiers;
-        let hotkey = match hotkey_from_keys(m.control, m.alt, m.shift, m.platform, &keystroke.key) {
-            Ok(hotkey) => hotkey,
+        match hotkey_from_keys(m.control, m.alt, m.shift, m.platform, &keystroke.key) {
+            Ok(hotkey) => self.record(hotkey, cx),
             Err(message) => {
                 self.message = Some(message.into());
                 cx.notify();
-                return;
             }
-        };
+        }
+    }
+
+    /// Make `hotkey` this field's, unless another hotkey or application
+    /// has it.
+    fn record(&mut self, hotkey: String, cx: &mut Context<Self>) {
         let taken_by = HotkeyKind::ALL
             .into_iter()
             .filter(|k| *k != self.kind)
@@ -355,6 +395,28 @@ impl Render for HotkeyField {
                     .when(self.recording, |d| d.text_color(muted))
                     .child(text),
             )
+            .when(self.print_screen_held(), |d| {
+                d.child(
+                    div()
+                        .flex()
+                        .items_center()
+                        .gap_2()
+                        .child(
+                            div()
+                                .id(SharedString::from(format!("{id}-print-screen")))
+                                .test_support()
+                                .max_w(px(260.))
+                                .text_xs()
+                                .text_color(muted)
+                                .child(PRINT_SCREEN_HELD),
+                        )
+                        .child(
+                            Button::new(SharedString::from(format!("{id}-print-screen-setting")))
+                                .label("Open setting")
+                                .on_click(|_, _, cx| cx.open_url(PRINT_SCREEN_SETTING)),
+                        ),
+                )
+            })
             .when_some(self.message.clone(), |d, message| {
                 d.child(
                     div()

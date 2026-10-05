@@ -56,6 +56,7 @@ use crate::{
     popup,
     record_bar::Destructive,
     settings::{self, Settings},
+    settings_window::OnPrintScreen,
     update::{self, UpdateBackend},
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
@@ -76,7 +77,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tray::TRAY_DELAY;
+use tray::{TRAY_DELAY, print_screen_hotkey};
 use windows::{open_folder, open_main};
 
 /// Everything the running app shares between its tasks.
@@ -126,6 +127,8 @@ struct State {
     /// Counts undo windows, so a timer knows whether its window is still
     /// the current one.
     undo_generation: Cell<u64>,
+    /// While a hotkey field records: what it does with Print Screen.
+    print_screen: RefCell<Option<OnPrintScreen>>,
 }
 
 impl State {
@@ -291,6 +294,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         recording: RefCell::new(None),
         previous_take: RefCell::new(None),
         undo_generation: Cell::new(0),
+        print_screen: RefCell::new(None),
     });
     watch_for_updates(&state, cx);
     let open_window = shuttercrab.open_window;
@@ -362,11 +366,20 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                 }
                 PlatformEvent::NotificationClicked => notification_clicked(&state, cx),
                 PlatformEvent::DisplaysChanged => displays_changed(&state),
-                PlatformEvent::Hotkey(_) | PlatformEvent::TrayCommand(_) => {}
+                PlatformEvent::Hotkey(id) => print_screen_pressed(&state, id, cx),
+                PlatformEvent::TrayCommand(_) => {}
             }
         }
     })
     .detach();
+}
+
+/// Print Screen, pressed while a hotkey field records: tell the field.
+fn print_screen_pressed(state: &Rc<State>, id: u32, cx: &mut AsyncApp) {
+    let listener = state.print_screen.borrow().clone();
+    if let (Some(hotkey), Some(listener)) = (print_screen_hotkey(id), listener) {
+        cx.update(|cx| listener(hotkey, cx));
+    }
 }
 
 /// Open what the latest notification is about, like clicking the
