@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/jakeklassen/shuttercrab/compare/v0.1.11...v0.1.12) - 2026-10-05
+
+### Added
+
+- the eraser, and Erase all mark-ups
+
+### Fixed
+
+- the eraser button shows its icon, and each tool button its key
+
 ## [0.1.11](https://github.com/jakeklassen/shuttercrab/compare/v0.1.10...v0.1.11) - 2026-10-05
 
 ### Added
