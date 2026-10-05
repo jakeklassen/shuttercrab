@@ -556,3 +556,52 @@ fn the_drawing_tools_fit_beside_the_rest_of_the_toolbar(cx: &mut TestAppContext)
         }
     });
 }
+
+#[gpui_kit::test]
+fn the_flyout_picks_colours_and_sizes_and_remembers_them(cx: &mut TestAppContext) {
+    use shuttercrab::markup::{Brush, PEN_COLORS, Tool};
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    let flyout_open = |cx: &mut TestAppContext| {
+        let mut open = false;
+        update(cx, &opened, |window, _| {
+            open = window.try_find("flyout").is_some()
+        });
+        open
+    };
+    // P picks up the pen; P again opens its flyout.
+    press(cx, &opened, &["p"]);
+    assert!(!flyout_open(cx));
+    press(cx, &opened, &["p"]);
+    assert!(flyout_open(cx));
+
+    // A click on a swatch: the blue in the third row.
+    update(cx, &opened, |window, cx| window.click("color-16", cx));
+    let brush = |opened: &Opened| opened.settings.borrow().brush(Tool::Pen);
+    assert_eq!(brush(&opened).color, PEN_COLORS[16]);
+    // Arrows from there, then Enter: one down and one left.
+    press(cx, &opened, &["down", "left", "enter"]);
+    assert_eq!(brush(&opened).color, PEN_COLORS[21]);
+    assert!(!flyout_open(cx));
+
+    // ] and [ change the size, within the pen's 1 to 24.
+    press(cx, &opened, &["]", "]"]);
+    assert_eq!(brush(&opened).size, Brush::PEN.size + 2.);
+    for _ in 0..30 {
+        press(cx, &opened, &["["]);
+    }
+    assert_eq!(brush(&opened).size, 1.);
+
+    // Escape closes the flyout first, then puts the pen down.
+    press(cx, &opened, &["p"]);
+    assert!(flyout_open(cx));
+    press(cx, &opened, &["escape"]);
+    assert!(!flyout_open(cx));
+    assert_eq!(cx.update(|cx| opened.view.read(cx).tool()), Some(Tool::Pen));
+    press(cx, &opened, &["escape"]);
+    assert_eq!(cx.update(|cx| opened.view.read(cx).tool()), None);
+}

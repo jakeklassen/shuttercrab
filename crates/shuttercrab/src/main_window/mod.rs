@@ -16,9 +16,10 @@
 //! Ctrl with the scroll wheel, around the pointer), Ctrl+0 fits it to the
 //! window and Ctrl+1 shows it at full size. The wheel, or a drag, moves a
 //! screenshot bigger than the window. P and H pick up the pen and the
-//! highlighter (again, or Escape, puts them down): dragging then draws,
-//! and Space+drag or Ctrl+drag moves the screenshot. Ctrl+Z and Ctrl+Y
-//! undo and redo. Escape closes a menu, or goes back
+//! highlighter, and pressed again open its colours and size; Escape puts
+//! it down. Dragging then draws (Shift for a straight line), and
+//! Space+drag or Ctrl+drag moves the screenshot. [ and ] change the size,
+//! Ctrl+Z and Ctrl+Y undo and redo. Escape closes a menu, or goes back
 //! from Settings. At the bottom, quietly, the version running; once a newer
 //! release is downloaded, Restart to update (U) in its place.
 //!
@@ -26,10 +27,11 @@
 //! so it can be tested on its own.
 
 mod canvas;
+mod tools;
 
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
-    markup::{Brush, Stroke, Tool},
+    markup::{Stroke, Tool},
     palette::{border, coral, hover, muted, recording, surface, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, Settings},
     settings_window::{Hooks, SettingsWindow},
@@ -49,6 +51,7 @@ use gpui_kit::{
     px, rgb,
 };
 use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use tools::Flyout;
 
 /// The window's size on each page, logical pixels.
 pub const HOME_SIZE: Size<Pixels> = Size {
@@ -269,8 +272,8 @@ pub struct MainWindow {
     /// The drawing tool in hand, if any: dragging on the screenshot draws
     /// with it rather than moving the screenshot.
     tool: Option<Tool>,
-    pen: Brush,
-    highlighter: Brush,
+    /// The tool in hand's colours and size, if open.
+    flyout: Option<Flyout>,
     /// Space is held: dragging moves the screenshot, whatever the tool.
     space_held: bool,
     focus: FocusHandle,
@@ -290,8 +293,7 @@ impl MainWindow {
             copied: false,
             copies: 0,
             tool: None,
-            pen: Brush::PEN,
-            highlighter: Brush::HIGHLIGHTER,
+            flyout: None,
             space_held: false,
             focus,
         }
@@ -560,6 +562,9 @@ impl MainWindow {
         if keystroke.modifiers.alt || keystroke.modifiers.platform {
             return;
         }
+        if self.on_flyout_key(key, cx) {
+            return;
+        }
         if let Some(menu) = self.menu {
             let len = self.menu_len(menu);
             match key {
@@ -579,6 +584,8 @@ impl MainWindow {
             "h" => self.take_tool(Tool::Highlighter, cx),
             "escape" => self.put_down_tool(cx),
             "space" => self.space_held = true,
+            "[" => self.step_size(-1., window, cx),
+            "]" => self.step_size(1., window, cx),
             "n" | "enter" => self.start(window, cx),
             "s" => self.set_mode(CaptureMode::Screenshot, cx),
             "r" => self.set_mode(CaptureMode::Record, cx),
@@ -1239,7 +1246,7 @@ impl Render for MainWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    if this.menu.take().is_some() {
+                    if this.menu.take().is_some() | this.flyout.take().is_some() {
                         cx.notify();
                     }
                 }),

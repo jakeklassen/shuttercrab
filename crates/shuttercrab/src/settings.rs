@@ -4,7 +4,10 @@
 //! fields removed by hand) still loads. A file that cannot be parsed is kept
 //! as `settings.json.bad` rather than overwritten.
 
-use crate::capture_choice::{CaptureMode, CaptureTarget};
+use crate::{
+    capture_choice::{CaptureMode, CaptureTarget},
+    markup::{Brush, Rgb, Tool},
+};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
@@ -68,6 +71,12 @@ pub struct Settings {
     pub notify_after_recording: bool,
     /// 30 or 60 (PRD §13.1).
     pub record_fps: u32,
+    /// The pen's and the highlighter's last colours (`#RRGGBB`) and sizes;
+    /// read through [`Settings::brush`].
+    pub pen_color: String,
+    pub pen_size: f32,
+    pub highlighter_color: String,
+    pub highlighter_size: f32,
 }
 
 impl Default for Settings {
@@ -99,11 +108,46 @@ impl Default for Settings {
             notify_after_recording: true,
             confirm_discard: true,
             undo_seconds: 10,
+            pen_color: Brush::PEN.color.to_hex_string(),
+            pen_size: Brush::PEN.size,
+            highlighter_color: Brush::HIGHLIGHTER.color.to_hex_string(),
+            highlighter_size: Brush::HIGHLIGHTER.size,
         }
     }
 }
 
 impl Settings {
+    /// `tool`'s colour and size, as last chosen; its default where the file
+    /// holds something it does not offer.
+    pub fn brush(&self, tool: Tool) -> Brush {
+        let (color, size) = match tool {
+            Tool::Pen => (&self.pen_color, self.pen_size),
+            Tool::Highlighter => (&self.highlighter_color, self.highlighter_size),
+        };
+        let default = tool.default_brush();
+        let sizes = tool.sizes();
+        Brush {
+            color: Rgb::from_hex_string(color)
+                .filter(|c| tool.colors().contains(c))
+                .unwrap_or(default.color),
+            size: if sizes.contains(&size) {
+                size.round()
+            } else {
+                default.size
+            },
+        }
+    }
+
+    pub fn set_brush(&mut self, tool: Tool, brush: Brush) {
+        let color = brush.color.to_hex_string();
+        match tool {
+            Tool::Pen => (self.pen_color, self.pen_size) = (color, brush.size),
+            Tool::Highlighter => {
+                (self.highlighter_color, self.highlighter_size) = (color, brush.size)
+            }
+        }
+    }
+
     /// The folder screenshots are saved to.
     pub fn output_dir(&self) -> PathBuf {
         self.output_dir.clone().unwrap_or_else(default_output_dir)
@@ -241,6 +285,22 @@ pub fn save(path: &Path, settings: &Settings) -> Result<()> {
 mod tests {
     use super::*;
 
+    #[test]
+    fn brushes_are_remembered_and_odd_values_fall_back() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.brush(Tool::Pen), Brush::PEN);
+        let blue = Brush {
+            color: Rgb(0x00, 0x4D, 0xE6),
+            size: 7.,
+        };
+        settings.set_brush(Tool::Pen, blue);
+        assert_eq!(settings.brush(Tool::Pen), blue);
+        assert_eq!(settings.brush(Tool::Highlighter), Brush::HIGHLIGHTER);
+        // A colour the tool does not offer, or a size out of range.
+        settings.highlighter_color = "#123456".into();
+        settings.highlighter_size = 200.;
+        assert_eq!(settings.brush(Tool::Highlighter), Brush::HIGHLIGHTER);
+    }
     /// A folder of the test's own under the workspace's gitignored `tmp`,
     /// removed when the test ends, passed or not.
     struct Scratch(PathBuf);

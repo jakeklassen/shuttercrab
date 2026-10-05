@@ -12,16 +12,15 @@
 use super::{FOOTER_HEIGHT, MainWindow, Shot, TOOLBAR_HEIGHT};
 use crate::{
     markup::{self, Brush, Drawing, Marks, Region, Stroke, Tool},
-    palette::{border, coral, hover, tile},
+    palette::border,
     pixels,
     shot_view::{ShotView, Xy},
 };
 use gpui_kit::{
     Bounds, ContentMask, Context, CursorStyle, InteractiveElement as _, IntoElement, KeyUpEvent,
     MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder,
-    PathStyle, Pixels, Point, RenderImage, Role, ScrollWheelEvent, StatefulInteractiveElement as _,
-    Styled as _, TestSupportExt as _, Window, assets::IconName, canvas, component::Icon, div, img,
-    point, prelude::FluentBuilder as _, px, rgb, size,
+    PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent, Styled as _, TestSupportExt as _,
+    Window, canvas, div, img, point, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin, StrokeOptions};
 use std::sync::Arc;
@@ -209,20 +208,6 @@ impl MainWindow {
         });
     }
 
-    /// Pick up `tool`, or put it down if it is in hand.
-    pub(super) fn take_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
-        if self.shown.is_some() {
-            self.tool = (self.tool != Some(tool)).then_some(tool);
-            cx.notify();
-        }
-    }
-
-    pub(super) fn put_down_tool(&mut self, cx: &mut Context<Self>) {
-        if self.tool.take().is_some() {
-            cx.notify();
-        }
-    }
-
     pub(super) fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         if let Some(shown) = &mut self.shown
             && shown.marks.undo()
@@ -307,11 +292,7 @@ impl MainWindow {
         let canvas = canvas_size(window);
         let at = canvas_point(event.position);
         let panning = self.space_held || event.modifiers.control;
-        let brush = match self.tool {
-            Some(Tool::Pen) => Some((Tool::Pen, self.pen)),
-            Some(Tool::Highlighter) => Some((Tool::Highlighter, self.highlighter)),
-            None => None,
-        };
+        let brush = self.tool.map(|tool| (tool, self.brush(tool)));
         let Some(shown) = &mut self.shown else {
             return;
         };
@@ -530,113 +511,6 @@ impl MainWindow {
                 .absolute()
                 .size_full(),
             )
-    }
-
-    /// The pen and highlighter, then undo and redo, for the toolbar.
-    pub(super) fn drawing_tools(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let marks = self.shown.as_ref().map(|shown| &shown.marks);
-        let (can_undo, can_redo) = marks.map_or((false, false), |m| (m.can_undo(), m.can_redo()));
-        let separator = || div().w(px(1.)).h(px(28.)).mx_1().bg(border());
-        div()
-            .flex()
-            .items_center()
-            .gap_1()
-            .child(separator())
-            .child(self.tool_button(Tool::Pen, cx))
-            .child(self.tool_button(Tool::Highlighter, cx))
-            .child(separator())
-            .child(Self::history_button(
-                "undo",
-                "Undo (Ctrl+Z)",
-                IconName::Undo2,
-                can_undo,
-                cx,
-                Self::undo,
-            ))
-            .child(Self::history_button(
-                "redo",
-                "Redo (Ctrl+Y)",
-                IconName::Redo2,
-                can_redo,
-                cx,
-                Self::redo,
-            ))
-    }
-
-    /// A drawing tool's button: its icon over a bar of its colour, and a
-    /// coral outline while it is in hand.
-    fn tool_button(&self, tool: Tool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let (id, label, icon, brush) = match tool {
-            Tool::Pen => ("tool-pen", "Pen (P)", IconName::Pen, self.pen),
-            Tool::Highlighter => (
-                "tool-highlighter",
-                "Highlighter (H)",
-                IconName::Highlighter,
-                self.highlighter,
-            ),
-        };
-        let in_hand = self.tool == Some(tool);
-        div()
-            .id(id)
-            .role(Role::Button)
-            .aria_label(label)
-            .test_support()
-            .flex()
-            .flex_col()
-            .items_center()
-            .justify_center()
-            .gap_0p5()
-            .size(px(40.))
-            .rounded_md()
-            .border_1()
-            .border_color(if in_hand {
-                coral()
-            } else {
-                gpui_kit::transparent_black()
-            })
-            .when(in_hand, |d| d.bg(tile()))
-            .hover(|s| s.bg(hover()))
-            .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| this.take_tool(tool, cx)),
-            )
-            .child(Icon::new(icon).size(px(18.)))
-            .child(
-                div()
-                    .w(px(16.))
-                    .h(px(3.))
-                    .rounded_full()
-                    .bg(rgb(brush.color.hex())),
-            )
-    }
-
-    /// Undo or redo, dimmed when there is nothing to undo or redo.
-    fn history_button(
-        id: &'static str,
-        label: &'static str,
-        icon: IconName,
-        enabled: bool,
-        cx: &mut Context<Self>,
-        action: fn(&mut Self, &mut Window, &mut Context<Self>),
-    ) -> impl IntoElement + use<> {
-        div()
-            .id(id)
-            .role(Role::Button)
-            .aria_label(label)
-            .test_support()
-            .flex()
-            .items_center()
-            .justify_center()
-            .size(px(40.))
-            .rounded_md()
-            .when(!enabled, |d| d.opacity(0.35))
-            .when(enabled, |d| d.hover(|s| s.bg(hover())).cursor_pointer())
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, window, cx| action(this, window, cx)),
-            )
-            .child(Icon::new(icon).size(px(18.)))
     }
 }
 

@@ -39,6 +39,94 @@ pub struct Brush {
     pub size: f32,
 }
 
+/// The pen's colours, Snipping Tool's 30 in its 6 × 5 grid: greys, brights,
+/// greens and blues, purples and browns, pastels.
+pub const PEN_COLORS: [Rgb; 30] = [
+    Rgb(0x00, 0x00, 0x00),
+    Rgb(0xFF, 0xFF, 0xFF),
+    Rgb(0xD1, 0xD3, 0xD4),
+    Rgb(0xA7, 0xA9, 0xAC),
+    Rgb(0x80, 0x82, 0x85),
+    Rgb(0x58, 0x59, 0x5B),
+    Rgb(0xB3, 0x15, 0x64),
+    Rgb(0xE6, 0x1B, 0x1B),
+    Rgb(0xFF, 0x55, 0x00),
+    Rgb(0xFF, 0xAA, 0x00),
+    Rgb(0xFF, 0xCE, 0x00),
+    Rgb(0xFF, 0xE6, 0x00),
+    Rgb(0xA2, 0xE6, 0x1B),
+    Rgb(0x26, 0xE6, 0x00),
+    Rgb(0x00, 0x80, 0x55),
+    Rgb(0x00, 0xAA, 0xCC),
+    Rgb(0x00, 0x4D, 0xE6),
+    Rgb(0x3D, 0x00, 0xB8),
+    Rgb(0x66, 0x00, 0xCC),
+    Rgb(0x60, 0x00, 0x80),
+    Rgb(0xF7, 0xD7, 0xC4),
+    Rgb(0xBB, 0x91, 0x67),
+    Rgb(0x8E, 0x56, 0x2E),
+    Rgb(0x61, 0x3D, 0x30),
+    Rgb(0xFF, 0x80, 0xFF),
+    Rgb(0xFF, 0xC6, 0x80),
+    Rgb(0xFF, 0xFF, 0x80),
+    Rgb(0x80, 0xFF, 0x9E),
+    Rgb(0x80, 0xD6, 0xFF),
+    Rgb(0xBC, 0xB3, 0xFF),
+];
+
+/// The highlighter's colours, Snipping Tool's 6: yellow, green, blue, pink,
+/// orange, purple.
+pub const HIGHLIGHTER_COLORS: [Rgb; 6] = [
+    Rgb(0xFF, 0xE6, 0x00),
+    Rgb(0x26, 0xE6, 0x00),
+    Rgb(0x44, 0xC8, 0xF5),
+    Rgb(0xEC, 0x00, 0x8C),
+    Rgb(0xFF, 0x55, 0x00),
+    Rgb(0x66, 0x00, 0xCC),
+];
+
+impl Tool {
+    /// The colours it offers.
+    pub fn colors(self) -> &'static [Rgb] {
+        match self {
+            Tool::Pen => &PEN_COLORS,
+            Tool::Highlighter => &HIGHLIGHTER_COLORS,
+        }
+    }
+
+    /// Its sizes, smallest to largest, as Snipping Tool's.
+    pub fn sizes(self) -> std::ops::RangeInclusive<f32> {
+        match self {
+            Tool::Pen => 1. ..=24.,
+            Tool::Highlighter => 12. ..=64.,
+        }
+    }
+
+    pub fn default_brush(self) -> Brush {
+        match self {
+            Tool::Pen => Brush::PEN,
+            Tool::Highlighter => Brush::HIGHLIGHTER,
+        }
+    }
+}
+
+impl Rgb {
+    /// As `#RRGGBB`, as settings keep it.
+    pub fn to_hex_string(self) -> String {
+        format!("#{:06X}", self.hex())
+    }
+
+    /// From `#RRGGBB`.
+    pub fn from_hex_string(text: &str) -> Option<Self> {
+        let digits = text.strip_prefix('#')?;
+        if digits.len() != 6 {
+            return None;
+        }
+        let value = u32::from_str_radix(digits, 16).ok()?;
+        Some(Rgb((value >> 16) as u8, (value >> 8) as u8, value as u8))
+    }
+}
+
 impl Brush {
     /// Snipping Tool's defaults: a red pen of 3, a yellow highlighter of 16.
     pub const PEN: Brush = Brush {
@@ -457,6 +545,19 @@ mod tests {
             drawing.extend_to((x as f32, (x * 3 % 7) as f32), true);
         }
         assert_eq!(drawing.stroke.points, [(1., 1.), (29., 3.)]);
+    }
+
+    #[test]
+    fn colours_read_back_as_written() {
+        let red = Rgb(0xE6, 0x1B, 0x1B);
+        assert_eq!(red.to_hex_string(), "#E61B1B");
+        assert_eq!(Rgb::from_hex_string("#E61B1B"), Some(red));
+        assert_eq!(Rgb::from_hex_string("E61B1B"), None);
+        assert_eq!(Rgb::from_hex_string("#E61B1"), None);
+        assert_eq!(Rgb::from_hex_string("#GGGGGG"), None);
+        // The defaults are in their palettes.
+        assert!(PEN_COLORS.contains(&Brush::PEN.color));
+        assert!(HIGHLIGHTER_COLORS.contains(&Brush::HIGHLIGHTER.color));
     }
 
     #[test]
