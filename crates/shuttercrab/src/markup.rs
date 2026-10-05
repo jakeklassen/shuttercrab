@@ -120,20 +120,78 @@ impl Marks {
 /// stroke colours are swapped to match. Pen and multiply blending treat
 /// each channel alike, which makes the order free.
 pub fn draw(pixels: &[u8], width: u32, height: u32, strokes: &[Stroke], bgr: bool) -> Vec<u8> {
-    let mut data = pixels.to_vec();
+    let whole = Region {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    };
+    draw_region(pixels, width, whole, strokes, bgr)
+}
+
+/// A rectangle of a screenshot, pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Region {
+    pub x: u32,
+    pub y: u32,
+    pub width: u32,
+    pub height: u32,
+}
+
+impl Stroke {
+    /// The part of a `width` × `height` screenshot the stroke can touch;
+    /// `None` if it lies wholly outside.
+    pub fn region(&self, width: u32, height: u32) -> Option<Region> {
+        // Half the width each side, more for the highlighter's square
+        // corners, and a pixel for smoothing.
+        let reach = self.width * 0.75 + 1.;
+        let (mut x0, mut y0, mut x1, mut y1) = (f32::MAX, f32::MAX, f32::MIN, f32::MIN);
+        for &(x, y) in &self.points {
+            (x0, y0, x1, y1) = (x0.min(x), y0.min(y), x1.max(x), y1.max(y));
+        }
+        let left = (x0 - reach).floor().max(0.) as u32;
+        let top = (y0 - reach).floor().max(0.) as u32;
+        let right = ((x1 + reach).ceil().max(0.) as u32).min(width);
+        let bottom = ((y1 + reach).ceil().max(0.) as u32).min(height);
+        (left < right && top < bottom).then(|| Region {
+            x: left,
+            y: top,
+            width: right - left,
+            height: bottom - top,
+        })
+    }
+}
+
+/// `strokes` drawn onto `region` of a screenshot `width` pixels wide, as
+/// [`draw`] draws them, giving only that region: enough to show a stroke
+/// being drawn without drawing the whole screenshot each time.
+pub fn draw_region(
+    pixels: &[u8],
+    width: u32,
+    region: Region,
+    strokes: &[Stroke],
+    bgr: bool,
+) -> Vec<u8> {
+    let (row, cut) = (width as usize * 4, region.width as usize * 4);
+    let mut data = Vec::with_capacity(cut * region.height as usize);
+    for y in region.y..region.y + region.height {
+        let start = y as usize * row + region.x as usize * 4;
+        data.extend_from_slice(&pixels[start..start + cut]);
+    }
     premultiply(&mut data);
-    let size = IntSize::from_wh(width, height).expect("a screenshot has an area");
+    let size = IntSize::from_wh(region.width, region.height).expect("a region has an area");
     let mut canvas = Pixmap::from_vec(data, size).expect("the buffer matches its size");
+    let shift = Transform::from_translate(-(region.x as f32), -(region.y as f32));
     for stroke in strokes {
-        paint(&mut canvas, stroke, bgr);
+        paint(&mut canvas, stroke, bgr, shift);
     }
     let mut data = canvas.take();
     demultiply(&mut data);
     data
 }
 
-/// Draw one stroke onto the canvas.
-fn paint(canvas: &mut Pixmap, stroke: &Stroke, bgr: bool) {
+/// Draw one stroke onto the canvas, moved by `shift`.
+fn paint(canvas: &mut Pixmap, stroke: &Stroke, bgr: bool, shift: Transform) {
     let Rgb(r, g, b) = stroke.color;
     let (first, third) = if bgr { (b, r) } else { (r, b) };
     let mut paint = Paint {
@@ -158,7 +216,7 @@ fn paint(canvas: &mut Pixmap, stroke: &Stroke, bgr: bool) {
                 }
             };
             if let Some(dot) = dot {
-                canvas.fill_path(&dot, &paint, FillRule::Winding, Transform::identity(), None);
+                canvas.fill_path(&dot, &paint, FillRule::Winding, shift, None);
             }
         }
         points => {
@@ -174,7 +232,7 @@ fn paint(canvas: &mut Pixmap, stroke: &Stroke, bgr: bool) {
                 line_join: LineJoin::Round,
                 ..Outline::default()
             };
-            canvas.stroke_path(&path, &paint, &outline, Transform::identity(), None);
+            canvas.stroke_path(&path, &paint, &outline, shift, None);
         }
     }
 }
@@ -292,6 +350,30 @@ mod tests {
         }
         let out = draw(&clear, 20, 20, &[], false);
         assert_eq!(pixel(&out, 20, 5, 5), [0, 0, 0, 0]);
+    }
+
+    #[test]
+    fn a_region_matches_the_same_part_of_the_whole() {
+        // A grey ramp, so every pixel differs.
+        let base: Vec<u8> = (0..40 * 30)
+            .flat_map(|i| [(i % 251) as u8, (i % 97) as u8, (i % 13) as u8, 255])
+            .collect();
+        let stroke = Stroke {
+            tool: Tool::Highlighter,
+            color: Rgb(255, 230, 0),
+            width: 5.,
+            points: vec![(8., 6.), (20., 15.), (30., 9.)],
+        };
+        let whole = draw(&base, 40, 30, std::slice::from_ref(&stroke), false);
+        let region = stroke.region(40, 30).unwrap();
+        let part = draw_region(&base, 40, region, &[stroke], false);
+        for y in 0..region.height {
+            for x in 0..region.width {
+                let from = (((region.y + y) * 40 + region.x + x) * 4) as usize;
+                let at = ((y * region.width + x) * 4) as usize;
+                assert_eq!(whole[from..from + 4], part[at..at + 4], "{x},{y}");
+            }
+        }
     }
 
     #[test]

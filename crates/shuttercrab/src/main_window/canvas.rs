@@ -4,13 +4,14 @@
 //! Finished strokes are drawn onto a copy of the screenshot off the main
 //! thread ([`markup::draw`]), the same way Copy and Save draw them, so what
 //! the window shows is what they give. Until that copy is ready, and while
-//! a stroke is being drawn, strokes are painted over the screenshot
-//! directly. GPUI cannot multiply colours, so the highlighter shows
-//! translucent there until its stroke is drawn in.
+//! a stroke is being drawn, pen strokes are painted over it directly: they
+//! cover what is under them, so that looks the same. GPUI cannot multiply
+//! colours, so a highlighter stroke is drawn onto just the patch of the
+//! screenshot it covers, as the stroke grows, and shown over it.
 
 use super::{FOOTER_HEIGHT, MainWindow, Shot, TOOLBAR_HEIGHT};
 use crate::{
-    markup::{self, Brush, Marks, Stroke, Tool},
+    markup::{self, Brush, Marks, Region, Stroke, Tool},
     palette::{border, coral, hover, tile},
     pixels,
     shot_view::{ShotView, Xy},
@@ -35,6 +36,11 @@ pub(super) struct Shown {
     /// The screenshot with marks drawn on: shown in its place. Drawn off
     /// the main thread after each change, so it can lag behind `marks`.
     drawn: Option<Drawn>,
+    /// The highlighter stroke being drawn, multiplied onto the part of the
+    /// screenshot it covers.
+    patch: Option<Patch>,
+    /// A patch is being drawn; the next waits for it.
+    patching: bool,
     gesture: Option<Gesture>,
 }
 
@@ -42,6 +48,16 @@ pub(super) struct Shown {
 struct Drawn {
     image: Arc<RenderImage>,
     strokes: Vec<Stroke>,
+}
+
+/// A highlighter stroke drawn onto just `region` of the screenshot,
+/// multiplied as it will be: shown over the screenshot while the stroke is
+/// drawn, and until the whole drawing has it.
+struct Patch {
+    image: Arc<RenderImage>,
+    region: Region,
+    /// The stroke's place in the marks once finished.
+    index: usize,
 }
 
 /// What a drag on the canvas is doing.
@@ -60,6 +76,8 @@ impl Shown {
             scale,
             marks: Marks::default(),
             drawn: None,
+            patch: None,
+            patching: false,
             gesture: None,
         }
     }
@@ -77,6 +95,15 @@ impl Shown {
         if let Some(drawn) = self.drawn {
             let _ = window.drop_image(drawn.image);
         }
+        if let Some(patch) = self.patch {
+            let _ = window.drop_image(patch.image);
+        }
+    }
+
+    fn drop_patch(&mut self, window: &mut Window) {
+        if let Some(patch) = self.patch.take() {
+            let _ = window.drop_image(patch.image);
+        }
     }
 
     /// The screenshot with its marks so far.
@@ -88,14 +115,16 @@ impl Shown {
     }
 
     /// What to show: an image, and the finished strokes not drawn into it
-    /// yet, to paint over it.
+    /// yet. After an undo or redo, the last drawing stays, unchanged, until
+    /// the next is ready: painting its strokes again meanwhile would flash.
     fn layers(&self) -> (Arc<RenderImage>, &[Stroke]) {
         let strokes = self.marks.strokes();
         match &self.drawn {
             Some(drawn) if strokes.starts_with(&drawn.strokes) => {
                 (drawn.image.clone(), &strokes[drawn.strokes.len()..])
             }
-            _ => (self.shot.image.clone(), strokes),
+            Some(drawn) => (drawn.image.clone(), &[]),
+            None => (self.shot.image.clone(), strokes),
         }
     }
 
@@ -198,6 +227,7 @@ impl MainWindow {
         if let Some(shown) = &mut self.shown
             && shown.marks.undo()
         {
+            shown.drop_patch(window);
             self.redraw(window, cx);
         }
     }
@@ -206,6 +236,7 @@ impl MainWindow {
         if let Some(shown) = &mut self.shown
             && shown.marks.redo()
         {
+            shown.drop_patch(window);
             self.redraw(window, cx);
         }
     }
@@ -247,6 +278,14 @@ impl MainWindow {
                     return;
                 };
                 if Arc::ptr_eq(&shown.shot.image, &base) && shown.marks.strokes() == strokes {
+                    // The drawing now has the patch's stroke.
+                    if shown
+                        .patch
+                        .as_ref()
+                        .is_some_and(|p| p.index < strokes.len())
+                    {
+                        shown.drop_patch(window);
+                    }
                     if let Some(old) = shown.drawn.replace(Drawn { image, strokes }) {
                         let _ = window.drop_image(old.image);
                     }
@@ -328,7 +367,73 @@ impl MainWindow {
             }
             None => {}
         }
+        self.update_patch(window, cx);
         cx.notify();
+    }
+
+    /// Bring the highlighter's patch up to the stroke being drawn: drawn
+    /// off the main thread, one at a time, the next as soon as one is done
+    /// if the stroke has grown meanwhile.
+    fn update_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shown) = &mut self.shown else {
+            return;
+        };
+        let Some(Gesture::Draw(stroke)) = &shown.gesture else {
+            return;
+        };
+        if stroke.tool != Tool::Highlighter || shown.patching {
+            return;
+        }
+        let (width, height) = shown.shot.size();
+        let Some(region) = stroke.region(width, height) else {
+            return;
+        };
+        let (source, pending) = shown.layers();
+        // Finished strokes not in the drawing yet belong in the patch too.
+        let mut strokes = pending.to_vec();
+        strokes.push(stroke.clone());
+        let (base, drawn_points, index) = (
+            shown.shot.image.clone(),
+            stroke.points.len(),
+            shown.marks.strokes().len(),
+        );
+        shown.patching = true;
+        cx.spawn_in(window, async move |this, cx| {
+            let image = cx
+                .background_executor()
+                .spawn(async move {
+                    let pixels = source.as_bytes(0).unwrap_or_default();
+                    let bgra = markup::draw_region(pixels, width, region, &strokes, true);
+                    pixels::bgra_image(bgra, region.width, region.height)
+                })
+                .await;
+            let _ = this.update_in(cx, |this, window, cx| {
+                let Some(shown) = &mut this.shown else {
+                    return;
+                };
+                if !Arc::ptr_eq(&shown.shot.image, &base) {
+                    return;
+                }
+                shown.patching = false;
+                let patch = Patch {
+                    image,
+                    region,
+                    index,
+                };
+                if let Some(old) = shown.patch.replace(patch) {
+                    let _ = window.drop_image(old.image);
+                }
+                cx.notify();
+                let grown = matches!(
+                    &shown.gesture,
+                    Some(Gesture::Draw(now)) if now.points.len() != drawn_points
+                );
+                if grown {
+                    this.update_patch(window, cx);
+                }
+            });
+        })
+        .detach();
     }
 
     /// The drag is over: a finished stroke joins the marks.
@@ -358,12 +463,30 @@ impl MainWindow {
         let canvas_area = canvas_size(window);
         let placed = shown.view.placement(canvas_area);
         let (image, pending) = shown.layers();
-        let mut live = pending.to_vec();
-        if let Some(Gesture::Draw(stroke)) = &shown.gesture {
-            live.push(stroke.clone());
-        }
+        // The pen paints over, so painting it directly matches the drawing.
+        // The highlighter multiplies, which only its patch shows; until the
+        // patch is ready it is left out rather than shown wrong.
+        let drawing = match &shown.gesture {
+            Some(Gesture::Draw(stroke)) => Some(stroke),
+            _ => None,
+        };
+        let live: Vec<Stroke> = pending
+            .iter()
+            .chain(drawing)
+            .filter(|stroke| stroke.tool == Tool::Pen)
+            .cloned()
+            .collect();
         // Screen pixels per screenshot pixel.
         let per_pixel = placed.size.x / shown.shot.size().0 as f32;
+        let patch = shown.patch.as_ref().map(|patch| {
+            let r = patch.region;
+            img(patch.image.clone())
+                .absolute()
+                .left(px(placed.origin.x + r.x as f32 * per_pixel))
+                .top(px(placed.origin.y + r.y as f32 * per_pixel))
+                .w(px(r.width as f32 * per_pixel))
+                .h(px(r.height as f32 * per_pixel))
+        });
         let cursor = match (&shown.gesture, self.tool, self.space_held) {
             (Some(Gesture::Pan(_)), ..) => CursorStyle::ClosedHand,
             (_, Some(_), false) => CursorStyle::Crosshair,
@@ -395,6 +518,7 @@ impl MainWindow {
                     .border_color(border())
                     .child(img(image).w(px(placed.size.x)).h(px(placed.size.y))),
             )
+            .children(patch)
             .child(
                 canvas(
                     |_, _, _| {},
@@ -404,7 +528,7 @@ impl MainWindow {
                             bounds.origin.y + px(placed.origin.y),
                         );
                         let area = Bounds::new(origin, size(px(placed.size.x), px(placed.size.y)));
-                        paint_strokes(window, &live, area, per_pixel);
+                        paint_pen_strokes(window, &live, area, per_pixel);
                     },
                 )
                 .absolute()
@@ -520,10 +644,15 @@ impl MainWindow {
     }
 }
 
-/// Paint `strokes` over the screenshot drawn in `area` (window pixels),
-/// `per_pixel` window pixels a screenshot pixel, clipped to it as Copy
-/// and Save clip them.
-fn paint_strokes(window: &mut Window, strokes: &[Stroke], area: Bounds<Pixels>, per_pixel: f32) {
+/// Paint pen `strokes` over the screenshot drawn in `area` (window
+/// pixels), `per_pixel` window pixels a screenshot pixel, clipped to it as
+/// Copy and Save clip them. (The highlighter shows through its patch.)
+fn paint_pen_strokes(
+    window: &mut Window,
+    strokes: &[Stroke],
+    area: Bounds<Pixels>,
+    per_pixel: f32,
+) {
     let to_window = |(x, y): (f32, f32)| {
         point(
             area.origin.x + px(x * per_pixel),
@@ -533,13 +662,9 @@ fn paint_strokes(window: &mut Window, strokes: &[Stroke], area: Bounds<Pixels>, 
     window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
         for stroke in strokes {
             let width = (stroke.width * per_pixel).max(1.);
-            let (cap, opacity) = match stroke.tool {
-                Tool::Pen => (LineCap::Round, 1.),
-                Tool::Highlighter => (LineCap::Square, 0.5),
-            };
             let options = StrokeOptions::default()
                 .with_line_width(width)
-                .with_line_cap(cap)
+                .with_line_cap(LineCap::Round)
                 .with_line_join(LineJoin::Round);
             let mut path = PathBuilder::stroke(px(width)).with_style(PathStyle::Stroke(options));
             let points = &stroke.points;
@@ -557,8 +682,7 @@ fn paint_strokes(window: &mut Window, strokes: &[Stroke], area: Bounds<Pixels>, 
             // A click leaves a dot: a line too short to see, with its caps.
             path.line_to(to_window((lx + 0.01, ly)));
             if let Ok(path) = path.build() {
-                let color: gpui_kit::Hsla = rgb(stroke.color.hex()).into();
-                window.paint_path(path, color.opacity(opacity));
+                window.paint_path(path, rgb(stroke.color.hex()));
             }
         }
     });
