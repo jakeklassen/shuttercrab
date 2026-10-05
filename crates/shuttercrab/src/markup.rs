@@ -61,6 +61,44 @@ pub struct Stroke {
     pub points: Vec<(f32, f32)>,
 }
 
+/// A stroke being drawn, point by point.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Drawing {
+    pub stroke: Stroke,
+    /// While Shift is held, where the straight part starts: an index into
+    /// the points.
+    anchor: Option<usize>,
+}
+
+impl Drawing {
+    pub fn new(stroke: Stroke) -> Self {
+        Self {
+            stroke,
+            anchor: None,
+        }
+    }
+
+    /// Carry the stroke on to `point`. With `straight` (Shift held), it
+    /// runs straight to `point` from where Shift went down, or from where
+    /// it started if Shift was down already; without, it goes freehand.
+    pub fn extend_to(&mut self, point: (f32, f32), straight: bool) {
+        let points = &mut self.stroke.points;
+        if !straight {
+            self.anchor = None;
+            let (lx, ly) = points[points.len() - 1];
+            // Half a screenshot pixel apart at least: enough for a smooth
+            // line, without piling up points.
+            if (point.0 - lx).hypot(point.1 - ly) >= 0.5 {
+                points.push(point);
+            }
+            return;
+        }
+        let anchor = *self.anchor.get_or_insert(points.len() - 1);
+        points.truncate(anchor + 1);
+        points.push(point);
+    }
+}
+
 /// The marks on a screenshot, with what undo took off for redo.
 #[derive(Clone, Debug, Default)]
 pub struct Marks {
@@ -374,6 +412,51 @@ mod tests {
                 assert_eq!(whole[from..from + 4], part[at..at + 4], "{x},{y}");
             }
         }
+    }
+
+    #[test]
+    fn shift_draws_straight_from_where_it_went_down() {
+        let mut drawing = Drawing::new(Stroke {
+            tool: Tool::Pen,
+            color: Rgb(0, 0, 0),
+            width: 3.,
+            points: vec![(0., 0.)],
+        });
+        drawing.extend_to((5., 5.), false);
+        drawing.extend_to((10., 3.), false);
+        // Shift down: straight from (10, 3), wherever the pointer wanders.
+        drawing.extend_to((20., 20.), true);
+        drawing.extend_to((30., 10.), true);
+        assert_eq!(
+            drawing.stroke.points,
+            [(0., 0.), (5., 5.), (10., 3.), (30., 10.)]
+        );
+        // Shift up: freehand again from there; down again: a new anchor.
+        drawing.extend_to((32., 12.), false);
+        drawing.extend_to((40., 40.), true);
+        drawing.extend_to((50., 20.), true);
+        assert_eq!(
+            drawing.stroke.points[3..],
+            [(30., 10.), (32., 12.), (50., 20.)]
+        );
+        // Close points are skipped freehand.
+        let before = drawing.stroke.points.len();
+        drawing.extend_to((50.2, 20.1), false);
+        assert_eq!(drawing.stroke.points.len(), before);
+    }
+
+    #[test]
+    fn shift_from_the_start_draws_one_straight_line() {
+        let mut drawing = Drawing::new(Stroke {
+            tool: Tool::Highlighter,
+            color: Rgb(255, 230, 0),
+            width: 16.,
+            points: vec![(1., 1.)],
+        });
+        for x in 2..30 {
+            drawing.extend_to((x as f32, (x * 3 % 7) as f32), true);
+        }
+        assert_eq!(drawing.stroke.points, [(1., 1.), (29., 3.)]);
     }
 
     #[test]

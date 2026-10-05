@@ -11,7 +11,7 @@
 
 use super::{FOOTER_HEIGHT, MainWindow, Shot, TOOLBAR_HEIGHT};
 use crate::{
-    markup::{self, Brush, Marks, Region, Stroke, Tool},
+    markup::{self, Brush, Drawing, Marks, Region, Stroke, Tool},
     palette::{border, coral, hover, tile},
     pixels,
     shot_view::{ShotView, Xy},
@@ -65,7 +65,7 @@ enum Gesture {
     /// Moving the screenshot; where the pointer last was, in the canvas.
     Pan(Xy),
     /// Drawing a stroke.
-    Draw(Stroke),
+    Draw(Drawing),
 }
 
 impl Shown {
@@ -317,12 +317,12 @@ impl MainWindow {
         };
         shown.gesture = match (brush, panning) {
             (Some((tool, brush)), false) => shown.pixel_at(at, canvas).map(|pixel| {
-                Gesture::Draw(Stroke {
+                Gesture::Draw(Drawing::new(Stroke {
                     tool,
                     color: brush.color,
                     width: shown.width_for(brush),
                     points: vec![pixel],
-                })
+                }))
             }),
             _ => shown.view.can_pan(canvas).then_some(Gesture::Pan(at)),
         };
@@ -355,15 +355,11 @@ impl MainWindow {
                 shown.view.pan(by, canvas);
                 shown.gesture = Some(Gesture::Pan(at));
             }
-            Some(Gesture::Draw(stroke)) => {
+            Some(Gesture::Draw(drawing)) => {
                 let x = (at.x - placed.origin.x) / placed.size.x * width as f32;
                 let y = (at.y - placed.origin.y) / placed.size.y * height as f32;
-                let (lx, ly) = stroke.points[stroke.points.len() - 1];
-                // Half a screenshot pixel apart at least: enough for a
-                // smooth line, without piling up points.
-                if (x - lx).hypot(y - ly) >= 0.5 {
-                    stroke.points.push((x, y));
-                }
+                // Shift draws a straight line.
+                drawing.extend_to((x, y), event.modifiers.shift);
             }
             None => {}
         }
@@ -373,12 +369,12 @@ impl MainWindow {
 
     /// Bring the highlighter's patch up to the stroke being drawn: drawn
     /// off the main thread, one at a time, the next as soon as one is done
-    /// if the stroke has grown meanwhile.
+    /// if the stroke has changed meanwhile.
     fn update_patch(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(shown) = &mut self.shown else {
             return;
         };
-        let Some(Gesture::Draw(stroke)) = &shown.gesture else {
+        let Some(Gesture::Draw(Drawing { stroke, .. })) = &shown.gesture else {
             return;
         };
         if stroke.tool != Tool::Highlighter || shown.patching {
@@ -392,9 +388,9 @@ impl MainWindow {
         // Finished strokes not in the drawing yet belong in the patch too.
         let mut strokes = pending.to_vec();
         strokes.push(stroke.clone());
-        let (base, drawn_points, index) = (
+        let (base, drawn, index) = (
             shown.shot.image.clone(),
-            stroke.points.len(),
+            stroke.clone(),
             shown.marks.strokes().len(),
         );
         shown.patching = true;
@@ -424,11 +420,11 @@ impl MainWindow {
                     let _ = window.drop_image(old.image);
                 }
                 cx.notify();
-                let grown = matches!(
+                let changed = matches!(
                     &shown.gesture,
-                    Some(Gesture::Draw(now)) if now.points.len() != drawn_points
+                    Some(Gesture::Draw(now)) if now.stroke != drawn
                 );
-                if grown {
+                if changed {
                     this.update_patch(window, cx);
                 }
             });
@@ -442,8 +438,8 @@ impl MainWindow {
             return;
         };
         match shown.gesture.take() {
-            Some(Gesture::Draw(stroke)) => {
-                shown.marks.add(stroke);
+            Some(Gesture::Draw(drawing)) => {
+                shown.marks.add(drawing.stroke);
                 self.redraw(window, cx);
             }
             Some(Gesture::Pan(_)) => cx.notify(),
@@ -467,7 +463,7 @@ impl MainWindow {
         // The highlighter multiplies, which only its patch shows; until the
         // patch is ready it is left out rather than shown wrong.
         let drawing = match &shown.gesture {
-            Some(Gesture::Draw(stroke)) => Some(stroke),
+            Some(Gesture::Draw(drawing)) => Some(&drawing.stroke),
             _ => None,
         };
         let live: Vec<Stroke> = pending
