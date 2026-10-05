@@ -37,7 +37,7 @@ use crate::{
     settings_window::{Hooks, SettingsWindow},
     shot_view::{self, Xy},
 };
-use canvas::{Shown, canvas_size};
+use canvas::{Shown, canvas_size, pointer_in_canvas};
 use chrono::NaiveDateTime;
 use gpui_kit::{
     Animation, AnimationExt as _, App, AppContext as _, Context, Entity, FocusHandle, Hsla,
@@ -274,8 +274,8 @@ pub struct MainWindow {
     tool: Option<Tool>,
     /// The tool in hand's colours and size, if open.
     flyout: Option<Flyout>,
-    /// Where the pointer is over the canvas, if it is: the tool's tip is
-    /// outlined there.
+    /// Where the pointer is over the canvas, if it is, as of the last
+    /// render: the tool's tip is outlined there.
     pointer: Option<Xy>,
     /// The tool's size just changed from the keyboard: the tip shows it,
     /// labelled, for a moment.
@@ -1236,6 +1236,7 @@ impl Render for MainWindow {
         {
             shown.rescale(window.scale_factor());
         }
+        self.pointer = pointer_in_canvas(window).filter(|_| self.shown.is_some());
         let zoom = self
             .shown
             .as_ref()

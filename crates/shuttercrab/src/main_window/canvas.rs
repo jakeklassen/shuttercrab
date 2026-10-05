@@ -165,6 +165,17 @@ pub(super) fn canvas_size(window: &Window) -> Xy {
     )
 }
 
+/// Where the pointer is in the canvas, if it is over it (and over the
+/// window: GPUI redraws the window when the pointer leaves it).
+pub(super) fn pointer_in_canvas(window: &Window) -> Option<Xy> {
+    if !window.is_window_hovered() {
+        return None;
+    }
+    let at = canvas_point(window.mouse_position());
+    let canvas = canvas_size(window);
+    ((0. ..canvas.x).contains(&at.x) && (0. ..canvas.y).contains(&at.y)).then_some(at)
+}
+
 /// A window position as a point in the canvas, which starts under the
 /// toolbar.
 fn canvas_point(position: Point<Pixels>) -> Xy {
@@ -318,7 +329,6 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let canvas = canvas_size(window);
-        self.pointer = Some(canvas_point(event.position));
         if self.tool.is_some() {
             // The tip outline follows the pointer.
             cx.notify();
@@ -478,11 +488,6 @@ impl MainWindow {
         };
         div()
             .id("canvas")
-            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if !*hovered && this.pointer.take().is_some() {
-                    cx.notify();
-                }
-            }))
             .test_support()
             .relative()
             .flex_1()
@@ -522,25 +527,20 @@ impl MainWindow {
                 .absolute()
                 .size_full(),
             )
-            .children(self.tip(shown, canvas_area, per_pixel))
+            .children(self.tip(shown, per_pixel))
     }
 
-    /// The tool in hand's tip outlined at the pointer, at the size it
-    /// draws: round for the pen, square for the highlighter, a light line
-    /// in a dark one to show on any screenshot. Labelled with its size for
-    /// a moment after [ or ]; then shown in the middle if the pointer is
-    /// elsewhere.
-    fn tip(&self, shown: &Shown, canvas_area: Xy, per_pixel: f32) -> Vec<AnyElement> {
-        let Some(tool) = self.tool else {
+    /// The tool in hand's tip outlined at the pointer, while the pointer is
+    /// over the canvas, at the size it draws: round for the pen, square for
+    /// the highlighter, a light line in a dark one to show on any
+    /// screenshot. Labelled with its size for a moment after [ or ].
+    fn tip(&self, shown: &Shown, per_pixel: f32) -> Vec<AnyElement> {
+        let (Some(tool), Some(at)) = (self.tool, self.pointer) else {
             return Vec::new();
         };
         if self.space_held || matches!(shown.gesture, Some(Gesture::Pan(_))) {
             return Vec::new();
         }
-        let middle = Xy::new(canvas_area.x / 2., canvas_area.y / 2.);
-        let Some(at) = self.pointer.or(self.size_note.then_some(middle)) else {
-            return Vec::new();
-        };
         let brush = self.brush(tool);
         let side = (shown.width_for(brush) * per_pixel).max(3.);
         let round = tool == Tool::Pen;

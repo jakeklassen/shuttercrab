@@ -266,6 +266,12 @@ impl MainWindow {
             .when_some(flyout, |d, flyout| {
                 d.child(deferred(self.flyout_panel(flyout, brush, cx)).with_priority(1))
             })
+            // [ or ] with the pointer off the screenshot, where the tip
+            // would show it: the size, under the button, for a moment.
+            .when(
+                in_hand && flyout.is_none() && self.size_note && self.pointer.is_none(),
+                |d| d.child(size_note(tool, brush)),
+            )
     }
 
     /// The flyout: "Colours" in a grid of swatches, the chosen one ringed,
@@ -365,6 +371,31 @@ impl MainWindow {
             )
             .child(Icon::new(icon).size(px(18.)))
     }
+}
+
+/// "Pen 5": a tool's size, labelled, below its button.
+fn size_note(tool: Tool, brush: Brush) -> impl IntoElement {
+    let name = match tool {
+        Tool::Pen => "Pen",
+        Tool::Highlighter => "Highlighter",
+    };
+    let note = SharedString::from(format!("{name} {}", brush.size));
+    div()
+        .id("size-note")
+        .aria_label(note.clone())
+        .test_support()
+        .absolute()
+        .top(px(46.))
+        .left(px(0.))
+        .px_1p5()
+        .py_0p5()
+        .rounded_md()
+        .bg(rgb(0x2C2C2C))
+        .border_1()
+        .border_color(border())
+        .text_xs()
+        .whitespace_nowrap()
+        .child(note)
 }
 
 /// A wavy stroke in the brush's colour and size, as Snipping Tool's flyout
