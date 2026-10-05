@@ -38,40 +38,18 @@ pub(super) fn open_folder(state: &State, cx: &mut AsyncApp) {
 /// Open the main window on `page`, or bring it forward on `page` if it is
 /// open. Settings is a page of it, so Shuttercrab has one window.
 pub(super) fn open_main(state: &Rc<State>, page: Page, cx: &mut AsyncApp) {
-    open_window(state, page, None, Focus::Take, cx);
+    open_window(state, page, None, cx);
 }
 
 /// Show `shot` in the main window, opening it if needed, as Snipping Tool
 /// shows a new snip.
-pub(super) fn show_in_main(state: &Rc<State>, shot: Shot, focus: Focus, cx: &mut AsyncApp) {
-    open_window(state, Page::Home, Some(shot), focus, cx);
+pub(super) fn show_in_main(state: &Rc<State>, shot: Shot, cx: &mut AsyncApp) {
+    open_window(state, Page::Home, Some(shot), cx);
 }
 
-/// Whether the main window takes the keyboard when it comes forward.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(super) enum Focus {
-    Take,
-    /// It stays with the active window: after a screenshot taken there,
-    /// to paste it.
-    Leave,
-}
-
-/// Bring the window forward, with the keyboard or without.
-fn bring_forward(hwnd: isize, focus: Focus) {
-    match focus {
-        Focus::Take => platform_window::show_normal(hwnd),
-        Focus::Leave => platform_window::show_without_focus(hwnd),
-    }
-}
-
-/// Open the main window, or bring it forward, on `page` or showing `shot`.
-fn open_window(
-    state: &Rc<State>,
-    page: Page,
-    mut shot: Option<Shot>,
-    focus: Focus,
-    cx: &mut AsyncApp,
-) {
+/// Open the main window, or bring it forward with the keyboard, on `page`
+/// or showing `shot`.
+fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut AsyncApp) {
     let open = state.main_window.borrow().clone();
     if let Some((window, view)) = open
         && let Ok(hwnd) = window.update(cx, |_, window, cx| {
@@ -83,13 +61,14 @@ fn open_window(
         })
     {
         // Restored if minimised, and brought forward; but left hidden while
-        // a capture it started is being taken. In a task of its own: after
+        // a capture is being taken. In a task of its own: after
         // this update, which the window's activation would interrupt, and
         // after the window is sized for a screenshot.
         if state.hidden_main.get().is_none()
             && let Some(hwnd) = hwnd
         {
-            cx.spawn(async move |_| bring_forward(hwnd, focus)).detach();
+            cx.spawn(async move |_| platform_window::show_normal(hwnd))
+                .detach();
         }
         return;
     }
@@ -113,7 +92,7 @@ fn open_window(
                     title: Some("Shuttercrab".into()),
                     ..Default::default()
                 }),
-                focus: focus == Focus::Take,
+                focus: true,
                 show: true,
                 kind: WindowKind::Normal,
                 ..Default::default()
@@ -150,7 +129,7 @@ fn open_window(
                     .ok()
                     .flatten();
                 if let Some(hwnd) = hwnd {
-                    bring_forward(hwnd, focus);
+                    platform_window::show_normal(hwnd);
                 }
                 state.main_window.replace(Some((window.into(), view)));
             }

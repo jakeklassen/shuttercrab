@@ -116,6 +116,20 @@ pub fn exclude_from_capture(hwnd: isize) -> Result<()> {
     Ok(())
 }
 
+/// Let screen captures see the window again, after
+/// [`exclude_from_capture`].
+pub fn include_in_capture(hwnd: isize) {
+    use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_NONE};
+    let _ = unsafe { SetWindowDisplayAffinity(HWND(hwnd as _), WDA_NONE) };
+}
+
+/// Whether the window is on screen: shown and not minimised.
+pub fn is_on_screen(hwnd: isize) -> bool {
+    use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
+    let hwnd = HWND(hwnd as _);
+    unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
+}
+
 /// Give a borderless window Windows 11's rounded corners.
 pub fn round_corners(hwnd: isize) {
     use windows::Win32::Graphics::Dwm::{
@@ -222,27 +236,6 @@ pub fn fit_client_area(
     let y = ((window.top + window.bottom) / 2 - h / 2).clamp(work.top, work.bottom - h);
     unsafe { SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) }
         .context("SetWindowPos failed")
-}
-
-/// Show the window, restored if minimised, above other windows but without
-/// taking the keyboard from the active one.
-pub fn show_without_focus(hwnd: isize) {
-    use windows::Win32::UI::WindowsAndMessaging::{
-        HWND_TOP, SW_SHOWNOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-    };
-    let hwnd = HWND(hwnd as _);
-    unsafe {
-        let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
-        let _ = SetWindowPos(
-            hwnd,
-            Some(HWND_TOP),
-            0,
-            0,
-            0,
-            0,
-            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-        );
-    }
 }
 
 /// Show the window normally and bring it to the front. A launcher's "start

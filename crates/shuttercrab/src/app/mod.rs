@@ -148,13 +148,37 @@ impl State {
         self.platform.set_tray_menu(menu);
     }
 
-    /// Show the main window again if a capture it started hid it, once
-    /// nothing is being chosen or recorded.
+    /// Hide the main window while a capture is chosen and taken, as
+    /// Snipping Tool hides its own, if it is on screen. Left out of captures
+    /// at once, so the capture need not wait for it to fade away.
+    fn hide_main(&self, cx: &mut AsyncApp) {
+        if self.hidden_main.get().is_some() {
+            return;
+        }
+        let open = self.main_window.borrow().clone();
+        let hwnd = open.and_then(|(window, _)| {
+            window
+                .update(cx, |_, window, _| popup::raw_hwnd(window))
+                .ok()
+                .flatten()
+        });
+        if let Some(hwnd) = hwnd.filter(|hwnd| platform_window::is_on_screen(*hwnd)) {
+            if let Err(e) = platform_window::exclude_from_capture(hwnd) {
+                log::warn!("the main window may show in the capture: {e:#}");
+            }
+            platform_window::hide(hwnd);
+            self.hidden_main.set(Some(hwnd));
+        }
+    }
+
+    /// Show the main window again if a capture hid it, once nothing is
+    /// being chosen or recorded, with the keyboard.
     fn show_hidden_main(&self) {
         if self.busy.get() == Busy::Idle
             && self.recording.borrow().is_none()
             && let Some(hwnd) = self.hidden_main.take()
         {
+            platform_window::include_in_capture(hwnd);
             platform_window::show_normal(hwnd);
         }
     }
@@ -465,6 +489,7 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
         }
     }
     state.busy.set(Busy::Choosing);
+    state.hide_main(cx);
     let state = state.clone();
     cx.spawn(async move |cx| {
         if let Some(delay) = delay {
