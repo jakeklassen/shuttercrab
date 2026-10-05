@@ -7,6 +7,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/jakeklassen/shuttercrab/compare/v0.1.10...v0.1.11) - 2026-10-05
+
+### Added
+
+- Draw on a screenshot in Shuttercrab's window, with Snipping Tool's pen and highlighter. P picks up the pen, H the highlighter; drag to draw, and hold Shift for a straight line. The highlighter has a slanted chisel tip and blends like highlighter ink, so text shows through it.
+- Click the tool in hand, or press its key again, for its colours and size: the pen's 30 colours and the highlighter's 6, as in Snipping Tool. [ and ] change the size as you go, and the outline at the pointer shows it. Your choices are remembered.
+- Undo and redo with Ctrl+Z and Ctrl+Y, or the arrows in the toolbar. With a tool in hand, Space+drag or Ctrl+drag moves the screenshot.
+- Copy, Save as, Edit in Paint and Open with give the marked-up screenshot. The one saved automatically stays as it was taken.
+- Copy now confirms with a check mark once the screenshot is on the clipboard.
 ## [0.1.10](https://github.com/jakeklassen/shuttercrab/compare/v0.1.9...v0.1.10) - 2026-10-04
 
 ### Added
