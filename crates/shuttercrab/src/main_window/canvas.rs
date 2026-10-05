@@ -21,7 +21,7 @@ use gpui_kit::{
     KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
     PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, canvas, div, img,
-    point, prelude::FluentBuilder as _, px, rgb, size,
+    point, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin, StrokeOptions};
 use std::sync::Arc;
@@ -163,6 +163,40 @@ pub(super) fn canvas_size(window: &Window) -> Xy {
         f32::from(viewport.width),
         f32::from(viewport.height) - TOOLBAR_HEIGHT - FOOTER_HEIGHT,
     )
+}
+
+/// The highlighter's slanted chisel tip, `size` canvas pixels tall,
+/// outlined around canvas point `at`: a light line over a dark one.
+fn chisel_outline(at: Xy, size: f32) -> impl IntoElement {
+    let corners = markup::chisel(size);
+    canvas(
+        |_, _, _| {},
+        move |bounds, _, window, _| {
+            let to_window = |(x, y): (f32, f32)| {
+                point(
+                    bounds.origin.x + px(at.x + x),
+                    bounds.origin.y + px(at.y + y),
+                )
+            };
+            let lines = [
+                (3., gpui_kit::black().opacity(0.6)),
+                (1., gpui_kit::white().opacity(0.9)),
+            ];
+            for (width, color) in lines {
+                let mut path = PathBuilder::stroke(px(width));
+                path.move_to(to_window(corners[0]));
+                for &corner in &corners[1..] {
+                    path.line_to(to_window(corner));
+                }
+                path.close();
+                if let Ok(path) = path.build() {
+                    window.paint_path(path, color);
+                }
+            }
+        },
+    )
+    .absolute()
+    .size_full()
 }
 
 /// Where the pointer is in the canvas, if it is over it (and over the
@@ -543,23 +577,25 @@ impl MainWindow {
         }
         let brush = self.brush(tool);
         let side = (shown.width_for(brush) * per_pixel).max(3.);
-        let round = tool == Tool::Pen;
-        let outline = div()
-            .absolute()
-            .left(px(at.x - side / 2. - 1.))
-            .top(px(at.y - side / 2. - 1.))
-            .size(px(side + 2.))
-            .border_1()
-            .border_color(gpui_kit::black().opacity(0.6))
-            .when(round, |d| d.rounded_full())
-            .child(
-                div()
-                    .size_full()
-                    .border_1()
-                    .border_color(gpui_kit::white().opacity(0.9))
-                    .when(round, |d| d.rounded_full()),
-            )
-            .into_any_element();
+        let outline = match tool {
+            Tool::Pen => div()
+                .absolute()
+                .left(px(at.x - side / 2. - 1.))
+                .top(px(at.y - side / 2. - 1.))
+                .size(px(side + 2.))
+                .rounded_full()
+                .border_1()
+                .border_color(gpui_kit::black().opacity(0.6))
+                .child(
+                    div()
+                        .size_full()
+                        .rounded_full()
+                        .border_1()
+                        .border_color(gpui_kit::white().opacity(0.9)),
+                )
+                .into_any_element(),
+            Tool::Highlighter => chisel_outline(at, side).into_any_element(),
+        };
         let mut tip = vec![outline];
         if self.size_note {
             let name = match tool {

@@ -2,14 +2,15 @@
 //! pen and highlighter strokes. They are kept apart from the screenshot, in
 //! its own pixels, until it is copied or saved; [`draw`] puts them on it.
 //!
-//! The pen paints over what is under it. The highlighter multiplies with
-//! it, like highlighter ink: yellow on white stays yellow and text shows
+//! The pen paints over what is under it, with a round tip. The highlighter
+//! has a slanted chisel tip, so a stroke across has slanted ends, and it
+//! multiplies with what is under it, like highlighter ink: yellow on white stays yellow and text shows
 //! through, and one colour over another darkens. A single stroke never
 //! darkens where it crosses itself, since it is drawn in one go.
 
 use tiny_skia::{
-    BlendMode, Color, FillRule, IntSize, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Rect,
-    Shader, Stroke as Outline, Transform,
+    BlendMode, Color, FillRule, IntSize, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Shader,
+    Stroke as Outline, Transform,
 };
 
 /// What draws a stroke.
@@ -326,22 +327,19 @@ fn paint(canvas: &mut Pixmap, stroke: &Stroke, bgr: bool, shift: Transform) {
         ..Paint::default()
     };
     if stroke.tool == Tool::Highlighter {
+        // One fill for the whole swept shape: it multiplies once, so the
+        // stroke never darkens where it crosses itself.
         paint.blend_mode = BlendMode::Multiply;
+        if let Some(path) = chisel_path(&stroke.points, stroke.width) {
+            canvas.fill_path(&path, &paint, FillRule::Winding, shift, None);
+        }
+        return;
     }
-    let half = stroke.width / 2.;
     match stroke.points.as_slice() {
         [] => {}
-        // A click leaves a dot: round for the pen, square for the
-        // highlighter's flat tip.
+        // A click leaves a dot.
         [(x, y)] => {
-            let dot = match stroke.tool {
-                Tool::Pen => PathBuilder::from_circle(*x, *y, half),
-                Tool::Highlighter => {
-                    Rect::from_xywh(x - half, y - half, stroke.width, stroke.width)
-                        .map(PathBuilder::from_rect)
-                }
-            };
-            if let Some(dot) = dot {
+            if let Some(dot) = PathBuilder::from_circle(*x, *y, stroke.width / 2.) {
                 canvas.fill_path(&dot, &paint, FillRule::Winding, shift, None);
             }
         }
@@ -351,16 +349,117 @@ fn paint(canvas: &mut Pixmap, stroke: &Stroke, bgr: bool, shift: Transform) {
             };
             let outline = Outline {
                 width: stroke.width,
-                line_cap: match stroke.tool {
-                    Tool::Pen => LineCap::Round,
-                    Tool::Highlighter => LineCap::Square,
-                },
+                line_cap: LineCap::Round,
                 line_join: LineJoin::Round,
                 ..Outline::default()
             };
             canvas.stroke_path(&path, &paint, &outline, shift, None);
         }
     }
+}
+
+/// How far the highlighter's tip leans from upright: the tangent of 30°.
+const CHISEL_LEAN: f32 = 0.577;
+
+/// The highlighter's chisel tip around its centre, as corners: a bar
+/// `size` tall leaning right like `/`, a fifth of that thick. Drawn across,
+/// it leaves a band with slanted ends, `/====/`; along its slant, a thin
+/// line.
+pub fn chisel(size: f32) -> [(f32, f32); 4] {
+    let half = size / 2.;
+    let lean = half * CHISEL_LEAN;
+    let thick = size / 10.;
+    [
+        (-lean - thick, half),
+        (lean - thick, -half),
+        (lean + thick, -half),
+        (-lean + thick, half),
+    ]
+}
+
+/// The shape the chisel tip sweeps along the smoothed `points`: for each
+/// step, the convex hull of the tip at its two ends. All the hulls wind the
+/// same way, so filled together they make their union.
+fn chisel_path(points: &[(f32, f32)], size: f32) -> Option<tiny_skia::Path> {
+    let tip = chisel(size);
+    let at = |(x, y): (f32, f32)| tip.map(|(tx, ty)| (x + tx, y + ty));
+    let samples = smooth_points(points);
+    let mut path = PathBuilder::new();
+    let mut add = |corners: &[(f32, f32)]| {
+        let (x0, y0) = corners[0];
+        path.move_to(x0, y0);
+        for &(x, y) in &corners[1..] {
+            path.line_to(x, y);
+        }
+        path.close();
+    };
+    match samples.as_slice() {
+        [] => return None,
+        [one] => add(&convex_hull(&at(*one))),
+        _ => {
+            for pair in samples.windows(2) {
+                let mut corners = at(pair[0]).to_vec();
+                corners.extend(at(pair[1]));
+                add(&convex_hull(&corners));
+            }
+        }
+    }
+    path.finish()
+}
+
+/// Points along the curve [`smooth_path`] draws through `points`, close
+/// enough together to sweep a tip along.
+fn smooth_points(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    const STEPS: usize = 4;
+    let mut out = vec![points[0]];
+    let mut from = points[0];
+    for pair in points.windows(2).skip(1) {
+        let (c, n) = (pair[0], pair[1]);
+        let to = ((c.0 + n.0) / 2., (c.1 + n.1) / 2.);
+        for step in 1..=STEPS {
+            let t = step as f32 / STEPS as f32;
+            let u = 1. - t;
+            out.push((
+                u * u * from.0 + 2. * u * t * c.0 + t * t * to.0,
+                u * u * from.1 + 2. * u * t * c.1 + t * t * to.1,
+            ));
+        }
+        from = to;
+    }
+    if points.len() > 1 {
+        out.push(points[points.len() - 1]);
+    }
+    out
+}
+
+/// The convex hull of `points`, always wound the same way (Andrew's
+/// monotone chain).
+fn convex_hull(points: &[(f32, f32)]) -> Vec<(f32, f32)> {
+    let mut sorted = points.to_vec();
+    sorted.sort_by(|a, b| a.0.total_cmp(&b.0).then(a.1.total_cmp(&b.1)));
+    let mut lower = hull_half(sorted.iter().copied());
+    let mut upper = hull_half(sorted.iter().rev().copied());
+    // Each half ends where the other begins.
+    lower.pop();
+    upper.pop();
+    lower.append(&mut upper);
+    lower
+}
+
+/// One half of a convex hull, from points in order: each kept point turns
+/// the same way from the two before it.
+fn hull_half(points: impl Iterator<Item = (f32, f32)>) -> Vec<(f32, f32)> {
+    let turn = |o: (f32, f32), a: (f32, f32), b: (f32, f32)| {
+        (a.0 - o.0) * (b.1 - o.1) - (a.1 - o.1) * (b.0 - o.0)
+    };
+    let mut half: Vec<(f32, f32)> = Vec::new();
+    for p in points {
+        while half.len() >= 2 && turn(half[half.len() - 2], half[half.len() - 1], p) <= 0. {
+            half.pop();
+        }
+        half.push(p);
+    }
+    half
 }
 
 /// A smooth path through `points`: straight to the first midpoint, then a
@@ -545,6 +644,35 @@ mod tests {
             drawing.extend_to((x as f32, (x * 3 % 7) as f32), true);
         }
         assert_eq!(drawing.stroke.points, [(1., 1.), (29., 3.)]);
+    }
+
+    #[test]
+    fn the_highlighter_draws_a_band_with_slanted_ends() {
+        // A size-12 stroke across a 60 × 30 white screenshot.
+        let stroke = Stroke {
+            tool: Tool::Highlighter,
+            color: Rgb(0, 0, 0),
+            width: 12.,
+            points: vec![(15., 15.), (45., 15.)],
+        };
+        let out = draw(&white(60), 60, 60, &[stroke], false);
+        let inked = |x: u32, y: u32| pixel(&out, 60, x, y)[0] < 128;
+        // Full height in the middle.
+        assert!(inked(30, 10) && inked(30, 20));
+        // The ends lean like `/`: the start reaches further left at the
+        // bottom, the end further right at the top.
+        assert!(inked(13, 19) && !inked(13, 11));
+        assert!(inked(47, 11) && !inked(47, 19));
+    }
+
+    #[test]
+    fn a_hull_holds_every_point() {
+        let points = [(0., 0.), (4., 1.), (2., 2.), (1., 4.), (3., 3.), (4., 4.)];
+        let hull = convex_hull(&points);
+        assert_eq!(hull.len(), 4);
+        for corner in [(0., 0.), (4., 1.), (4., 4.), (1., 4.)] {
+            assert!(hull.contains(&corner), "{corner:?}");
+        }
     }
 
     #[test]
