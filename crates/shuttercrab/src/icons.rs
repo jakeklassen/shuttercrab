@@ -34,7 +34,8 @@ icon_assets!(
         Pen,
         Highlighter,
         Undo2,
-        Redo2
+        Redo2,
+        Eraser
     ]
 );
 
@@ -96,6 +97,7 @@ mod tests {
             IconName::Highlighter,
             IconName::Undo2,
             IconName::Redo2,
+            IconName::Eraser,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

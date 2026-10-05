@@ -279,12 +279,15 @@ impl MainWindow {
     /// tool, and a coral outline while it is in hand; its flyout below it
     /// when open.
     fn tool_button(&self, hand: Hand, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let (id, label, icon) = match hand {
-            Hand::Draw(Tool::Pen) => ("tool-pen", "Pen (P)", IconName::Pen),
-            Hand::Draw(Tool::Highlighter) => {
-                ("tool-highlighter", "Highlighter (H)", IconName::Highlighter)
-            }
-            Hand::Erase => ("tool-eraser", "Eraser (X)", IconName::Eraser),
+        let (id, label, icon, key) = match hand {
+            Hand::Draw(Tool::Pen) => ("tool-pen", "Pen (P)", IconName::Pen, "P"),
+            Hand::Draw(Tool::Highlighter) => (
+                "tool-highlighter",
+                "Highlighter (H)",
+                IconName::Highlighter,
+                "H",
+            ),
+            Hand::Erase => ("tool-eraser", "Eraser (X)", IconName::Eraser, "X"),
         };
         let brush = hand.drawing().map(|tool| (tool, self.brush(tool)));
         let in_hand = self.hand == Some(hand);
@@ -323,6 +326,17 @@ impl MainWindow {
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, _: &MouseUpEvent, _, cx| this.take(hand, cx)),
+                    )
+                    .relative()
+                    // Its key, small in the corner.
+                    .child(
+                        div()
+                            .absolute()
+                            .top(px(1.))
+                            .right(px(3.))
+                            .text_size(px(9.))
+                            .text_color(muted())
+                            .child(key),
                     )
                     .child(Icon::new(icon).size(px(18.)))
                     // The eraser has a clear bar, to sit level with the rest.
