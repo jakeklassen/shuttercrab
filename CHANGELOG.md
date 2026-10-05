@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.12](https://github.com/jakeklassen/shuttercrab/compare/v0.1.11...v0.1.12) - 2026-10-05
+
+### Added
+
+- The eraser, as in Snipping Tool: X, or its button in the toolbar, then drag over marks to take them off whole; the screenshot itself is never touched. Press X again, or click the eraser in hand, for Erase all mark-ups (or Enter). Each drag, and Erase all, undoes in one go.
+- The pen, highlighter and eraser buttons show their keys, P, H and X.
 ## [0.1.11](https://github.com/jakeklassen/shuttercrab/compare/v0.1.10...v0.1.11) - 2026-10-05
 
 ### Added
