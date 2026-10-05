@@ -604,4 +604,36 @@ fn the_flyout_picks_colours_and_sizes_and_remembers_them(cx: &mut TestAppContext
     assert_eq!(cx.update(|cx| opened.view.read(cx).tool()), Some(Tool::Pen));
     press(cx, &opened, &["escape"]);
     assert_eq!(cx.update(|cx| opened.view.read(cx).tool()), None);
+
+    // Clicking the pen picks it up, then opens and closes its flyout, as
+    // its key does.
+    for open in [false, true, false, true] {
+        update(cx, &opened, |window, cx| window.click("tool-pen", cx));
+        assert_eq!(flyout_open(cx), open);
+    }
+}
+
+#[gpui_kit::test]
+fn changing_the_size_by_key_shows_it_for_a_moment(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    let note = |cx: &mut TestAppContext| {
+        let mut note = None;
+        update(cx, &opened, |window, _| {
+            note = window
+                .try_find("size-note")
+                .and_then(|e| e.label().map(|l| l.to_string()));
+        });
+        note
+    };
+    press(cx, &opened, &["h", "]"]);
+    assert_eq!(note(cx).as_deref(), Some("Highlighter 20"));
+    cx.executor()
+        .advance_clock(std::time::Duration::from_millis(1300));
+    cx.run_until_parked();
+    assert_eq!(note(cx), None);
 }

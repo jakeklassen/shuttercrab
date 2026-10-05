@@ -25,6 +25,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     px, rgb,
 };
+use std::time::Duration;
 
 /// A tool's flyout, open below its button.
 pub(super) struct Flyout {
@@ -37,6 +38,9 @@ pub(super) struct Flyout {
 
 /// Swatches in a row, as in Snipping Tool.
 const COLUMNS: usize = 6;
+
+/// How long the size label stays after [ or ].
+const SIZE_NOTE_FOR: Duration = Duration::from_millis(1200);
 
 impl MainWindow {
     /// The colour and size `tool` draws with.
@@ -126,11 +130,31 @@ impl MainWindow {
         let brush = self.brush(tool);
         let size = (brush.size + steps * step).clamp(*sizes.start(), *sizes.end());
         self.set_brush(tool, Brush { size, ..brush }, cx);
+        self.note_size(cx);
         if let Some(flyout) = &self.flyout {
             flyout
                 .size
                 .update(cx, |slider, cx| slider.set_value(size, window, cx));
         }
+    }
+
+    /// Show the tip, labelled with its size, for a moment.
+    fn note_size(&mut self, cx: &mut Context<Self>) {
+        self.size_notes += 1;
+        self.size_note = true;
+        let note = self.size_notes;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(SIZE_NOTE_FOR).await;
+            // Unless a later change is showing its own.
+            let _ = this.update(cx, |this, cx| {
+                if this.size_notes == note {
+                    this.size_note = false;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// A key while a flyout is open: arrows move through the colours, Enter
@@ -223,6 +247,9 @@ impl MainWindow {
                     .when(in_hand, |d| d.bg(tile()))
                     .hover(|s| s.bg(hover()))
                     .cursor_pointer()
+                    // The press stays here: the window's own press handler
+                    // closes the flyout, which the release would reopen.
+                    .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_up(
                         MouseButton::Left,
                         cx.listener(move |this, _: &MouseUpEvent, _, cx| this.take_tool(tool, cx)),

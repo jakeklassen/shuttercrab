@@ -17,10 +17,11 @@ use crate::{
     shot_view::{ShotView, Xy},
 };
 use gpui_kit::{
-    Bounds, ContentMask, Context, CursorStyle, InteractiveElement as _, IntoElement, KeyUpEvent,
-    MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _, PathBuilder,
-    PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent, Styled as _, TestSupportExt as _,
-    Window, canvas, div, img, point, px, rgb, size,
+    AnyElement, Bounds, ContentMask, Context, CursorStyle, InteractiveElement as _, IntoElement,
+    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
+    PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, canvas, div, img,
+    point, prelude::FluentBuilder as _, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin, StrokeOptions};
 use std::sync::Arc;
@@ -317,6 +318,11 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let canvas = canvas_size(window);
+        self.pointer = Some(canvas_point(event.position));
+        if self.tool.is_some() {
+            // The tip outline follows the pointer.
+            cx.notify();
+        }
         let Some(shown) = &mut self.shown else {
             return;
         };
@@ -472,6 +478,11 @@ impl MainWindow {
         };
         div()
             .id("canvas")
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if !*hovered && this.pointer.take().is_some() {
+                    cx.notify();
+                }
+            }))
             .test_support()
             .relative()
             .flex_1()
@@ -511,6 +522,71 @@ impl MainWindow {
                 .absolute()
                 .size_full(),
             )
+            .children(self.tip(shown, canvas_area, per_pixel))
+    }
+
+    /// The tool in hand's tip outlined at the pointer, at the size it
+    /// draws: round for the pen, square for the highlighter, a light line
+    /// in a dark one to show on any screenshot. Labelled with its size for
+    /// a moment after [ or ]; then shown in the middle if the pointer is
+    /// elsewhere.
+    fn tip(&self, shown: &Shown, canvas_area: Xy, per_pixel: f32) -> Vec<AnyElement> {
+        let Some(tool) = self.tool else {
+            return Vec::new();
+        };
+        if self.space_held || matches!(shown.gesture, Some(Gesture::Pan(_))) {
+            return Vec::new();
+        }
+        let middle = Xy::new(canvas_area.x / 2., canvas_area.y / 2.);
+        let Some(at) = self.pointer.or(self.size_note.then_some(middle)) else {
+            return Vec::new();
+        };
+        let brush = self.brush(tool);
+        let side = (shown.width_for(brush) * per_pixel).max(3.);
+        let round = tool == Tool::Pen;
+        let outline = div()
+            .absolute()
+            .left(px(at.x - side / 2. - 1.))
+            .top(px(at.y - side / 2. - 1.))
+            .size(px(side + 2.))
+            .border_1()
+            .border_color(gpui_kit::black().opacity(0.6))
+            .when(round, |d| d.rounded_full())
+            .child(
+                div()
+                    .size_full()
+                    .border_1()
+                    .border_color(gpui_kit::white().opacity(0.9))
+                    .when(round, |d| d.rounded_full()),
+            )
+            .into_any_element();
+        let mut tip = vec![outline];
+        if self.size_note {
+            let name = match tool {
+                Tool::Pen => "Pen",
+                Tool::Highlighter => "Highlighter",
+            };
+            let note = SharedString::from(format!("{name} {}", brush.size));
+            tip.push(
+                div()
+                    .id("size-note")
+                    .aria_label(note.clone())
+                    .test_support()
+                    .absolute()
+                    .left(px(at.x + side / 2. + 10.))
+                    .top(px(at.y - 11.))
+                    .px_1p5()
+                    .py_0p5()
+                    .rounded_md()
+                    .bg(rgb(0x2C2C2C))
+                    .border_1()
+                    .border_color(border())
+                    .text_xs()
+                    .child(note)
+                    .into_any_element(),
+            );
+        }
+        tip
     }
 }
 

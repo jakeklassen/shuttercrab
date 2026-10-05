@@ -35,7 +35,7 @@ use crate::{
     palette::{border, coral, hover, muted, recording, surface, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, Settings},
     settings_window::{Hooks, SettingsWindow},
-    shot_view,
+    shot_view::{self, Xy},
 };
 use canvas::{Shown, canvas_size};
 use chrono::NaiveDateTime;
@@ -274,6 +274,15 @@ pub struct MainWindow {
     tool: Option<Tool>,
     /// The tool in hand's colours and size, if open.
     flyout: Option<Flyout>,
+    /// Where the pointer is over the canvas, if it is: the tool's tip is
+    /// outlined there.
+    pointer: Option<Xy>,
+    /// The tool's size just changed from the keyboard: the tip shows it,
+    /// labelled, for a moment.
+    size_note: bool,
+    /// Counts size changes, so the label's timer knows whether a later one
+    /// has started its own.
+    size_notes: u64,
     /// Space is held: dragging moves the screenshot, whatever the tool.
     space_held: bool,
     focus: FocusHandle,
@@ -294,6 +303,9 @@ impl MainWindow {
             copies: 0,
             tool: None,
             flyout: None,
+            pointer: None,
+            size_note: false,
+            size_notes: 0,
             space_held: false,
             focus,
         }
