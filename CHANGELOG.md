@@ -11,18 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- the highlighter has a slanted chisel tip
-- show the drawing tool's tip at its size, and toggle flyouts by click
-- colour and size flyouts for the pen and highlighter, remembered
-- Shift draws straight lines with the pen and highlighter
-- draw on a screenshot with the pen and highlighter, with undo
-- Copy shows a check mark once the screenshot is copied
-
-### Fixed
-
-- the drawing tip no longer jumps to the middle or sticks at the edge
-- no flashing when undoing, redoing or highlighting
-
+- Draw on a screenshot in Shuttercrab's window, with Snipping Tool's pen and highlighter. P picks up the pen, H the highlighter; drag to draw, and hold Shift for a straight line. The highlighter has a slanted chisel tip and blends like highlighter ink, so text shows through it.
+- Click the tool in hand, or press its key again, for its colours and size: the pen's 30 colours and the highlighter's 6, as in Snipping Tool. [ and ] change the size as you go, and the outline at the pointer shows it. Your choices are remembered.
+- Undo and redo with Ctrl+Z and Ctrl+Y, or the arrows in the toolbar. With a tool in hand, Space+drag or Ctrl+drag moves the screenshot.
+- Copy, Save as, Edit in Paint and Open with give the marked-up screenshot. The one saved automatically stays as it was taken.
+- Copy now confirms with a check mark once the screenshot is on the clipboard.
 ## [0.1.10](https://github.com/jakeklassen/shuttercrab/compare/v0.1.9...v0.1.10) - 2026-10-04
 
 ### Added
