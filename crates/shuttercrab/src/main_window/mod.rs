@@ -16,8 +16,9 @@
 //! Ctrl with the scroll wheel, around the pointer), Ctrl+0 fits it to the
 //! window and Ctrl+1 shows it at full size. The wheel, or a drag, moves a
 //! screenshot bigger than the window. P and H pick up the pen and the
-//! highlighter, and pressed again open its colours and size; Escape puts
-//! it down. Dragging then draws (Shift for a straight line), and
+//! highlighter, and pressed again open its colours and size; X picks up
+//! the eraser, which takes off whole marks, and pressed again offers to
+//! take off every one. Escape puts the tool down. Dragging then draws (Shift for a straight line), and
 //! Space+drag or Ctrl+drag moves the screenshot. [ and ] change the size,
 //! Ctrl+Z and Ctrl+Y undo and redo. Escape closes a menu, or goes back
 //! from Settings. At the bottom, quietly, the version running; once a newer
@@ -52,6 +53,7 @@ use gpui_kit::{
 };
 use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
 use tools::Flyout;
+pub use tools::Hand;
 
 /// The window's size on each page, logical pixels.
 pub const HOME_SIZE: Size<Pixels> = Size {
@@ -269,11 +271,17 @@ pub struct MainWindow {
     /// Counts copies, so the check mark's timer knows whether a later copy
     /// has started its own.
     copies: u64,
-    /// The drawing tool in hand, if any: dragging on the screenshot draws
+    /// The tool in hand, if any: dragging on the screenshot draws or erases
     /// with it rather than moving the screenshot.
-    tool: Option<Tool>,
+    hand: Option<Hand>,
     /// The tool in hand's colours and size, if open.
     flyout: Option<Flyout>,
+    /// The eraser's flyout is open.
+    eraser_menu: bool,
+    /// A short message over the screenshot, such as that every mark was
+    /// taken off, and a count for its timer, as for the size label.
+    notice: Option<&'static str>,
+    notices: u64,
     /// Where the pointer is over the canvas, if it is, as of the last
     /// render: the tool's tip is outlined there.
     pointer: Option<Xy>,
@@ -301,8 +309,11 @@ impl MainWindow {
             shown: None,
             copied: false,
             copies: 0,
-            tool: None,
+            hand: None,
             flyout: None,
+            eraser_menu: false,
+            notice: None,
+            notices: 0,
             pointer: None,
             size_note: false,
             size_notes: 0,
@@ -328,7 +339,12 @@ impl MainWindow {
 
     /// The drawing tool in hand, if any.
     pub fn tool(&self) -> Option<Tool> {
-        self.tool
+        self.hand.and_then(Hand::drawing)
+    }
+
+    /// The tool in hand, the eraser included, if any.
+    pub fn hand(&self) -> Option<Hand> {
+        self.hand
     }
 
     /// Show `shot` on the home page, in place of any shown before, and size
@@ -574,7 +590,7 @@ impl MainWindow {
         if keystroke.modifiers.alt || keystroke.modifiers.platform {
             return;
         }
-        if self.on_flyout_key(key, cx) {
+        if self.on_flyout_key(key, window, cx) {
             return;
         }
         if let Some(menu) = self.menu {
@@ -592,8 +608,9 @@ impl MainWindow {
             }
         }
         match key {
-            "p" => self.take_tool(Tool::Pen, cx),
-            "h" => self.take_tool(Tool::Highlighter, cx),
+            "p" => self.take(Hand::Draw(Tool::Pen), cx),
+            "h" => self.take(Hand::Draw(Tool::Highlighter), cx),
+            "x" => self.take(Hand::Erase, cx),
             "escape" => self.put_down_tool(cx),
             "space" => self.space_held = true,
             "[" => self.step_size(-1., window, cx),
@@ -1259,7 +1276,7 @@ impl Render for MainWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    if this.menu.take().is_some() | this.flyout.take().is_some() {
+                    if this.menu.take().is_some() | this.close_flyouts() {
                         cx.notify();
                     }
                 }),

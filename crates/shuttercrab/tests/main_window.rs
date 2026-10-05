@@ -637,3 +637,61 @@ fn changing_the_size_by_key_shows_it_for_a_moment(cx: &mut TestAppContext) {
     cx.run_until_parked();
     assert_eq!(note(cx), None);
 }
+
+/// Drag across the canvas `dy` logical pixels below its middle, from `x0`
+/// to `x1` pixels right of the middle.
+fn drag_at(cx: &mut TestAppContext, opened: &Opened, dy: f32, x0: f32, x1: f32) {
+    update(cx, opened, |window, cx| {
+        let middle = window.find("canvas").bounds().center();
+        let at =
+            |dx: f32| gpui_kit::point(middle.x + gpui_kit::px(dx), middle.y + gpui_kit::px(dy));
+        window.drag(at(x0), at(x1), cx);
+    });
+}
+
+#[gpui_kit::test]
+fn the_eraser_takes_whole_marks_and_erase_all_takes_every_one(cx: &mut TestAppContext) {
+    use shuttercrab::main_window::Hand;
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    // Two pen strokes, one above the other.
+    press(cx, &opened, &["p"]);
+    drag_at(cx, &opened, -30., -40., 40.);
+    drag_at(cx, &opened, 30., -40., 40.);
+    assert_eq!(marks(cx, &opened).len(), 2);
+
+    // The eraser across the lower one takes it whole, and only it.
+    press(cx, &opened, &["x"]);
+    assert_eq!(
+        cx.update(|cx| opened.view.read(cx).hand()),
+        Some(Hand::Erase)
+    );
+    drag_at(cx, &opened, 30., 0., 5.);
+    let left = marks(cx, &opened);
+    assert_eq!(left.len(), 1);
+    assert!(left[0].points[0].1 < 300., "the upper stroke stays");
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(marks(cx, &opened).len(), 2);
+
+    // X again opens the eraser's flyout; its one action takes every mark,
+    // says so, and is undone in one go.
+    press(cx, &opened, &["x"]);
+    update(cx, &opened, |window, cx| window.click("erase-all", cx));
+    assert!(marks(cx, &opened).is_empty());
+    let mut notice = None;
+    update(cx, &opened, |window, _| {
+        notice = window
+            .try_find("notice")
+            .and_then(|e| e.label().map(|l| l.to_string()));
+    });
+    assert_eq!(notice.as_deref(), Some("All mark-ups erased"));
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(marks(cx, &opened).len(), 2);
+    // And from the keyboard: X opens the flyout, Enter takes every mark.
+    press(cx, &opened, &["x", "enter"]);
+    assert!(marks(cx, &opened).is_empty());
+}

@@ -9,7 +9,7 @@
 //! colours, so a highlighter stroke is drawn onto just the patch of the
 //! screenshot it covers, as the stroke grows, and shown over it.
 
-use super::{FOOTER_HEIGHT, MainWindow, Shot, TOOLBAR_HEIGHT};
+use super::{FOOTER_HEIGHT, Hand, MainWindow, Shot, TOOLBAR_HEIGHT};
 use crate::{
     markup::{self, Brush, Drawing, Marks, Region, Stroke, Tool},
     palette::border,
@@ -66,6 +66,9 @@ enum Gesture {
     Pan(Xy),
     /// Drawing a stroke.
     Draw(Drawing),
+    /// Erasing: where the eraser last was, in screenshot pixels, and
+    /// whether this drag has taken anything yet.
+    Erase { last: (f32, f32), erased: bool },
 }
 
 impl Shown {
@@ -156,6 +159,10 @@ fn view_for(shot: &Shot, scale: f32) -> ShotView {
 /// pixels.
 const WHEEL_LINE: f32 = 40.;
 
+/// The eraser's reach around the pointer, logical pixels on screen: the
+/// same whatever the zoom.
+const ERASER_RADIUS: f32 = 8.;
+
 /// The canvas's size: the window less the toolbar and the footer.
 pub(super) fn canvas_size(window: &Window) -> Xy {
     let viewport = window.viewport_size();
@@ -163,6 +170,52 @@ pub(super) fn canvas_size(window: &Window) -> Xy {
         f32::from(viewport.width),
         f32::from(viewport.height) - TOOLBAR_HEIGHT - FOOTER_HEIGHT,
     )
+}
+
+/// A circle `size` canvas pixels across around canvas point `at`, a light
+/// line in a dark one: the pen's tip and the eraser's reach.
+fn round_outline(at: Xy, size: f32) -> impl IntoElement {
+    div()
+        .absolute()
+        .left(px(at.x - size / 2. - 1.))
+        .top(px(at.y - size / 2. - 1.))
+        .size(px(size + 2.))
+        .rounded_full()
+        .border_1()
+        .border_color(gpui_kit::black().opacity(0.6))
+        .child(
+            div()
+                .size_full()
+                .rounded_full()
+                .border_1()
+                .border_color(gpui_kit::white().opacity(0.9)),
+        )
+}
+
+/// A short message at the foot of the canvas, such as that every mark was
+/// taken off.
+fn notice(text: &'static str) -> impl IntoElement {
+    div()
+        .absolute()
+        .bottom(px(16.))
+        .left_0()
+        .right_0()
+        .flex()
+        .justify_center()
+        .child(
+            div()
+                .id("notice")
+                .aria_label(text)
+                .test_support()
+                .px_3()
+                .py_1p5()
+                .rounded_md()
+                .bg(rgb(0x2C2C2C))
+                .border_1()
+                .border_color(border())
+                .text_sm()
+                .child(text),
+        )
 }
 
 /// The highlighter's slanted chisel tip, `size` canvas pixels tall,
@@ -327,8 +380,9 @@ impl MainWindow {
         .detach();
     }
 
-    /// A press on the canvas: start a stroke with the tool in hand, or
-    /// start moving the screenshot (with Space or Ctrl held, or no tool).
+    /// A press on the canvas: start a stroke or erasing with the tool in
+    /// hand, or start moving the screenshot (with Space or Ctrl held, or no
+    /// tool).
     fn on_canvas_down(
         &mut self,
         event: &MouseDownEvent,
@@ -337,13 +391,18 @@ impl MainWindow {
     ) {
         let canvas = canvas_size(window);
         let at = canvas_point(event.position);
-        let panning = self.space_held || event.modifiers.control;
-        let brush = self.tool.map(|tool| (tool, self.brush(tool)));
+        let hand = self
+            .hand
+            .filter(|_| !(self.space_held || event.modifiers.control));
+        let brush = hand
+            .and_then(Hand::drawing)
+            .map(|tool| (tool, self.brush(tool)));
         let Some(shown) = &mut self.shown else {
             return;
         };
-        shown.gesture = match (brush, panning) {
-            (Some((tool, brush)), false) => shown.pixel_at(at, canvas).map(|pixel| {
+        let pixel = shown.pixel_at(at, canvas);
+        shown.gesture = match (hand, brush) {
+            (Some(Hand::Draw(_)), Some((tool, brush))) => pixel.map(|pixel| {
                 Gesture::Draw(Drawing::new(Stroke {
                     tool,
                     color: brush.color,
@@ -351,9 +410,79 @@ impl MainWindow {
                     points: vec![pixel],
                 }))
             }),
+            (Some(Hand::Erase), _) => pixel.map(|pixel| Gesture::Erase {
+                last: pixel,
+                erased: false,
+            }),
             _ => shown.view.can_pan(canvas).then_some(Gesture::Pan(at)),
         };
+        // A press erases where it lands, without moving.
+        if hand == Some(Hand::Erase)
+            && let Some(pixel) = pixel
+        {
+            self.erase_to(pixel, canvas, window, cx);
+        }
         cx.notify();
+    }
+
+    /// While erasing, take off every mark the eraser passes over on its way
+    /// to `pixel`, as one change for the whole drag.
+    fn erase_to(
+        &mut self,
+        pixel: (f32, f32),
+        canvas: Xy,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        let Some(shown) = &mut self.shown else {
+            return;
+        };
+        let Some(Gesture::Erase { last, erased }) = &mut shown.gesture else {
+            return;
+        };
+        let placed = shown.view.placement(canvas);
+        // The eraser's reach on screen, in screenshot pixels.
+        let reach = ERASER_RADIUS * shown.shot.size().0 as f32 / placed.size.x;
+        let from = std::mem::replace(last, pixel);
+        // Checked every half reach along the way, so a quick drag misses
+        // nothing.
+        let length = (pixel.0 - from.0).hypot(pixel.1 - from.1);
+        let steps = ((length / (reach / 2.)).ceil() as usize).max(1);
+        let mut took = false;
+        for step in 0..=steps {
+            let t = step as f32 / steps as f32;
+            let at = (
+                from.0 + (pixel.0 - from.0) * t,
+                from.1 + (pixel.1 - from.1) * t,
+            );
+            while let Some(index) = shown
+                .marks
+                .strokes()
+                .iter()
+                .rposition(|stroke| stroke.touches(at, reach))
+            {
+                // The drag's first take starts a change; the rest join it.
+                shown.marks.erase(index, *erased);
+                *erased = true;
+                took = true;
+            }
+        }
+        if took {
+            shown.drop_patch(window);
+            self.redraw(window, cx);
+        }
+    }
+
+    /// Erase all mark-ups, as one change undo takes back, and say so.
+    pub(super) fn erase_all(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(shown) = &mut self.shown else {
+            return;
+        };
+        if shown.marks.clear() {
+            shown.drop_patch(window);
+            self.redraw(window, cx);
+            self.show_notice("All mark-ups erased", cx);
+        }
     }
 
     fn on_canvas_move(
@@ -363,7 +492,7 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let canvas = canvas_size(window);
-        if self.tool.is_some() {
+        if self.hand.is_some() {
             // The tip outline follows the pointer.
             cx.notify();
         }
@@ -391,6 +520,11 @@ impl MainWindow {
                 let y = (at.y - placed.origin.y) / placed.size.y * height as f32;
                 // Shift draws a straight line.
                 drawing.extend_to((x, y), event.modifiers.shift);
+            }
+            Some(Gesture::Erase { .. }) => {
+                let x = (at.x - placed.origin.x) / placed.size.x * width as f32;
+                let y = (at.y - placed.origin.y) / placed.size.y * height as f32;
+                self.erase_to((x, y), canvas, window, cx);
             }
             None => {}
         }
@@ -473,7 +607,7 @@ impl MainWindow {
                 shown.marks.add(drawing.stroke);
                 self.redraw(window, cx);
             }
-            Some(Gesture::Pan(_)) => cx.notify(),
+            Some(Gesture::Pan(_) | Gesture::Erase { .. }) => cx.notify(),
             None => {}
         }
     }
@@ -514,7 +648,7 @@ impl MainWindow {
                 .w(px(r.width as f32 * per_pixel))
                 .h(px(r.height as f32 * per_pixel))
         });
-        let cursor = match (&shown.gesture, self.tool, self.space_held) {
+        let cursor = match (&shown.gesture, self.hand, self.space_held) {
             (Some(Gesture::Pan(_)), ..) => CursorStyle::ClosedHand,
             (_, Some(_), false) => CursorStyle::Crosshair,
             _ if shown.view.can_pan(canvas_area) => CursorStyle::OpenHand,
@@ -562,38 +696,28 @@ impl MainWindow {
                 .size_full(),
             )
             .children(self.tip(shown, per_pixel))
+            .children(self.notice.map(notice))
     }
 
     /// The tool in hand's tip outlined at the pointer, while the pointer is
-    /// over the canvas, at the size it draws: round for the pen, square for
-    /// the highlighter, a light line in a dark one to show on any
-    /// screenshot. Labelled with its size for a moment after [ or ].
+    /// over the canvas: at the size it draws, round for the pen, the slanted
+    /// chisel for the highlighter; the eraser's reach. A light line in a
+    /// dark one, to show on any screenshot. Labelled with its size for a
+    /// moment after [ or ].
     fn tip(&self, shown: &Shown, per_pixel: f32) -> Vec<AnyElement> {
-        let (Some(tool), Some(at)) = (self.tool, self.pointer) else {
+        let (Some(hand), Some(at)) = (self.hand, self.pointer) else {
             return Vec::new();
         };
         if self.space_held || matches!(shown.gesture, Some(Gesture::Pan(_))) {
             return Vec::new();
         }
+        let Hand::Draw(tool) = hand else {
+            return vec![round_outline(at, 2. * ERASER_RADIUS).into_any_element()];
+        };
         let brush = self.brush(tool);
         let side = (shown.width_for(brush) * per_pixel).max(3.);
         let outline = match tool {
-            Tool::Pen => div()
-                .absolute()
-                .left(px(at.x - side / 2. - 1.))
-                .top(px(at.y - side / 2. - 1.))
-                .size(px(side + 2.))
-                .rounded_full()
-                .border_1()
-                .border_color(gpui_kit::black().opacity(0.6))
-                .child(
-                    div()
-                        .size_full()
-                        .rounded_full()
-                        .border_1()
-                        .border_color(gpui_kit::white().opacity(0.9)),
-                )
-                .into_any_element(),
+            Tool::Pen => round_outline(at, side).into_any_element(),
             Tool::Highlighter => chisel_outline(at, side).into_any_element(),
         };
         let mut tip = vec![outline];

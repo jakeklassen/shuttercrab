@@ -27,6 +27,23 @@ use gpui_kit::{
 };
 use std::time::Duration;
 
+/// What dragging on the screenshot does: draw with a tool, or erase.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Hand {
+    Draw(Tool),
+    Erase,
+}
+
+impl Hand {
+    /// The drawing tool, unless erasing.
+    pub fn drawing(self) -> Option<Tool> {
+        match self {
+            Hand::Draw(tool) => Some(tool),
+            Hand::Erase => None,
+        }
+    }
+}
+
 /// A tool's flyout, open below its button.
 pub(super) struct Flyout {
     tool: Tool,
@@ -38,6 +55,12 @@ pub(super) struct Flyout {
 
 /// Swatches in a row, as in Snipping Tool.
 const COLUMNS: usize = 6;
+
+/// Snipping Tool's words for the eraser's second option.
+const ERASE_ALL: &str = "Erase all mark-ups";
+
+/// How long a notice stays at the foot of the screenshot.
+const NOTICE_FOR: Duration = Duration::from_millis(2000);
 
 /// How long the size label stays after [ or ].
 const SIZE_NOTE_FOR: Duration = Duration::from_millis(1200);
@@ -52,28 +75,37 @@ impl MainWindow {
         self.change(cx, |settings| settings.set_brush(tool, brush));
     }
 
-    /// Pick up `tool`; if it is in hand already, open or close its flyout.
-    pub(super) fn take_tool(&mut self, tool: Tool, cx: &mut Context<Self>) {
+    /// Pick up `hand`; if it is in hand already, open or close its flyout
+    /// (the eraser's: Erase all mark-ups).
+    pub(super) fn take(&mut self, hand: Hand, cx: &mut Context<Self>) {
         if self.shown.is_none() {
             return;
         }
-        if self.tool == Some(tool) {
-            match self.flyout.take() {
-                Some(_) => {}
-                None => self.open_flyout(tool, cx),
+        if self.hand == Some(hand) {
+            let was_open = self.flyout.take().is_some() | std::mem::take(&mut self.eraser_menu);
+            if !was_open {
+                match hand {
+                    Hand::Draw(tool) => self.open_flyout(tool, cx),
+                    Hand::Erase => self.eraser_menu = true,
+                }
             }
         } else {
-            self.tool = Some(tool);
-            self.flyout = None;
+            self.hand = Some(hand);
+            self.close_flyouts();
         }
         cx.notify();
     }
 
-    /// Escape: close the flyout, or put the tool down.
+    /// Escape: close a flyout, or put the tool down.
     pub(super) fn put_down_tool(&mut self, cx: &mut Context<Self>) {
-        if self.flyout.take().is_some() || self.tool.take().is_some() {
+        if self.close_flyouts() || self.hand.take().is_some() {
             cx.notify();
         }
+    }
+
+    /// Close any tool's flyout. Returns whether one was open.
+    pub(super) fn close_flyouts(&mut self) -> bool {
+        self.flyout.take().is_some() | std::mem::take(&mut self.eraser_menu)
     }
 
     fn open_flyout(&mut self, tool: Tool, cx: &mut Context<Self>) {
@@ -119,7 +151,7 @@ impl MainWindow {
     /// [ and ]: the tool in hand a size smaller or bigger, by a step its
     /// range suits.
     pub(super) fn step_size(&mut self, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(tool) = self.tool else {
+        let Some(tool) = self.hand.and_then(Hand::drawing) else {
             return;
         };
         let sizes = tool.sizes();
@@ -136,6 +168,25 @@ impl MainWindow {
                 .size
                 .update(cx, |slider, cx| slider.set_value(size, window, cx));
         }
+    }
+
+    /// Show `text` at the foot of the screenshot for a moment.
+    pub(super) fn show_notice(&mut self, text: &'static str, cx: &mut Context<Self>) {
+        self.notices += 1;
+        self.notice = Some(text);
+        let shown = self.notices;
+        cx.spawn(async move |this, cx| {
+            cx.background_executor().timer(NOTICE_FOR).await;
+            // Unless a later notice is showing.
+            let _ = this.update(cx, |this, cx| {
+                if this.notices == shown {
+                    this.notice = None;
+                    cx.notify();
+                }
+            });
+        })
+        .detach();
+        cx.notify();
     }
 
     /// Show the tip, labelled with its size, for a moment.
@@ -159,7 +210,17 @@ impl MainWindow {
 
     /// A key while a flyout is open: arrows move through the colours, Enter
     /// or Space picks one and closes it. Returns whether the key was used.
-    pub(super) fn on_flyout_key(&mut self, key: &str, cx: &mut Context<Self>) -> bool {
+    pub(super) fn on_flyout_key(
+        &mut self,
+        key: &str,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> bool {
+        if self.eraser_menu && matches!(key, "enter" | "space") {
+            self.eraser_menu = false;
+            self.erase_all(window, cx);
+            return true;
+        }
         let Some(flyout) = &mut self.flyout else {
             return false;
         };
@@ -182,7 +243,7 @@ impl MainWindow {
         true
     }
 
-    /// The pen and highlighter, then undo and redo, for the toolbar.
+    /// The pen, highlighter and eraser, then undo and redo, for the toolbar.
     pub(super) fn drawing_tools(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let marks = self.shown.as_ref().map(|shown| &shown.marks);
         let (can_undo, can_redo) = marks.map_or((false, false), |m| (m.can_undo(), m.can_redo()));
@@ -192,8 +253,9 @@ impl MainWindow {
             .items_center()
             .gap_1()
             .child(separator())
-            .child(self.tool_button(Tool::Pen, cx))
-            .child(self.tool_button(Tool::Highlighter, cx))
+            .child(self.tool_button(Hand::Draw(Tool::Pen), cx))
+            .child(self.tool_button(Hand::Draw(Tool::Highlighter), cx))
+            .child(self.tool_button(Hand::Erase, cx))
             .child(separator())
             .child(Self::history_button(
                 "undo",
@@ -213,16 +275,24 @@ impl MainWindow {
             ))
     }
 
-    /// A drawing tool's button: its icon over a bar of its colour, and a
-    /// coral outline while it is in hand; its flyout below it when open.
-    fn tool_button(&self, tool: Tool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let (id, label, icon) = match tool {
-            Tool::Pen => ("tool-pen", "Pen (P)", IconName::Pen),
-            Tool::Highlighter => ("tool-highlighter", "Highlighter (H)", IconName::Highlighter),
+    /// A tool's button: its icon, over a bar of its colour for a drawing
+    /// tool, and a coral outline while it is in hand; its flyout below it
+    /// when open.
+    fn tool_button(&self, hand: Hand, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let (id, label, icon) = match hand {
+            Hand::Draw(Tool::Pen) => ("tool-pen", "Pen (P)", IconName::Pen),
+            Hand::Draw(Tool::Highlighter) => {
+                ("tool-highlighter", "Highlighter (H)", IconName::Highlighter)
+            }
+            Hand::Erase => ("tool-eraser", "Eraser (X)", IconName::Eraser),
         };
-        let brush = self.brush(tool);
-        let in_hand = self.tool == Some(tool);
-        let flyout = self.flyout.as_ref().filter(|f| f.tool == tool);
+        let brush = hand.drawing().map(|tool| (tool, self.brush(tool)));
+        let in_hand = self.hand == Some(hand);
+        let flyout = self
+            .flyout
+            .as_ref()
+            .filter(|f| brush.is_some_and(|(tool, _)| f.tool == tool));
+        let menu = hand == Hand::Erase && self.eraser_menu;
         div()
             .relative()
             .child(
@@ -252,25 +322,79 @@ impl MainWindow {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| this.take_tool(tool, cx)),
+                        cx.listener(move |this, _: &MouseUpEvent, _, cx| this.take(hand, cx)),
                     )
                     .child(Icon::new(icon).size(px(18.)))
+                    // The eraser has a clear bar, to sit level with the rest.
                     .child(
                         div()
                             .w(px(16.))
                             .h(px(3.))
                             .rounded_full()
-                            .bg(rgb(brush.color.hex())),
+                            .map(|bar| match brush {
+                                Some((_, brush)) => bar.bg(rgb(brush.color.hex())),
+                                None => bar,
+                            }),
                     ),
             )
-            .when_some(flyout, |d, flyout| {
+            .when_some(flyout.zip(brush), |d, (flyout, (_, brush))| {
                 d.child(deferred(self.flyout_panel(flyout, brush, cx)).with_priority(1))
+            })
+            .when(menu, |d| {
+                d.child(deferred(Self::eraser_menu(cx)).with_priority(1))
             })
             // [ or ] with the pointer off the screenshot, where the tip
             // would show it: the size, under the button, for a moment.
-            .when(
-                in_hand && flyout.is_none() && self.size_note && self.pointer.is_none(),
-                |d| d.child(size_note(tool, brush)),
+            .when_some(brush, |d, (tool, brush)| {
+                d.when(
+                    in_hand && flyout.is_none() && self.size_note && self.pointer.is_none(),
+                    |d| d.child(size_note(tool, brush)),
+                )
+            })
+    }
+
+    /// The eraser's flyout, with its one action and its key.
+    fn eraser_menu(cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .id("eraser-menu")
+            .role(Role::Menu)
+            .test_support()
+            .absolute()
+            .top(px(46.))
+            .left(px(0.))
+            .p(px(5.))
+            .rounded_lg()
+            .bg(rgb(0x2C2C2C))
+            .border_1()
+            .border_color(border())
+            .shadow_lg()
+            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+            .child(
+                div()
+                    .id("erase-all")
+                    .role(Role::MenuItem)
+                    .aria_label(ERASE_ALL)
+                    .test_support()
+                    .flex()
+                    .items_center()
+                    .gap_2p5()
+                    .h(px(36.))
+                    .px_3()
+                    .rounded_md()
+                    .text_sm()
+                    .whitespace_nowrap()
+                    .hover(|s| s.bg(rgb(0x383838)))
+                    .cursor_pointer()
+                    .on_mouse_up(
+                        MouseButton::Left,
+                        cx.listener(|this, _: &MouseUpEvent, window, cx| {
+                            this.eraser_menu = false;
+                            this.erase_all(window, cx);
+                        }),
+                    )
+                    .child(Icon::new(IconName::Trash).size(px(16.)))
+                    .child(ERASE_ALL)
+                    .child(div().text_xs().text_color(muted()).child("Enter")),
             )
     }
 

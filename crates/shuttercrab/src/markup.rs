@@ -188,11 +188,24 @@ impl Drawing {
     }
 }
 
-/// The marks on a screenshot, with what undo took off for redo.
+/// The marks on a screenshot, with the changes made to them, for undo, and
+/// the changes undo took back, for redo.
 #[derive(Clone, Debug, Default)]
 pub struct Marks {
     strokes: Vec<Stroke>,
-    undone: Vec<Stroke>,
+    done: Vec<Change>,
+    undone: Vec<Change>,
+}
+
+/// One change to the marks, as undo takes it back whole.
+#[derive(Clone, Debug)]
+enum Change {
+    Added(Stroke),
+    /// The strokes the eraser took in one drag, each with the place it had
+    /// when taken, in the order taken.
+    Erased(Vec<(usize, Stroke)>),
+    /// Every stroke, by Erase all mark-ups.
+    Cleared(Vec<Stroke>),
 }
 
 impl Marks {
@@ -204,41 +217,112 @@ impl Marks {
         self.strokes.is_empty()
     }
 
-    /// Add a finished stroke. What undo took off can no longer be redone.
+    /// Add a finished stroke.
     pub fn add(&mut self, stroke: Stroke) {
-        self.strokes.push(stroke);
+        self.strokes.push(stroke.clone());
+        self.record(Change::Added(stroke));
+    }
+
+    /// Erase the stroke at `index`. With `joining`, it joins the eraser's
+    /// last change, so one drag is undone in one go.
+    pub fn erase(&mut self, index: usize, joining: bool) {
+        let stroke = self.strokes.remove(index);
+        if joining && let Some(Change::Erased(taken)) = self.done.last_mut() {
+            taken.push((index, stroke));
+            return;
+        }
+        self.record(Change::Erased(vec![(index, stroke)]));
+    }
+
+    /// Erase every stroke. Returns whether there were any.
+    pub fn clear(&mut self) -> bool {
+        if self.strokes.is_empty() {
+            return false;
+        }
+        let all = std::mem::take(&mut self.strokes);
+        self.record(Change::Cleared(all));
+        true
+    }
+
+    /// A new change: what undo took back can no longer be redone.
+    fn record(&mut self, change: Change) {
+        self.done.push(change);
         self.undone.clear();
     }
 
-    /// Take off the latest stroke. Returns whether there was one.
+    /// Take back the latest change. Returns whether there was one.
     pub fn undo(&mut self) -> bool {
-        match self.strokes.pop() {
-            Some(stroke) => {
-                self.undone.push(stroke);
-                true
+        let Some(change) = self.done.pop() else {
+            return false;
+        };
+        match &change {
+            Change::Added(_) => {
+                self.strokes.pop();
             }
-            None => false,
+            Change::Erased(taken) => {
+                for (index, stroke) in taken.iter().rev() {
+                    self.strokes.insert(*index, stroke.clone());
+                }
+            }
+            Change::Cleared(all) => self.strokes = all.clone(),
         }
+        self.undone.push(change);
+        true
     }
 
-    /// Put back the stroke undo took off last. Returns whether there was one.
+    /// Make again the change undo took back last. Returns whether there was
+    /// one.
     pub fn redo(&mut self) -> bool {
-        match self.undone.pop() {
-            Some(stroke) => {
-                self.strokes.push(stroke);
-                true
+        let Some(change) = self.undone.pop() else {
+            return false;
+        };
+        match &change {
+            Change::Added(stroke) => self.strokes.push(stroke.clone()),
+            Change::Erased(taken) => {
+                for (index, _) in taken {
+                    self.strokes.remove(*index);
+                }
             }
-            None => false,
+            Change::Cleared(_) => self.strokes.clear(),
         }
+        self.done.push(change);
+        true
     }
 
     pub fn can_undo(&self) -> bool {
-        !self.strokes.is_empty()
+        !self.done.is_empty()
     }
 
     pub fn can_redo(&self) -> bool {
         !self.undone.is_empty()
     }
+}
+
+impl Stroke {
+    /// Whether the stroke comes within `reach` screenshot pixels of
+    /// `point`, counting its own width.
+    pub fn touches(&self, point: (f32, f32), reach: f32) -> bool {
+        let near = self.width / 2. + reach;
+        let samples = smooth_points(&self.points);
+        if let [only] = samples.as_slice() {
+            return distance(point, *only, *only) <= near;
+        }
+        samples
+            .windows(2)
+            .any(|pair| distance(point, pair[0], pair[1]) <= near)
+    }
+}
+
+/// How far `point` is from the segment `a`–`b`.
+fn distance(point: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
+    let (dx, dy) = (b.0 - a.0, b.1 - a.1);
+    let length = dx * dx + dy * dy;
+    let t = if length == 0. {
+        0.
+    } else {
+        (((point.0 - a.0) * dx + (point.1 - a.1) * dy) / length).clamp(0., 1.)
+    };
+    (point.0 - (a.0 + t * dx)).hypot(point.1 - (a.1 + t * dy))
 }
 
 /// `strokes` drawn onto a `width` × `height` screenshot. `pixels` and the
@@ -673,6 +757,51 @@ mod tests {
         for corner in [(0., 0.), (4., 1.), (4., 4.), (1., 4.)] {
             assert!(hull.contains(&corner), "{corner:?}");
         }
+    }
+
+    #[test]
+    fn erasing_is_undone_in_one_go_and_redone() {
+        let mut marks = Marks::default();
+        for y in [5., 10., 15.] {
+            marks.add(line(Tool::Pen, Rgb(0, 0, 0), y));
+        }
+        // One drag takes the first and, joining, the (new) first again.
+        marks.erase(0, false);
+        marks.erase(0, true);
+        assert_eq!(marks.strokes().len(), 1);
+        assert_eq!(marks.strokes()[0].points[0].1, 15.);
+        assert!(marks.undo());
+        assert_eq!(
+            marks
+                .strokes()
+                .iter()
+                .map(|s| s.points[0].1)
+                .collect::<Vec<_>>(),
+            [5., 10., 15.]
+        );
+        assert!(marks.redo());
+        assert_eq!(marks.strokes().len(), 1);
+        // Erase all, undone and redone.
+        assert!(marks.clear());
+        assert!(marks.is_empty());
+        assert!(!marks.clear());
+        assert!(marks.undo());
+        assert_eq!(marks.strokes().len(), 1);
+        assert!(marks.redo());
+        assert!(marks.is_empty());
+        // Undo walks back through every change to the start.
+        while marks.undo() {}
+        assert!(marks.is_empty() && !marks.can_undo() && marks.can_redo());
+    }
+
+    #[test]
+    fn a_stroke_is_touched_within_its_width_and_reach() {
+        let stroke = line(Tool::Pen, Rgb(0, 0, 0), 10.);
+        // Width 6: 3 either side of y = 10, from x 2 to 18.
+        assert!(stroke.touches((10., 12.), 0.));
+        assert!(!stroke.touches((10., 15.), 0.));
+        assert!(stroke.touches((10., 15.), 3.));
+        assert!(!stroke.touches((30., 10.), 3.));
     }
 
     #[test]
