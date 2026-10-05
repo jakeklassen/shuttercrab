@@ -544,6 +544,7 @@ fn the_drawing_tools_fit_beside_the_rest_of_the_toolbar(cx: &mut TestAppContext)
         for id in [
             "tool-pen",
             "tool-highlighter",
+            "tool-eraser",
             "undo",
             "redo",
             "copy",
