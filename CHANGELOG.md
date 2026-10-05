@@ -7,6 +7,22 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.11](https://github.com/jakeklassen/shuttercrab/compare/v0.1.10...v0.1.11) - 2026-10-05
+
+### Added
+
+- the highlighter has a slanted chisel tip
+- show the drawing tool's tip at its size, and toggle flyouts by click
+- colour and size flyouts for the pen and highlighter, remembered
+- Shift draws straight lines with the pen and highlighter
+- draw on a screenshot with the pen and highlighter, with undo
+- Copy shows a check mark once the screenshot is copied
+
+### Fixed
+
+- the drawing tip no longer jumps to the middle or sticks at the edge
+- no flashing when undoing, redoing or highlighting
+
 ## [0.1.10](https://github.com/jakeklassen/shuttercrab/compare/v0.1.9...v0.1.10) - 2026-10-04
 
 ### Added
