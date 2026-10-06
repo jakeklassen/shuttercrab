@@ -170,6 +170,7 @@ async fn show_in_window(
         saved,
         scale: Some(scale),
         marks: Vec::new(),
+        crop: None,
     };
     show_in_main(state, shot, cx);
 }
@@ -302,6 +303,7 @@ impl CaptureFile {
             saved,
             scale,
             marks: Vec::new(),
+            crop: None,
         })
     }
 

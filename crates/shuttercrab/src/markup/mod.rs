@@ -236,6 +236,9 @@ impl Mark {
 #[derive(Clone, Debug, Default)]
 pub struct Marks {
     marks: Vec<Mark>,
+    /// The part of the screenshot kept by a crop, if cropped. The rest
+    /// stays, so the crop can be widened again.
+    crop: Option<Region>,
     done: Vec<Change>,
     undone: Vec<Change>,
 }
@@ -256,6 +259,11 @@ enum Change {
         before: Mark,
         after: Mark,
         how: Edit,
+    },
+    /// The crop, from what it was.
+    Cropped {
+        before: Option<Region>,
+        after: Option<Region>,
     },
 }
 
@@ -305,6 +313,23 @@ impl Marks {
         let all = std::mem::take(&mut self.marks);
         self.record(Change::Cleared(all));
         true
+    }
+
+    /// The part of the screenshot kept, if cropped.
+    pub fn crop(&self) -> Option<Region> {
+        self.crop
+    }
+
+    /// Crop to `crop` (`None`: the whole screenshot again), as one change.
+    pub fn set_crop(&mut self, crop: Option<Region>) {
+        if crop == self.crop {
+            return;
+        }
+        let before = std::mem::replace(&mut self.crop, crop);
+        self.record(Change::Cropped {
+            before,
+            after: crop,
+        });
     }
 
     /// Put `mark` in place of the one at `index`. A `Nudge` or `Style`
@@ -372,6 +397,7 @@ impl Marks {
             }
             Change::Cleared(all) => self.marks = all.clone(),
             Change::Edited { index, before, .. } => self.marks[*index] = before.clone(),
+            Change::Cropped { before, .. } => self.crop = *before,
         }
         self.undone.push(change);
         true
@@ -392,6 +418,7 @@ impl Marks {
             }
             Change::Cleared(_) => self.marks.clear(),
             Change::Edited { index, after, .. } => self.marks[*index] = after.clone(),
+            Change::Cropped { after, .. } => self.crop = *after,
         }
         self.done.push(change);
         true
@@ -1038,6 +1065,32 @@ mod tests {
         // The defaults are in their palettes.
         assert!(PEN_COLORS.contains(&Brush::PEN.color));
         assert!(HIGHLIGHTER_COLORS.contains(&Brush::HIGHLIGHTER.color));
+    }
+
+    #[test]
+    fn a_crop_is_undone_and_redone_and_leaves_the_marks() {
+        let mut marks = Marks::default();
+        marks.add(Mark::Stroke(line(Tool::Pen, Rgb(0, 0, 0), 5.)));
+        let part = Region {
+            x: 2,
+            y: 3,
+            width: 10,
+            height: 8,
+        };
+        marks.set_crop(Some(part));
+        assert_eq!(marks.crop(), Some(part));
+        // Erase all takes the marks, not the crop.
+        assert!(marks.clear());
+        assert_eq!(marks.crop(), Some(part));
+        assert!(marks.undo() && marks.undo());
+        assert_eq!(marks.crop(), None);
+        assert_eq!(marks.marks().len(), 1);
+        assert!(marks.redo());
+        assert_eq!(marks.crop(), Some(part));
+        // The same crop again is no change.
+        marks.set_crop(Some(part));
+        assert!(marks.undo());
+        assert_eq!(marks.crop(), None);
     }
 
     #[test]

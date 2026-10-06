@@ -243,7 +243,7 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
 /// Resolves to whether it was copied.
 fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) -> Task<bool> {
     let (state, shot) = (state.clone(), shot.clone());
-    let (width, height) = shot.size();
+    let (width, height) = shot.output_size();
     cx.spawn(async move |cx| {
         let flattened = cx
             .background_executor()
@@ -286,8 +286,9 @@ fn open_shot_file(
     cx: &mut App,
     open: impl FnOnce(&Path) -> Result<(), &'static str> + 'static,
 ) {
-    // A marked-up screenshot is never the saved file, which has no marks.
-    let saved = shot.saved.clone().filter(|_| shot.marks.is_empty());
+    // A marked-up or cropped screenshot is never the saved file, which is
+    // as taken.
+    let saved = shot.saved.clone().filter(|_| !shot.is_edited());
     let (state, shot) = (state.clone(), shot.clone());
     cx.spawn(async move |cx| {
         let path = match saved {
@@ -354,15 +355,22 @@ fn save_shot_as(state: &Rc<State>, shot: &Shot, cx: &mut App) {
 }
 
 /// The screenshot's pixels (straight-alpha RGBA) and its PNG file, with
-/// its marks drawn on. Without marks, the PNG is the one taken.
+/// its marks drawn on and cut to its crop. Unedited, the PNG is the one
+/// taken.
 fn flatten(shot: &Shot) -> anyhow::Result<(Vec<u8>, Arc<Vec<u8>>)> {
     let rgba = pixels::rgba(&shot.image);
-    if shot.marks.is_empty() {
+    if !shot.is_edited() {
         return Ok((rgba, shot.png.clone()));
     }
     let (width, height) = shot.size();
-    let marked = markup::draw(&rgba, width, height, &shot.marks, false);
-    let png = shuttercrab_capture::encode_png(width, height, &marked)?;
+    let kept = shot.crop.unwrap_or(markup::Region {
+        x: 0,
+        y: 0,
+        width,
+        height,
+    });
+    let marked = markup::draw_region(&rgba, width, kept, &shot.marks, false);
+    let png = shuttercrab_capture::encode_png(kept.width, kept.height, &marked)?;
     Ok((marked, Arc::new(png)))
 }
 

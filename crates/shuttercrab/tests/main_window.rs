@@ -269,6 +269,7 @@ fn shot(width: u32, height: u32) -> Shot {
         saved: None,
         scale: None,
         marks: Vec::new(),
+        crop: None,
     }
 }
 

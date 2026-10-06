@@ -201,6 +201,7 @@ impl Shown {
     pub(super) fn marked(&self) -> Shot {
         Shot {
             marks: self.marks.marks().to_vec(),
+            crop: self.marks.crop(),
             ..self.shot.clone()
         }
     }

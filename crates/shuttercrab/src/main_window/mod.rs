@@ -38,7 +38,7 @@ mod tools;
 
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
-    markup::{Mark, Tool},
+    markup::{Mark, Region, Tool},
     palette::{border, coral, hover, muted, recording, surface, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, Settings},
     settings_window::{Hooks, SettingsWindow},
@@ -112,6 +112,9 @@ pub struct Shot {
     /// The marks drawn on it, which copying, saving and opening it
     /// elsewhere include. `image` and `png` stay as they were taken.
     pub marks: Vec<Mark>,
+    /// The part kept by a crop, if cropped, which copying, saving and
+    /// opening it elsewhere give.
+    pub crop: Option<Region>,
 }
 
 impl Shot {
@@ -119,6 +122,19 @@ impl Shot {
     pub fn size(&self) -> (u32, u32) {
         let size = self.image.size(0);
         (size.width.0 as u32, size.height.0 as u32)
+    }
+
+    /// The size copying and saving it gives: the crop's, if cropped.
+    pub fn output_size(&self) -> (u32, u32) {
+        match self.crop {
+            Some(crop) => (crop.width, crop.height),
+            None => self.size(),
+        }
+    }
+
+    /// Whether it was marked up or cropped: then it is not the file taken.
+    pub fn is_edited(&self) -> bool {
+        !self.marks.is_empty() || self.crop.is_some()
     }
 }
 
