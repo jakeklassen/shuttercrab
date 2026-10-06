@@ -15,17 +15,25 @@
 //! seconds; a discarded take counts down with Undo (Z) and Discard now
 //! (Enter, or the discard chord again). The bar only reports what was
 //! asked; the app does it and tells the bar what to show.
+//!
+//! Before recording, as in the Snipping Tool, the bar is ready rather than
+//! recording: it has the keyboard, and offers Start (Enter), Cancel (Esc),
+//! and the sound to record, starting from the settings each time: the
+//! microphone (M), which one (Down opens the list), and the system sound
+//! (A). Choices there are for that recording only. Both switches stay
+//! while recording, so either source can be switched on or off mid-take.
 
 use crate::{
     palette::{border, hover, muted, paused, recording, surface, tile},
     recording::{Clock, clock},
 };
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement as _,
-    IntoElement, KeyDownEvent, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, assets::IconName,
-    component::Icon, div, prelude::FluentBuilder as _, px,
+    AnyElement, Bounds, ClickEvent, Context, EventEmitter, FocusHandle, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, ParentElement as _, Pixels, Render, Role,
+    SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
+    assets::IconName, canvas, component::Icon, div, prelude::FluentBuilder as _, px,
 };
+use shuttercrab_capture::record::{Microphone, Source};
 use std::{
     cell::Cell,
     rc::Rc,
@@ -44,7 +52,49 @@ pub enum RecordBarEvent {
     /// No to it: keep the take.
     Cancel,
     Undo,
+    /// Start recording, from the ready bar.
+    Start,
+    /// Close the ready bar without recording.
+    Close,
+    /// Switch a sound source on or off; the bar already shows it.
+    SetSound(Source, bool),
+    /// Open the list of microphones.
+    ChooseMicrophone,
 }
+
+/// The sound a recording takes.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct Sound {
+    /// What the speakers play.
+    pub system: bool,
+    pub microphone: bool,
+    /// Which microphone: Windows' id for it, or `None` for Windows'
+    /// default.
+    pub device: Option<String>,
+}
+
+impl Sound {
+    pub fn is_on(&self, source: Source) -> bool {
+        match source {
+            Source::System => self.system,
+            Source::Microphone => self.microphone,
+        }
+    }
+
+    fn set(&mut self, source: Source, on: bool) {
+        match source {
+            Source::System => self.system = on,
+            Source::Microphone => self.microphone = on,
+        }
+    }
+}
+
+/// The microphone list button's width, logical pixels: long names are cut
+/// short.
+const MICROPHONE_LIST_WIDTH: f32 = 220.0;
+
+/// How the microphone list names Windows' default.
+pub const DEFAULT_MICROPHONE: &str = "Windows' default";
 
 /// An action that throws a take away.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -56,6 +106,10 @@ pub enum Destructive {
 /// What the bar shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BarMode {
+    /// Before recording: Start, Cancel and the sound to record.
+    Ready,
+    /// Start was pressed; the countdown runs or the recorder starts.
+    Starting,
     /// The time and the four actions.
     Controls,
     /// Asking before `Destructive` throws away a take `length` long.
@@ -76,7 +130,7 @@ pub struct RecordKeys {
 }
 
 /// The bar's size in logical pixels.
-pub const RECORD_BAR_WIDTH: f32 = 860.0;
+pub const RECORD_BAR_WIDTH: f32 = 920.0;
 pub const RECORD_BAR_HEIGHT: f32 = 48.0;
 
 /// The time is redrawn once a second, just after the clock reaches the
@@ -105,6 +159,14 @@ pub struct RecordBar {
     /// Whether the bar has the keyboard, so the letters work.
     active: bool,
     keys: RecordKeys,
+    /// The sound to record, as switched in the bar.
+    sound: Sound,
+    /// The microphones plugged in when the bar opened, Windows' default
+    /// first.
+    microphones: Vec<Microphone>,
+    /// Where the microphone list's button was last drawn, so the list can
+    /// open below it.
+    list_button: Rc<Cell<Bounds<Pixels>>>,
     focus: FocusHandle,
 }
 
@@ -148,12 +210,70 @@ impl RecordBar {
             notice: None,
             active: window.is_window_active(),
             keys,
+            sound: Sound::default(),
+            microphones: Vec::new(),
+            list_button: Rc::default(),
             focus,
         }
     }
 
+    /// Show the ready bar, recording `sound` unless switched, with
+    /// `microphones` to choose from. A chosen microphone that is not
+    /// plugged in gives way to Windows' default.
+    pub fn ready(mut self, mut sound: Sound, microphones: Vec<Microphone>) -> Self {
+        if let Some(id) = &sound.device
+            && !microphones.iter().any(|m| &m.id == id)
+        {
+            log::info!("the chosen microphone is not plugged in; Windows' default is used");
+            sound.device = None;
+        }
+        self.mode = BarMode::Ready;
+        self.sound = sound;
+        self.microphones = microphones;
+        self
+    }
+
     pub fn mode(&self) -> BarMode {
         self.mode
+    }
+
+    pub fn sound(&self) -> &Sound {
+        &self.sound
+    }
+
+    /// The microphone list's choices: Windows' default, then each one
+    /// plugged in. The second value is the index of the one chosen.
+    pub fn microphone_choices(&self) -> (Vec<SharedString>, usize) {
+        let names = std::iter::once(DEFAULT_MICROPHONE.into())
+            .chain(self.microphones.iter().map(|m| m.name.clone().into()))
+            .collect();
+        let chosen = self
+            .sound
+            .device
+            .as_ref()
+            .and_then(|id| self.microphones.iter().position(|m| &m.id == id))
+            .map_or(0, |i| i + 1);
+        (names, chosen)
+    }
+
+    /// Use the microphone list's choice `index`.
+    pub fn choose_microphone(&mut self, index: usize, cx: &mut Context<Self>) {
+        self.sound.device = index
+            .checked_sub(1)
+            .and_then(|i| self.microphones.get(i))
+            .map(|m| m.id.clone());
+        cx.notify();
+    }
+
+    /// Where the microphone list's button is, logical pixels in the bar.
+    pub fn list_button(&self) -> Bounds<Pixels> {
+        self.list_button.get()
+    }
+
+    /// The chosen microphone's name.
+    fn microphone_name(&self) -> SharedString {
+        let (names, chosen) = self.microphone_choices();
+        names[chosen].clone()
     }
 
     pub fn set_mode(&mut self, mode: BarMode, cx: &mut Context<Self>) {
@@ -185,13 +305,36 @@ impl RecordBar {
     }
 
     fn ask(&mut self, event: RecordBarEvent, cx: &mut Context<Self>) {
+        match event {
+            RecordBarEvent::SetSound(source, on) => self.sound.set(source, on),
+            RecordBarEvent::Start => self.mode = BarMode::Starting,
+            _ => {}
+        }
         cx.emit(event);
         cx.notify();
+    }
+
+    /// Switch `source` the other way.
+    fn flip(&self, source: Source) -> RecordBarEvent {
+        RecordBarEvent::SetSound(source, !self.sound.is_on(source))
+    }
+
+    /// Whether the sound switches are shown.
+    fn switches_shown(&self) -> bool {
+        matches!(
+            self.mode,
+            BarMode::Ready | BarMode::Starting | BarMode::Controls
+        )
     }
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
         let request = match (self.mode, key) {
+            (_, "m") if self.switches_shown() => Some(self.flip(Source::Microphone)),
+            (_, "a") if self.switches_shown() => Some(self.flip(Source::System)),
+            (BarMode::Ready, "enter") => Some(RecordBarEvent::Start),
+            (BarMode::Ready, "escape") => Some(RecordBarEvent::Close),
+            (BarMode::Ready, "down") => Some(RecordBarEvent::ChooseMicrophone),
             (BarMode::Controls, "p" | "space") => Some(RecordBarEvent::TogglePause),
             (BarMode::Controls, "s") => Some(RecordBarEvent::Stop),
             (BarMode::Controls, "n") if !self.offering(Instant::now()) => {
@@ -226,6 +369,122 @@ impl RecordBar {
         }
     }
 
+    /// The key hint for a button with no global chord: its key while the
+    /// bar has the keyboard, otherwise none. The ready bar always shows
+    /// them: it gets the keyboard back from the microphone list, and hints
+    /// coming and going would move its buttons.
+    fn letter(&self, letter: &'static str) -> SharedString {
+        if self.active || self.mode == BarMode::Ready {
+            letter.into()
+        } else {
+            "".into()
+        }
+    }
+
+    /// A button's key hint, if it has one.
+    fn key_hint(id: &'static str, key: SharedString) -> Option<AnyElement> {
+        (!key.is_empty()).then(|| {
+            div()
+                .id(SharedString::from(format!("{id}-key")))
+                .role(Role::Status)
+                .aria_label(key.clone())
+                .test_support()
+                .text_xs()
+                .text_color(muted())
+                .child(key)
+                .into_any_element()
+        })
+    }
+
+    /// A switch for a sound source, its icon crossed out when off. In the
+    /// ready bar it is named; while recording, the icon alone.
+    fn sound_switch(&self, source: Source, cx: &mut Context<Self>) -> AnyElement {
+        let on = self.sound.is_on(source);
+        let (id, name, icon, letter) = match source {
+            Source::Microphone => (
+                "record-microphone",
+                "Microphone",
+                if on { IconName::Mic } else { IconName::MicOff },
+                "M",
+            ),
+            Source::System => (
+                "record-system-sound",
+                "System sound",
+                if on {
+                    IconName::Volume2
+                } else {
+                    IconName::VolumeX
+                },
+                "A",
+            ),
+        };
+        let label = format!("{name} {}", if on { "on" } else { "off" });
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .test_support()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1p5()
+            .h(px(32.))
+            .px_2()
+            .rounded_md()
+            .bg(tile())
+            .hover(|s| s.bg(hover()))
+            .cursor_pointer()
+            .text_sm()
+            .text_color(if on { gpui_kit::white() } else { muted() })
+            .on_click(
+                cx.listener(move |this, _: &ClickEvent, _, cx| this.ask(this.flip(source), cx)),
+            )
+            .child(Icon::new(icon).size(px(14.)))
+            .when(self.mode == BarMode::Ready, |d| d.child(name))
+            .children(Self::key_hint(id, self.letter(letter)))
+            .into_any_element()
+    }
+
+    /// The button that opens the microphone list, naming the one chosen.
+    fn microphone_list(&self, cx: &mut Context<Self>) -> AnyElement {
+        let name = self.microphone_name();
+        let drawn = self.list_button.clone();
+        div()
+            .id("record-microphones")
+            .role(Role::Button)
+            .aria_label(format!("Which microphone: {name}"))
+            .test_support()
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1p5()
+            .h(px(32.))
+            .px_2()
+            .rounded_md()
+            .bg(tile())
+            .hover(|s| s.bg(hover()))
+            .cursor_pointer()
+            .text_sm()
+            .text_color(gpui_kit::white())
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.ask(RecordBarEvent::ChooseMicrophone, cx)
+            }))
+            // As wide whichever is chosen, so nothing moves when it changes.
+            .w(px(MICROPHONE_LIST_WIDTH))
+            .child(div().flex_1().min_w_0().truncate().child(name))
+            .child(Icon::new(IconName::ChevronDown).size(px(14.)))
+            .children(Self::key_hint("record-microphones", self.letter("↓")))
+            .child(
+                canvas(move |bounds, _, _| drawn.set(bounds), |_, _, _, _| {})
+                    .absolute()
+                    .top_0()
+                    .left_0()
+                    .size_full(),
+            )
+            .into_any_element()
+    }
+
     /// A button: an icon, a label and its key hint.
     #[expect(
         clippy::too_many_arguments,
@@ -241,7 +500,6 @@ impl RecordBar {
         cx: &mut Context<Self>,
         event: RecordBarEvent,
     ) -> AnyElement {
-        let key_id = SharedString::from(format!("{id}-key"));
         div()
             .id(id)
             .role(Role::Button)
@@ -262,18 +520,7 @@ impl RecordBar {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.ask(event, cx)))
             .child(Icon::new(icon).size(px(14.)))
             .child(label)
-            .when(!key.is_empty(), |d| {
-                d.child(
-                    div()
-                        .id(key_id)
-                        .role(Role::Status)
-                        .aria_label(key.clone())
-                        .test_support()
-                        .text_xs()
-                        .text_color(muted())
-                        .child(key),
-                )
-            })
+            .children(Self::key_hint(id, key))
             .into_any_element()
     }
 
@@ -286,6 +533,8 @@ impl RecordBar {
         }
         let is_paused = self.clock.get().is_paused();
         match self.mode {
+            BarMode::Ready => ("Ready to record".into(), gpui_kit::white()),
+            BarMode::Starting => ("Starting…".into(), muted()),
             BarMode::Controls if is_paused => (self.time().into(), paused()),
             BarMode::Controls => (self.time().into(), gpui_kit::white()),
             BarMode::Confirm(Destructive::Discard, length) => (
@@ -309,10 +558,53 @@ impl RecordBar {
 
     fn buttons(&self, now: Instant, cx: &mut Context<Self>) -> Vec<AnyElement> {
         match self.mode {
-            BarMode::Controls => self.control_buttons(now, cx),
+            BarMode::Ready => self.ready_buttons(cx),
+            BarMode::Starting => self.switches(cx),
+            BarMode::Controls => {
+                let mut buttons = self.switches(cx);
+                buttons.extend(self.control_buttons(now, cx));
+                buttons
+            }
             BarMode::Confirm(action, _) => self.confirm_buttons(action, cx),
             BarMode::Discarded { .. } => self.discarded_buttons(cx),
         }
+    }
+
+    /// Before recording: the sound to record, then Start and Cancel.
+    fn ready_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![
+            self.sound_switch(Source::Microphone, cx),
+            self.microphone_list(cx),
+            self.sound_switch(Source::System, cx),
+            div().w(px(4.)).into_any_element(),
+            self.button(
+                "record-start",
+                IconName::Circle,
+                "Start",
+                self.letter("Enter"),
+                recording(),
+                cx,
+                RecordBarEvent::Start,
+            ),
+            self.button(
+                "record-close",
+                IconName::X,
+                "Cancel",
+                self.letter("Esc"),
+                gpui_kit::white(),
+                cx,
+                RecordBarEvent::Close,
+            ),
+        ]
+    }
+
+    /// The sound switches alone, set apart from what follows.
+    fn switches(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        vec![
+            self.sound_switch(Source::Microphone, cx),
+            self.sound_switch(Source::System, cx),
+            div().w(px(4.)).into_any_element(),
+        ]
     }
 
     /// While recording: Pause, Stop, Restart, and Discard set apart.
@@ -440,7 +732,7 @@ impl Render for RecordBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
         let dot = match self.mode {
-            BarMode::Discarded { .. } => muted(),
+            BarMode::Ready | BarMode::Starting | BarMode::Discarded { .. } => muted(),
             _ if self.clock.get().is_paused() => paused(),
             _ => recording(),
         };

@@ -46,7 +46,11 @@ icon_assets!(
         FaceSlightlySmiling,
         Crop,
         Hand,
-        HandGrab
+        HandGrab,
+        Mic,
+        MicOff,
+        Volume2,
+        VolumeX
     ]
 );
 
@@ -120,6 +124,10 @@ mod tests {
             IconName::Crop,
             IconName::Hand,
             IconName::HandGrab,
+            IconName::Mic,
+            IconName::MicOff,
+            IconName::Volume2,
+            IconName::VolumeX,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

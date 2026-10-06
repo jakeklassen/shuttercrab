@@ -10,11 +10,12 @@ use gpui_kit::{
 };
 use shuttercrab::{
     record_bar::{
-        BarMode, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent,
-        RecordKeys,
+        BarMode, DEFAULT_MICROPHONE, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar,
+        RecordBarEvent, RecordKeys, Sound,
     },
     recording::Clock,
 };
+use shuttercrab_capture::record::{Microphone, Source};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -29,6 +30,31 @@ struct Opened {
 
 /// Controls for a recording `running` long.
 fn open(cx: &mut TestAppContext, running: Duration) -> Opened {
+    open_bar(cx, running, None)
+}
+
+/// The ready bar, recording `sound` unless switched.
+fn open_ready(cx: &mut TestAppContext, sound: Sound) -> Opened {
+    open_bar(cx, Duration::ZERO, Some((sound, microphones())))
+}
+
+fn microphones() -> Vec<Microphone> {
+    [
+        ("{yeti}", "Yeti Stereo Microphone"),
+        ("{c920}", "C920 webcam"),
+    ]
+    .map(|(id, name)| Microphone {
+        id: id.into(),
+        name: name.into(),
+    })
+    .into()
+}
+
+fn open_bar(
+    cx: &mut TestAppContext,
+    running: Duration,
+    ready: Option<(Sound, Vec<Microphone>)>,
+) -> Opened {
     cx.update(gpui_kit::init);
     let clock = Rc::new(Cell::new(Clock::new(Instant::now() - running)));
     let events = Rc::new(RefCell::new(Vec::new()));
@@ -45,7 +71,11 @@ fn open(cx: &mut TestAppContext, running: Duration) -> Opened {
                 discard: "Ctrl+Alt+D".into(),
                 undo: "Ctrl+Alt+Z".into(),
             };
-            RecordBar::new(shared, keys, window, cx)
+            let bar = RecordBar::new(shared, keys, window, cx);
+            match ready {
+                Some((sound, microphones)) => bar.ready(sound, microphones),
+                None => bar,
+            }
         },
     );
     Opened {
@@ -329,5 +359,209 @@ fn after_a_restart_the_previous_take_can_be_kept(cx: &mut TestAppContext) {
     update(cx, &opened, |window, _| {
         assert!(window.try_find("record-restart").is_some());
         assert!(window.try_find("record-keep-previous").is_none());
+    });
+}
+
+fn sound(cx: &mut TestAppContext, opened: &Opened) -> Sound {
+    cx.update(|cx| opened.handle.read(cx).unwrap().sound().clone())
+}
+
+/// The sound the settings record: the microphone only, the Yeti.
+fn from_settings() -> Sound {
+    Sound {
+        system: false,
+        microphone: true,
+        device: Some("{yeti}".into()),
+    }
+}
+
+#[gpui_kit::test]
+fn the_ready_bar_offers_start_and_the_sound(cx: &mut TestAppContext) {
+    let opened = open_ready(cx, from_settings());
+    activate(cx, &opened);
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-time").unwrap(), "Ready to record");
+        assert_eq!(label(window, "record-microphone").unwrap(), "Microphone on");
+        assert_eq!(
+            label(window, "record-microphones").unwrap(),
+            "Which microphone: Yeti Stereo Microphone"
+        );
+        assert_eq!(
+            label(window, "record-system-sound").unwrap(),
+            "System sound off"
+        );
+        for (id, key) in [
+            ("record-microphone-key", "M"),
+            ("record-system-sound-key", "A"),
+            ("record-start-key", "Enter"),
+            ("record-close-key", "Esc"),
+        ] {
+            assert_eq!(label(window, id).unwrap(), key, "{id}");
+        }
+        // Nothing is recording yet.
+        assert!(window.try_find("record-pause").is_none());
+        assert!(window.try_find("record-stop").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn the_ready_bar_switches_the_sound_by_key(cx: &mut TestAppContext) {
+    let opened = open_ready(cx, from_settings());
+    activate(cx, &opened);
+    update(cx, &opened, |window, cx| {
+        for key in ["m", "a", "a", "down", "p", "s"] {
+            window.press(key, cx);
+        }
+    });
+    // P and S mean nothing before recording.
+    assert_eq!(
+        events(&opened),
+        [
+            RecordBarEvent::SetSound(Source::Microphone, false),
+            RecordBarEvent::SetSound(Source::System, true),
+            RecordBarEvent::SetSound(Source::System, false),
+            RecordBarEvent::ChooseMicrophone,
+        ]
+    );
+    assert_eq!(
+        sound(cx, &opened),
+        Sound {
+            microphone: false,
+            ..from_settings()
+        }
+    );
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "record-microphone").unwrap(),
+            "Microphone off"
+        );
+    });
+}
+
+#[gpui_kit::test]
+fn enter_starts_and_the_switches_stay(cx: &mut TestAppContext) {
+    let opened = open_ready(cx, from_settings());
+    activate(cx, &opened);
+    update(cx, &opened, |window, cx| {
+        window.press("enter", cx);
+        // Starting: Start and Cancel are gone; the switches stay.
+        window.press("enter", cx);
+        window.press("escape", cx);
+        window.press("a", cx);
+    });
+    assert_eq!(
+        events(&opened),
+        [
+            RecordBarEvent::Start,
+            RecordBarEvent::SetSound(Source::System, true),
+        ]
+    );
+    assert_eq!(mode(cx, &opened), BarMode::Starting);
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-time").unwrap(), "Starting…");
+        assert!(window.try_find("record-start").is_none());
+        assert!(window.try_find("record-microphones").is_none());
+        assert_eq!(
+            label(window, "record-system-sound").unwrap(),
+            "System sound on"
+        );
+    });
+    // Recording: the switches sit before Pause, and still work.
+    set_mode(cx, &opened, BarMode::Controls);
+    update(cx, &opened, |window, cx| {
+        assert!(window.try_find("record-pause").is_some());
+        window.press("m", cx);
+    });
+    assert_eq!(
+        events(&opened)[2..],
+        [RecordBarEvent::SetSound(Source::Microphone, false)]
+    );
+}
+
+#[gpui_kit::test]
+fn escape_closes_the_ready_bar(cx: &mut TestAppContext) {
+    let opened = open_ready(cx, Sound::default());
+    activate(cx, &opened);
+    update(cx, &opened, |window, cx| window.press("escape", cx));
+    assert_eq!(events(&opened), [RecordBarEvent::Close]);
+}
+
+#[gpui_kit::test]
+fn clicking_the_ready_bar(cx: &mut TestAppContext) {
+    let opened = open_ready(cx, Sound::default());
+    // Without the keyboard (the microphone list has it), the hints stay,
+    // so the buttons do not move.
+    VisualTestContext::from_window(opened.handle.into(), cx).deactivate_window();
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-start-key").unwrap(), "Enter");
+        assert_eq!(label(window, "record-microphone-key").unwrap(), "M");
+    });
+    for id in [
+        "record-microphone",
+        "record-system-sound",
+        "record-microphones",
+        "record-start",
+    ] {
+        update(cx, &opened, |window, cx| window.click(id, cx));
+    }
+    assert_eq!(
+        events(&opened),
+        [
+            RecordBarEvent::SetSound(Source::Microphone, true),
+            RecordBarEvent::SetSound(Source::System, true),
+            RecordBarEvent::ChooseMicrophone,
+            RecordBarEvent::Start,
+        ]
+    );
+}
+
+#[gpui_kit::test]
+fn choosing_a_microphone(cx: &mut TestAppContext) {
+    let opened = open_ready(cx, from_settings());
+    let choices = |cx: &mut TestAppContext| {
+        cx.update(|cx| opened.handle.read(cx).unwrap().microphone_choices())
+    };
+    let (names, chosen) = choices(cx);
+    assert_eq!(
+        names,
+        [DEFAULT_MICROPHONE, "Yeti Stereo Microphone", "C920 webcam"]
+    );
+    assert_eq!(chosen, 1);
+    let choose = |cx: &mut TestAppContext, index| {
+        cx.update(|cx| {
+            opened
+                .handle
+                .update(cx, |bar, _, cx| bar.choose_microphone(index, cx))
+                .unwrap()
+        })
+    };
+    choose(cx, 2);
+    assert_eq!(sound(cx, &opened).device.as_deref(), Some("{c920}"));
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "record-microphones").unwrap(),
+            "Which microphone: C920 webcam"
+        );
+    });
+    choose(cx, 0);
+    assert_eq!(sound(cx, &opened).device, None);
+    assert_eq!(choices(cx).1, 0);
+}
+
+#[gpui_kit::test]
+fn a_microphone_not_plugged_in_gives_way_to_the_default(cx: &mut TestAppContext) {
+    let opened = open_ready(
+        cx,
+        Sound {
+            device: Some("{gone}".into()),
+            ..from_settings()
+        },
+    );
+    assert_eq!(sound(cx, &opened).device, None);
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "record-microphones").unwrap(),
+            format!("Which microphone: {DEFAULT_MICROPHONE}")
+        );
     });
 }

@@ -70,8 +70,21 @@ pub(super) struct Session {
     /// microphone), and their mix.
     captures: [Option<Capture>; 2],
     mixer: Mixer,
+    /// How each source's sound arrived, for the log.
+    arrivals: [Arrivals; 2],
     /// Where captures send their sound, to start one later.
     sounds: Sender<Event>,
+}
+
+/// How one source's sound arrived, in ticks: to tell from the log whether
+/// sound is missing because it came late.
+#[derive(Clone, Copy, Debug, Default)]
+struct Arrivals {
+    /// The first packet's time on the timeline, and how long after it was
+    /// captured it arrived.
+    first: Option<(i64, i64)>,
+    /// The longest any packet took to arrive.
+    slowest: i64,
 }
 
 impl Session {
@@ -166,6 +179,7 @@ impl Session {
             },
             captures,
             mixer: Mixer::default(),
+            arrivals: [Arrivals::default(); 2],
             sounds,
         })
     }
@@ -242,6 +256,10 @@ impl Session {
     fn place_sound(&mut self, packet: &Packet, timeline: &Timeline) {
         if !timeline.is_paused() {
             let time = timeline.sound_time(packet.captured);
+            let arrivals = &mut self.arrivals[packet.source as usize];
+            let delay = qpc_ticks() - packet.captured;
+            arrivals.first.get_or_insert((time, delay));
+            arrivals.slowest = arrivals.slowest.max(delay);
             self.mixer.add(packet.source, time, &packet.samples);
         }
     }
@@ -363,6 +381,9 @@ impl Session {
         let time = timeline
             .last_written
             .map_or(time, |(previous, _)| time.max(previous + 1));
+        if timeline.last_written.is_none() {
+            log::info!("first frame at {} ms", time / (TICKS_PER_SECOND / 1000));
+        }
         let started = Instant::now();
         self.writer.write(&self.nv12, slot, time, timeline.period)?;
         if let (Some(t), Some(i)) = (timer.as_mut(), measured) {
@@ -410,6 +431,7 @@ impl Session {
         self.stop_capture();
         // The sound lasts as long as the picture.
         self.captures = [None, None];
+        self.log_arrivals();
         if interrupted.is_none() && self.writer.has_sound() {
             self.write_mix_until(duration_ticks(duration))
                 .map_err(why)?;
@@ -430,6 +452,24 @@ impl Session {
             sound: self.writer.has_sound(),
             interrupted,
         })
+    }
+
+    /// Say how each source's sound arrived.
+    fn log_arrivals(&self) {
+        let ms = |ticks: i64| ticks / (TICKS_PER_SECOND / 1000);
+        for source in [Source::System, Source::Microphone] {
+            let arrivals = self.arrivals[source as usize];
+            let Some((time, delay)) = arrivals.first else {
+                continue;
+            };
+            log::info!(
+                "{source:?} sound: first at {} ms, arrived {} ms after capture; slowest {} ms; {} ms too late to mix",
+                ms(time),
+                ms(delay),
+                ms(arrivals.slowest),
+                ms(self.mixer.late(source)),
+            );
+        }
     }
 
     /// Stop capturing, once: removing the FrameArrived handler a second

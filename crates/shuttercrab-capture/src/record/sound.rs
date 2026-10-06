@@ -361,12 +361,19 @@ pub(super) struct Mixer {
     pending: Vec<i32>,
     /// Where each source's sound so far ends, frames.
     ends: [u64; 2],
+    /// Each source's frames left out because they came too late.
+    late: [u64; 2],
 }
 
 impl Mixer {
     /// Frames written out so far.
     pub(super) fn written(&self) -> u64 {
         self.written
+    }
+
+    /// How much of `source`'s sound came too late to mix, ticks.
+    pub(super) fn late(&self, source: Source) -> i64 {
+        frames_to_ticks(self.late[source.index()])
     }
 
     /// Mix `samples` from `source`, captured at `time` (ticks on the
@@ -389,6 +396,7 @@ impl Mixer {
         *end = start + (frames - trim);
         // What falls on what is written out already is too late to mix.
         let late = self.written.saturating_sub(start).min(frames - trim);
+        self.late[source.index()] += late;
         let from = (start + late - self.written) as usize * channels;
         let kept = &samples[(trim + late) as usize * channels..];
         if self.pending.len() < from + kept.len() {

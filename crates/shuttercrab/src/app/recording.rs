@@ -1,6 +1,6 @@
-//! Recording: choosing the area, the countdown, the border and the
-//! controls; pausing, restarting, discarding and undoing; and finishing the
-//! file.
+//! Recording: choosing the area, the ready bar and its microphone list,
+//! the countdown, the border and the controls; pausing, restarting,
+//! discarding and undoing; switching the sound; and finishing the file.
 
 use super::{
     State,
@@ -9,13 +9,14 @@ use super::{
 };
 use crate::{
     capture_choice::CaptureTarget,
+    choice_menu::{CHOICE_MENU_WIDTH, ChoiceMenu, ChoiceMenuEvent, choice_menu_height},
     countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
     files, heap,
     overlay::{Mode, OverlayEvent},
     popup::{self, Activation},
     record_bar::{
         BarMode, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent,
-        RecordKeys,
+        RecordKeys, Sound,
     },
     recorder_process::RecorderProcess,
     recording::{self, Clock},
@@ -26,7 +27,7 @@ use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{AppContext as _, AsyncApp, Entity};
 use shuttercrab_capture::{
     MonitorId, MonitorInfo, PhysicalRect,
-    record::{RecordOptions, RecordingSummary},
+    record::{Microphone, RecordOptions, RecordingSummary, Source},
 };
 use shuttercrab_platform::{
     frame::{Frame, FrameStyle, Rect as FrameRect},
@@ -34,6 +35,7 @@ use shuttercrab_platform::{
 };
 use std::{
     cell::{Cell, RefCell},
+    ops::ControlFlow,
     path::{Path, PathBuf},
     rc::Rc,
     time::{Duration, Instant},
@@ -104,6 +106,8 @@ const FRAME_GAP: f32 = 5.0;
 struct Controls {
     popup: popup::Popup,
     view: Entity<RecordBar>,
+    /// Where the bar is, physical virtual-desktop pixels.
+    rect: PhysicalRect,
 }
 
 impl Recording {
@@ -147,6 +151,29 @@ impl Recording {
         self.clock.set(clock);
         self.color_frame_for_clock();
         true
+    }
+
+    /// Switch `source` on or off, for this take and any restart of it.
+    fn set_sound(&mut self, source: Source, on: bool) {
+        let options = &mut self.options;
+        let was = match source {
+            Source::System => std::mem::replace(&mut options.system_sound, on),
+            Source::Microphone => std::mem::replace(&mut options.microphone, on),
+        };
+        if was == on {
+            return;
+        }
+        if let Some(recorder) = &self.recorder {
+            recorder.set_sound(source, on);
+        }
+        log::info!(
+            "{} switched {}",
+            match source {
+                Source::System => "system sound",
+                Source::Microphone => "the microphone",
+            },
+            if on { "on" } else { "off" }
+        );
     }
 
     /// Draw the border in `color`.
@@ -202,27 +229,29 @@ pub(super) async fn record(
         return Ok(());
     };
     // The border shows what will be recorded: grey until recording starts.
-    let countdown = state.settings.borrow().countdown();
-    let waiting = if countdown > 0 {
-        FRAME_WAITING
-    } else {
-        FRAME_RECORDING
+    let frame = show_frame(&info, region, FRAME_WAITING);
+    let settings = state.settings.borrow().clone();
+    let clock = Rc::new(Cell::new(Clock::new(Instant::now())));
+    let ControlFlow::Continue(opened) = ready(state, &info, region, clock.clone(), cx).await else {
+        log::info!("recording cancelled in the ready bar");
+        return Ok(());
     };
-    let frame = show_frame(&info, region, waiting);
+    let (controls, requests) = opened.unzip();
+    let countdown = settings.countdown();
     if countdown > 0 && !count_down(&info, region, countdown, cx).await {
+        if let Some(controls) = controls {
+            controls.popup.close(cx);
+        }
         log::info!("recording cancelled during the countdown");
         return Ok(());
     }
     let chosen = Instant::now();
-    let clock = Rc::new(Cell::new(Clock::new(chosen)));
-    // The controls come first, so they are excluded before the first frame.
-    let keys = record_keys(&state.settings.borrow());
-    let (controls, requests) = match open_controls(&info, region, clock.clone(), keys, cx) {
-        Some((controls, requests)) => (Some(controls), Some(requests)),
-        None => (None, None),
+    // As switched in the bar, which can change during the countdown.
+    let sound = match &controls {
+        Some(controls) => controls.view.read_with(cx, |bar, _| bar.sound().clone()),
+        None => sound(&settings),
     };
 
-    let settings = state.settings.borrow().clone();
     let dir = settings.recording_dir();
     let options = RecordOptions {
         // The area may be on another monitor than the one first under the
@@ -231,9 +260,9 @@ pub(super) async fn record(
         region,
         fps: settings.record_fps(),
         include_cursor: settings.record_cursor,
-        system_sound: settings.record_system_sound,
-        microphone: settings.record_microphone,
-        microphone_device: settings.microphone.clone(),
+        system_sound: sound.system,
+        microphone: sound.microphone,
+        microphone_device: sound.device,
         // The controls can switch either on mid-recording.
         sound_track: true,
         // `start_take` names the file.
@@ -264,6 +293,8 @@ pub(super) async fn record(
         chosen.elapsed().as_millis()
     );
     clock.set(Clock::new(Instant::now()));
+    let view = controls.as_ref().map(|c| c.view.clone());
+    show(view, cx, |bar, cx| bar.set_mode(BarMode::Controls, cx));
     let recording = Recording {
         recorder: Some(take.recorder),
         path: take.path,
@@ -305,6 +336,142 @@ async fn choose_area(
             Ok(Some((region, frame.info)))
         }
     }
+}
+
+/// The sound the settings record; the ready bar starts from it.
+fn sound(settings: &Settings) -> Sound {
+    Sound {
+        system: settings.record_system_sound,
+        microphone: settings.record_microphone,
+        device: settings.microphone.clone(),
+    }
+}
+
+/// Show the ready bar next to `region` and wait for Start; it stays as the
+/// controls, so it is excluded before the first frame. Breaks if cancelled;
+/// without the bar (it cannot be shown) recording starts at once.
+async fn ready(
+    state: &State,
+    info: &MonitorInfo,
+    region: Option<PhysicalRect>,
+    clock: Rc<Cell<Clock>>,
+    cx: &mut AsyncApp,
+) -> ControlFlow<(), Option<(Controls, UnboundedReceiver<RecordBarEvent>)>> {
+    let give_back = platform_window::foreground_window();
+    let microphones = shuttercrab_capture::record::microphones()
+        .inspect_err(|e| log::warn!("could not list the microphones: {e:#}"))
+        .unwrap_or_default();
+    let (keys, sound) = {
+        let settings = state.settings.borrow();
+        (record_keys(&settings), sound(&settings))
+    };
+    let opened = open_controls(info, region, clock, keys, sound, microphones, cx);
+    let Some((controls, mut requests)) = opened else {
+        return ControlFlow::Continue(None);
+    };
+    if get_ready(state, info, &controls, &mut requests, give_back, cx).await {
+        ControlFlow::Continue(Some((controls, requests)))
+    } else {
+        controls.popup.close(cx);
+        ControlFlow::Break(())
+    }
+}
+
+/// Wait for the ready bar's Start or Cancel. The bar has the keyboard
+/// meanwhile, and gives it back to `give_back` then. Returns whether to
+/// start. A microphone chosen there is kept in the settings, for the next
+/// recording too.
+async fn get_ready(
+    state: &State,
+    info: &MonitorInfo,
+    controls: &Controls,
+    requests: &mut UnboundedReceiver<RecordBarEvent>,
+    give_back: Option<isize>,
+    cx: &mut AsyncApp,
+) -> bool {
+    if let Some(hwnd) = controls.popup.hwnd() {
+        platform_window::bring_to_front(hwnd);
+    }
+    let start = loop {
+        match requests.next().await {
+            Some(RecordBarEvent::Start) => break true,
+            Some(RecordBarEvent::Close) | None => break false,
+            Some(RecordBarEvent::ChooseMicrophone) => {
+                if let Some(device) = choose_microphone(info, controls, cx).await {
+                    state.update_settings(|settings| settings.microphone = device, cx);
+                }
+            }
+            // The bar keeps the sound as switched.
+            Some(_) => {}
+        }
+    };
+    if let Some(window) = give_back {
+        platform_window::bring_to_front(window);
+    }
+    start
+}
+
+/// The microphone list's distance from the bar, logical pixels.
+const LIST_GAP: f32 = 4.0;
+
+/// Open the microphone list under its button in the bar (over it when
+/// there is no room below), and use what is chosen. The list has the
+/// keyboard; the bar gets it back. Returns the microphone chosen (`None`
+/// inside for Windows' default), if one was.
+async fn choose_microphone(
+    info: &MonitorInfo,
+    controls: &Controls,
+    cx: &mut AsyncApp,
+) -> Option<Option<String>> {
+    let (choices, chosen, button) = controls.view.read_with(cx, |bar, _| {
+        let (choices, chosen) = bar.microphone_choices();
+        (choices, chosen, bar.list_button())
+    });
+    let scale = info.scale_factor;
+    let to_physical = |logical: f32| (logical * scale).round() as i32;
+    let (w, h) = (
+        to_physical(CHOICE_MENU_WIDTH),
+        to_physical(choice_menu_height(choices.len())),
+    );
+    let (bar, gap) = (controls.rect, to_physical(LIST_GAP));
+    let (wx, wy, ww, wh) =
+        platform_window::work_area(info.id.0).unwrap_or((bar.x, bar.y, bar.width, bar.height));
+    let x = (bar.x + to_physical(f32::from(button.origin.x)))
+        .min(wx + ww as i32 - w)
+        .max(wx);
+    let below = bar.y + bar.height as i32 + gap;
+    let y = if below + h <= wy + wh as i32 {
+        below
+    } else {
+        bar.y - gap - h
+    };
+    let rect = PhysicalRect::new(x, y, w as u32, h as u32);
+    let opened = popup::open(info, rect, Activation::Take, cx, move |window, cx| {
+        cx.new(|cx| ChoiceMenu::new(choices, chosen, window, cx))
+    });
+    let (popup, mut events) = match opened {
+        Ok(opened) => opened,
+        Err(e) => {
+            log::warn!("could not show the microphone list: {e}");
+            return None;
+        }
+    };
+    if let Some(hwnd) = popup.hwnd() {
+        platform_window::round_corners(hwnd);
+        exclude_from_capture(hwnd, "microphone list");
+    }
+    let event = events.next().await.unwrap_or(ChoiceMenuEvent::Cancel);
+    popup.close(cx);
+    if let Some(hwnd) = controls.popup.hwnd() {
+        platform_window::bring_to_front(hwnd);
+    }
+    let ChoiceMenuEvent::Chose(index) = event else {
+        return None;
+    };
+    Some(controls.view.update(cx, |bar, cx| {
+        bar.choose_microphone(index, cx);
+        bar.sound().device.clone()
+    }))
 }
 
 /// The controls' key hints, from the hotkey settings.
@@ -387,6 +554,8 @@ fn open_controls(
     region: Option<PhysicalRect>,
     clock: Rc<Cell<Clock>>,
     keys: RecordKeys,
+    sound: Sound,
+    microphones: Vec<Microphone>,
     cx: &mut AsyncApp,
 ) -> Option<(Controls, UnboundedReceiver<RecordBarEvent>)> {
     let (b, scale) = (info.bounds, info.scale_factor);
@@ -410,7 +579,7 @@ fn open_controls(
     let view = Rc::new(RefCell::new(None));
     let slot = view.clone();
     let opened = popup::open(info, rect, Activation::OnClick, cx, move |window, cx| {
-        let bar = cx.new(|cx| RecordBar::new(clock, keys, window, cx));
+        let bar = cx.new(|cx| RecordBar::new(clock, keys, window, cx).ready(sound, microphones));
         slot.replace(Some(bar.clone()));
         bar
     });
@@ -449,7 +618,7 @@ fn open_controls(
             "not excluded"
         }
     );
-    Some((Controls { popup, view }, requests))
+    Some((Controls { popup, view, rect }, requests))
 }
 
 /// Notice when the take written to `path` ends by itself (the display went
@@ -594,6 +763,15 @@ fn handle_controls(
                 RecordBarEvent::Confirm => confirm(&state, cx).await,
                 RecordBarEvent::Cancel => keep_take(&state, cx),
                 RecordBarEvent::Undo => undo(&state, cx),
+                RecordBarEvent::SetSound(source, on) => {
+                    if let Some(recording) = state.recording.borrow_mut().as_mut() {
+                        recording.set_sound(source, on);
+                    }
+                }
+                // Only the ready bar asks these, before recording.
+                RecordBarEvent::Start
+                | RecordBarEvent::Close
+                | RecordBarEvent::ChooseMicrophone => {}
             }
             if state.recording.borrow().is_none() {
                 break;
@@ -966,8 +1144,12 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
             let ended = take.recorder.ended();
             let watched = take.path.clone();
             let previous = std::mem::replace(&mut recording.path, take.path);
+            let switched = (recording.options.system_sound, recording.options.microphone);
             recording.options = take.options;
             recording.recorder = Some(take.recorder);
+            // The sound may have been switched while restarting.
+            recording.set_sound(Source::System, switched.0);
+            recording.set_sound(Source::Microphone, switched.1);
             recording.clock.set(Clock::new(Instant::now()));
             let view = recording.view();
             drop(slot);
