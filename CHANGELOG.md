@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17](https://github.com/jakeklassen/shuttercrab/compare/v0.1.16...v0.1.17) - 2026-10-06
+
+### Added
+
+- a ready bar before each recording, to choose its sound
+- record a microphone, mixed with system sound, each switchable mid-take
+- record what the speakers play, as an AAC track (off by default)
+
+### Fixed
+
+- the recording bar's buttons stay put when it gains the keyboard
+
 ## [0.1.16](https://github.com/jakeklassen/shuttercrab/compare/v0.1.15...v0.1.16) - 2026-10-06
 
 ### Fixed
