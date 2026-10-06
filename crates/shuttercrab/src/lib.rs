@@ -10,6 +10,7 @@ pub mod app;
 pub mod capture_bar;
 pub mod capture_choice;
 pub mod countdown;
+pub mod cursors;
 pub mod files;
 pub mod heap;
 pub mod icons;

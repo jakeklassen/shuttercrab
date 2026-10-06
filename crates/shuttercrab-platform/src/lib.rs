@@ -6,6 +6,7 @@
 
 mod clipboard;
 mod console;
+pub mod cursor;
 pub mod drag;
 pub mod frame;
 mod hotkey;

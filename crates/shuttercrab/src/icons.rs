@@ -44,7 +44,9 @@ icon_assets!(
         RotateCw,
         MousePointer2,
         FaceSlightlySmiling,
-        Crop
+        Crop,
+        Hand,
+        HandGrab
     ]
 );
 
@@ -116,6 +118,8 @@ mod tests {
             IconName::MousePointer2,
             IconName::FaceSlightlySmiling,
             IconName::Crop,
+            IconName::Hand,
+            IconName::HandGrab,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

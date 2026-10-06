@@ -16,11 +16,12 @@ use super::{
     selection::{Editing, Grip, Placing},
 };
 use crate::{
+    cursors,
     markup::{
         self, Drawing, Emoji, Figure, Ink, Mark, Marks, Region, Shape, ShapeKind, Stroke, Tool,
     },
     palette::border,
-    pixels,
+    pixels, popup,
     shot_view::{ShotView, Xy},
 };
 use gpui_kit::{
@@ -31,6 +32,7 @@ use gpui_kit::{
     point, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin, StrokeOptions};
+use shuttercrab_platform::cursor::{Cursor, CursorOver};
 use std::{cell::RefCell, sync::Arc};
 
 /// The screenshot shown, how it sits in the canvas, and the marks on it.
@@ -403,6 +405,43 @@ fn screenshot(shown: &Shown, image: Arc<RenderImage>, placing: Placing) -> impl 
         )
 }
 
+/// What the pointer shows over the canvas: a cursor GPUI has, or one it
+/// lacks on Windows, which the window shows itself.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Pointer {
+    Style(CursorStyle),
+    Hand(cursors::Hand),
+    /// The four-way arrow, for moving a shape or the crop frame.
+    Move,
+}
+
+/// Have the window show `over`'s pointer over the canvas (of its size,
+/// under the toolbar), if it is one GPUI lacks; otherwise, or with
+/// `None`, leave the pointer to GPUI.
+pub(super) fn show_pointer(window: &Window, over: Option<(Pointer, Xy)>) {
+    let Some(hwnd) = popup::raw_hwnd(window) else {
+        return;
+    };
+    let scale = window.scale_factor();
+    let Some((pointer, canvas)) = over else {
+        return shuttercrab_platform::cursor::show(hwnd, None);
+    };
+    let cursor = match pointer {
+        Pointer::Hand(hand) => cursors::hand(hand, scale),
+        Pointer::Move => Cursor::move_all().ok(),
+        Pointer::Style(_) => None,
+    };
+    let physical = |logical: f32| (logical * scale).round() as i32;
+    let area = (
+        0,
+        physical(TOOLBAR_HEIGHT),
+        physical(canvas.x),
+        physical(canvas.y),
+    );
+    let over = cursor.map(|cursor| CursorOver { cursor, area });
+    shuttercrab_platform::cursor::show(hwnd, over);
+}
+
 /// The marks of `all` that `drawn` lacks, if `drawn` is some of them,
 /// in order; `None` if it has any `all` does not.
 fn missing(all: &[Mark], drawn: &[Mark]) -> Option<Vec<Mark>> {
@@ -608,9 +647,11 @@ impl MainWindow {
         }
     }
 
-    pub(super) fn on_key_up(&mut self, event: &KeyUpEvent, _: &mut Window, _: &mut Context<Self>) {
+    pub(super) fn on_key_up(&mut self, event: &KeyUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if event.keystroke.key == "space" {
             self.space_held = false;
+            // The pointer changes back at once.
+            cx.notify();
         }
     }
 
@@ -980,23 +1021,23 @@ impl MainWindow {
         }
     }
 
-    /// The pointer over the canvas: what a drag would do.
-    fn cursor(&self, shown: &Shown, canvas_area: Xy) -> CursorStyle {
+    /// The pointer over the canvas: what a drag would do. An open hand over
+    /// a screenshot that can move (with Space held, or no tool), closed
+    /// while moving it; the four-way arrow while moving a shape.
+    fn pointer(&self, shown: &Shown, canvas_area: Xy) -> Pointer {
         let panning = matches!(shown.gesture, Some(Gesture::Pan(_)));
         if !(panning || self.space_held)
-            && let Some(cursor) = self.crop_cursor(shown, canvas_area)
+            && let Some(pointer) = self.crop_pointer(shown, canvas_area)
         {
-            return cursor;
+            return pointer;
         }
         match (&shown.gesture, self.hand, self.space_held) {
-            (Some(Gesture::Pan(_)), ..) => CursorStyle::ClosedHand,
-            (Some(Gesture::Edit(editing)), ..) if editing.grip == Grip::Body => {
-                CursorStyle::ClosedHand
-            }
-            (_, Some(Hand::Select), false) => CursorStyle::Arrow,
-            (_, Some(_), false) => CursorStyle::Crosshair,
-            _ if shown.view.can_pan(canvas_area) => CursorStyle::OpenHand,
-            _ => CursorStyle::Arrow,
+            (Some(Gesture::Pan(_)), ..) => Pointer::Hand(cursors::Hand::Closed),
+            (Some(Gesture::Edit(editing)), ..) if editing.grip == Grip::Body => Pointer::Move,
+            (_, Some(Hand::Select), false) => Pointer::Style(CursorStyle::Arrow),
+            (_, Some(_), false) => Pointer::Style(CursorStyle::Crosshair),
+            _ if shown.view.can_pan(canvas_area) => Pointer::Hand(cursors::Hand::Open),
+            _ => Pointer::Style(CursorStyle::Arrow),
         }
     }
 
@@ -1010,6 +1051,10 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let canvas_area = canvas_size(window);
+        let pointer = self.pointer(shown, canvas_area);
+        let over =
+            (self.canvas_hovered && self.pointer.is_some()).then_some((pointer, canvas_area));
+        show_pointer(window, over);
         let placing = shown.placing(canvas_area);
         let (image, pending) = shown.layers();
         let (per_pixel, scale) = (placing.per_pixel, window.scale_factor());
@@ -1021,8 +1066,17 @@ impl MainWindow {
             .flex_1()
             .min_h_0()
             .overflow_hidden()
-            .cursor(self.cursor(shown, canvas_area))
+            .cursor(match pointer {
+                Pointer::Style(style) => style,
+                // Shown by the window itself, over the arrow.
+                Pointer::Hand(_) | Pointer::Move => CursorStyle::Arrow,
+            })
             .on_scroll_wheel(cx.listener(Self::on_wheel))
+            // Bars and menus on it block the pointer: not over the canvas.
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                this.canvas_hovered = *hovered;
+                cx.notify();
+            }))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_canvas_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_canvas_right_down))
             .on_mouse_move(cx.listener(Self::on_canvas_move))

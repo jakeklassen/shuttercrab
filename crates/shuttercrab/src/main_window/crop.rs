@@ -10,7 +10,7 @@
 
 use super::{
     MainWindow,
-    canvas::{Gesture, Shown},
+    canvas::{Gesture, Pointer, Shown},
     selection::Placing,
 };
 use crate::{
@@ -199,16 +199,16 @@ pub(super) fn bind_keys(cx: &mut App) {
 
 impl Grip {
     /// The pointer over this part: a resize arrow along the way it moves,
-    /// or a hand over the inside (closed while dragging it).
-    fn cursor(self, dragging: bool) -> CursorStyle {
-        match (self.left || self.right, self.top || self.bottom) {
+    /// or the four-way arrow over the inside, as Snipping Tool's.
+    fn cursor(self) -> Pointer {
+        let style = match (self.left || self.right, self.top || self.bottom) {
             (true, true) if self.left == self.top => CursorStyle::ResizeUpLeftDownRight,
             (true, true) => CursorStyle::ResizeUpRightDownLeft,
             (true, false) => CursorStyle::ResizeLeftRight,
             (false, true) => CursorStyle::ResizeUpDown,
-            (false, false) if dragging => CursorStyle::ClosedHand,
-            (false, false) => CursorStyle::OpenHand,
-        }
+            (false, false) => return Pointer::Move,
+        };
+        Pointer::Style(style)
     }
 }
 
@@ -216,16 +216,16 @@ impl MainWindow {
     /// The pointer while cropping, over a canvas of size `canvas`: what
     /// dragging the part of the frame under it, or being dragged, does.
     /// `None` when not cropping.
-    pub(super) fn crop_cursor(&self, shown: &Shown, canvas: Xy) -> Option<CursorStyle> {
+    pub(super) fn crop_pointer(&self, shown: &Shown, canvas: Xy) -> Option<Pointer> {
         let cropping = shown.cropping.as_ref()?;
         if let Some(Gesture::Crop(drag)) = &shown.gesture {
-            return Some(drag.grip.cursor(true));
+            return Some(drag.grip.cursor());
         }
         let placing = shown.placing(canvas);
         let grip = self
             .pointer
             .and_then(|at| cropping.frame.grip_at(at, placing));
-        Some(grip.map_or(CursorStyle::Arrow, |grip| grip.cursor(false)))
+        Some(grip.map_or(Pointer::Style(CursorStyle::Arrow), Grip::cursor))
     }
 
     /// Tab or Shift+Tab while cropping: the next part for the arrow keys,
@@ -503,6 +503,7 @@ impl MainWindow {
                     .border_1()
                     .border_color(border())
                     .shadow_lg()
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
                         button("crop-apply", "Apply", "Enter", IconName::Check).on_click(
@@ -602,39 +603,21 @@ mod tests {
             right,
             bottom,
         };
+        use CursorStyle::*;
         let cursors = [
-            (
-                grip(true, true, false, false),
-                CursorStyle::ResizeUpLeftDownRight,
-            ),
-            (
-                grip(false, false, true, true),
-                CursorStyle::ResizeUpLeftDownRight,
-            ),
-            (
-                grip(false, true, true, false),
-                CursorStyle::ResizeUpRightDownLeft,
-            ),
-            (
-                grip(true, false, false, true),
-                CursorStyle::ResizeUpRightDownLeft,
-            ),
-            (
-                grip(true, false, false, false),
-                CursorStyle::ResizeLeftRight,
-            ),
-            (
-                grip(false, false, true, false),
-                CursorStyle::ResizeLeftRight,
-            ),
-            (grip(false, true, false, false), CursorStyle::ResizeUpDown),
-            (grip(false, false, false, true), CursorStyle::ResizeUpDown),
-            (Grip::INSIDE, CursorStyle::OpenHand),
+            (grip(true, true, false, false), ResizeUpLeftDownRight),
+            (grip(false, false, true, true), ResizeUpLeftDownRight),
+            (grip(false, true, true, false), ResizeUpRightDownLeft),
+            (grip(true, false, false, true), ResizeUpRightDownLeft),
+            (grip(true, false, false, false), ResizeLeftRight),
+            (grip(false, false, true, false), ResizeLeftRight),
+            (grip(false, true, false, false), ResizeUpDown),
+            (grip(false, false, false, true), ResizeUpDown),
         ];
         for (grip, cursor) in cursors {
-            assert_eq!(grip.cursor(false), cursor, "{grip:?}");
+            assert_eq!(grip.cursor(), Pointer::Style(cursor), "{grip:?}");
         }
-        assert_eq!(Grip::INSIDE.cursor(true), CursorStyle::ClosedHand);
+        assert_eq!(Grip::INSIDE.cursor(), Pointer::Move);
     }
 
     #[test]

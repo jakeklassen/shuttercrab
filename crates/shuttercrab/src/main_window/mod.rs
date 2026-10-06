@@ -325,6 +325,9 @@ pub struct MainWindow {
     size_notes: u64,
     /// Space is held: dragging moves the screenshot, whatever the tool.
     space_held: bool,
+    /// The pointer is over the screenshot itself, not a bar or a menu on
+    /// it: where the window shows the pointers GPUI lacks.
+    canvas_hovered: bool,
     focus: FocusHandle,
 }
 
@@ -355,6 +358,7 @@ impl MainWindow {
             size_note: false,
             size_notes: 0,
             space_held: false,
+            canvas_hovered: false,
             focus,
         }
     }
@@ -658,7 +662,11 @@ impl MainWindow {
             "v" => self.take(Hand::Select, window, cx),
             "c" => self.start_crop(window, cx),
             "escape" => self.put_down_tool(window, cx),
-            "space" => self.space_held = true,
+            "space" => {
+                self.space_held = true;
+                // The pointer shows a hand at once, where it can move.
+                cx.notify();
+            }
             "[" => self.step_size(-1., window, cx),
             "]" => self.step_size(1., window, cx),
             "n" | "enter" => self.start(window, cx),
@@ -979,6 +987,7 @@ impl MainWindow {
             .border_1()
             .border_color(border())
             .shadow_lg()
+            .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .children(
                 items
@@ -1284,6 +1293,10 @@ impl Render for MainWindow {
         }
         if let Some(shown) = &self.shown {
             shown.drop_stale_pictures(window);
+        }
+        // No screenshot to point at: none of the window's own pointers.
+        if self.page != Page::Home || self.shown.is_none() {
+            canvas::show_pointer(window, None);
         }
         self.pointer = pointer_in_canvas(window).filter(|_| self.shown.is_some());
         let zoom = self

@@ -423,6 +423,7 @@ impl MainWindow {
             .border_1()
             .border_color(border())
             .shadow_lg()
+            .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(
                 div()
@@ -503,6 +504,7 @@ impl MainWindow {
             .border_1()
             .border_color(border())
             .shadow_lg()
+            .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().text_sm().child("Colours"))
             .child(div().flex().flex_wrap().gap(px(10.)).children(swatches))

@@ -227,6 +227,7 @@ impl MainWindow {
             .border_1()
             .border_color(border())
             .shadow_lg()
+            .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .child(div().flex().flex_wrap().gap(px(4.)).children(cells))
             .child(

@@ -623,6 +623,7 @@ impl MainWindow {
                     .border_1()
                     .border_color(border())
                     .shadow_lg()
+                    .occlude()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_down(MouseButton::Right, |_, _, cx| cx.stop_propagation())
                     .children(items),
