@@ -676,13 +676,16 @@ impl MainWindow {
         let brush = hand
             .and_then(Hand::drawing)
             .map(|tool| (tool, self.brush(tool)));
-        // Crop mode: the frame, or moving the screenshot.
+        // Crop mode: the frame, or moving the screenshot (with Space or
+        // Ctrl held, or off the frame).
         if let Some(shown) = &self.shown
             && shown.cropping.is_some()
         {
             let placing = shown.placing(canvas);
-            let gesture = self
-                .press_crop(shown, at, placing)
+            let panning = self.space_held || event.modifiers.control;
+            let gesture = (!panning)
+                .then(|| self.press_crop(shown, at, placing))
+                .flatten()
                 .or_else(|| shown.view.can_pan(canvas).then_some(Gesture::Pan(at)));
             if let Some(shown) = &mut self.shown {
                 shown.gesture = gesture;

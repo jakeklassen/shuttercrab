@@ -392,8 +392,8 @@ impl MainWindow {
                 h,
             ),
             div()
-                .id("crop-frame")
-                .test_support()
+                // No id: an element with one would take the pointer, and
+                // show its own cursor rather than the canvas's.
                 .absolute()
                 .left(px(top_left.x))
                 .top(px(top_left.y))
