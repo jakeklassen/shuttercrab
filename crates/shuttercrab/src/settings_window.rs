@@ -76,6 +76,7 @@ pub struct Diagnostics {
 pub enum HotkeyKind {
     CaptureBar,
     Screenshot,
+    ScreenshotWithWindow,
     Record,
     Pause,
     Restart,
@@ -84,9 +85,10 @@ pub enum HotkeyKind {
 }
 
 impl HotkeyKind {
-    pub const ALL: [HotkeyKind; 7] = [
+    pub const ALL: [HotkeyKind; 8] = [
         Self::CaptureBar,
         Self::Screenshot,
+        Self::ScreenshotWithWindow,
         Self::Record,
         Self::Pause,
         Self::Restart,
@@ -98,6 +100,7 @@ impl HotkeyKind {
         match self {
             Self::CaptureBar => &s.capture_bar_hotkey,
             Self::Screenshot => &s.screenshot_hotkey,
+            Self::ScreenshotWithWindow => &s.screenshot_with_window_hotkey,
             Self::Record => &s.record_hotkey,
             Self::Pause => &s.pause_hotkey,
             Self::Restart => &s.restart_hotkey,
@@ -110,6 +113,7 @@ impl HotkeyKind {
         let slot = match self {
             Self::CaptureBar => &mut s.capture_bar_hotkey,
             Self::Screenshot => &mut s.screenshot_hotkey,
+            Self::ScreenshotWithWindow => &mut s.screenshot_with_window_hotkey,
             Self::Record => &mut s.record_hotkey,
             Self::Pause => &mut s.pause_hotkey,
             Self::Restart => &mut s.restart_hotkey,
@@ -124,6 +128,7 @@ impl HotkeyKind {
         match self {
             Self::CaptureBar => "opens the Capture Bar",
             Self::Screenshot => "takes area screenshots",
+            Self::ScreenshotWithWindow => "takes area screenshots with this window",
             Self::Record => "starts and stops recording",
             Self::Pause => "pauses recording",
             Self::Restart => "restarts recording",
@@ -137,6 +142,7 @@ impl HotkeyKind {
         match self {
             Self::CaptureBar => "hotkey-capture-bar",
             Self::Screenshot => "hotkey-screenshot",
+            Self::ScreenshotWithWindow => "hotkey-screenshot-with-window",
             Self::Record => "hotkey-record",
             Self::Pause => "hotkey-pause",
             Self::Restart => "hotkey-restart",
@@ -151,6 +157,7 @@ impl HotkeyKind {
         match self {
             Self::CaptureBar => CAPTURE_BAR_HOTKEY,
             Self::Screenshot => SCREENSHOT_HOTKEY,
+            Self::ScreenshotWithWindow => SCREENSHOT_WITH_WINDOW_HOTKEY,
             Self::Record => RECORD_HOTKEY,
             Self::Pause => PAUSE_HOTKEY,
             Self::Restart => RESTART_HOTKEY,
@@ -518,10 +525,20 @@ impl SettingsWindow {
                         "Open the Capture Bar",
                         self.hotkey(HotkeyKind::CaptureBar),
                     ))
-                    .item(SettingItem::new(
-                        "Screenshot an area",
-                        self.hotkey(HotkeyKind::Screenshot),
-                    ))
+                    .item(
+                        SettingItem::new(
+                            "Screenshot an area",
+                            self.hotkey(HotkeyKind::Screenshot),
+                        )
+                        .description("Shuttercrab's window hides first."),
+                    )
+                    .item(
+                        SettingItem::new(
+                            "Screenshot an area with this window",
+                            self.hotkey(HotkeyKind::ScreenshotWithWindow),
+                        )
+                        .description("Shuttercrab's window stays in the picture."),
+                    )
                     .item(
                         SettingItem::new("Record an area", self.hotkey(HotkeyKind::Record))
                             .description("Press it again to stop."),

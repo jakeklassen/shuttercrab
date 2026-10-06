@@ -14,6 +14,7 @@ pub const PAUSE_HOTKEY: u32 = 5;
 pub const RESTART_HOTKEY: u32 = 6;
 pub const DISCARD_HOTKEY: u32 = 7;
 pub const UNDO_HOTKEY: u32 = 8;
+pub const SCREENSHOT_WITH_WINDOW_HOTKEY: u32 = 9;
 
 /// While a hotkey field records, Print Screen with each mix of Ctrl, Alt
 /// and Shift is registered under these ids, as windows never see that key
@@ -59,9 +60,10 @@ pub const MENU_OPEN: u32 = 10;
 /// Quits without the tray menu; kept for development.
 pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
 
-/// The global hotkeys for `settings`: the Capture Bar, area screenshots,
-/// recording, and quit; pause, restart and discard while `recording`; and
-/// undo while there is something to `undo`. Other apps keep those chords
+/// The global hotkeys for `settings`: the Capture Bar, area screenshots
+/// (without Shuttercrab's window and with it), recording, and quit; pause,
+/// restart and discard while `recording`; and undo while there is
+/// something to `undo`. Other apps keep those chords
 /// the rest of the time. A hotkey the settings spell wrongly is left out
 /// (main checks them at startup; the settings window only stores valid
 /// ones).
@@ -75,6 +77,10 @@ pub fn hotkeys(settings: &Settings, recording: bool, undo: bool) -> Vec<(u32, Ho
     [
         (CAPTURE_BAR_HOTKEY, settings.capture_bar_hotkey.as_str()),
         (SCREENSHOT_HOTKEY, settings.screenshot_hotkey.as_str()),
+        (
+            SCREENSHOT_WITH_WINDOW_HOTKEY,
+            settings.screenshot_with_window_hotkey.as_str(),
+        ),
         (RECORD_HOTKEY, settings.record_hotkey.as_str()),
         (QUIT_HOTKEY, QUIT_KEYS),
     ]
@@ -254,6 +260,7 @@ mod tests {
         let during = [PAUSE_HOTKEY, RESTART_HOTKEY, DISCARD_HOTKEY];
         let idle = ids(false, false);
         assert!(idle.contains(&RECORD_HOTKEY));
+        assert!(idle.contains(&SCREENSHOT_WITH_WINDOW_HOTKEY));
         assert!(during.iter().all(|id| !idle.contains(id)));
         assert!(!idle.contains(&UNDO_HOTKEY));
         let recording = ids(true, false);

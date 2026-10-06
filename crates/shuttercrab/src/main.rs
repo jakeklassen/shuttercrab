@@ -231,6 +231,10 @@ fn normalize_hotkeys(settings: &mut Settings, notices: &mut Vec<Notice>) {
         &defaults.capture_bar_hotkey,
     );
     normalize(&mut settings.screenshot_hotkey, &defaults.screenshot_hotkey);
+    normalize(
+        &mut settings.screenshot_with_window_hotkey,
+        &defaults.screenshot_with_window_hotkey,
+    );
     normalize(&mut settings.record_hotkey, &defaults.record_hotkey);
     normalize(&mut settings.pause_hotkey, &defaults.pause_hotkey);
     normalize(&mut settings.restart_hotkey, &defaults.restart_hotkey);

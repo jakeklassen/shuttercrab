@@ -46,7 +46,8 @@ pub use tray::{
     CAPTURE_BAR_HOTKEY, DISCARD_HOTKEY, MENU_AUTO_SAVE, MENU_CAPTURE_BAR, MENU_OPEN,
     MENU_OPEN_FOLDER, MENU_PAUSE, MENU_QUIT, MENU_RECORD, MENU_SCREENSHOT, MENU_SETTINGS,
     MENU_UPDATE, PAUSE_HOTKEY, QUIT_HOTKEY, QUIT_KEYS, RECORD_HOTKEY, RESTART_HOTKEY,
-    SCREENSHOT_HOTKEY, TrayRecording, UNDO_HOTKEY, hotkeys, tray_menu,
+    SCREENSHOT_HOTKEY, SCREENSHOT_WITH_WINDOW_HOTKEY, TrayRecording, UNDO_HOTKEY, hotkeys,
+    tray_menu,
 };
 
 use crate::{
@@ -254,6 +255,8 @@ impl State {
 enum Start {
     CaptureBar,
     Screenshot(CaptureTarget),
+    /// An area screenshot that leaves Shuttercrab's window in the picture.
+    ScreenshotWithWindow,
     Record(CaptureTarget),
 }
 
@@ -309,6 +312,9 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
             match event {
                 PlatformEvent::Hotkey(SCREENSHOT_HOTKEY) => {
                     start(&state, Start::Screenshot(CaptureTarget::Area), None, cx)
+                }
+                PlatformEvent::Hotkey(SCREENSHOT_WITH_WINDOW_HOTKEY) => {
+                    start(&state, Start::ScreenshotWithWindow, None, cx)
                 }
                 PlatformEvent::Hotkey(CAPTURE_BAR_HOTKEY)
                 | PlatformEvent::TrayCommand(MENU_CAPTURE_BAR) => {
@@ -502,7 +508,9 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
         }
     }
     state.busy.set(Busy::Choosing);
-    state.hide_main(cx);
+    if !matches!(what, Start::ScreenshotWithWindow) {
+        state.hide_main(cx);
+    }
     let state = state.clone();
     cx.spawn(async move |cx| {
         if let Some(delay) = delay {
@@ -514,6 +522,9 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
             Some(monitor) => match what {
                 Start::CaptureBar => capture_bar(&state, monitor, pressed, cx).await,
                 Start::Screenshot(target) => capture(&state, target, monitor, pressed, cx).await,
+                Start::ScreenshotWithWindow => {
+                    capture(&state, CaptureTarget::Area, monitor, pressed, cx).await
+                }
                 Start::Record(target) => record(&state, target, monitor, pressed, cx).await,
             },
         };

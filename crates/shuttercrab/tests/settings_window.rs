@@ -144,6 +144,10 @@ fn shows_the_hotkeys_from_the_settings(cx: &mut TestAppContext) {
             Some("Ctrl+Alt+S")
         );
         assert_eq!(
+            label(window, "hotkey-screenshot-with-window").as_deref(),
+            Some("Ctrl+Alt+Shift+S")
+        );
+        assert_eq!(
             label(window, "hotkey-record").as_deref(),
             Some("Ctrl+Alt+R")
         );

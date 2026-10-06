@@ -17,8 +17,11 @@ use std::path::{Path, PathBuf};
 pub struct Settings {
     /// Opens the Capture Bar, e.g. `Ctrl+Alt+C`.
     pub capture_bar_hotkey: String,
-    /// Starts an area screenshot directly, e.g. `Ctrl+Alt+S`.
+    /// Starts an area screenshot directly, e.g. `Ctrl+Alt+S`; Shuttercrab's
+    /// window hides first.
     pub screenshot_hotkey: String,
+    /// The same, with Shuttercrab's window left in the picture.
+    pub screenshot_with_window_hotkey: String,
     /// Starts an area recording directly, or stops the one running.
     pub record_hotkey: String,
     /// Pause, restart and discard the recording; registered only while
@@ -47,8 +50,7 @@ pub struct Settings {
     pub last_mode: CaptureMode,
     pub last_target: CaptureTarget,
     /// Show each screenshot in Shuttercrab's window, as Snipping Tool does,
-    /// whatever started it. The window comes forward without taking the
-    /// keyboard.
+    /// whatever started it. The window comes forward with the keyboard.
     pub show_in_window: bool,
     /// Show a thumbnail in the corner after each screenshot.
     pub show_thumbnail: bool,
@@ -84,6 +86,7 @@ impl Default for Settings {
         Self {
             capture_bar_hotkey: "Ctrl+Alt+C".into(),
             screenshot_hotkey: "Ctrl+Alt+S".into(),
+            screenshot_with_window_hotkey: "Ctrl+Alt+Shift+S".into(),
             record_hotkey: "Ctrl+Alt+R".into(),
             pause_hotkey: "Ctrl+Alt+P".into(),
             restart_hotkey: "Ctrl+Alt+N".into(),
