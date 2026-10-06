@@ -11,7 +11,7 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- Tab and Shift+Tab move through the window's open menus
+- In the window's menus (More and the delay), Tab moves to the next item and Shift+Tab to the one before. Tab did nothing there before.
 
 ## [0.1.15](https://github.com/jakeklassen/shuttercrab/compare/v0.1.14...v0.1.15) - 2026-10-06
 
