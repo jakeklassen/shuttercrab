@@ -8,10 +8,10 @@ use crate::{
     palette::{accent, border, hover, muted, recording, surface, tile},
 };
 use gpui_kit::{
-    Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
-    MouseButton, MouseUpEvent, ParentElement as _, Render, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, component::Icon,
-    div, prelude::FluentBuilder as _, px,
+    ClickEvent, Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,
+    KeyDownEvent, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
+    Styled as _, TestSupportExt as _, Window, component::Icon, div, prelude::FluentBuilder as _,
+    px,
 };
 
 /// What the user did with the bar.
@@ -148,13 +148,10 @@ impl CaptureBar {
                 },
             )
             .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                    this.set_mode(mode);
-                    cx.notify();
-                }),
-            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.set_mode(mode);
+                cx.notify();
+            }))
             .text_sm()
             .child(
                 Icon::new(mode.icon())
@@ -195,9 +192,8 @@ impl CaptureBar {
             .bg(tile())
             .when(!offered, |d| d.opacity(0.4))
             .when(offered, |d| {
-                d.hover(|s| s.bg(hover())).cursor_pointer().on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| this.choose(target, cx)),
+                d.hover(|s| s.bg(hover())).cursor_pointer().on_click(
+                    cx.listener(move |this, _: &ClickEvent, _, cx| this.choose(target, cx)),
                 )
             })
             .child(

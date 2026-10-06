@@ -8,10 +8,10 @@
 
 use crate::palette::{border, surface};
 use gpui_kit::{
-    Context, EventEmitter, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,
-    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, Pixels, Point, Render,
-    RenderImage, Role, StatefulInteractiveElement as _, Styled as _, StyledImage as _, Task,
-    TestSupportExt as _, Window, assets::IconName, component::Icon, div, img,
+    ClickEvent, Context, EventEmitter, InteractiveElement as _, IntoElement, MouseButton,
+    MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, Pixels, Point,
+    Render, RenderImage, Role, StatefulInteractiveElement as _, Styled as _, StyledImage as _,
+    Task, TestSupportExt as _, Window, assets::IconName, component::Icon, div, img,
     prelude::FluentBuilder as _, px, rgb,
 };
 use std::{
@@ -340,14 +340,11 @@ impl Render for Thumbnail {
                         .bg(rgb(0x000000).opacity(0.7))
                         .hover(|s| s.bg(rgb(0x3A3A3A)))
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                cx.stop_propagation();
-                                this.pressed_at = None;
-                                this.close(cx);
-                            }),
-                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            cx.stop_propagation();
+                            this.pressed_at = None;
+                            this.close(cx);
+                        }))
                         .child(
                             Icon::new(IconName::X)
                                 .size(px(14.))

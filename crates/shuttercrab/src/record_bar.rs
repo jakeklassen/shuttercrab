@@ -21,8 +21,8 @@ use crate::{
     recording::{Clock, clock},
 };
 use gpui_kit::{
-    AnyElement, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseUpEvent, ParentElement as _, Render, Role, SharedString,
+    AnyElement, ClickEvent, Context, EventEmitter, FocusHandle, Hsla, InteractiveElement as _,
+    IntoElement, KeyDownEvent, ParentElement as _, Render, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, assets::IconName,
     component::Icon, div, prelude::FluentBuilder as _, px,
 };
@@ -259,10 +259,7 @@ impl RecordBar {
             .cursor_pointer()
             .text_sm()
             .text_color(color)
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| this.ask(event, cx)),
-            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.ask(event, cx)))
             .child(Icon::new(icon).size(px(14.)))
             .child(label)
             .when(!key.is_empty(), |d| {
