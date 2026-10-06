@@ -547,6 +547,7 @@ fn the_drawing_tools_fit_beside_the_rest_of_the_toolbar(cx: &mut TestAppContext)
             "tool-pen",
             "tool-highlighter",
             "tool-eraser",
+            "tool-shapes",
             "undo",
             "redo",
             "copy",
@@ -700,4 +701,126 @@ fn the_eraser_takes_whole_marks_and_erase_all_takes_every_one(cx: &mut TestAppCo
     // And from the keyboard: X opens the flyout, Enter takes every mark.
     press(cx, &opened, &["x", "enter"]);
     assert!(marks(cx, &opened).is_empty());
+}
+
+#[gpui_kit::test]
+fn the_shapes_tool_draws_a_shape_with_a_drag_and_nothing_with_a_click(cx: &mut TestAppContext) {
+    use shuttercrab::{
+        main_window::Hand,
+        markup::{Ink, ShapeKind, ShapeStyle},
+    };
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    let bar_shown = |cx: &mut TestAppContext| {
+        let mut shown = false;
+        update(cx, &opened, |window, _| {
+            shown = window.try_find("shapes-bar").is_some()
+        });
+        shown
+    };
+    assert!(!bar_shown(cx));
+    // G picks up the shapes, and their bar shows over the screenshot.
+    press(cx, &opened, &["g"]);
+    assert_eq!(
+        cx.update(|cx| opened.view.read(cx).hand()),
+        Some(Hand::Shape)
+    );
+    assert!(bar_shown(cx));
+
+    // A click draws nothing; a drag draws the rectangle, red, unfilled.
+    drag_at(cx, &opened, 0., 0., 1.);
+    assert!(marks(cx, &opened).is_empty());
+    drag_at(cx, &opened, 0., -60., 60.);
+    let drawn = marks(cx, &opened);
+    assert_eq!(drawn.len(), 1);
+    let shape = drawn[0].as_shape().unwrap();
+    assert_eq!(shape.kind, ShapeKind::Rectangle);
+    assert_eq!(shape.outline, ShapeStyle::DEFAULT.outline);
+    assert_eq!(shape.fill, Ink::TRANSPARENT);
+    assert!(shape.end.0 - shape.start.0 > 100.);
+
+    // Each shape has its key; the choice is remembered.
+    for (key, kind) in [
+        ("o", ShapeKind::Oval),
+        ("l", ShapeKind::Line),
+        ("a", ShapeKind::Arrow),
+    ] {
+        press(cx, &opened, &[key]);
+        assert_eq!(opened.settings.borrow().shape_style().kind, kind);
+    }
+    drag_at(cx, &opened, 40., -60., 60.);
+    let drawn = marks(cx, &opened);
+    assert_eq!(drawn[1].as_shape().unwrap().kind, ShapeKind::Arrow);
+    // A shape is undone like any mark.
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(marks(cx, &opened).len(), 1);
+
+    // Escape puts the shapes down, and the bar goes.
+    press(cx, &opened, &["escape"]);
+    assert_eq!(cx.update(|cx| opened.view.read(cx).hand()), None);
+    assert!(!bar_shown(cx));
+}
+
+#[gpui_kit::test]
+fn fill_and_outline_pick_colours_opacity_and_size_from_the_keyboard(cx: &mut TestAppContext) {
+    use shuttercrab::markup::{SHAPE_COLORS, ShapeKind};
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    let menu_open = |cx: &mut TestAppContext| {
+        let mut open = false;
+        update(cx, &opened, |window, _| {
+            open = window.try_find("shape-menu").is_some()
+        });
+        open
+    };
+    let style = |opened: &Opened| opened.settings.borrow().shape_style();
+    press(cx, &opened, &["g", "r"]);
+
+    // F opens Fill: Transparent is chosen; one right and Enter picks black.
+    press(cx, &opened, &["f"]);
+    assert!(menu_open(cx));
+    press(cx, &opened, &["right", "enter"]);
+    assert!(!menu_open(cx));
+    assert_eq!(style(&opened).fill.color, SHAPE_COLORS[1]);
+    // Minus and plus change the open menu's opacity, by tens.
+    press(cx, &opened, &["f", "-", "-"]);
+    assert_eq!(style(&opened).fill.opacity, 80);
+    press(cx, &opened, &["+"]);
+    assert_eq!(style(&opened).fill.opacity, 90);
+    // A click on a swatch picks it, and the menu stays.
+    update(cx, &opened, |window, cx| window.click("shape-color-0", cx));
+    assert_eq!(style(&opened).fill.color, None);
+    assert!(menu_open(cx));
+
+    // T switches to Outline; [ and ] change its size, from 1 to 24.
+    press(cx, &opened, &["t"]);
+    assert!(menu_open(cx));
+    press(cx, &opened, &["]", "]"]);
+    assert_eq!(style(&opened).size, 6.);
+    for _ in 0..30 {
+        press(cx, &opened, &["]"]);
+    }
+    assert_eq!(style(&opened).size, 24.);
+
+    // A line has no fill: F does nothing, and Fill's menu closes.
+    press(cx, &opened, &["escape", "f"]);
+    assert!(menu_open(cx));
+    press(cx, &opened, &["l"]);
+    assert_eq!(style(&opened).kind, ShapeKind::Line);
+    assert!(!menu_open(cx));
+    press(cx, &opened, &["f"]);
+    assert!(!menu_open(cx));
+
+    // Escape closes a menu first, then puts the shapes down.
+    press(cx, &opened, &["t", "escape"]);
+    assert!(!menu_open(cx));
+    assert!(cx.update(|cx| opened.view.read(cx).hand()).is_some());
 }

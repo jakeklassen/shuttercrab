@@ -1,5 +1,6 @@
 //! The screenshot in the main window: where it sits (zoom and position),
-//! moving it about, and drawing on it with the pen and highlighter.
+//! moving it about, and drawing on it with the pen, the highlighter and the
+//! shapes.
 //!
 //! Finished strokes are drawn onto a copy of the screenshot off the main
 //! thread ([`markup::draw`]), the same way Copy and Save draw them, so what
@@ -11,7 +12,7 @@
 
 use super::{FOOTER_HEIGHT, Hand, MainWindow, Shot, TOOLBAR_HEIGHT};
 use crate::{
-    markup::{self, Brush, Drawing, Figure, Mark, Marks, Region, Shape, Stroke, Tool},
+    markup::{self, Drawing, Figure, Ink, Mark, Marks, Region, Shape, Stroke, Tool},
     palette::border,
     pixels,
     shot_view::{ShotView, Xy},
@@ -19,7 +20,7 @@ use crate::{
 use gpui_kit::{
     AnyElement, Bounds, ContentMask, Context, CursorStyle, InteractiveElement as _, IntoElement,
     KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent, SharedString,
+    PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, canvas, div, img,
     point, px, rgb, size,
 };
@@ -69,6 +70,9 @@ enum Gesture {
     /// Erasing: where the eraser last was, in screenshot pixels, and
     /// whether this drag has taken anything yet.
     Erase { last: (f32, f32), erased: bool },
+    /// Drawing a shape: where the press was, in the canvas, and whether the
+    /// drag has gone far enough to be one.
+    Shape { shape: Shape, from: Xy, drawn: bool },
 }
 
 impl Shown {
@@ -141,10 +145,10 @@ impl Shown {
         ((0. ..width as f32).contains(&x) && (0. ..height as f32).contains(&y)).then_some((x, y))
     }
 
-    /// The stroke width, screenshot pixels, for `brush`: its size in the
+    /// The stroke width, screenshot pixels, for a tool's `size`: in the
     /// logical pixels of the screen the screenshot was taken on.
-    fn width_for(&self, brush: Brush) -> f32 {
-        brush.size * self.shot.scale.unwrap_or(self.scale)
+    fn width_for(&self, size: f32) -> f32 {
+        size * self.shot.scale.unwrap_or(self.scale)
     }
 }
 
@@ -393,6 +397,7 @@ impl MainWindow {
         let brush = hand
             .and_then(Hand::drawing)
             .map(|tool| (tool, self.brush(tool)));
+        let style = self.shape_style();
         let Some(shown) = &mut self.shown else {
             return;
         };
@@ -402,13 +407,29 @@ impl MainWindow {
                 Gesture::Draw(Drawing::new(Stroke {
                     tool,
                     color: brush.color,
-                    width: shown.width_for(brush),
+                    width: shown.width_for(brush.size),
                     points: vec![pixel],
                 }))
             }),
             (Some(Hand::Erase), _) => pixel.map(|pixel| Gesture::Erase {
                 last: pixel,
                 erased: false,
+            }),
+            (Some(Hand::Shape), _) => pixel.map(|pixel| Gesture::Shape {
+                shape: Shape {
+                    kind: style.kind,
+                    start: pixel,
+                    end: pixel,
+                    outline: style.outline,
+                    fill: if style.kind.fills() {
+                        style.fill
+                    } else {
+                        Ink::TRANSPARENT
+                    },
+                    width: shown.width_for(style.size),
+                },
+                from: at,
+                drawn: false,
             }),
             _ => shown.view.can_pan(canvas).then_some(Gesture::Pan(at)),
         };
@@ -522,6 +543,19 @@ impl MainWindow {
                 let y = (at.y - placed.origin.y) / placed.size.y * height as f32;
                 self.erase_to((x, y), canvas, window, cx);
             }
+            Some(Gesture::Shape { shape, from, drawn }) => {
+                let end = (
+                    (at.x - placed.origin.x) / placed.size.x * width as f32,
+                    (at.y - placed.origin.y) / placed.size.y * height as f32,
+                );
+                // Shift: a square, a circle, or a line at 45°.
+                shape.end = if event.modifiers.shift {
+                    markup::constrained(shape.kind, shape.start, end)
+                } else {
+                    end
+                };
+                *drawn |= (at.x - from.x).abs() + (at.y - from.y).abs() > markup::LEAST_DRAG;
+            }
             None => {}
         }
         self.update_patch(window, cx);
@@ -603,6 +637,15 @@ impl MainWindow {
                 shown.marks.add(Mark::Stroke(drawing.stroke));
                 self.redraw(window, cx);
             }
+            // A click, or a drag too short to see, is not a shape.
+            Some(Gesture::Shape { shape, drawn, .. }) => {
+                if drawn {
+                    shown.marks.add(Mark::Shape(shape));
+                    self.redraw(window, cx);
+                } else {
+                    cx.notify();
+                }
+            }
             Some(Gesture::Pan(_) | Gesture::Erase { .. }) => cx.notify(),
             None => {}
         }
@@ -624,13 +667,16 @@ impl MainWindow {
         // The highlighter multiplies, which only its patch shows; until the
         // patch is ready it is left out rather than shown wrong.
         let drawing = match &shown.gesture {
-            Some(Gesture::Draw(drawing)) => Some(&drawing.stroke),
+            Some(Gesture::Draw(drawing)) => Some(Mark::Stroke(drawing.stroke.clone())),
+            Some(Gesture::Shape {
+                shape, drawn: true, ..
+            }) => Some(Mark::Shape(shape.clone())),
             _ => None,
         };
         let live: Vec<Mark> = pending
             .iter()
             .cloned()
-            .chain(drawing.cloned().map(Mark::Stroke))
+            .chain(drawing)
             .filter(paints_over)
             .collect();
         // Screen pixels per screenshot pixel.
@@ -693,13 +739,14 @@ impl MainWindow {
             )
             .children(self.tip(shown, per_pixel))
             .children(self.notice.map(notice))
+            .children(self.shapes_bar(cx))
     }
 
     /// The tool in hand's tip outlined at the pointer, while the pointer is
     /// over the canvas: at the size it draws, round for the pen, the slanted
     /// chisel for the highlighter; the eraser's reach. A light line in a
-    /// dark one, to show on any screenshot. Labelled with its size for a
-    /// moment after [ or ].
+    /// dark one, to show on any screenshot. The shapes have none, only the
+    /// crosshair. Labelled with its size for a moment after [ or ].
     fn tip(&self, shown: &Shown, per_pixel: f32) -> Vec<AnyElement> {
         let (Some(hand), Some(at)) = (self.hand, self.pointer) else {
             return Vec::new();
@@ -707,22 +754,23 @@ impl MainWindow {
         if self.space_held || matches!(shown.gesture, Some(Gesture::Pan(_))) {
             return Vec::new();
         }
-        let Hand::Draw(tool) = hand else {
-            return vec![round_outline(at, 2. * ERASER_RADIUS).into_any_element()];
+        let (mut tip, side) = match hand {
+            Hand::Erase => {
+                return vec![round_outline(at, 2. * ERASER_RADIUS).into_any_element()];
+            }
+            Hand::Shape => (Vec::new(), 0.),
+            Hand::Draw(tool) => {
+                let side = (shown.width_for(self.brush(tool).size) * per_pixel).max(3.);
+                let outline = match tool {
+                    Tool::Pen => round_outline(at, side).into_any_element(),
+                    Tool::Highlighter => chisel_outline(at, side).into_any_element(),
+                };
+                (vec![outline], side)
+            }
         };
-        let brush = self.brush(tool);
-        let side = (shown.width_for(brush) * per_pixel).max(3.);
-        let outline = match tool {
-            Tool::Pen => round_outline(at, side).into_any_element(),
-            Tool::Highlighter => chisel_outline(at, side).into_any_element(),
-        };
-        let mut tip = vec![outline];
-        if self.size_note {
-            let name = match tool {
-                Tool::Pen => "Pen",
-                Tool::Highlighter => "Highlighter",
-            };
-            let note = SharedString::from(format!("{name} {}", brush.size));
+        if self.size_note
+            && let Some(note) = self.size_label()
+        {
             tip.push(
                 div()
                     .id("size-note")

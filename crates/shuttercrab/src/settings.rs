@@ -6,7 +6,7 @@
 
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
-    markup::{Brush, Rgb, Tool},
+    markup::{Brush, Ink, Rgb, SHAPE_COLORS, ShapeKind, ShapeStyle, Tool},
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
@@ -79,6 +79,16 @@ pub struct Settings {
     pub pen_size: f32,
     pub highlighter_color: String,
     pub highlighter_size: f32,
+    /// The Shapes tool's last choices: the shape, its outline's and its
+    /// fill's colours (`#RRGGBB`, or empty for Transparent) and opacities
+    /// (percent), and the outline's size; read through
+    /// [`Settings::shape_style`].
+    pub shape: ShapeKind,
+    pub shape_outline_color: String,
+    pub shape_outline_opacity: u8,
+    pub shape_fill_color: String,
+    pub shape_fill_opacity: u8,
+    pub shape_size: f32,
 }
 
 impl Default for Settings {
@@ -115,6 +125,12 @@ impl Default for Settings {
             pen_size: Brush::PEN.size,
             highlighter_color: Brush::HIGHLIGHTER.color.to_hex_string(),
             highlighter_size: Brush::HIGHLIGHTER.size,
+            shape: ShapeStyle::DEFAULT.kind,
+            shape_outline_color: ink_text(ShapeStyle::DEFAULT.outline),
+            shape_outline_opacity: ShapeStyle::DEFAULT.outline.opacity,
+            shape_fill_color: ink_text(ShapeStyle::DEFAULT.fill),
+            shape_fill_opacity: ShapeStyle::DEFAULT.fill.opacity,
+            shape_size: ShapeStyle::DEFAULT.size,
         }
     }
 }
@@ -149,6 +165,53 @@ impl Settings {
                 (self.highlighter_color, self.highlighter_size) = (color, brush.size)
             }
         }
+    }
+
+    /// The Shapes tool's choices, as last made; the default for any the
+    /// file holds that it does not offer.
+    pub fn shape_style(&self) -> ShapeStyle {
+        let default = ShapeStyle::DEFAULT;
+        let ink = |text: &str, opacity: u8, default: Ink| {
+            let color = if text.is_empty() {
+                Some(None)
+            } else {
+                Rgb::from_hex_string(text).map(Some)
+            };
+            match color.filter(|c| SHAPE_COLORS.contains(c)) {
+                Some(color) => Ink {
+                    color,
+                    opacity: opacity.clamp(1, 100),
+                },
+                None => default,
+            }
+        };
+        ShapeStyle {
+            kind: self.shape,
+            outline: ink(
+                &self.shape_outline_color,
+                self.shape_outline_opacity,
+                default.outline,
+            ),
+            fill: ink(
+                &self.shape_fill_color,
+                self.shape_fill_opacity,
+                default.fill,
+            ),
+            size: if ShapeStyle::SIZES.contains(&self.shape_size) {
+                self.shape_size.round()
+            } else {
+                default.size
+            },
+        }
+    }
+
+    pub fn set_shape_style(&mut self, style: ShapeStyle) {
+        self.shape = style.kind;
+        self.shape_outline_color = ink_text(style.outline);
+        self.shape_outline_opacity = style.outline.opacity;
+        self.shape_fill_color = ink_text(style.fill);
+        self.shape_fill_opacity = style.fill.opacity;
+        self.shape_size = style.size;
     }
 
     /// The folder screenshots are saved to.
@@ -284,9 +347,39 @@ pub fn save(path: &Path, settings: &Settings) -> Result<()> {
     std::fs::rename(&partial, path).with_context(|| format!("replacing {}", path.display()))
 }
 
+/// An ink's colour as settings keep it: `#RRGGBB`, or empty for
+/// Transparent.
+fn ink_text(ink: Ink) -> String {
+    ink.color.map(Rgb::to_hex_string).unwrap_or_default()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn shape_choices_are_remembered_and_odd_values_fall_back() {
+        let mut settings = Settings::default();
+        assert_eq!(settings.shape_style(), ShapeStyle::DEFAULT);
+        let chosen = ShapeStyle {
+            kind: ShapeKind::Arrow,
+            outline: Ink::TRANSPARENT,
+            fill: Ink {
+                color: Some(Rgb(0x00, 0x4D, 0xE6)),
+                opacity: 40,
+            },
+            size: 9.,
+        };
+        settings.set_shape_style(chosen);
+        assert_eq!(settings.shape_style(), chosen);
+        // Iron gray is the pen's, not a shape's; sizes stop at 24.
+        settings.shape_outline_color = "#58595B".into();
+        settings.shape_size = 30.;
+        let style = settings.shape_style();
+        assert_eq!(style.outline, ShapeStyle::DEFAULT.outline);
+        assert_eq!(style.size, ShapeStyle::DEFAULT.size);
+        assert_eq!(style.fill, chosen.fill);
+    }
 
     #[test]
     fn brushes_are_remembered_and_odd_values_fall_back() {

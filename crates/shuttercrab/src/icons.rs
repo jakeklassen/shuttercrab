@@ -35,7 +35,12 @@ icon_assets!(
         Highlighter,
         Undo2,
         Redo2,
-        Eraser
+        Eraser,
+        Shapes,
+        Circle,
+        Slash,
+        MoveUpLeft,
+        Ban
     ]
 );
 
@@ -98,6 +103,11 @@ mod tests {
             IconName::Undo2,
             IconName::Redo2,
             IconName::Eraser,
+            IconName::Shapes,
+            IconName::Circle,
+            IconName::Slash,
+            IconName::MoveUpLeft,
+            IconName::Ban,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

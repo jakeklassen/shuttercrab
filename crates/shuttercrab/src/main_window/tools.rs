@@ -1,5 +1,6 @@
 //! The toolbar's drawing tools, as Snipping Tool's: the pen and the
-//! highlighter, each showing its colour, then undo and redo.
+//! highlighter, each showing its colour, the eraser and the shapes, then
+//! undo and redo.
 //!
 //! Clicking the tool in hand, or pressing its key again, opens its flyout:
 //! its colours and a size slider over a preview stroke. Arrow keys move
@@ -12,7 +13,7 @@ use crate::{
     palette::{border, coral, hover, muted, tile},
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
+    AppContext as _, Context, Entity, Hsla, InteractiveElement as _, IntoElement, MouseButton,
     MouseUpEvent, ParentElement as _, PathBuilder, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window,
     assets::IconName,
@@ -27,19 +28,21 @@ use gpui_kit::{
 };
 use std::time::Duration;
 
-/// What dragging on the screenshot does: draw with a tool, or erase.
+/// What dragging on the screenshot does: draw with a tool, erase, or draw
+/// a shape.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hand {
     Draw(Tool),
     Erase,
+    Shape,
 }
 
 impl Hand {
-    /// The drawing tool, unless erasing.
+    /// The pen or the highlighter, if in hand.
     pub fn drawing(self) -> Option<Tool> {
         match self {
             Hand::Draw(tool) => Some(tool),
-            Hand::Erase => None,
+            Hand::Erase | Hand::Shape => None,
         }
     }
 }
@@ -76,17 +79,19 @@ impl MainWindow {
     }
 
     /// Pick up `hand`; if it is in hand already, open or close its flyout
-    /// (the eraser's: Erase all mark-ups).
+    /// (the eraser's: Erase all mark-ups; the Shapes bar stays open, and
+    /// only its menu closes).
     pub(super) fn take(&mut self, hand: Hand, cx: &mut Context<Self>) {
         if self.shown.is_none() {
             return;
         }
         if self.hand == Some(hand) {
-            let was_open = self.flyout.take().is_some() | std::mem::take(&mut self.eraser_menu);
+            let was_open = self.close_flyouts();
             if !was_open {
                 match hand {
                     Hand::Draw(tool) => self.open_flyout(tool, cx),
                     Hand::Erase => self.eraser_menu = true,
+                    Hand::Shape => {}
                 }
             }
         } else {
@@ -105,7 +110,9 @@ impl MainWindow {
 
     /// Close any tool's flyout. Returns whether one was open.
     pub(super) fn close_flyouts(&mut self) -> bool {
-        self.flyout.take().is_some() | std::mem::take(&mut self.eraser_menu)
+        self.flyout.take().is_some()
+            | std::mem::take(&mut self.eraser_menu)
+            | self.shape_menu.take().is_some()
     }
 
     fn open_flyout(&mut self, tool: Tool, cx: &mut Context<Self>) {
@@ -151,6 +158,9 @@ impl MainWindow {
     /// [ and ]: the tool in hand a size smaller or bigger, by a step its
     /// range suits.
     pub(super) fn step_size(&mut self, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
+        if self.hand == Some(Hand::Shape) {
+            return self.step_shape_size(steps, window, cx);
+        }
         let Some(tool) = self.hand.and_then(Hand::drawing) else {
             return;
         };
@@ -189,8 +199,20 @@ impl MainWindow {
         cx.notify();
     }
 
+    /// "Pen 5", "Highlighter 16" or "Outline 4": the tool in hand's size,
+    /// labelled; `None` for the eraser or no tool.
+    pub(super) fn size_label(&self) -> Option<SharedString> {
+        let (name, size) = match self.hand? {
+            Hand::Draw(Tool::Pen) => ("Pen", self.brush(Tool::Pen).size),
+            Hand::Draw(Tool::Highlighter) => ("Highlighter", self.brush(Tool::Highlighter).size),
+            Hand::Shape => ("Outline", self.shape_style().size),
+            Hand::Erase => return None,
+        };
+        Some(format!("{name} {size}").into())
+    }
+
     /// Show the tip, labelled with its size, for a moment.
-    fn note_size(&mut self, cx: &mut Context<Self>) {
+    pub(super) fn note_size(&mut self, cx: &mut Context<Self>) {
         self.size_notes += 1;
         self.size_note = true;
         let note = self.size_notes;
@@ -256,6 +278,7 @@ impl MainWindow {
             .child(self.tool_button(Hand::Draw(Tool::Pen), cx))
             .child(self.tool_button(Hand::Draw(Tool::Highlighter), cx))
             .child(self.tool_button(Hand::Erase, cx))
+            .child(self.tool_button(Hand::Shape, cx))
             .child(separator())
             .child(Self::history_button(
                 "undo",
@@ -288,6 +311,7 @@ impl MainWindow {
                 "H",
             ),
             Hand::Erase => ("tool-eraser", "Eraser (X)", IconName::Eraser, "X"),
+            Hand::Shape => ("tool-shapes", "Shapes (G)", IconName::Shapes, "G"),
         };
         let brush = hand.drawing().map(|tool| (tool, self.brush(tool)));
         let in_hand = self.hand == Some(hand);
@@ -339,7 +363,8 @@ impl MainWindow {
                             .child(key),
                     )
                     .child(Icon::new(icon).size(px(18.)))
-                    // The eraser has a clear bar, to sit level with the rest.
+                    // The eraser and the shapes have a clear bar, to sit level
+                    // with the rest.
                     .child(
                         div()
                             .w(px(16.))
@@ -359,10 +384,10 @@ impl MainWindow {
             })
             // [ or ] with the pointer off the screenshot, where the tip
             // would show it: the size, under the button, for a moment.
-            .when_some(brush, |d, (tool, brush)| {
+            .when_some(self.size_label().filter(|_| in_hand), |d, label| {
                 d.when(
-                    in_hand && flyout.is_none() && self.size_note && self.pointer.is_none(),
-                    |d| d.child(size_note(tool, brush)),
+                    flyout.is_none() && self.size_note && self.pointer.is_none(),
+                    |d| d.child(size_note(label)),
                 )
             })
     }
@@ -472,7 +497,7 @@ impl MainWindow {
             .child(div().text_sm().child("Colours"))
             .child(div().flex().flex_wrap().gap(px(10.)).children(swatches))
             .child(div().text_sm().child("Size"))
-            .child(preview(brush))
+            .child(preview(rgb(brush.color.hex()).into(), brush.size))
             .child(Slider::new(&flyout.size).horizontal())
             .child(
                 div()
@@ -512,12 +537,7 @@ impl MainWindow {
 }
 
 /// "Pen 5": a tool's size, labelled, below its button.
-fn size_note(tool: Tool, brush: Brush) -> impl IntoElement {
-    let name = match tool {
-        Tool::Pen => "Pen",
-        Tool::Highlighter => "Highlighter",
-    };
-    let note = SharedString::from(format!("{name} {}", brush.size));
+fn size_note(note: SharedString) -> impl IntoElement {
     div()
         .id("size-note")
         .aria_label(note.clone())
@@ -536,11 +556,10 @@ fn size_note(tool: Tool, brush: Brush) -> impl IntoElement {
         .child(note)
 }
 
-/// A wavy stroke in the brush's colour and size, as Snipping Tool's flyout
-/// shows. The highlighter's appears solid: on the flyout's dark background
-/// its multiply would hide it.
-fn preview(brush: Brush) -> impl IntoElement {
-    let width = brush.size;
+/// A wavy stroke `width` wide, as Snipping Tool's flyouts show a size. The
+/// highlighter's appears solid: on the flyout's dark background its
+/// multiply would hide it.
+pub(super) fn preview(color: Hsla, width: f32) -> impl IntoElement {
     canvas(
         |_, _, _| {},
         move |bounds, _, window, _| {
@@ -552,7 +571,6 @@ fn preview(brush: Brush) -> impl IntoElement {
             path.cubic_bezier_to(at(0.5, 0.5), at(0.25, -0.1), at(0.35, 1.1));
             path.cubic_bezier_to(at(0.92, 0.3), at(0.7, -0.1), at(0.8, 1.1));
             if let Ok(path) = path.build() {
-                let color: gpui_kit::Hsla = rgb(brush.color.hex()).into();
                 window.paint_path(path, color);
             }
         },

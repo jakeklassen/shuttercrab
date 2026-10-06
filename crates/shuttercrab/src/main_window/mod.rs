@@ -18,7 +18,9 @@
 //! screenshot bigger than the window. P and H pick up the pen and the
 //! highlighter, and pressed again open its colours and size; X picks up
 //! the eraser, which takes off whole marks, and pressed again offers to
-//! take off every one. Escape puts the tool down. Dragging then draws (Shift for a straight line), and
+//! take off every one. G picks up the shapes, whose bar has keys of its own
+//! (see `shapes`). Escape puts the tool down. Dragging then draws (Shift
+//! for a straight line, a square or a circle), and
 //! Space+drag or Ctrl+drag moves the screenshot. [ and ] change the size,
 //! Ctrl+Z and Ctrl+Y undo and redo. Escape closes a menu, or goes back
 //! from Settings. At the bottom, quietly, the version running; once a newer
@@ -28,6 +30,7 @@
 //! so it can be tested on its own.
 
 mod canvas;
+mod shapes;
 mod tools;
 
 use crate::{
@@ -67,7 +70,7 @@ pub const SETTINGS_SIZE: Size<Pixels> = Size {
 
 /// The window's least width with a screenshot shown, logical pixels: room
 /// for the toolbar's drawing tools, zoom, Copy and Save as too.
-pub const SHOT_MIN_WIDTH: f32 = 1100.;
+pub const SHOT_MIN_WIDTH: f32 = 1150.;
 
 /// The toolbar's and the footer's heights, logical pixels: fixed, so the
 /// window can be sized around a screenshot.
@@ -278,6 +281,8 @@ pub struct MainWindow {
     flyout: Option<Flyout>,
     /// The eraser's flyout is open.
     eraser_menu: bool,
+    /// The Shapes bar's Fill or Outline menu, if open.
+    shape_menu: Option<shapes::ShapeMenu>,
     /// A short message over the screenshot, such as that every mark was
     /// taken off, and a count for its timer, as for the size label.
     notice: Option<&'static str>,
@@ -312,6 +317,7 @@ impl MainWindow {
             hand: None,
             flyout: None,
             eraser_menu: false,
+            shape_menu: None,
             notice: None,
             notices: 0,
             pointer: None,
@@ -590,7 +596,7 @@ impl MainWindow {
         if keystroke.modifiers.alt || keystroke.modifiers.platform {
             return;
         }
-        if self.on_flyout_key(key, window, cx) {
+        if self.on_flyout_key(key, window, cx) || self.on_shapes_key(key, window, cx) {
             return;
         }
         if let Some(menu) = self.menu {
@@ -611,6 +617,7 @@ impl MainWindow {
             "p" => self.take(Hand::Draw(Tool::Pen), cx),
             "h" => self.take(Hand::Draw(Tool::Highlighter), cx),
             "x" => self.take(Hand::Erase, cx),
+            "g" => self.take(Hand::Shape, cx),
             "escape" => self.put_down_tool(cx),
             "space" => self.space_held = true,
             "[" => self.step_size(-1., window, cx),
