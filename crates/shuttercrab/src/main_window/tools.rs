@@ -125,6 +125,7 @@ impl MainWindow {
             | std::mem::take(&mut self.eraser_menu)
             | self.shape_menu.take().is_some()
             | self.shape_context.take().is_some()
+            | self.emoji_menu.take().is_some()
     }
 
     fn open_flyout(&mut self, tool: Tool, cx: &mut Context<Self>) {

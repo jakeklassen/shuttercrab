@@ -31,6 +31,7 @@
 //! so it can be tested on its own.
 
 mod canvas;
+mod emoji;
 mod selection;
 mod shapes;
 mod tools;
@@ -287,6 +288,11 @@ pub struct MainWindow {
     shape_menu: Option<shapes::ShapeMenu>,
     /// The right-click menu on a shape, if open.
     shape_context: Option<selection::ShapeContext>,
+    /// The Shapes bar's emoji picker, if open, with the emoji the arrow
+    /// keys are on.
+    emoji_menu: Option<usize>,
+    /// The emoji's art for the picker, drawn the first time it opens.
+    emoji_art: std::cell::OnceCell<Vec<Arc<RenderImage>>>,
     /// A short message over the screenshot, such as that every mark was
     /// taken off, and a count for its timer, as for the size label.
     notice: Option<&'static str>,
@@ -323,6 +329,8 @@ impl MainWindow {
             eraser_menu: false,
             shape_menu: None,
             shape_context: None,
+            emoji_menu: None,
+            emoji_art: std::cell::OnceCell::new(),
             notice: None,
             notices: 0,
             pointer: None,
@@ -1268,6 +1276,9 @@ impl Render for MainWindow {
             && shown.scale != window.scale_factor()
         {
             shown.rescale(window.scale_factor());
+        }
+        if let Some(shown) = &self.shown {
+            shown.drop_stale_pictures(window);
         }
         self.pointer = pointer_in_canvas(window).filter(|_| self.shown.is_some());
         let zoom = self

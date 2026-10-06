@@ -929,3 +929,51 @@ fn select_picks_up_a_shape_to_move_recolour_and_turn_from_its_menu(cx: &mut Test
     assert!(!shown(cx, "shape-context"));
     assert_eq!(first_shape(cx, &opened).angle, 90.);
 }
+
+#[gpui_kit::test]
+fn emoji_land_picked_up_in_the_middle_one_after_another(cx: &mut TestAppContext) {
+    use shuttercrab::markup::{Emoji, ShapeKind};
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    let shown = |cx: &mut TestAppContext, id: &'static str| {
+        let mut shown = false;
+        update(cx, &opened, |window, _| {
+            shown = window.try_find(id).is_some()
+        });
+        shown
+    };
+    // G, then E opens the emoji; one right and Enter places the star.
+    press(cx, &opened, &["g", "e"]);
+    assert!(shown(cx, "emoji-menu"));
+    press(cx, &opened, &["right", "enter"]);
+    assert!(!shown(cx, "emoji-menu"));
+    let star = first_shape(cx, &opened);
+    assert_eq!(star.kind, ShapeKind::Emoji(Emoji::Star));
+    assert_eq!(star.center(), (400., 300.));
+    assert_eq!(star.end.0 - star.start.0, star.end.1 - star.start.1);
+    // Picked up: it can turn, and has no outline to choose.
+    assert!(shown(cx, "turn-handle"));
+    press(cx, &opened, &["t"]);
+    assert!(!shown(cx, "shape-menu"));
+
+    // A second lands below and right of the first, unmoved; a click on
+    // the picker places it too.
+    press(cx, &opened, &["e"]);
+    update(cx, &opened, |window, cx| window.click("emoji-0", cx));
+    let drawn = marks(cx, &opened);
+    let heart = drawn[1].as_shape().unwrap();
+    assert_eq!(heart.kind, ShapeKind::Emoji(Emoji::RedHeart));
+    assert!(heart.center().0 > star.center().0 && heart.center().1 > star.center().1);
+
+    // The next shape is still the one chosen before.
+    assert_eq!(
+        opened.settings.borrow().shape_style().kind,
+        ShapeKind::Rectangle
+    );
+    press(cx, &opened, &["delete"]);
+    assert_eq!(marks(cx, &opened).len(), 1);
+}

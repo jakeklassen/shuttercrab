@@ -1,6 +1,7 @@
 //! The Shapes tool, as Snipping Tool's. G picks it up, and while it is in
-//! hand a bar over the screenshot offers Rectangle (R), Oval (O), Line (L)
-//! and Arrow (A), then Fill (F) and Outline (T). Fill and Outline each open
+//! hand a bar over the screenshot offers Emoji (E), Rectangle (R), Oval (O),
+//! Line (L) and Arrow (A), then Fill (F) and Outline (T). Emoji opens its
+//! 18, and the one picked lands in the middle of the view, picked up. Fill and Outline each open
 //! their colours, Transparent first, and an opacity; Outline its size too.
 //! Arrows and Enter pick a colour, - and + change the opacity, [ and ] the
 //! size. Choices are kept in the settings.
@@ -71,6 +72,7 @@ impl ShapeKind {
             ShapeKind::Oval => "Oval",
             ShapeKind::Line => "Line",
             ShapeKind::Arrow => "Arrow",
+            ShapeKind::Emoji(_) => "Emoji",
         }
     }
 
@@ -80,6 +82,7 @@ impl ShapeKind {
             ShapeKind::Oval => "o",
             ShapeKind::Line => "l",
             ShapeKind::Arrow => "a",
+            ShapeKind::Emoji(_) => "e",
         }
     }
 
@@ -89,6 +92,7 @@ impl ShapeKind {
             ShapeKind::Oval => IconName::Circle,
             ShapeKind::Line => IconName::Slash,
             ShapeKind::Arrow => IconName::MoveUpLeft,
+            ShapeKind::Emoji(_) => IconName::FaceSlightlySmiling,
         }
     }
 }
@@ -118,6 +122,20 @@ impl MainWindow {
         }
     }
 
+    /// Whether Fill or Outline can be chosen: for the shape picked up, or
+    /// the next one. An emoji has neither; a line or an arrow, no fill.
+    fn ink_enabled(&self, part: Part, style: &ShapeStyle) -> bool {
+        let picked_up = self
+            .shown
+            .as_ref()
+            .and_then(|shown| shown.selected_shape())
+            .map(|(_, shape)| shape.kind);
+        match picked_up.unwrap_or(style.kind) {
+            ShapeKind::Emoji(_) => false,
+            kind => part == Part::Outline || kind.fills(),
+        }
+    }
+
     /// Draw `kind` next. Fill's menu closes for a shape without a fill.
     fn pick_shape(&mut self, kind: ShapeKind, cx: &mut Context<Self>) {
         let style = ShapeStyle {
@@ -140,8 +158,9 @@ impl MainWindow {
     /// fill to choose.
     fn toggle_shape_menu(&mut self, part: Part, cx: &mut Context<Self>) {
         let style = self.shape_style();
+        self.emoji_menu = None;
         let was = self.shape_menu.take().map(|menu| menu.part);
-        if was != Some(part) && (part == Part::Outline || style.kind.fills()) {
+        if was != Some(part) && self.ink_enabled(part, &style) {
             self.open_shape_menu(part, style, cx);
         }
         cx.notify();
@@ -262,6 +281,9 @@ impl MainWindow {
             self.pick_shape(kind, cx);
             return true;
         }
+        if self.on_emoji_key(key, window, cx) {
+            return true;
+        }
         match key {
             "f" => return self.toggle_shape_menu_by_key(Part::Fill, cx),
             "t" => return self.toggle_shape_menu_by_key(Part::Outline, cx),
@@ -335,6 +357,8 @@ impl MainWindow {
                         .shadow_lg()
                         // A press here is not a shape, nor a press elsewhere.
                         .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+                        .child(self.emoji_button(cx))
+                        .child(separator())
                         .children(shapes)
                         .child(separator())
                         .child(self.ink_button(Part::Fill, &style, cx))
@@ -389,7 +413,7 @@ impl MainWindow {
             Part::Fill => ("shape-fill", "Fill", "F"),
             Part::Outline => ("shape-outline", "Outline", "T"),
         };
-        let enabled = part == Part::Outline || style.kind.fills();
+        let enabled = self.ink_enabled(part, style);
         let ink = part.ink(style);
         let swatch = match ink.color {
             None => Icon::new(IconName::Ban)

@@ -186,7 +186,11 @@ impl Settings {
             }
         };
         ShapeStyle {
-            kind: self.shape,
+            // An emoji is placed, never drawn next.
+            kind: match self.shape {
+                ShapeKind::Emoji(_) => default.kind,
+                kind => kind,
+            },
             outline: ink(
                 &self.shape_outline_color,
                 self.shape_outline_opacity,

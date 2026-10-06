@@ -1,12 +1,12 @@
 //! Snipping Tool's shapes: rectangle, oval, line and arrow. Each has an
 //! outline, and a rectangle or oval a fill too; either can be Transparent,
-//! or partly see-through.
+//! or partly see-through. An emoji is a shape too: a square box it fills.
 //!
 //! A shape is kept as it was dragged, from `start` to `end`, and turned into
 //! [`Layer`]s, polygons filled or stroked, which both the drawing
 //! ([`super::draw`]) and the window's live view paint, so the two agree.
 
-use super::{PEN_COLORS, Rgb, distance};
+use super::{Emoji, PEN_COLORS, Rgb, distance};
 use serde::{Deserialize, Serialize};
 use std::f32::consts::{FRAC_PI_4, PI};
 
@@ -22,6 +22,8 @@ pub enum ShapeKind {
     Oval,
     Line,
     Arrow,
+    /// Placed from the picker, never drawn by dragging.
+    Emoji(Emoji),
 }
 
 impl ShapeKind {
@@ -153,6 +155,9 @@ pub enum Figure {
 /// click is not a shape. Snipping Tool's.
 pub const LEAST_DRAG: f32 = 4.;
 
+/// The biggest an emoji grows, screenshot pixels: Snipping Tool's.
+pub const EMOJI_MAX: f32 = 1024.;
+
 /// How long an arrow's head is, and how wide, in outline widths.
 const ARROW_HEAD: f32 = 5.;
 
@@ -204,6 +209,8 @@ impl Shape {
                 .map(|(ink, points)| layer(Figure::Fill(points), ink))
                 .into_iter()
                 .collect(),
+            // Drawn from its art instead.
+            ShapeKind::Emoji(_) => Vec::new(),
         }
     }
 
@@ -238,6 +245,9 @@ impl Shape {
     /// `point`: on its outline, or anywhere on its fill. A shape without a
     /// fill is hollow.
     pub fn touches(&self, point: Point, reach: f32) -> bool {
+        if matches!(self.kind, ShapeKind::Emoji(_)) {
+            return self.holds(point, reach);
+        }
         self.layers().iter().any(|layer| match &layer.figure {
             Figure::Fill(polygon) => {
                 inside(polygon, point)
@@ -257,7 +267,10 @@ impl Shape {
     /// Whether it has a box, with corner handles and a rotate button: a
     /// rectangle or an oval. A line or an arrow has a handle at each end.
     pub fn has_frame(&self) -> bool {
-        self.kind.fills()
+        matches!(
+            self.kind,
+            ShapeKind::Rectangle | ShapeKind::Oval | ShapeKind::Emoji(_)
+        )
     }
 
     /// The middle of its box, or of its line.
@@ -310,8 +323,14 @@ impl Shape {
         }
         let stays = self.frame()[(index + 2) % 4];
         // The new box, unturned, about the middle of the two corners.
-        let center = ((stays.0 + to.0) / 2., (stays.1 + to.1) / 2.);
-        let across = turned((to.0 - stays.0, to.1 - stays.1), (0., 0.), -self.angle);
+        let mut across = turned((to.0 - stays.0, to.1 - stays.1), (0., 0.), -self.angle);
+        if matches!(self.kind, ShapeKind::Emoji(_)) {
+            // Square, the bigger way winning, as far as the biggest.
+            let side = across.0.abs().max(across.1.abs()).min(EMOJI_MAX);
+            across = (side * across.0.signum(), side * across.1.signum());
+        }
+        let middle = turned((across.0 / 2., across.1 / 2.), (0., 0.), self.angle);
+        let center = (stays.0 + middle.0, stays.1 + middle.1);
         Shape {
             start: (center.0 - across.0 / 2., center.1 - across.1 / 2.),
             end: (center.0 + across.0 / 2., center.1 + across.1 / 2.),
@@ -350,7 +369,12 @@ impl Shape {
     pub fn grown(&self, wider: f32, taller: f32) -> Shape {
         let center = self.center();
         let (dx, dy) = (self.end.0 - self.start.0, self.end.1 - self.start.1);
-        let half = if self.has_frame() {
+        let half = if let ShapeKind::Emoji(_) = self.kind {
+            // Square: Right or Up grows it, Left or Down shrinks it.
+            let by = if wider != 0. { wider } else { taller };
+            let side = (dx.abs() + by).clamp(1., EMOJI_MAX);
+            (side * dx.signum() / 2., side * dy.signum() / 2.)
+        } else if self.has_frame() {
             let w = (dx.abs() + wider).max(1.) * dx.signum();
             let h = (dy.abs() + taller).max(1.) * dy.signum();
             (w / 2., h / 2.)
@@ -527,6 +551,26 @@ mod tests {
         assert!((length(&longer) - length(&line) - 10.).abs() < 0.01);
         assert!(near(longer.center(), line.center()));
         assert!(near(line.moved((5., -5.)).start, (15., 5.)));
+    }
+
+    #[test]
+    fn an_emoji_stays_square_and_no_bigger_than_snipping_tools() {
+        let emoji = Shape {
+            kind: ShapeKind::Emoji(Emoji::Star),
+            start: (0., 0.),
+            end: (64., 64.),
+            ..shape(ShapeKind::Rectangle, Ink::TRANSPARENT)
+        };
+        // A corner dragged wider than tall: square, the bigger way.
+        let resized = emoji.with_handle(2, (100., 80.));
+        assert_eq!((resized.start, resized.end), ((0., 0.), (100., 100.)));
+        assert!(emoji.with_handle(2, (5000., 10.)).end.0 <= EMOJI_MAX);
+        // Up grows it every way, as Right does.
+        let grown = emoji.grown(0., 10.);
+        assert_eq!((grown.start, grown.end), ((-5., -5.), (69., 69.)));
+        // It has no outline or fill to draw, and is touched anywhere on it.
+        assert!(emoji.layers().is_empty());
+        assert!(emoji.touches((32., 32.), 0.));
     }
 
     #[test]

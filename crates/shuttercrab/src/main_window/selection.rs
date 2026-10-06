@@ -16,7 +16,7 @@ use super::{
     tools::Hand,
 };
 use crate::{
-    markup::{Edit, Mark, Shape, ShapeStyle},
+    markup::{Edit, Mark, Shape, ShapeKind, ShapeStyle},
     palette::border,
     shot_view::Xy,
 };
@@ -226,7 +226,11 @@ impl MainWindow {
             .round()
             .clamp(*sizes.start(), *sizes.end());
         let style = ShapeStyle {
-            kind: shape.kind,
+            // The bar never offers an emoji as the next shape.
+            kind: match shape.kind {
+                ShapeKind::Emoji(_) => current.kind,
+                kind => kind,
+            },
             outline: shape.outline,
             fill: if shape.kind.fills() {
                 shape.fill
@@ -331,6 +335,9 @@ impl MainWindow {
             return;
         };
         let changed = change(shape);
+        if changed == *shape {
+            return;
+        }
         shown.marks.edit(index, Mark::Shape(changed), how);
         cx.notify();
     }

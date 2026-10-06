@@ -9,10 +9,14 @@
 //! through, and one colour over another darkens. A single stroke never
 //! darkens where it crosses itself, since it is drawn in one go.
 
+mod emoji;
 mod shape;
 
+pub use emoji::{Emoji, image as emoji_image};
+
 pub use shape::{
-    Figure, Ink, LEAST_DRAG, Layer, SHAPE_COLORS, Shape, ShapeKind, ShapeStyle, constrained,
+    EMOJI_MAX, Figure, Ink, LEAST_DRAG, Layer, SHAPE_COLORS, Shape, ShapeKind, ShapeStyle,
+    constrained,
 };
 use tiny_skia::{
     BlendMode, Color, FillRule, IntSize, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Shader,
@@ -500,7 +504,14 @@ pub fn draw_region(
     for mark in marks {
         match mark {
             Mark::Stroke(stroke) => paint(&mut canvas, stroke, bgr, shift),
-            Mark::Shape(shape) => paint_shape(&mut canvas, shape, bgr, shift),
+            Mark::Shape(shape) => match shape.kind {
+                ShapeKind::Emoji(emoji) => {
+                    let side = (shape.end.0 - shape.start.0).abs();
+                    let placed = (shape.center(), side, shape.angle);
+                    emoji::paint(&mut canvas, emoji, placed, bgr, shift);
+                }
+                _ => paint_shape(&mut canvas, shape, bgr, shift),
+            },
         }
     }
     let mut data = canvas.take();
@@ -842,6 +853,25 @@ mod tests {
         assert!(r.abs_diff(128) <= 1 && g.abs_diff(128) <= 1, "{r} {g}");
         assert_eq!((b, a), (255, 255));
         assert_eq!(pixel(&out, 20, 1, 1), [255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn an_emoji_is_drawn_in_its_box_and_nowhere_else() {
+        let star = Shape {
+            kind: ShapeKind::Emoji(Emoji::Star),
+            start: (4., 4.),
+            end: (28., 28.),
+            outline: Ink::TRANSPARENT,
+            fill: Ink::TRANSPARENT,
+            width: 0.,
+            angle: 0.,
+        };
+        let out = draw(&white(32), 32, 32, &[Mark::Shape(star)], false);
+        // The star's middle is yellow-orange: much more red than blue.
+        let [r, _, b, a] = pixel(&out, 32, 16, 16);
+        assert!(r > 200 && b < 120 && a == 255, "{r} {b}");
+        assert_eq!(pixel(&out, 32, 1, 1), [255, 255, 255, 255]);
+        assert_eq!(pixel(&out, 32, 30, 30), [255, 255, 255, 255]);
     }
 
     #[test]

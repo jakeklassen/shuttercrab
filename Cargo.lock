@@ -6290,6 +6290,7 @@ dependencies = [
  "log",
  "lyon_tessellation",
  "raw-window-handle",
+ "resvg 0.45.1",
  "serde",
  "serde_json",
  "shuttercrab-capture",

@@ -15,20 +15,22 @@ use super::{
     selection::{Editing, Grip, Placing},
 };
 use crate::{
-    markup::{self, Drawing, Figure, Ink, Mark, Marks, Region, Shape, Stroke, Tool},
+    markup::{
+        self, Drawing, Emoji, Figure, Ink, Mark, Marks, Region, Shape, ShapeKind, Stroke, Tool,
+    },
     palette::border,
     pixels,
     shot_view::{ShotView, Xy},
 };
 use gpui_kit::{
-    AnyElement, Bounds, ContentMask, Context, CursorStyle, InteractiveElement as _, IntoElement,
-    KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent, ParentElement as _,
-    PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent,
+    AnyElement, Bounds, ContentMask, Context, Corners, CursorStyle, InteractiveElement as _,
+    IntoElement, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
+    ParentElement as _, PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, canvas, div, img,
     point, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin, StrokeOptions};
-use std::sync::Arc;
+use std::{cell::RefCell, sync::Arc};
 
 /// The screenshot shown, how it sits in the canvas, and the marks on it.
 pub(super) struct Shown {
@@ -49,6 +51,68 @@ pub(super) struct Shown {
     /// The shape picked up to change, by its place in the marks: left out
     /// of the drawing and painted over it.
     pub(super) selected: Option<usize>,
+    /// Emoji drawn for the screen, as the canvas shows them.
+    emoji_pictures: RefCell<EmojiPictures>,
+}
+
+/// Emoji drawn for the screen, each kept while it looks the same there, so
+/// it is drawn once; those no longer shown wait for the next frame to be
+/// let go of.
+#[derive(Default)]
+struct EmojiPictures {
+    kept: Vec<(Picture, Arc<RenderImage>)>,
+    stale: Vec<Arc<RenderImage>>,
+}
+
+/// How an emoji looks on screen: which, how many device pixels across,
+/// and how far turned, in tenths of a degree.
+#[derive(Clone, Copy, PartialEq, Eq)]
+struct Picture {
+    emoji: Emoji,
+    side: u32,
+    angle: i32,
+}
+
+impl EmojiPictures {
+    /// The pictures `wanted` this frame, drawing those not kept; the
+    /// kept ones not wanted go stale.
+    fn for_frame(&mut self, wanted: &[Option<Picture>]) -> Vec<Option<Arc<RenderImage>>> {
+        let mut kept: Vec<(Picture, Arc<RenderImage>)> = Vec::new();
+        let mut pictures = Vec::with_capacity(wanted.len());
+        for picture in wanted {
+            let Some(picture) = *picture else {
+                pictures.push(None);
+                continue;
+            };
+            let known = kept.iter().chain(&self.kept).find(|(p, _)| *p == picture);
+            let image = match known {
+                Some((_, image)) => image.clone(),
+                None => {
+                    let angle = picture.angle as f32 / 10.;
+                    let (bgra, span) =
+                        markup::emoji_image(picture.emoji, picture.side as f32, angle);
+                    pixels::bgra_image(bgra, span, span)
+                }
+            };
+            if !kept.iter().any(|(p, _)| *p == picture) {
+                kept.push((picture, image.clone()));
+            }
+            pictures.push(Some(image));
+        }
+        for (picture, image) in std::mem::replace(&mut self.kept, kept) {
+            if !self.kept.iter().any(|(p, _)| *p == picture) {
+                self.stale.push(image);
+            }
+        }
+        pictures
+    }
+
+    /// Let go of the pictures no longer shown.
+    fn drop_stale(&mut self, window: &mut Window) {
+        for image in self.stale.drain(..) {
+            let _ = window.drop_image(image);
+        }
+    }
 }
 
 /// The screenshot with `marks` drawn on it.
@@ -95,6 +159,7 @@ impl Shown {
             patching: false,
             gesture: None,
             selected: None,
+            emoji_pictures: RefCell::default(),
         }
     }
 
@@ -114,6 +179,16 @@ impl Shown {
         if let Some(patch) = self.patch {
             let _ = window.drop_image(patch.image);
         }
+        let mut pictures = self.emoji_pictures.into_inner();
+        pictures.drop_stale(window);
+        for (_, image) in pictures.kept {
+            let _ = window.drop_image(image);
+        }
+    }
+
+    /// Let go of the emoji pictures the last frame stopped showing.
+    pub(super) fn drop_stale_pictures(&self, window: &mut Window) {
+        self.emoji_pictures.borrow_mut().drop_stale(window);
     }
 
     fn drop_patch(&mut self, window: &mut Window) {
@@ -786,6 +861,25 @@ impl MainWindow {
             .collect();
         // Screen pixels per screenshot pixel.
         let per_pixel = placed.size.x / shown.shot.size().0 as f32;
+        // Emoji are painted as pictures, drawn at the size they show.
+        let scale = window.scale_factor();
+        let wanted: Vec<Option<Picture>> = live
+            .iter()
+            .map(|mark| {
+                let shape = mark.as_shape()?;
+                let ShapeKind::Emoji(emoji) = shape.kind else {
+                    return None;
+                };
+                let side = (shape.end.0 - shape.start.0).abs() * per_pixel * scale;
+                Some(Picture {
+                    emoji,
+                    side: side.round().max(1.) as u32,
+                    angle: (shape.angle * 10.).round() as i32,
+                })
+            })
+            .collect();
+        let pictures = shown.emoji_pictures.borrow_mut().for_frame(&wanted);
+        let live: Vec<(Mark, Option<Arc<RenderImage>>)> = live.into_iter().zip(pictures).collect();
         let patch = shown.patch.as_ref().map(|patch| {
             let r = patch.region;
             img(patch.image.clone())
@@ -841,7 +935,7 @@ impl MainWindow {
                             bounds.origin.y + px(placed.origin.y),
                         );
                         let area = Bounds::new(origin, size(px(placed.size.x), px(placed.size.y)));
-                        paint_marks(window, &live, area, per_pixel);
+                        paint_marks(window, &live, area, per_pixel, scale);
                     },
                 )
                 .absolute()
@@ -918,7 +1012,15 @@ fn paints_over(mark: &Mark) -> bool {
 /// Paint `marks` over the screenshot drawn in `area` (window pixels),
 /// `per_pixel` window pixels a screenshot pixel, clipped to it as Copy and
 /// Save clip them. (The highlighter shows through its patch.)
-fn paint_marks(window: &mut Window, marks: &[Mark], area: Bounds<Pixels>, per_pixel: f32) {
+/// Emoji are painted from their `pictures`, drawn for `scale` device
+/// pixels a logical one.
+fn paint_marks(
+    window: &mut Window,
+    marks: &[(Mark, Option<Arc<RenderImage>>)],
+    area: Bounds<Pixels>,
+    per_pixel: f32,
+    scale: f32,
+) {
     let to_window = |(x, y): (f32, f32)| {
         point(
             area.origin.x + px(x * per_pixel),
@@ -926,7 +1028,22 @@ fn paint_marks(window: &mut Window, marks: &[Mark], area: Bounds<Pixels>, per_pi
         )
     };
     window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
-        for mark in marks {
+        for (mark, picture) in marks {
+            if let (Mark::Shape(shape), Some(picture)) = (mark, picture) {
+                let span = picture.size(0).width.0 as f32 / scale;
+                let middle = to_window(shape.center());
+                let at = point(middle.x - px(span / 2.), middle.y - px(span / 2.));
+                let bounds = Bounds::new(at, size(px(span), px(span)));
+                let _ = window.paint_image(
+                    bounds,
+                    bounds,
+                    Corners::default(),
+                    picture.clone(),
+                    0,
+                    false,
+                );
+                continue;
+            }
             match mark {
                 Mark::Stroke(stroke) => paint_pen_stroke(window, stroke, per_pixel, to_window),
                 Mark::Shape(shape) => paint_shape(window, shape, per_pixel, to_window),
