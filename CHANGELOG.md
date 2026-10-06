@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/jakeklassen/shuttercrab/compare/v0.1.12...v0.1.13) - 2026-10-06
+
+### Added
+
+- a second screenshot hotkey keeps Shuttercrab's window in the picture
+- Print Screen as a hotkey
+
+### Fixed
+
+- a capture hides the main window, which comes back with the keyboard
+
 ## [0.1.12](https://github.com/jakeklassen/shuttercrab/compare/v0.1.11...v0.1.12) - 2026-10-05
 
 ### Added
