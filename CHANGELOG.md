@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.17](https://github.com/jakeklassen/shuttercrab/compare/v0.1.16...v0.1.17) - 2026-10-06
+
+### Added
+
+- Recordings can have sound: what your speakers or headphones play, your microphone, or both, mixed into one track. Both are off unless switched on in Settings > Sound, so nothing is recorded by surprise; Settings also chooses which microphone.
+- A ready bar before each recording, as in Snipping Tool: after you choose the area, the bar waits with Start (Enter) and Cancel (Esc), and switches for the microphone (M) and the system sound (A) that start from your settings and apply to that recording only. The microphone list (Down) chooses which one, and remembers it for next time. The switches stay while recording, so either sound can be turned on or off mid-take. A microphone that is off is never opened.
+
+### Fixed
+
+- Clicking a button on the recording bar works the first time. Before, the click that gave the bar the keyboard moved its buttons, so it was missed, and a second click could land on Pause instead.
+
 ## [0.1.16](https://github.com/jakeklassen/shuttercrab/compare/v0.1.15...v0.1.16) - 2026-10-06
 
 ### Fixed
