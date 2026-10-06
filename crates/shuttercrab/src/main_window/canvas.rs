@@ -427,6 +427,7 @@ impl MainWindow {
                         Ink::TRANSPARENT
                     },
                     width: shown.width_for(style.size),
+                    angle: 0.,
                 },
                 from: at,
                 drawn: false,

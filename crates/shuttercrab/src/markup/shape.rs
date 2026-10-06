@@ -122,6 +122,9 @@ pub struct Shape {
     pub fill: Ink,
     /// The outline's width.
     pub width: f32,
+    /// How far a rectangle or an oval is turned about its centre,
+    /// degrees clockwise. A line or an arrow turns its ends instead.
+    pub angle: f32,
 }
 
 /// One part of a shape to paint, in paint order.
@@ -170,6 +173,7 @@ impl Shape {
                     ShapeKind::Rectangle => self.corners().to_vec(),
                     _ => self.ellipse(),
                 };
+                let edge = self.turn(edge);
                 let fill = self
                     .fill
                     .paint()
@@ -203,7 +207,8 @@ impl Shape {
         }
     }
 
-    /// The box's corners, clockwise from the top left.
+    /// The box's corners, clockwise from the top left, before it is
+    /// turned.
     fn corners(&self) -> [Point; 4] {
         let (x0, x1) = (self.start.0.min(self.end.0), self.start.0.max(self.end.0));
         let (y0, y1) = (self.start.1.min(self.end.1), self.start.1.max(self.end.1));
@@ -245,6 +250,144 @@ impl Shape {
             } => edges(points, *closed).any(|(a, b)| distance(point, a, b) <= width / 2. + reach),
         })
     }
+}
+
+/// Editing a shape after it is drawn: each change gives a new shape.
+impl Shape {
+    /// Whether it has a box, with corner handles and a rotate button: a
+    /// rectangle or an oval. A line or an arrow has a handle at each end.
+    pub fn has_frame(&self) -> bool {
+        self.kind.fills()
+    }
+
+    /// The middle of its box, or of its line.
+    pub fn center(&self) -> Point {
+        (
+            (self.start.0 + self.end.0) / 2.,
+            (self.start.1 + self.end.1) / 2.,
+        )
+    }
+
+    /// `points` turned with the shape, about its centre.
+    fn turn(&self, points: Vec<Point>) -> Vec<Point> {
+        if self.angle == 0. {
+            return points;
+        }
+        let center = self.center();
+        points
+            .into_iter()
+            .map(|point| turned(point, center, self.angle))
+            .collect()
+    }
+
+    /// Its box's corners as turned, clockwise from the top left.
+    pub fn frame(&self) -> [Point; 4] {
+        let corners = self.turn(self.corners().to_vec());
+        [corners[0], corners[1], corners[2], corners[3]]
+    }
+
+    /// Where its handles are: its box's corners, clockwise from the top
+    /// left, or its ends.
+    pub fn handles(&self) -> Vec<Point> {
+        if self.has_frame() {
+            self.frame().to_vec()
+        } else {
+            vec![self.start, self.end]
+        }
+    }
+
+    /// With handle `index` (as [`Shape::handles`] lists them) dragged to
+    /// `to`: the opposite corner stays where it is, or the other end.
+    pub fn with_handle(&self, index: usize, to: Point) -> Shape {
+        if !self.has_frame() {
+            let mut shape = self.clone();
+            if index == 0 {
+                shape.start = to;
+            } else {
+                shape.end = to;
+            }
+            return shape;
+        }
+        let stays = self.frame()[(index + 2) % 4];
+        // The new box, unturned, about the middle of the two corners.
+        let center = ((stays.0 + to.0) / 2., (stays.1 + to.1) / 2.);
+        let across = turned((to.0 - stays.0, to.1 - stays.1), (0., 0.), -self.angle);
+        Shape {
+            start: (center.0 - across.0 / 2., center.1 - across.1 / 2.),
+            end: (center.0 + across.0 / 2., center.1 + across.1 / 2.),
+            ..self.clone()
+        }
+    }
+
+    /// Moved `by` screenshot pixels.
+    pub fn moved(&self, by: Point) -> Shape {
+        Shape {
+            start: (self.start.0 + by.0, self.start.1 + by.1),
+            end: (self.end.0 + by.0, self.end.1 + by.1),
+            ..self.clone()
+        }
+    }
+
+    /// Turned `degrees` clockwise about its centre.
+    pub fn turned(&self, degrees: f32) -> Shape {
+        if self.has_frame() {
+            return Shape {
+                angle: (self.angle + degrees).rem_euclid(360.),
+                ..self.clone()
+            };
+        }
+        let center = self.center();
+        Shape {
+            start: turned(self.start, center, degrees),
+            end: turned(self.end, center, degrees),
+            ..self.clone()
+        }
+    }
+
+    /// `wider` and `taller` screenshot pixels bigger (smaller if
+    /// negative) about its centre, a pixel at least. A line or an arrow
+    /// grows longer by `wider`.
+    pub fn grown(&self, wider: f32, taller: f32) -> Shape {
+        let center = self.center();
+        let (dx, dy) = (self.end.0 - self.start.0, self.end.1 - self.start.1);
+        let half = if self.has_frame() {
+            let w = (dx.abs() + wider).max(1.) * dx.signum();
+            let h = (dy.abs() + taller).max(1.) * dy.signum();
+            (w / 2., h / 2.)
+        } else {
+            let length = dx.hypot(dy).max(0.01);
+            let scale = (length + wider).max(1.) / length;
+            (dx * scale / 2., dy * scale / 2.)
+        };
+        Shape {
+            start: (center.0 - half.0, center.1 - half.1),
+            end: (center.0 + half.0, center.1 + half.1),
+            ..self.clone()
+        }
+    }
+
+    /// Whether `point` is on it, to pick it up or move it: anywhere in a
+    /// rectangle's or an oval's box, filled or not; within `reach` of a
+    /// line or an arrow.
+    pub fn holds(&self, point: Point, reach: f32) -> bool {
+        if self.has_frame() {
+            let frame = self.frame();
+            inside(&frame, point)
+                || edges(&frame, true).any(|(a, b)| distance(point, a, b) <= reach)
+        } else {
+            self.touches(point, reach)
+        }
+    }
+}
+
+/// `point` turned `degrees` clockwise about `center` (y grows downward).
+fn turned(point: Point, center: Point, degrees: f32) -> Point {
+    let (sin, cos) = degrees.to_radians().sin_cos();
+    let (dx, dy) = (point.0 - center.0, point.1 - center.1);
+    (
+        center.0 + dx * cos - dy * sin,
+        center.1 + dx * sin + dy * cos,
+    )
 }
 
 /// Where a drag from `start` to `end` ends with Shift held: a square or a
@@ -331,7 +474,69 @@ mod tests {
             outline: ShapeStyle::DEFAULT.outline,
             fill,
             width: 4.,
+            angle: 0.,
         }
+    }
+
+    /// Whether two points are within a hundredth of a pixel.
+    fn near(a: Point, b: Point) -> bool {
+        (a.0 - b.0).abs() < 0.01 && (a.1 - b.1).abs() < 0.01
+    }
+
+    #[test]
+    fn a_turned_rectangle_turns_about_its_centre() {
+        // 40 × 20 around (30, 20), a quarter turn: 20 × 40.
+        let turned = shape(ShapeKind::Rectangle, Ink::TRANSPARENT).turned(90.);
+        let frame = turned.frame();
+        assert!(near(frame[0], (40., 0.)), "{frame:?}");
+        assert!(near(frame[2], (20., 40.)), "{frame:?}");
+        // Its layers turn with it.
+        let Figure::Stroke { points, .. } = &turned.layers()[0].figure else {
+            panic!("an outline");
+        };
+        assert!(near(points[0], (40., 0.)));
+        // A line turns its ends instead.
+        let line = shape(ShapeKind::Line, Ink::TRANSPARENT).turned(180.);
+        assert!(near(line.start, (50., 30.)) && near(line.end, (10., 10.)));
+        assert_eq!(line.angle, 0.);
+    }
+
+    #[test]
+    fn dragging_a_corner_keeps_the_opposite_one_even_when_turned() {
+        let turned = shape(ShapeKind::Oval, Ink::TRANSPARENT).turned(30.);
+        let stays = turned.frame()[2];
+        let resized = turned.with_handle(0, (0., -5.));
+        assert!(near(resized.frame()[2], stays), "{:?}", resized.frame());
+        assert!(near(resized.frame()[0], (0., -5.)), "{:?}", resized.frame());
+        assert_eq!(resized.angle, 30.);
+        // A line's handles are its ends.
+        let line = shape(ShapeKind::Arrow, Ink::TRANSPARENT).with_handle(1, (70., 70.));
+        assert_eq!((line.start, line.end), ((10., 10.), (70., 70.)));
+    }
+
+    #[test]
+    fn growing_keeps_the_centre_and_a_pixel_at_least() {
+        let grown = shape(ShapeKind::Rectangle, Ink::TRANSPARENT).grown(10., -10.);
+        assert_eq!((grown.start, grown.end), ((5., 15.), (55., 25.)));
+        let squashed = grown.grown(0., -50.);
+        assert_eq!(squashed.end.1 - squashed.start.1, 1.);
+        // A line grows longer along itself.
+        let line = shape(ShapeKind::Line, Ink::TRANSPARENT);
+        let length = |s: &Shape| (s.end.0 - s.start.0).hypot(s.end.1 - s.start.1);
+        let longer = line.grown(10., 0.);
+        assert!((length(&longer) - length(&line) - 10.).abs() < 0.01);
+        assert!(near(longer.center(), line.center()));
+        assert!(near(line.moved((5., -5.)).start, (15., 5.)));
+    }
+
+    #[test]
+    fn a_hollow_box_is_held_anywhere_inside_but_a_line_only_near_it() {
+        let hollow = shape(ShapeKind::Rectangle, Ink::TRANSPARENT);
+        assert!(hollow.holds((30., 20.), 0.));
+        assert!(!hollow.holds((70., 20.), 3.));
+        let line = shape(ShapeKind::Line, Ink::TRANSPARENT);
+        assert!(line.holds((30., 20.), 0.));
+        assert!(!line.holds((30., 10.), 3.));
     }
 
     fn blue(opacity: u8) -> Ink {

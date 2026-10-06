@@ -245,6 +245,26 @@ enum Change {
     Erased(Vec<(usize, Mark)>),
     /// Every mark, by Erase all mark-ups.
     Cleared(Vec<Mark>),
+    /// The mark at `index`, changed in place: moved, resized, turned or
+    /// recoloured.
+    Edited {
+        index: usize,
+        before: Mark,
+        after: Mark,
+        how: Edit,
+    },
+}
+
+/// How an edit joins the one before it, for undo.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Edit {
+    /// On its own: a drag, a turn from the menu.
+    Once,
+    /// One of a run of key presses (moving, resizing, turning by key),
+    /// undone together.
+    Nudge,
+    /// One of a run of colour, opacity and size changes, undone together.
+    Style,
 }
 
 impl Marks {
@@ -283,6 +303,49 @@ impl Marks {
         true
     }
 
+    /// Put `mark` in place of the one at `index`. A `Nudge` or `Style`
+    /// edit joins the last change if that was the same kind of edit to the
+    /// same mark.
+    pub fn edit(&mut self, index: usize, mark: Mark, how: Edit) {
+        let before = std::mem::replace(&mut self.marks[index], mark.clone());
+        if how != Edit::Once
+            && let Some(Change::Edited {
+                index: last,
+                after,
+                how: last_how,
+                ..
+            }) = self.done.last_mut()
+            && *last == index
+            && *last_how == how
+        {
+            *after = mark;
+            self.undone.clear();
+            return;
+        }
+        self.record(Change::Edited {
+            index,
+            before,
+            after: mark,
+            how,
+        });
+    }
+
+    /// The mark undo would change in place next, if it would edit one.
+    pub fn undo_edits(&self) -> Option<usize> {
+        match self.done.last()? {
+            Change::Edited { index, .. } => Some(*index),
+            _ => None,
+        }
+    }
+
+    /// The mark redo would change in place next, if it would edit one.
+    pub fn redo_edits(&self) -> Option<usize> {
+        match self.undone.last()? {
+            Change::Edited { index, .. } => Some(*index),
+            _ => None,
+        }
+    }
+
     /// A new change: what undo took back can no longer be redone.
     fn record(&mut self, change: Change) {
         self.done.push(change);
@@ -304,6 +367,7 @@ impl Marks {
                 }
             }
             Change::Cleared(all) => self.marks = all.clone(),
+            Change::Edited { index, before, .. } => self.marks[*index] = before.clone(),
         }
         self.undone.push(change);
         true
@@ -323,6 +387,7 @@ impl Marks {
                 }
             }
             Change::Cleared(_) => self.marks.clear(),
+            Change::Edited { index, after, .. } => self.marks[*index] = after.clone(),
         }
         self.done.push(change);
         true
@@ -767,6 +832,7 @@ mod tests {
                 opacity: 50,
             },
             width: 2.,
+            angle: 0.,
         };
         let out = draw(&white(20), 20, 20, &[Mark::Shape(rectangle)], false);
         // The outline, opaque red, centred on the edge.
@@ -942,6 +1008,33 @@ mod tests {
         // The defaults are in their palettes.
         assert!(PEN_COLORS.contains(&Brush::PEN.color));
         assert!(HIGHLIGHTER_COLORS.contains(&Brush::HIGHLIGHTER.color));
+    }
+
+    #[test]
+    fn edits_undo_alone_or_in_runs() {
+        let mut marks = Marks::default();
+        let at = |y| Mark::Stroke(line(Tool::Pen, Rgb(0, 0, 0), y));
+        marks.add(at(1.));
+        // Two nudges, one undo; a drag after them, its own.
+        marks.edit(0, at(2.), Edit::Nudge);
+        marks.edit(0, at(3.), Edit::Nudge);
+        marks.edit(0, at(4.), Edit::Once);
+        assert_eq!(marks.undo_edits(), Some(0));
+        assert!(marks.undo());
+        assert_eq!(marks.marks()[0], at(3.));
+        assert!(marks.undo());
+        assert_eq!(marks.marks()[0], at(1.));
+        assert_eq!(marks.redo_edits(), Some(0));
+        assert!(marks.redo());
+        assert_eq!(marks.marks()[0], at(3.));
+        // A style run after a nudge run starts its own.
+        marks.edit(0, at(5.), Edit::Style);
+        marks.edit(0, at(6.), Edit::Style);
+        assert!(marks.undo());
+        assert_eq!(marks.marks()[0], at(3.));
+        // Undo past the add: nothing to edit.
+        assert!(marks.undo() && marks.undo());
+        assert_eq!(marks.undo_edits(), None);
     }
 
     #[test]
