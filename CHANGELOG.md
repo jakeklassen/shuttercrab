@@ -7,6 +7,24 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/jakeklassen/shuttercrab/compare/v0.1.14...v0.1.15) - 2026-10-06
+
+### Added
+
+- single-key shortcuts are off by default, for now
+- a setting to turn off the window's single-key shortcuts
+- open and closed hands for moving the screenshot, and the move arrow
+- the crop frame's parts show resize cursors
+- crop the screenshot shown, as Snipping Tool's Image crop
+- a screenshot can be cropped, undoably, and widened again
+
+### Fixed
+
+- the Capture Bar's, the recording controls' and the thumbnail's buttons act on a click
+- the window's buttons act on a click, not on any release over them
+- an open hand inside the crop frame, and Space pans while cropping
+- keys no longer hide the pointer
+
 ## [0.1.14](https://github.com/jakeklassen/shuttercrab/compare/v0.1.13...v0.1.14) - 2026-10-06
 
 ### Added
