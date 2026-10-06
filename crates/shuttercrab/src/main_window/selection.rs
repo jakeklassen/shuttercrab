@@ -113,16 +113,29 @@ const TURN_OFFSET: f32 = 30.;
 const GROW_STEP: f32 = 10.;
 const TURN_STEP: f32 = 15.;
 
-/// Where a selected shape sits on screen: canvas pixels for screenshot
-/// pixels.
+/// Where the screenshot sits on screen: canvas pixels for screenshot
+/// pixels, and the part of the canvas it shows (all of it, or its crop).
 #[derive(Clone, Copy)]
 pub(super) struct Placing {
+    /// Where the screenshot's top-left pixel is, cropped off or not.
     pub(super) origin: Xy,
     pub(super) per_pixel: f32,
+    /// The part shown, in the canvas.
+    pub(super) seen_origin: Xy,
+    pub(super) seen_size: Xy,
 }
 
 impl Placing {
-    fn at(self, (x, y): (f32, f32)) -> Xy {
+    /// The screenshot pixel under canvas point `at`, on it or off it.
+    pub(super) fn pixel(self, at: Xy) -> (f32, f32) {
+        (
+            (at.x - self.origin.x) / self.per_pixel,
+            (at.y - self.origin.y) / self.per_pixel,
+        )
+    }
+
+    /// Where screenshot pixel `(x, y)` is in the canvas.
+    pub(super) fn at(self, (x, y): (f32, f32)) -> Xy {
         Xy::new(
             self.origin.x + x * self.per_pixel,
             self.origin.y + y * self.per_pixel,

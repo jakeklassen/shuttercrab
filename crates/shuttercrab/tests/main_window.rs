@@ -289,7 +289,7 @@ fn a_screenshot_shows_with_copy_and_save_as(cx: &mut TestAppContext) {
         scale = window.scale_factor();
         opened
             .view
-            .update(cx, |view, cx| view.show_shot(shot(2400, 1600), window, cx));
+            .update(cx, |view, cx| view.show_shot(shot(2800, 1600), window, cx));
     });
     update(cx, &opened, |window, _| {
         assert!(window.try_find("canvas").is_some());
@@ -301,7 +301,7 @@ fn a_screenshot_shows_with_copy_and_save_as(cx: &mut TestAppContext) {
     assert_eq!(
         opened.seen.fits.borrow().last().copied(),
         Some((
-            expected(2400. / scale + 34.),
+            expected(2800. / scale + 34.),
             expected(1600. / scale + 34. + 59. + 32.)
         ))
     );
@@ -954,7 +954,11 @@ fn emoji_land_picked_up_in_the_middle_one_after_another(cx: &mut TestAppContext)
     assert!(!shown(cx, "emoji-menu"));
     let star = first_shape(cx, &opened);
     assert_eq!(star.kind, ShapeKind::Emoji(Emoji::Star));
-    assert_eq!(star.center(), (400., 300.));
+    let (x, y) = star.center();
+    assert!(
+        (x - 400.).abs() < 0.01 && (y - 300.).abs() < 0.01,
+        "{x} {y}"
+    );
     assert_eq!(star.end.0 - star.start.0, star.end.1 - star.start.1);
     // Picked up: it can turn, and has no outline to choose.
     assert!(shown(cx, "turn-handle"));
@@ -977,4 +981,74 @@ fn emoji_land_picked_up_in_the_middle_one_after_another(cx: &mut TestAppContext)
     );
     press(cx, &opened, &["delete"]);
     assert_eq!(marks(cx, &opened).len(), 1);
+}
+
+#[gpui_kit::test]
+fn crop_frames_the_part_kept_applies_with_enter_and_undoes(cx: &mut TestAppContext) {
+    use shuttercrab::markup::Region;
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    let label = |cx: &mut TestAppContext, id: &'static str| {
+        let mut label = None;
+        update(cx, &opened, |window, _| {
+            label = window
+                .try_find(id)
+                .and_then(|e| e.label().map(|l| l.to_string()))
+        });
+        label
+    };
+    let crop = |cx: &mut TestAppContext| {
+        cx.update(|cx| opened.view.read(cx).marked_shot().and_then(|s| s.crop))
+    };
+    // C opens crop on the whole screenshot; the drawing tools step aside.
+    press(cx, &opened, &["c"]);
+    assert_eq!(label(cx, "crop-size").as_deref(), Some("800 × 600"));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("crop-bar").is_some());
+        assert!(window.try_find("tool-pen").is_none());
+    });
+
+    // Tab to the top-left corner: arrows resize by 5. Then the bottom-right.
+    press(cx, &opened, &["tab", "right", "right", "right", "right"]);
+    assert_eq!(label(cx, "crop-size").as_deref(), Some("780 × 600"));
+    press(cx, &opened, &["tab", "up", "up"]);
+    assert_eq!(label(cx, "crop-size").as_deref(), Some("780 × 590"));
+    // It stops at 48 pixels.
+    for _ in 0..200 {
+        press(cx, &opened, &["left"]);
+    }
+    assert_eq!(label(cx, "crop-size").as_deref(), Some("48 × 590"));
+    for _ in 0..200 {
+        press(cx, &opened, &["right"]);
+    }
+
+    // Enter keeps it, and the tools come back.
+    press(cx, &opened, &["enter"]);
+    let kept = Region {
+        x: 20,
+        y: 0,
+        width: 780,
+        height: 590,
+    };
+    assert_eq!(crop(cx), Some(kept));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("crop-bar").is_none());
+        assert!(window.try_find("tool-pen").is_some());
+    });
+
+    // Opening crop again starts from it; Escape leaves it as it was.
+    press(cx, &opened, &["c"]);
+    assert_eq!(label(cx, "crop-size").as_deref(), Some("780 × 590"));
+    press(cx, &opened, &["left", "escape"]);
+    assert_eq!(crop(cx), Some(kept));
+
+    // Undo takes the crop back, redo keeps it again.
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(crop(cx), None);
+    press(cx, &opened, &["ctrl-y"]);
+    assert_eq!(crop(cx), Some(kept));
 }

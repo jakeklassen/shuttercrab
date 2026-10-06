@@ -12,6 +12,7 @@
 
 use super::{
     FOOTER_HEIGHT, Hand, MainWindow, Shot, TOOLBAR_HEIGHT,
+    crop::{CropDrag, Cropping},
     selection::{Editing, Grip, Placing},
 };
 use crate::{
@@ -53,6 +54,11 @@ pub(super) struct Shown {
     pub(super) selected: Option<usize>,
     /// Emoji drawn for the screen, as the canvas shows them.
     emoji_pictures: RefCell<EmojiPictures>,
+    /// The part of the screenshot `view` was fitted to: its crop, or all
+    /// of it.
+    view_area: Region,
+    /// Crop mode, while open.
+    pub(super) cropping: Option<Cropping>,
 }
 
 /// Emoji drawn for the screen, each kept while it looks the same there, so
@@ -145,12 +151,22 @@ pub(super) enum Gesture {
     Shape { shape: Shape, from: Xy, drawn: bool },
     /// Changing the selected shape.
     Edit(Editing),
+    /// Resizing or moving the crop frame.
+    Crop(CropDrag),
 }
 
 impl Shown {
     pub(super) fn new(shot: Shot, scale: f32) -> Self {
+        let (width, height) = shot.size();
+        let whole = Region {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        };
         Self {
-            view: view_for(&shot, scale),
+            view: view_for(whole, scale),
+            view_area: whole,
             shot,
             scale,
             marks: Marks::default(),
@@ -160,14 +176,45 @@ impl Shown {
             gesture: None,
             selected: None,
             emoji_pictures: RefCell::default(),
+            cropping: None,
         }
     }
 
     /// The window moved to a screen of another scale: fit the screenshot
     /// again, keeping its marks.
     pub(super) fn rescale(&mut self, scale: f32) {
-        self.view = view_for(&self.shot, scale);
+        self.view = view_for(self.view_area, scale);
         self.scale = scale;
+    }
+
+    /// The whole screenshot, as a region.
+    pub(super) fn whole(&self) -> Region {
+        let (width, height) = self.shot.size();
+        Region {
+            x: 0,
+            y: 0,
+            width,
+            height,
+        }
+    }
+
+    /// The part of the screenshot to show: its crop, or all of it while
+    /// cropping or uncropped.
+    fn area(&self) -> Region {
+        match self.marks.crop() {
+            Some(crop) if self.cropping.is_none() => crop,
+            _ => self.whole(),
+        }
+    }
+
+    /// Fit the view again if the part to show changed: cropped, cropping,
+    /// or a crop undone.
+    pub(super) fn refit(&mut self) {
+        let area = self.area();
+        if area != self.view_area {
+            self.view = view_for(area, self.scale);
+            self.view_area = area;
+        }
     }
 
     /// Done with: GPUI keeps every image it has drawn until told otherwise.
@@ -232,11 +279,11 @@ impl Shown {
     /// The screenshot pixel under canvas point `at`; `None` off the
     /// screenshot.
     fn pixel_at(&self, at: Xy, canvas: Xy) -> Option<(f32, f32)> {
-        let placed = self.view.placement(canvas);
-        let (width, height) = self.shot.size();
-        let x = (at.x - placed.origin.x) / placed.size.x * width as f32;
-        let y = (at.y - placed.origin.y) / placed.size.y * height as f32;
-        ((0. ..width as f32).contains(&x) && (0. ..height as f32).contains(&y)).then_some((x, y))
+        let (x, y) = self.placing(canvas).pixel(at);
+        let area = self.view_area;
+        let across = area.x as f32..(area.x + area.width) as f32;
+        let down = area.y as f32..(area.y + area.height) as f32;
+        (across.contains(&x) && down.contains(&y)).then_some((x, y))
     }
 
     /// The stroke width, screenshot pixels, for a tool's `size`: in the
@@ -248,21 +295,112 @@ impl Shown {
     /// The screenshot pixel under canvas point `at`, on the screenshot or
     /// off it.
     fn pixel_anywhere(&self, at: Xy, canvas: Xy) -> (f32, f32) {
-        let placing = self.placing(canvas);
-        (
-            (at.x - placing.origin.x) / placing.per_pixel,
-            (at.y - placing.origin.y) / placing.per_pixel,
-        )
+        self.placing(canvas).pixel(at)
     }
 
     /// Where the screenshot sits in a canvas of size `canvas`.
-    fn placing(&self, canvas: Xy) -> Placing {
+    pub(super) fn placing(&self, canvas: Xy) -> Placing {
         let placed = self.view.placement(canvas);
+        let area = self.view_area;
+        let per_pixel = placed.size.x / area.width as f32;
         Placing {
-            origin: placed.origin,
-            per_pixel: placed.size.x / self.shot.size().0 as f32,
+            origin: Xy::new(
+                placed.origin.x - area.x as f32 * per_pixel,
+                placed.origin.y - area.y as f32 * per_pixel,
+            ),
+            per_pixel,
+            seen_origin: placed.origin,
+            seen_size: placed.size,
         }
     }
+}
+
+impl Shown {
+    /// The marks to paint over the drawing: `pending` ones not drawn into
+    /// it yet, the selected shape, and the one being drawn, each emoji with
+    /// its picture at the size it shows (`per_pixel` canvas pixels a
+    /// screenshot pixel, `scale` device pixels a canvas one). The pen and
+    /// the shapes paint over, as the drawing has them; the highlighter
+    /// multiplies, which only its patch shows, so until the patch is ready
+    /// it is left out rather than shown wrong.
+    fn live(
+        &self,
+        pending: Vec<Mark>,
+        per_pixel: f32,
+        scale: f32,
+    ) -> Vec<(Mark, Option<Arc<RenderImage>>)> {
+        let drawing = match &self.gesture {
+            Some(Gesture::Draw(drawing)) => Some(Mark::Stroke(drawing.stroke.clone())),
+            Some(Gesture::Shape {
+                shape, drawn: true, ..
+            }) => Some(Mark::Shape(shape.clone())),
+            _ => None,
+        };
+        let live: Vec<Mark> = pending
+            .into_iter()
+            .chain(self.selection_now().map(Mark::Shape))
+            .chain(drawing)
+            .filter(paints_over)
+            .collect();
+        let wanted: Vec<Option<Picture>> = live
+            .iter()
+            .map(|mark| {
+                let shape = mark.as_shape()?;
+                let ShapeKind::Emoji(emoji) = shape.kind else {
+                    return None;
+                };
+                let side = (shape.end.0 - shape.start.0).abs() * per_pixel * scale;
+                Some(Picture {
+                    emoji,
+                    side: side.round().max(1.) as u32,
+                    angle: (shape.angle * 10.).round() as i32,
+                })
+            })
+            .collect();
+        let pictures = self.emoji_pictures.borrow_mut().for_frame(&wanted);
+        live.into_iter().zip(pictures).collect()
+    }
+}
+
+/// The screenshot drawn at `placing`: `image` and any highlighter patch,
+/// clipped to the part shown (its crop), with a border just outside.
+fn screenshot(shown: &Shown, image: Arc<RenderImage>, placing: Placing) -> impl IntoElement {
+    let (seen, per_pixel) = (placing.seen_origin, placing.per_pixel);
+    // Where a screenshot pixel sits in the part shown.
+    let inset = |x: u32, y: u32| {
+        (
+            placing.origin.x - seen.x + x as f32 * per_pixel,
+            placing.origin.y - seen.y + y as f32 * per_pixel,
+        )
+    };
+    let placed = |image: Arc<RenderImage>, region: Region| {
+        let (left, top) = inset(region.x, region.y);
+        img(image)
+            .absolute()
+            .left(px(left))
+            .top(px(top))
+            .w(px(region.width as f32 * per_pixel))
+            .h(px(region.height as f32 * per_pixel))
+    };
+    let patch = shown
+        .patch
+        .as_ref()
+        .map(|patch| placed(patch.image.clone(), patch.region));
+    div()
+        .absolute()
+        .left(px(seen.x - 1.))
+        .top(px(seen.y - 1.))
+        .border_1()
+        .border_color(border())
+        .child(
+            div()
+                .relative()
+                .w(px(placing.seen_size.x))
+                .h(px(placing.seen_size.y))
+                .overflow_hidden()
+                .child(placed(image, shown.whole()))
+                .children(patch),
+        )
 }
 
 /// The marks of `all` that `drawn` lacks, if `drawn` is some of them,
@@ -280,11 +418,13 @@ fn missing(all: &[Mark], drawn: &[Mark]) -> Option<Vec<Mark>> {
     drawn.peek().is_none().then_some(lacking)
 }
 
-/// A screenshot fitted to the canvas, its size in the window's logical
-/// pixels at full size.
-fn view_for(shot: &Shot, scale: f32) -> ShotView {
-    let (width, height) = shot.size();
-    ShotView::new(Xy::new(width as f32 / scale, height as f32 / scale))
+/// `area` of a screenshot fitted to the canvas, its size in the window's
+/// logical pixels at full size.
+fn view_for(area: Region, scale: f32) -> ShotView {
+    ShotView::new(Xy::new(
+        area.width as f32 / scale,
+        area.height as f32 / scale,
+    ))
 }
 
 /// How far one notch of the scroll wheel moves the screenshot, logical
@@ -536,6 +676,20 @@ impl MainWindow {
         let brush = hand
             .and_then(Hand::drawing)
             .map(|tool| (tool, self.brush(tool)));
+        // Crop mode: the frame, or moving the screenshot.
+        if let Some(shown) = &self.shown
+            && shown.cropping.is_some()
+        {
+            let placing = shown.placing(canvas);
+            let gesture = self
+                .press_crop(shown, at, placing)
+                .or_else(|| shown.view.can_pan(canvas).then_some(Gesture::Pan(at)));
+            if let Some(shown) = &mut self.shown {
+                shown.gesture = gesture;
+            }
+            cx.notify();
+            return;
+        }
         // The Shapes tool and Select pick up, move and change shapes.
         if matches!(hand, Some(Hand::Shape | Hand::Select))
             && let Some(shown) = &self.shown
@@ -625,12 +779,11 @@ impl MainWindow {
         let Some(shown) = &mut self.shown else {
             return;
         };
+        // The eraser's reach on screen, in screenshot pixels.
+        let reach = ERASER_RADIUS / shown.placing(canvas).per_pixel;
         let Some(Gesture::Erase { last, erased }) = &mut shown.gesture else {
             return;
         };
-        let placed = shown.view.placement(canvas);
-        // The eraser's reach on screen, in screenshot pixels.
-        let reach = ERASER_RADIUS * shown.shot.size().0 as f32 / placed.size.x;
         let from = std::mem::replace(last, pixel);
         // Checked every half reach along the way, so a quick drag misses
         // nothing.
@@ -695,8 +848,13 @@ impl MainWindow {
             return self.finish_gesture(window, cx);
         }
         let at = canvas_point(event.position);
-        let placed = shown.view.placement(canvas);
-        let (width, height) = shown.shot.size();
+        let pixel = shown.placing(canvas).pixel(at);
+        if let Some(Gesture::Crop(drag)) = &shown.gesture {
+            let drag = *drag;
+            Self::drag_crop(shown, &drag, pixel);
+            cx.notify();
+            return;
+        }
         match &mut shown.gesture {
             Some(Gesture::Pan(from)) => {
                 let by = Xy::new(at.x - from.x, at.y - from.y);
@@ -704,37 +862,23 @@ impl MainWindow {
                 shown.gesture = Some(Gesture::Pan(at));
             }
             Some(Gesture::Draw(drawing)) => {
-                let x = (at.x - placed.origin.x) / placed.size.x * width as f32;
-                let y = (at.y - placed.origin.y) / placed.size.y * height as f32;
                 // Shift draws a straight line.
-                drawing.extend_to((x, y), event.modifiers.shift);
+                drawing.extend_to(pixel, event.modifiers.shift);
             }
-            Some(Gesture::Erase { .. }) => {
-                let x = (at.x - placed.origin.x) / placed.size.x * width as f32;
-                let y = (at.y - placed.origin.y) / placed.size.y * height as f32;
-                self.erase_to((x, y), canvas, window, cx);
-            }
+            Some(Gesture::Erase { .. }) => self.erase_to(pixel, canvas, window, cx),
             Some(Gesture::Shape { shape, from, drawn }) => {
-                let end = (
-                    (at.x - placed.origin.x) / placed.size.x * width as f32,
-                    (at.y - placed.origin.y) / placed.size.y * height as f32,
-                );
                 // Shift: a square, a circle, or a line at 45°.
                 shape.end = if event.modifiers.shift {
-                    markup::constrained(shape.kind, shape.start, end)
+                    markup::constrained(shape.kind, shape.start, pixel)
                 } else {
-                    end
+                    pixel
                 };
                 *drawn |= (at.x - from.x).abs() + (at.y - from.y).abs() > markup::LEAST_DRAG;
             }
             Some(Gesture::Edit(editing)) => {
-                let pixel = (
-                    (at.x - placed.origin.x) / placed.size.x * width as f32,
-                    (at.y - placed.origin.y) / placed.size.y * height as f32,
-                );
                 Self::drag_selection(editing, pixel, at, event.modifiers.shift);
             }
-            None => {}
+            Some(Gesture::Crop(_)) | None => {}
         }
         self.update_patch(window, cx);
         cx.notify();
@@ -827,8 +971,23 @@ impl MainWindow {
                 }
             }
             Some(Gesture::Edit(editing)) => self.finish_editing(editing, cx),
-            Some(Gesture::Pan(_) | Gesture::Erase { .. }) => cx.notify(),
+            Some(Gesture::Pan(_) | Gesture::Erase { .. } | Gesture::Crop(_)) => cx.notify(),
             None => {}
+        }
+    }
+
+    /// The pointer over the canvas: what a drag would do.
+    fn cursor(&self, shown: &Shown, canvas_area: Xy) -> CursorStyle {
+        match (&shown.gesture, self.hand, self.space_held) {
+            (Some(Gesture::Pan(_) | Gesture::Crop(_)), ..) => CursorStyle::ClosedHand,
+            (Some(Gesture::Edit(editing)), ..) if editing.grip == Grip::Body => {
+                CursorStyle::ClosedHand
+            }
+            _ if shown.cropping.is_some() && !self.space_held => CursorStyle::Arrow,
+            (_, Some(Hand::Select), false) => CursorStyle::Arrow,
+            (_, Some(_), false) => CursorStyle::Crosshair,
+            _ if shown.view.can_pan(canvas_area) => CursorStyle::OpenHand,
+            _ => CursorStyle::Arrow,
         }
     }
 
@@ -842,64 +1001,10 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
         let canvas_area = canvas_size(window);
-        let placed = shown.view.placement(canvas_area);
+        let placing = shown.placing(canvas_area);
         let (image, pending) = shown.layers();
-        // The pen paints over, so painting it directly matches the drawing.
-        // The highlighter multiplies, which only its patch shows; until the
-        // patch is ready it is left out rather than shown wrong.
-        let drawing = match &shown.gesture {
-            Some(Gesture::Draw(drawing)) => Some(Mark::Stroke(drawing.stroke.clone())),
-            Some(Gesture::Shape {
-                shape, drawn: true, ..
-            }) => Some(Mark::Shape(shape.clone())),
-            _ => None,
-        };
-        let live: Vec<Mark> = pending
-            .into_iter()
-            .chain(shown.selection_now().map(Mark::Shape))
-            .chain(drawing)
-            .filter(paints_over)
-            .collect();
-        // Screen pixels per screenshot pixel.
-        let per_pixel = placed.size.x / shown.shot.size().0 as f32;
-        // Emoji are painted as pictures, drawn at the size they show.
-        let scale = window.scale_factor();
-        let wanted: Vec<Option<Picture>> = live
-            .iter()
-            .map(|mark| {
-                let shape = mark.as_shape()?;
-                let ShapeKind::Emoji(emoji) = shape.kind else {
-                    return None;
-                };
-                let side = (shape.end.0 - shape.start.0).abs() * per_pixel * scale;
-                Some(Picture {
-                    emoji,
-                    side: side.round().max(1.) as u32,
-                    angle: (shape.angle * 10.).round() as i32,
-                })
-            })
-            .collect();
-        let pictures = shown.emoji_pictures.borrow_mut().for_frame(&wanted);
-        let live: Vec<(Mark, Option<Arc<RenderImage>>)> = live.into_iter().zip(pictures).collect();
-        let patch = shown.patch.as_ref().map(|patch| {
-            let r = patch.region;
-            img(patch.image.clone())
-                .absolute()
-                .left(px(placed.origin.x + r.x as f32 * per_pixel))
-                .top(px(placed.origin.y + r.y as f32 * per_pixel))
-                .w(px(r.width as f32 * per_pixel))
-                .h(px(r.height as f32 * per_pixel))
-        });
-        let cursor = match (&shown.gesture, self.hand, self.space_held) {
-            (Some(Gesture::Pan(_)), ..) => CursorStyle::ClosedHand,
-            (Some(Gesture::Edit(editing)), ..) if editing.grip == Grip::Body => {
-                CursorStyle::ClosedHand
-            }
-            (_, Some(Hand::Select), false) => CursorStyle::Arrow,
-            (_, Some(_), false) => CursorStyle::Crosshair,
-            _ if shown.view.can_pan(canvas_area) => CursorStyle::OpenHand,
-            _ => CursorStyle::Arrow,
-        };
+        let (per_pixel, scale) = (placing.per_pixel, window.scale_factor());
+        let live = shown.live(pending, per_pixel, scale);
         div()
             .id("canvas")
             .test_support()
@@ -907,7 +1012,7 @@ impl MainWindow {
             .flex_1()
             .min_h_0()
             .overflow_hidden()
-            .cursor(cursor)
+            .cursor(self.cursor(shown, canvas_area))
             .on_scroll_wheel(cx.listener(Self::on_wheel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_canvas_down))
             .on_mouse_down(MouseButton::Right, cx.listener(Self::on_canvas_right_down))
@@ -916,33 +1021,23 @@ impl MainWindow {
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseUpEvent, window, cx| this.finish_gesture(window, cx)),
             )
-            .child(
-                // The border sits just outside the screenshot.
-                div()
-                    .absolute()
-                    .left(px(placed.origin.x - 1.))
-                    .top(px(placed.origin.y - 1.))
-                    .border_1()
-                    .border_color(border())
-                    .child(img(image).w(px(placed.size.x)).h(px(placed.size.y))),
-            )
-            .children(patch)
+            .child(screenshot(shown, image, placing))
             .child(
                 canvas(
                     |_, _, _| {},
                     move |bounds, _, window, _| {
-                        let origin = point(
-                            bounds.origin.x + px(placed.origin.x),
-                            bounds.origin.y + px(placed.origin.y),
-                        );
-                        let area = Bounds::new(origin, size(px(placed.size.x), px(placed.size.y)));
-                        paint_marks(window, &live, area, per_pixel, scale);
+                        let at =
+                            |p: Xy| point(bounds.origin.x + px(p.x), bounds.origin.y + px(p.y));
+                        let size = size(px(placing.seen_size.x), px(placing.seen_size.y));
+                        let mask = Bounds::new(at(placing.seen_origin), size);
+                        paint_marks(window, &live, mask, at(placing.origin), per_pixel, scale);
                     },
                 )
                 .absolute()
                 .size_full(),
             )
-            .children(self.selection_overlay(shown, shown.placing(canvas_area)))
+            .children(self.selection_overlay(shown, placing))
+            .children(self.crop_overlay(shown, placing, cx))
             .children(self.tip(shown, per_pixel))
             .children(self.notice.map(notice))
             .children(self.shapes_bar(cx))
@@ -1018,17 +1113,14 @@ fn paints_over(mark: &Mark) -> bool {
 fn paint_marks(
     window: &mut Window,
     marks: &[(Mark, Option<Arc<RenderImage>>)],
-    area: Bounds<Pixels>,
+    mask: Bounds<Pixels>,
+    origin: Point<Pixels>,
     per_pixel: f32,
     scale: f32,
 ) {
-    let to_window = |(x, y): (f32, f32)| {
-        point(
-            area.origin.x + px(x * per_pixel),
-            area.origin.y + px(y * per_pixel),
-        )
-    };
-    window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
+    let to_window =
+        |(x, y): (f32, f32)| point(origin.x + px(x * per_pixel), origin.y + px(y * per_pixel));
+    window.with_content_mask(Some(ContentMask { bounds: mask }), |window| {
         for (mark, picture) in marks {
             if let (Mark::Shape(shape), Some(picture)) = (mark, picture) {
                 let span = picture.size(0).width.0 as f32 / scale;

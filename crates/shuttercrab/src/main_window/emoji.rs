@@ -9,6 +9,7 @@ use crate::{
     markup::{self, Emoji, Ink, Mark, Shape, ShapeKind},
     palette::{border, coral, hover, muted, tile},
     pixels,
+    shot_view::Xy,
 };
 use gpui_kit::{
     Context, InteractiveElement as _, IntoElement, MouseButton, MouseUpEvent, ParentElement as _,
@@ -92,19 +93,17 @@ impl MainWindow {
             return;
         };
         let scale = shown.shot.scale.unwrap_or(shown.scale);
-        let (width, height) = shown.shot.size();
-        let placed = shown.view.placement(canvas);
-        // The middle of what the canvas shows of the screenshot.
-        let per_pixel = placed.size.x / width as f32;
-        let middle = |origin: f32, length: f32, pixels: u32| {
-            let seen_from = (-origin).max(0.);
-            let seen_to = (length - origin).min(pixels as f32 * per_pixel);
-            ((seen_from + seen_to) / 2. / per_pixel).clamp(0., pixels as f32)
+        // The middle of what the canvas shows of the screenshot (or of its
+        // crop).
+        let placing = shown.placing(canvas);
+        let (seen, size) = (placing.seen_origin, placing.seen_size);
+        let middle = |origin: f32, length: f32, room: f32| {
+            (origin.max(0.) + (origin + length).min(room)) / 2.
         };
-        let mut center = (
-            middle(placed.origin.x, canvas.x, width),
-            middle(placed.origin.y, canvas.y, height),
-        );
+        let mut center = placing.pixel(Xy::new(
+            middle(seen.x, size.x, canvas.x),
+            middle(seen.y, size.y, canvas.y),
+        ));
         // Below and right of any emoji already there, unmoved.
         let taken = |at: (f32, f32)| {
             shown.marks.marks().iter().any(|mark| {

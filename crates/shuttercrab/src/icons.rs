@@ -43,7 +43,8 @@ icon_assets!(
         Ban,
         RotateCw,
         MousePointer2,
-        FaceSlightlySmiling
+        FaceSlightlySmiling,
+        Crop
     ]
 );
 
@@ -114,6 +115,7 @@ mod tests {
             IconName::RotateCw,
             IconName::MousePointer2,
             IconName::FaceSlightlySmiling,
+            IconName::Crop,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

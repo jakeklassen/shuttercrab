@@ -31,6 +31,7 @@
 //! so it can be tested on its own.
 
 mod canvas;
+mod crop;
 mod emoji;
 mod selection;
 mod shapes;
@@ -73,7 +74,7 @@ pub const SETTINGS_SIZE: Size<Pixels> = Size {
 
 /// The window's least width with a screenshot shown, logical pixels: room
 /// for the toolbar's drawing tools, zoom, Copy and Save as too.
-pub const SHOT_MIN_WIDTH: f32 = 1200.;
+pub const SHOT_MIN_WIDTH: f32 = 1250.;
 
 /// The toolbar's and the footer's heights, logical pixels: fixed, so the
 /// window can be sized around a screenshot.
@@ -331,6 +332,7 @@ impl MainWindow {
     pub fn new(hooks: Rc<MainHooks>, window: &mut Window, cx: &mut Context<Self>) -> Self {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        crop::bind_keys(cx);
         Self {
             hooks,
             page: Page::Home,
@@ -606,6 +608,9 @@ impl MainWindow {
         }
         let keystroke = &event.keystroke;
         let key = keystroke.key.as_str();
+        if self.on_crop_key(keystroke, cx) {
+            return;
+        }
         if keystroke.modifiers.control {
             match key {
                 "q" => (self.hooks.quit)(cx),
@@ -651,6 +656,7 @@ impl MainWindow {
             "x" => self.take(Hand::Erase, window, cx),
             "g" => self.take(Hand::Shape, window, cx),
             "v" => self.take(Hand::Select, window, cx),
+            "c" => self.start_crop(window, cx),
             "escape" => self.put_down_tool(window, cx),
             "space" => self.space_held = true,
             "[" => self.step_size(-1., window, cx),
@@ -1091,10 +1097,13 @@ impl MainWindow {
             .child(div().w(px(1.)).h(px(28.)).bg(border()))
             .child(self.targets(cx))
             .child(self.delay_button(cx))
-            .when(self.shown.is_some(), |d| d.child(self.drawing_tools(cx)))
+            // Crop mode has its own bar over the screenshot instead.
+            .when(self.shown.is_some() && !self.is_cropping(), |d| {
+                d.child(self.drawing_tools(cx))
+            })
             .child(div().flex_1())
             .when_some(zoom, |d, zoom| d.child(Self::zoom_button(zoom, cx)))
-            .when(self.shown.is_some(), |d| {
+            .when(self.shown.is_some() && !self.is_cropping(), |d| {
                 d.child(self.copy_button(cx)).child(Self::shot_button(
                     "save-as",
                     "Save as",
@@ -1293,6 +1302,10 @@ impl Render for MainWindow {
         {
             shown.rescale(window.scale_factor());
         }
+        // Cropped, cropping, or a crop undone: fit the part shown.
+        if let Some(shown) = &mut self.shown {
+            shown.refit();
+        }
         if let Some(shown) = &self.shown {
             shown.drop_stale_pictures(window);
         }
@@ -1315,6 +1328,15 @@ impl Render for MainWindow {
             .text_sm()
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
+            .when(self.is_cropping(), |d| {
+                d.key_context(crop::CONTEXT)
+                    .on_action(cx.listener(|this, _: &crop::NextGrip, _, cx| {
+                        this.step_crop_focus(false, cx)
+                    }))
+                    .on_action(cx.listener(|this, _: &crop::PreviousGrip, _, cx| {
+                        this.step_crop_focus(true, cx)
+                    }))
+            })
             // A press anywhere else closes an open menu.
             .on_mouse_down(
                 MouseButton::Left,

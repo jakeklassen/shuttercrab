@@ -294,6 +294,7 @@ impl MainWindow {
             .child(self.tool_button(Hand::Draw(Tool::Highlighter), cx))
             .child(self.tool_button(Hand::Erase, cx))
             .child(self.tool_button(Hand::Shape, cx))
+            .child(Self::crop_button(cx))
             .child(separator())
             .child(Self::history_button(
                 "undo",
