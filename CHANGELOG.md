@@ -7,6 +7,21 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.14](https://github.com/jakeklassen/shuttercrab/compare/v0.1.13...v0.1.14) - 2026-10-06
+
+### Added
+
+- a Notices page in Settings, with the Fluent Emoji licence
+- emoji, as in Snipping Tool's Shapes bar
+- change a shape after drawing it, and Select to pick one up again
+- shapes can be moved, resized, turned and edited with undo
+- the Shapes tool, with its bar, Fill and Outline
+- shapes as marks: rectangle, oval, line and arrow
+
+### Other
+
+- marks on a screenshot can be more than strokes
+
 ## [0.1.13](https://github.com/jakeklassen/shuttercrab/compare/v0.1.12...v0.1.13) - 2026-10-06
 
 ### Added
