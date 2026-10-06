@@ -232,6 +232,10 @@ pub(super) async fn record(
         fps: settings.record_fps(),
         include_cursor: settings.record_cursor,
         system_sound: settings.record_system_sound,
+        microphone: settings.record_microphone,
+        microphone_device: settings.microphone.clone(),
+        // The controls can switch either on mid-recording.
+        sound_track: true,
         // `start_take` names the file.
         path: PathBuf::new(),
     };

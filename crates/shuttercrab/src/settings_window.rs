@@ -21,7 +21,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     px,
 };
-use shuttercrab_capture::MonitorInfo;
+use shuttercrab_capture::{MonitorInfo, record::Microphone};
 use shuttercrab_platform::Hotkey;
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
@@ -452,6 +452,8 @@ pub struct SettingsWindow {
     /// What Escape does instead of closing the window, when the settings
     /// are a page of a larger window.
     on_escape: Option<Escape>,
+    /// The microphones plugged in when the settings opened.
+    microphones: Vec<Microphone>,
 }
 
 impl SettingsWindow {
@@ -461,11 +463,15 @@ impl SettingsWindow {
             .to_vec();
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
+        let microphones = shuttercrab_capture::record::microphones()
+            .inspect_err(|e| log::warn!("could not list the microphones: {e:#}"))
+            .unwrap_or_default();
         Self {
             hooks,
             hotkeys,
             focus,
             on_escape: None,
+            microphones,
         }
     }
 
@@ -684,6 +690,40 @@ impl SettingsWindow {
                 )
                 .description("What your speakers or headphones play."),
             )
+            .item(SettingItem::new(
+                "Microphone",
+                self.switch(|s| s.record_microphone, |s, v| s.record_microphone = v),
+            ))
+            .item(
+                SettingItem::new("Which microphone", self.microphone_choice())
+                    .description("Windows' default follows the one set in Windows."),
+            )
+    }
+
+    /// The microphones to choose from: Windows' default, then each plugged
+    /// in, by name.
+    fn microphone_choice(&self) -> SettingField<SharedString> {
+        let mut choices = vec![(
+            SharedString::default(),
+            SharedString::from("Windows' default"),
+        )];
+        choices.extend(
+            self.microphones
+                .iter()
+                .map(|m| (SharedString::from(&m.id), SharedString::from(&m.name))),
+        );
+        let (read, write) = (self.hooks.clone(), self.hooks.clone());
+        SettingField::dropdown(
+            choices,
+            move |_| {
+                let chosen = read.settings.borrow().microphone.clone();
+                chosen.unwrap_or_default().into()
+            },
+            move |id: SharedString, cx| {
+                write.settings.borrow_mut().microphone = (!id.is_empty()).then(|| id.to_string());
+                (write.changed)(cx);
+            },
+        )
     }
 
     fn recording(&self) -> SettingPage {

@@ -69,6 +69,10 @@ pub struct Settings {
     /// Record what the speakers play. Off by default: sound recorded by
     /// surprise is a problem, at work especially.
     pub record_system_sound: bool,
+    /// Record a microphone, also off by default: Windows' id for the one
+    /// chosen, or `None` for Windows' default.
+    pub record_microphone: bool,
+    pub microphone: Option<String>,
     /// Ask before Discard or Restart throws a take away; when off, they act
     /// at once and can be undone for a few seconds.
     pub confirm_discard: bool,
@@ -124,6 +128,8 @@ impl Default for Settings {
             recording_dir: None,
             record_cursor: true,
             record_system_sound: false,
+            record_microphone: false,
+            microphone: None,
             record_fps: 30,
             recording_countdown: 0,
             screenshot_delay: 0,

@@ -26,6 +26,7 @@ mod session;
 mod sound;
 mod timing;
 
+pub use sound::{Microphone, Source, microphones};
 pub use timing::FrameTiming;
 
 use crate::service::{MonitorId, PhysicalRect, hmonitor};
@@ -56,7 +57,21 @@ pub struct RecordOptions {
     pub include_cursor: bool,
     /// Record what the speakers play (off unless asked).
     pub system_sound: bool,
+    /// Record a microphone (off unless asked): the one named, or Windows'
+    /// default.
+    pub microphone: bool,
+    pub microphone_device: Option<String>,
+    /// Give the file a sound track even with every source off, so one can
+    /// be switched on mid-recording.
+    pub sound_track: bool,
     pub path: PathBuf,
+}
+
+impl RecordOptions {
+    /// Whether the file gets a sound track.
+    pub fn has_sound(&self) -> bool {
+        self.sound_track || self.system_sound || self.microphone
+    }
 }
 
 /// What a finished recording contains.
@@ -146,8 +161,10 @@ enum Event {
     /// The displays changed (HDR switched on or off, say): read the
     /// recorded display's white level again.
     DisplayChanged,
-    /// Sound the speakers played.
+    /// Sound from a source.
     Sound(sound::Packet),
+    /// Switch a source on or off.
+    SetSound(Source, bool),
 }
 
 /// A recording in progress, on its own thread.
@@ -196,6 +213,12 @@ impl Recorder {
 
     pub fn resume(&self) {
         let _ = self.events.send(Event::Resume);
+    }
+
+    /// Switch `source` on or off mid-recording. The file must have a
+    /// sound track ([`RecordOptions::has_sound`]).
+    pub fn set_sound(&self, source: Source, on: bool) {
+        let _ = self.events.send(Event::SetSound(source, on));
     }
 
     /// The recorded display is gone: end the recording, keeping what was

@@ -346,6 +346,9 @@ fn record(mut args: Args) -> Result<()> {
             fps,
             include_cursor,
             system_sound,
+            microphone: false,
+            microphone_device: None,
+            sound_track: false,
             path,
         })?;
         // Count from when recording is running, not from before its setup.

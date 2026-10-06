@@ -19,7 +19,7 @@ use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
 use shuttercrab_capture::{
     MonitorId, PhysicalRect,
-    record::{Interruption, RecordOptions, Recorder, RecordingSummary},
+    record::{Interruption, RecordOptions, Recorder, RecordingSummary, Source},
 };
 use std::{
     io::{BufRead, BufReader, Write},
@@ -39,6 +39,12 @@ enum Request {
     Start(Options),
     Pause,
     Resume,
+    /// Switch the speakers' sound (`false`) or the microphone (`true`)
+    /// on or off.
+    SetSound {
+        microphone: bool,
+        on: bool,
+    },
     DisplayGone,
     DisplayChanged,
     Stop,
@@ -52,6 +58,9 @@ struct Options {
     fps: u32,
     include_cursor: bool,
     system_sound: bool,
+    microphone: bool,
+    microphone_device: Option<String>,
+    sound_track: bool,
     path: PathBuf,
 }
 
@@ -97,6 +106,9 @@ impl From<RecordOptions> for Options {
             fps: o.fps,
             include_cursor: o.include_cursor,
             system_sound: o.system_sound,
+            microphone: o.microphone,
+            microphone_device: o.microphone_device,
+            sound_track: o.sound_track,
             path: o.path,
         }
     }
@@ -110,6 +122,9 @@ impl From<Options> for RecordOptions {
             fps: o.fps,
             include_cursor: o.include_cursor,
             system_sound: o.system_sound,
+            microphone: o.microphone,
+            microphone_device: o.microphone_device,
+            sound_track: o.sound_track,
             path: o.path,
         }
     }
@@ -266,6 +281,12 @@ impl RecorderProcess {
 
     pub fn resume(&self) {
         self.request(Request::Resume);
+    }
+
+    /// Switch `source` on or off; see [`Recorder::set_sound`].
+    pub fn set_sound(&self, source: Source, on: bool) {
+        let microphone = source == Source::Microphone;
+        self.request(Request::SetSound { microphone, on });
     }
 
     /// The recorded display is gone; see [`Recorder::display_gone`].
@@ -452,6 +473,14 @@ pub fn serve() -> i32 {
         match next {
             Next::Asked(Request::Pause) => recorder.pause(),
             Next::Asked(Request::Resume) => recorder.resume(),
+            Next::Asked(Request::SetSound { microphone, on }) => {
+                let source = if microphone {
+                    Source::Microphone
+                } else {
+                    Source::System
+                };
+                recorder.set_sound(source, on);
+            }
             Next::Asked(Request::DisplayGone) => recorder.display_gone(),
             Next::Asked(Request::DisplayChanged) => recorder.display_changed(),
             Next::Asked(Request::Start(_)) => log::warn!("the recorder is already recording"),
@@ -481,6 +510,9 @@ mod tests {
             fps: 60,
             include_cursor: true,
             system_sound: true,
+            microphone: true,
+            microphone_device: Some("{0.0.1.00000000}.{mic}".into()),
+            sound_track: true,
             path: PathBuf::from(r"C:\Videos\Shuttercrab\Recording 1.mp4.partial"),
         };
         let mut bytes = Vec::new();
@@ -496,7 +528,8 @@ mod tests {
         assert_eq!(back.monitor, options.monitor);
         assert_eq!(back.region, options.region);
         assert_eq!(back.path, options.path);
-        assert!(back.system_sound);
+        assert!(back.system_sound && back.microphone && back.sound_track);
+        assert_eq!(back.microphone_device, options.microphone_device);
         assert_eq!(
             serde_json::from_str::<Request>(lines[1]).unwrap(),
             Request::Pause

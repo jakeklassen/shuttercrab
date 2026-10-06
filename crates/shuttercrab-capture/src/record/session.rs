@@ -7,7 +7,7 @@ use super::{
     encoder::{Mp4Writer, Nv12},
     exposure::Exposure,
     qpc_ticks, recordable,
-    sound::{self, Packet, Soundtrack, SystemSound},
+    sound::{self, Capture, Mixer, Packet, Source},
     timing::Timer,
 };
 use crate::{
@@ -66,9 +66,12 @@ pub(super) struct Session {
     nv12: Nv12,
     writer: Mp4Writer,
     exposure: Exposure,
-    /// The sound capture, while it runs, and where its track ends.
-    sound: Option<SystemSound>,
-    track: Soundtrack,
+    /// Each source's capture while it is on (the speakers, then the
+    /// microphone), and their mix.
+    captures: [Option<Capture>; 2],
+    mixer: Mixer,
+    /// Where captures send their sound, to start one later.
+    sounds: Sender<Event>,
 }
 
 impl Session {
@@ -99,7 +102,7 @@ impl Session {
             &options.path,
             (w, h, options.fps),
             hardware,
-            options.system_sound,
+            options.has_sound(),
         )?;
 
         // The capture: FP16, two buffers, the pointer only if asked.
@@ -137,7 +140,10 @@ impl Session {
         capture.SetIsCursorCaptureEnabled(options.include_cursor)?;
         let _ = capture.SetIsBorderRequired(false);
         capture.StartCapture().context("StartCapture failed")?;
-        let sound = start_sound(options, sounds);
+        let captures = [
+            start_sound(Source::System, options, &sounds),
+            start_sound(Source::Microphone, options, &sounds),
+        ];
         Ok(Self {
             options: options.clone(),
             gpu,
@@ -158,8 +164,9 @@ impl Session {
                 value: None,
                 last: 0,
             },
-            sound,
-            track: Soundtrack::default(),
+            captures,
+            mixer: Mixer::default(),
+            sounds,
         })
     }
 
@@ -219,11 +226,8 @@ impl Session {
                     return Some(Interruption::DisplayGone);
                 }
                 Event::DisplayChanged => self.reread_white_scale(),
-                Event::Sound(packet) => {
-                    if let Err(e) = self.place_sound(packet, timeline) {
-                        return interrupted(e);
-                    }
-                }
+                Event::Sound(packet) => self.place_sound(&packet, timeline),
+                Event::SetSound(source, on) => self.set_sound(source, on),
                 Event::Frame => {
                     if let Err(e) = self.take_ready_frames(timeline, counts, timer) {
                         return interrupted(e);
@@ -233,48 +237,49 @@ impl Session {
         }
     }
 
-    /// Write a packet of sound where its time puts it on the timeline,
-    /// after silence if it came late, trimmed if early. Sound while paused
-    /// is left out, as frames are.
-    fn place_sound(&mut self, packet: Packet, timeline: &Timeline) -> Result<()> {
-        if timeline.is_paused() {
-            return Ok(());
+    /// Mix a packet of sound in where its time puts it on the timeline.
+    /// Sound while paused is left out, as frames are.
+    fn place_sound(&mut self, packet: &Packet, timeline: &Timeline) {
+        if !timeline.is_paused() {
+            let time = timeline.sound_time(packet.captured);
+            self.mixer.add(packet.source, time, &packet.samples);
         }
-        let frames = packet.samples.len() / usize::from(sound::CHANNELS);
-        let first = self.track.written();
-        let placement = self
-            .track
-            .place(timeline.sound_time(packet.captured), frames);
-        self.write_silence(first, placement.silence)?;
-        let at = first + placement.silence;
-        let kept = &packet.samples[placement.skip * usize::from(sound::CHANNELS)..];
-        self.writer.write_sound(kept, sound::frames_to_ticks(at))
     }
 
-    /// Nothing playing sends no sound: fill the track with silence up to
-    /// a little before now, so it keeps up with the picture (the writer
-    /// holds frames back for the track otherwise). Not while paused.
+    /// Switch `source` on or off mid-recording. A source that cannot
+    /// start leaves its part of the track silent.
+    fn set_sound(&mut self, source: Source, on: bool) {
+        let slot = &mut self.captures[source as usize];
+        match (on, slot.is_some()) {
+            (true, false) => {
+                let device = self.options.microphone_device.clone();
+                *slot = Capture::start(source, device, self.sounds.clone())
+                    .inspect_err(|e| log::warn!("could not switch on {source:?}: {e:#}"))
+                    .ok();
+            }
+            (false, true) => *slot = None,
+            _ => {}
+        }
+        log::info!("{source:?} {}", if on { "on" } else { "off" });
+    }
+
+    /// Write the mix out up to `time` on the timeline: silence where no
+    /// source had sound.
+    fn write_mix_until(&mut self, time: i64) -> Result<()> {
+        let first = self.mixer.written();
+        let samples = self.mixer.take_until(time);
+        self.writer
+            .write_sound(&samples, sound::frames_to_ticks(first))
+    }
+
+    /// Keep the track up with the picture, a little behind now: sound
+    /// arrives late, and nothing playing sends none (the writer holds
+    /// frames back for the track otherwise). Not while paused.
     fn keep_sound_up(&mut self, timeline: &Timeline) -> Result<()> {
-        if self.sound.is_none() || timeline.is_paused() {
+        if !self.writer.has_sound() || timeline.is_paused() {
             return Ok(());
         }
-        let first = self.track.written();
-        let missing = self.track.silence_until(timeline.now() - SOUND_LAG);
-        self.write_silence(first, missing)
-    }
-
-    /// Write `frames` of silence from frame `first` of the track.
-    fn write_silence(&self, first: u64, frames: u64) -> Result<()> {
-        let chunk = u64::from(sound::RATE) / 10;
-        let mut done = 0;
-        while done < frames {
-            let count = chunk.min(frames - done);
-            let zeros = vec![0; count as usize * usize::from(sound::CHANNELS)];
-            self.writer
-                .write_sound(&zeros, sound::frames_to_ticks(first + done))?;
-            done += count;
-        }
-        Ok(())
+        self.write_mix_until(timeline.now() - SOUND_LAG)
     }
 
     /// A still screen delivers no frames: repeat the last one every second,
@@ -404,11 +409,10 @@ impl Session {
         };
         self.stop_capture();
         // The sound lasts as long as the picture.
-        self.sound = None;
+        self.captures = [None, None];
         if interrupted.is_none() && self.writer.has_sound() {
-            let first = self.track.written();
-            let missing = self.track.silence_until(duration_ticks(duration));
-            self.write_silence(first, missing).map_err(why)?;
+            self.write_mix_until(duration_ticks(duration))
+                .map_err(why)?;
         }
         let timing = timer.map(|t| t.finish(&self.gpu.context));
         let hardware_encoder = self.writer.finish().map_err(why)?;
@@ -544,14 +548,18 @@ fn work_textures(gpu: &Gpu, w: u32, h: u32) -> Result<[ID3D11Texture2D; 3]> {
     Ok([crop, sdr, rgba])
 }
 
-/// Start capturing what the speakers play, if `options` ask for it. Without
-/// a device to record, the track stays silent: the picture still records.
-fn start_sound(options: &RecordOptions, events: Sender<Event>) -> Option<SystemSound> {
-    if !options.system_sound {
+/// Start capturing `source` if `options` switch it on. Without a device
+/// to record, its part of the track stays silent: the rest still records.
+fn start_sound(source: Source, options: &RecordOptions, events: &Sender<Event>) -> Option<Capture> {
+    let (on, device) = match source {
+        Source::System => (options.system_sound, None),
+        Source::Microphone => (options.microphone, options.microphone_device.clone()),
+    };
+    if !on {
         return None;
     }
-    SystemSound::start(events)
-        .inspect_err(|e| log::warn!("recording without sound: {e:#}"))
+    Capture::start(source, device, events.clone())
+        .inspect_err(|e| log::warn!("recording without {source:?}: {e:#}"))
         .ok()
 }
 
