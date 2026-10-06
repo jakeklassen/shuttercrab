@@ -294,7 +294,7 @@ impl MainWindow {
             .child(self.tool_button(Hand::Draw(Tool::Highlighter), cx))
             .child(self.tool_button(Hand::Erase, cx))
             .child(self.tool_button(Hand::Shape, cx))
-            .child(Self::crop_button(cx))
+            .child(Self::crop_button(self.shown_key("C"), cx))
             .child(separator())
             .child(Self::history_button(
                 "undo",
@@ -376,7 +376,7 @@ impl MainWindow {
                             .right(px(3.))
                             .text_size(px(9.))
                             .text_color(muted())
-                            .child(key),
+                            .child(self.shown_key(key)),
                     )
                     .child(Icon::new(icon).size(px(18.)))
                     // The other tools have a clear bar, to sit level with the
@@ -515,7 +515,11 @@ impl MainWindow {
                 div()
                     .text_xs()
                     .text_color(muted())
-                    .child("Arrows and Enter pick a colour; [ and ] change the size"),
+                    .child(if self.single_keys() {
+                        "Arrows and Enter pick a colour; [ and ] change the size"
+                    } else {
+                        "Arrows and Enter pick a colour"
+                    }),
             )
     }
 

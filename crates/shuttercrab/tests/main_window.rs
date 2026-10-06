@@ -1078,3 +1078,38 @@ fn a_drag_let_go_over_apply_does_not_apply(cx: &mut TestAppContext) {
     let crop = cx.update(|cx| opened.view.read(cx).marked_shot().and_then(|s| s.crop));
     assert!(crop.is_some());
 }
+
+#[gpui_kit::test]
+fn single_keys_can_be_turned_off_but_ctrl_and_escape_still_work(cx: &mut TestAppContext) {
+    use shuttercrab::markup::Tool;
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    opened.settings.borrow_mut().single_key_shortcuts = false;
+    let tool = |cx: &mut TestAppContext| cx.update(|cx| opened.view.read(cx).tool());
+
+    // N, P, C and the rest do nothing.
+    press(cx, &opened, &["n", "p", "g", "c", "r"]);
+    assert!(opened.seen.captures.borrow().is_empty());
+    assert_eq!(tool(cx), None);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("crop-bar").is_none());
+        assert!(window.try_find("shapes-bar").is_none());
+    });
+    // Ctrl shortcuts still work.
+    press(cx, &opened, &["ctrl-c"]);
+    assert_eq!(opened.seen.copies.get(), 1);
+    // A click still picks up a tool, and Escape still puts it down.
+    update(cx, &opened, |window, cx| window.click("tool-pen", cx));
+    assert_eq!(tool(cx), Some(Tool::Pen));
+    press(cx, &opened, &["escape"]);
+    assert_eq!(tool(cx), None);
+
+    // On again, they work.
+    opened.settings.borrow_mut().single_key_shortcuts = true;
+    press(cx, &opened, &["p"]);
+    assert_eq!(tool(cx), Some(Tool::Pen));
+}

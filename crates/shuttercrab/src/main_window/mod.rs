@@ -655,18 +655,20 @@ impl MainWindow {
             }
         }
         match key {
-            "p" => self.take(Hand::Draw(Tool::Pen), window, cx),
-            "h" => self.take(Hand::Draw(Tool::Highlighter), window, cx),
-            "x" => self.take(Hand::Erase, window, cx),
-            "g" => self.take(Hand::Shape, window, cx),
-            "v" => self.take(Hand::Select, window, cx),
-            "c" => self.start_crop(window, cx),
             "escape" => self.put_down_tool(window, cx),
             "space" => {
                 self.space_held = true;
                 // The pointer shows a hand at once, where it can move.
                 cx.notify();
             }
+            // The rest are single keys, which the settings can turn off.
+            _ if !self.single_keys() => {}
+            "p" => self.take(Hand::Draw(Tool::Pen), window, cx),
+            "h" => self.take(Hand::Draw(Tool::Highlighter), window, cx),
+            "x" => self.take(Hand::Erase, window, cx),
+            "g" => self.take(Hand::Shape, window, cx),
+            "v" => self.take(Hand::Select, window, cx),
+            "c" => self.start_crop(window, cx),
             "[" => self.step_size(-1., window, cx),
             "]" => self.step_size(1., window, cx),
             "n" | "enter" => self.start(window, cx),
@@ -682,6 +684,21 @@ impl MainWindow {
                     self.set_target(target, cx);
                 }
             }
+        }
+    }
+
+    /// Whether single keys work (N for New, P for the pen, and so on): the
+    /// settings can turn them off, against accidental presses.
+    pub(super) fn single_keys(&self) -> bool {
+        self.settings().single_key_shortcuts
+    }
+
+    /// `key`'s hint as shown: nothing for a single key while those are off.
+    pub(super) fn shown_key(&self, key: &'static str) -> &'static str {
+        if self.single_keys() || key.contains('+') {
+            key
+        } else {
+            ""
         }
     }
 
@@ -715,7 +732,7 @@ impl MainWindow {
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start(window, cx)))
             .child(Icon::new(IconName::Plus).size(px(16.)).text_color(coral()))
             .child("New")
-            .child(Self::key_hint("n"))
+            .child(Self::key_hint(self.shown_key("n")))
     }
 
     /// One item of a segmented control: an icon and its key, underlined in
@@ -800,7 +817,7 @@ impl MainWindow {
                 "mode-screenshot",
                 "Screenshot",
                 IconName::Camera,
-                "s",
+                self.shown_key("s"),
                 mode == CaptureMode::Screenshot,
                 true,
                 None,
@@ -812,7 +829,7 @@ impl MainWindow {
                 "mode-record",
                 "Record",
                 IconName::Video,
-                "r",
+                self.shown_key("r"),
                 mode == CaptureMode::Record,
                 true,
                 Some(recording()),
@@ -830,7 +847,7 @@ impl MainWindow {
                 target.id(),
                 target.label(),
                 target.icon(),
-                target.key(),
+                self.shown_key(target.key()),
                 target == chosen,
                 mode.offers(target),
                 None,
@@ -965,7 +982,10 @@ impl MainWindow {
                 let saved = self.shot().is_some_and(|shot| shot.saved.is_some());
                 More::items(self.shown.is_some())
                     .iter()
-                    .map(|m| (m.label(saved).into(), m.key().into(), Some(m.icon()), false))
+                    .map(|m| {
+                        let key = self.shown_key(m.key());
+                        (m.label(saved).into(), key.into(), Some(m.icon()), false)
+                    })
                     .collect()
             }
         };
@@ -1063,7 +1083,7 @@ impl MainWindow {
                 d.child(div().text_sm().child(format!("{now}s")))
             })
             .child(Icon::new(IconName::ChevronDown).size(px(14.)))
-            .child(Self::key_hint("t"));
+            .child(Self::key_hint(self.shown_key("t")));
         self.menu_button("delay", label, Menu::Delay, content, cx)
     }
 
@@ -1177,7 +1197,11 @@ impl MainWindow {
                 div()
                     .text_xs()
                     .text_color(muted())
-                    .child("Or choose above and press N"),
+                    .child(if self.single_keys() {
+                        "Or choose above and press N"
+                    } else {
+                        "Or choose above and click New"
+                    }),
             )
     }
 
@@ -1217,7 +1241,7 @@ impl MainWindow {
                         }))
                         .child(Icon::new(IconName::RotateCcw).size(px(12.)))
                         .child(label)
-                        .child(Self::key_hint("u")),
+                        .child(Self::key_hint(self.shown_key("u"))),
                 )
             }
             None => {

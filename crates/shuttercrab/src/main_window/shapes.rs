@@ -277,7 +277,8 @@ impl MainWindow {
         if !self.shapes_bar_shown() {
             return false;
         }
-        if let Some(kind) = ShapeKind::ALL.into_iter().find(|k| k.key() == key) {
+        let single = self.single_keys();
+        if single && let Some(kind) = ShapeKind::ALL.into_iter().find(|k| k.key() == key) {
             self.pick_shape(kind, cx);
             return true;
         }
@@ -285,8 +286,8 @@ impl MainWindow {
             return true;
         }
         match key {
-            "f" => return self.toggle_shape_menu_by_key(Part::Fill, cx),
-            "t" => return self.toggle_shape_menu_by_key(Part::Outline, cx),
+            "f" if single => return self.toggle_shape_menu_by_key(Part::Fill, cx),
+            "t" if single => return self.toggle_shape_menu_by_key(Part::Outline, cx),
             "-" => {
                 self.step_opacity(-1, window, cx);
                 return self.shape_menu.is_some();
@@ -332,7 +333,9 @@ impl MainWindow {
         }
         let style = self.shape_style();
         let separator = || div().w(px(1.)).h(px(28.)).mx_1().bg(border());
-        let shapes = ShapeKind::ALL.map(|kind| Self::shape_button(kind, kind == style.kind, cx));
+        let keys = self.single_keys();
+        let shapes =
+            ShapeKind::ALL.map(|kind| Self::shape_button(kind, kind == style.kind, keys, cx));
         Some(
             div()
                 .absolute()
@@ -368,9 +371,11 @@ impl MainWindow {
         )
     }
 
+    /// A shape's button; `keys`: its key shows.
     fn shape_button(
         kind: ShapeKind,
         chosen: bool,
+        keys: bool,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         let key = kind.key().to_uppercase();
@@ -395,7 +400,7 @@ impl MainWindow {
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.pick_shape(kind, cx)))
-            .child(corner_key(key))
+            .child(corner_key(if keys { key } else { String::new() }))
             .child(Icon::new(kind.icon()).size(px(18.)))
     }
 
@@ -456,7 +461,7 @@ impl MainWindow {
                                 this.toggle_shape_menu(part, cx)
                             }))
                     })
-                    .child(corner_key(key.into()))
+                    .child(corner_key(self.shown_key(key).into()))
                     .child(swatch)
                     .child(div().text_sm().child(name))
                     .child(Icon::new(IconName::ChevronDown).size(px(14.))),

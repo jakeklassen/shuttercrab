@@ -40,6 +40,10 @@ pub struct Settings {
     pub output_dir: Option<PathBuf>,
     /// Area selections snap to nearby window edges.
     pub snap_to_windows: bool,
+    /// Single keys work in the main window (N for New, P for the pen, and
+    /// so on); off, only Ctrl shortcuts and Escape do, against accidental
+    /// presses.
+    pub single_key_shortcuts: bool,
     /// Draw the pointer into screenshots (PRD §15: off by default).
     pub include_cursor: bool,
     /// Seconds to wait before a screenshot started from the main window;
@@ -107,6 +111,7 @@ impl Default for Settings {
             output_dir: None,
             snap_to_windows: true,
             include_cursor: false,
+            single_key_shortcuts: true,
             last_mode: CaptureMode::Screenshot,
             last_target: CaptureTarget::Area,
             show_in_window: true,

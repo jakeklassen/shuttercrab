@@ -52,7 +52,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if key == "e" {
+        if key == "e" && self.single_keys() {
             self.toggle_emoji_menu(cx);
             return true;
         }
@@ -171,7 +171,7 @@ impl MainWindow {
                             .right(px(3.))
                             .text_size(px(9.))
                             .text_color(muted())
-                            .child("E"),
+                            .child(self.shown_key("E")),
                     )
                     .child(Icon::new(IconName::FaceSlightlySmiling).size(px(18.))),
             )

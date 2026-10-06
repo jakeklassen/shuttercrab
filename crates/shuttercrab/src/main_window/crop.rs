@@ -433,8 +433,11 @@ impl MainWindow {
         overlay
     }
 
-    /// The toolbar's crop button, after the drawing tools.
-    pub(super) fn crop_button(cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The toolbar's crop button, after the drawing tools, with its `key`.
+    pub(super) fn crop_button(
+        key: &'static str,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         div()
             .id("tool-crop")
             .role(Role::Button)
@@ -457,7 +460,7 @@ impl MainWindow {
                     .right(px(3.))
                     .text_size(px(9.))
                     .text_color(muted())
-                    .child("C"),
+                    .child(key),
             )
             .child(Icon::new(IconName::Crop).size(px(18.)))
     }

@@ -542,6 +542,18 @@ impl SettingsWindow {
                     .item(
                         SettingItem::new("Record an area", self.hotkey(HotkeyKind::Record))
                             .description("Press it again to stop."),
+                    )
+                    .item(
+                        SettingItem::new(
+                            "Single-key shortcuts in this window",
+                            self.switch(
+                                |s| s.single_key_shortcuts,
+                                |s, v| s.single_key_shortcuts = v,
+                            ),
+                        )
+                        .description(
+                            "N for New, P for the pen and the like. Off, only Ctrl shortcuts and Escape work, so a stray key press does nothing.",
+                        ),
                     ),
             )
     }
