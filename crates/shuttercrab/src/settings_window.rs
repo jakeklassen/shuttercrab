@@ -843,6 +843,43 @@ impl SettingsWindow {
     }
 }
 
+/// The Fluent Emoji licence, which asks to travel with the art.
+const FLUENT_EMOJI_LICENSE: &str = include_str!("../assets/emoji/LICENSE");
+
+/// The Notices page: what Shuttercrab includes of others' work, with the
+/// licences that ask to be shown.
+fn notices() -> SettingPage {
+    // The licence file is indented; shown as plain paragraphs.
+    let license = FLUENT_EMOJI_LICENSE
+        .lines()
+        .map(str::trim)
+        .collect::<Vec<_>>()
+        .join("\n");
+    SettingPage::new("Notices").group(
+        SettingGroup::new()
+            .item(heading(
+                "Third-party notices",
+                Some("Work by others that Shuttercrab includes."),
+            ))
+            .item(
+                SettingItem::new(
+                    "Fluent Emoji",
+                    SettingField::render(|_, _, _| div().text_sm().child("MIT licence")),
+                )
+                .description("The emoji, by Microsoft Corporation."),
+            )
+            .item(SettingItem::render(move |_, _, cx| {
+                div()
+                    .id("fluent-emoji-license")
+                    .test_support()
+                    .text_xs()
+                    .text_color(cx.theme().muted_foreground)
+                    .whitespace_normal()
+                    .child(license.clone())
+            })),
+    )
+}
+
 /// A section heading inside a page. Sections are untitled groups, so the
 /// sidebar lists only the pages (the owner found per-section entries
 /// that merely scroll the page confusing).
@@ -985,6 +1022,7 @@ impl Render for SettingsWindow {
                         self.screenshot(),
                         self.recording(),
                         self.diagnostics(),
+                        notices(),
                     ]),
             )
     }
