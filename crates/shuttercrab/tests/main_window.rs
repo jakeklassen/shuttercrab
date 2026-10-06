@@ -477,7 +477,7 @@ fn drag_across(cx: &mut TestAppContext, opened: &Opened, dx: f32) {
     });
 }
 
-fn marks(cx: &mut TestAppContext, opened: &Opened) -> Vec<shuttercrab::markup::Stroke> {
+fn marks(cx: &mut TestAppContext, opened: &Opened) -> Vec<shuttercrab::markup::Mark> {
     cx.update(|cx| {
         opened
             .view
@@ -506,9 +506,10 @@ fn the_pen_draws_and_undo_takes_it_back(cx: &mut TestAppContext) {
     drag_across(cx, &opened, 40.);
     let drawn = marks(cx, &opened);
     assert_eq!(drawn.len(), 1);
-    assert_eq!(drawn[0].tool, Tool::Pen);
-    assert_eq!(drawn[0].color, Brush::PEN.color);
-    assert!(drawn[0].points.len() >= 2);
+    let stroke = drawn[0].as_stroke().unwrap();
+    assert_eq!(stroke.tool, Tool::Pen);
+    assert_eq!(stroke.color, Brush::PEN.color);
+    assert!(stroke.points.len() >= 2);
 
     // Copy gives the screenshot with its mark.
     press(cx, &opened, &["ctrl-c"]);
@@ -528,7 +529,7 @@ fn the_pen_draws_and_undo_takes_it_back(cx: &mut TestAppContext) {
     drag_across(cx, &opened, -40.);
     let drawn = marks(cx, &opened);
     assert_eq!(drawn.len(), 2);
-    assert_eq!(drawn[1].tool, Tool::Highlighter);
+    assert_eq!(drawn[1].as_stroke().unwrap().tool, Tool::Highlighter);
     press(cx, &opened, &["escape"]);
     assert_eq!(cx.update(|cx| opened.view.read(cx).tool()), None);
 }
@@ -675,7 +676,10 @@ fn the_eraser_takes_whole_marks_and_erase_all_takes_every_one(cx: &mut TestAppCo
     drag_at(cx, &opened, 30., 0., 5.);
     let left = marks(cx, &opened);
     assert_eq!(left.len(), 1);
-    assert!(left[0].points[0].1 < 300., "the upper stroke stays");
+    assert!(
+        left[0].as_stroke().unwrap().points[0].1 < 300.,
+        "the upper stroke stays"
+    );
     press(cx, &opened, &["ctrl-z"]);
     assert_eq!(marks(cx, &opened).len(), 2);
 

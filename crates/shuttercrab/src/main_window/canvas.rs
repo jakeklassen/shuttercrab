@@ -11,7 +11,7 @@
 
 use super::{FOOTER_HEIGHT, Hand, MainWindow, Shot, TOOLBAR_HEIGHT};
 use crate::{
-    markup::{self, Brush, Drawing, Marks, Region, Stroke, Tool},
+    markup::{self, Brush, Drawing, Mark, Marks, Region, Stroke, Tool},
     palette::border,
     pixels,
     shot_view::{ShotView, Xy},
@@ -44,10 +44,10 @@ pub(super) struct Shown {
     gesture: Option<Gesture>,
 }
 
-/// The screenshot with `strokes` drawn on it.
+/// The screenshot with `marks` drawn on it.
 struct Drawn {
     image: Arc<RenderImage>,
-    strokes: Vec<Stroke>,
+    marks: Vec<Mark>,
 }
 
 /// A highlighter stroke drawn onto just `region` of the screenshot,
@@ -112,22 +112,22 @@ impl Shown {
     /// The screenshot with its marks so far.
     pub(super) fn marked(&self) -> Shot {
         Shot {
-            marks: self.marks.strokes().to_vec(),
+            marks: self.marks.marks().to_vec(),
             ..self.shot.clone()
         }
     }
 
-    /// What to show: an image, and the finished strokes not drawn into it
+    /// What to show: an image, and the finished marks not drawn into it
     /// yet. After an undo or redo, the last drawing stays, unchanged, until
-    /// the next is ready: painting its strokes again meanwhile would flash.
-    fn layers(&self) -> (Arc<RenderImage>, &[Stroke]) {
-        let strokes = self.marks.strokes();
+    /// the next is ready: painting its marks again meanwhile would flash.
+    fn layers(&self) -> (Arc<RenderImage>, &[Mark]) {
+        let marks = self.marks.marks();
         match &self.drawn {
-            Some(drawn) if strokes.starts_with(&drawn.strokes) => {
-                (drawn.image.clone(), &strokes[drawn.strokes.len()..])
+            Some(drawn) if marks.starts_with(&drawn.marks) => {
+                (drawn.image.clone(), &marks[drawn.marks.len()..])
             }
             Some(drawn) => (drawn.image.clone(), &[]),
-            None => (self.shot.image.clone(), strokes),
+            None => (self.shot.image.clone(), marks),
         }
     }
 
@@ -345,9 +345,9 @@ impl MainWindow {
             }
             return;
         }
-        let (base, strokes) = (shown.shot.image.clone(), shown.marks.strokes().to_vec());
+        let (base, marks) = (shown.shot.image.clone(), shown.marks.marks().to_vec());
         let (width, height) = shown.shot.size();
-        let (onto, drawing) = (base.clone(), strokes.clone());
+        let (onto, drawing) = (base.clone(), marks.clone());
         cx.spawn_in(window, async move |this, cx| {
             let image = cx
                 .background_executor()
@@ -361,16 +361,12 @@ impl MainWindow {
                 let Some(shown) = &mut this.shown else {
                     return;
                 };
-                if Arc::ptr_eq(&shown.shot.image, &base) && shown.marks.strokes() == strokes {
+                if Arc::ptr_eq(&shown.shot.image, &base) && shown.marks.marks() == marks {
                     // The drawing now has the patch's stroke.
-                    if shown
-                        .patch
-                        .as_ref()
-                        .is_some_and(|p| p.index < strokes.len())
-                    {
+                    if shown.patch.as_ref().is_some_and(|p| p.index < marks.len()) {
                         shown.drop_patch(window);
                     }
-                    if let Some(old) = shown.drawn.replace(Drawn { image, strokes }) {
+                    if let Some(old) = shown.drawn.replace(Drawn { image, marks }) {
                         let _ = window.drop_image(old.image);
                     }
                     cx.notify();
@@ -457,9 +453,9 @@ impl MainWindow {
             );
             while let Some(index) = shown
                 .marks
-                .strokes()
+                .marks()
                 .iter()
-                .rposition(|stroke| stroke.touches(at, reach))
+                .rposition(|mark| mark.touches(at, reach))
             {
                 // The drag's first take starts a change; the rest join it.
                 shown.marks.erase(index, *erased);
@@ -550,13 +546,13 @@ impl MainWindow {
             return;
         };
         let (source, pending) = shown.layers();
-        // Finished strokes not in the drawing yet belong in the patch too.
-        let mut strokes = pending.to_vec();
-        strokes.push(stroke.clone());
+        // Finished marks not in the drawing yet belong in the patch too.
+        let mut marks = pending.to_vec();
+        marks.push(Mark::Stroke(stroke.clone()));
         let (base, drawn, index) = (
             shown.shot.image.clone(),
             stroke.clone(),
-            shown.marks.strokes().len(),
+            shown.marks.marks().len(),
         );
         shown.patching = true;
         cx.spawn_in(window, async move |this, cx| {
@@ -564,7 +560,7 @@ impl MainWindow {
                 .background_executor()
                 .spawn(async move {
                     let pixels = source.as_bytes(0).unwrap_or_default();
-                    let bgra = markup::draw_region(pixels, width, region, &strokes, true);
+                    let bgra = markup::draw_region(pixels, width, region, &marks, true);
                     pixels::bgra_image(bgra, region.width, region.height)
                 })
                 .await;
@@ -604,7 +600,7 @@ impl MainWindow {
         };
         match shown.gesture.take() {
             Some(Gesture::Draw(drawing)) => {
-                shown.marks.add(drawing.stroke);
+                shown.marks.add(Mark::Stroke(drawing.stroke));
                 self.redraw(window, cx);
             }
             Some(Gesture::Pan(_) | Gesture::Erase { .. }) => cx.notify(),
@@ -631,11 +627,11 @@ impl MainWindow {
             Some(Gesture::Draw(drawing)) => Some(&drawing.stroke),
             _ => None,
         };
-        let live: Vec<Stroke> = pending
+        let live: Vec<Mark> = pending
             .iter()
-            .chain(drawing)
-            .filter(|stroke| stroke.tool == Tool::Pen)
             .cloned()
+            .chain(drawing.cloned().map(Mark::Stroke))
+            .filter(paints_over)
             .collect();
         // Screen pixels per screenshot pixel.
         let per_pixel = placed.size.x / shown.shot.size().0 as f32;
@@ -689,7 +685,7 @@ impl MainWindow {
                             bounds.origin.y + px(placed.origin.y),
                         );
                         let area = Bounds::new(origin, size(px(placed.size.x), px(placed.size.y)));
-                        paint_pen_strokes(window, &live, area, per_pixel);
+                        paint_marks(window, &live, area, per_pixel);
                     },
                 )
                 .absolute()
@@ -750,15 +746,18 @@ impl MainWindow {
     }
 }
 
-/// Paint pen `strokes` over the screenshot drawn in `area` (window
-/// pixels), `per_pixel` window pixels a screenshot pixel, clipped to it as
-/// Copy and Save clip them. (The highlighter shows through its patch.)
-fn paint_pen_strokes(
-    window: &mut Window,
-    strokes: &[Stroke],
-    area: Bounds<Pixels>,
-    per_pixel: f32,
-) {
+/// Whether a mark looks the same painted over the screenshot as drawn into
+/// it: everything but the highlighter, which multiplies.
+fn paints_over(mark: &Mark) -> bool {
+    match mark {
+        Mark::Stroke(stroke) => stroke.tool == Tool::Pen,
+    }
+}
+
+/// Paint `marks` over the screenshot drawn in `area` (window pixels),
+/// `per_pixel` window pixels a screenshot pixel, clipped to it as Copy and
+/// Save clip them. (The highlighter shows through its patch.)
+fn paint_marks(window: &mut Window, marks: &[Mark], area: Bounds<Pixels>, per_pixel: f32) {
     let to_window = |(x, y): (f32, f32)| {
         point(
             area.origin.x + px(x * per_pixel),
@@ -766,30 +765,42 @@ fn paint_pen_strokes(
         )
     };
     window.with_content_mask(Some(ContentMask { bounds: area }), |window| {
-        for stroke in strokes {
-            let width = (stroke.width * per_pixel).max(1.);
-            let options = StrokeOptions::default()
-                .with_line_width(width)
-                .with_line_cap(LineCap::Round)
-                .with_line_join(LineJoin::Round);
-            let mut path = PathBuilder::stroke(px(width)).with_style(PathStyle::Stroke(options));
-            let points = &stroke.points;
-            path.move_to(to_window(points[0]));
-            // The same curve as `markup::draw`: through each point to the
-            // next midpoint.
-            for pair in points.windows(2).skip(1) {
-                let ((cx, cy), (nx, ny)) = (pair[0], pair[1]);
-                path.curve_to(
-                    to_window(((cx + nx) / 2., (cy + ny) / 2.)),
-                    to_window((cx, cy)),
-                );
-            }
-            let (lx, ly) = points[points.len() - 1];
-            // A click leaves a dot: a line too short to see, with its caps.
-            path.line_to(to_window((lx + 0.01, ly)));
-            if let Ok(path) = path.build() {
-                window.paint_path(path, rgb(stroke.color.hex()));
+        for mark in marks {
+            match mark {
+                Mark::Stroke(stroke) => paint_pen_stroke(window, stroke, per_pixel, to_window),
             }
         }
     });
+}
+
+/// Paint one pen stroke, its points placed by `to_window`.
+fn paint_pen_stroke(
+    window: &mut Window,
+    stroke: &Stroke,
+    per_pixel: f32,
+    to_window: impl Fn((f32, f32)) -> Point<Pixels>,
+) {
+    let width = (stroke.width * per_pixel).max(1.);
+    let options = StrokeOptions::default()
+        .with_line_width(width)
+        .with_line_cap(LineCap::Round)
+        .with_line_join(LineJoin::Round);
+    let mut path = PathBuilder::stroke(px(width)).with_style(PathStyle::Stroke(options));
+    let points = &stroke.points;
+    path.move_to(to_window(points[0]));
+    // The same curve as `markup::draw`: through each point to the next
+    // midpoint.
+    for pair in points.windows(2).skip(1) {
+        let ((cx, cy), (nx, ny)) = (pair[0], pair[1]);
+        path.curve_to(
+            to_window(((cx + nx) / 2., (cy + ny) / 2.)),
+            to_window((cx, cy)),
+        );
+    }
+    let (lx, ly) = points[points.len() - 1];
+    // A click leaves a dot: a line too short to see, with its caps.
+    path.line_to(to_window((lx + 0.01, ly)));
+    if let Ok(path) = path.build() {
+        window.paint_path(path, rgb(stroke.color.hex()));
+    }
 }

@@ -1,6 +1,7 @@
 //! Marks drawn on a screenshot in the main window, as in Snipping Tool:
 //! pen and highlighter strokes. They are kept apart from the screenshot, in
 //! its own pixels, until it is copied or saved; [`draw`] puts them on it.
+//! Each stays a mark of its own, so the eraser and undo take it off whole.
 //!
 //! The pen paints over what is under it, with a round tip. The highlighter
 //! has a slanted chisel tip, so a stroke across has slanted ends, and it
@@ -188,11 +189,33 @@ impl Drawing {
     }
 }
 
+/// One mark on a screenshot.
+#[derive(Clone, Debug, PartialEq)]
+pub enum Mark {
+    Stroke(Stroke),
+}
+
+impl Mark {
+    /// The stroke, if the mark is one.
+    pub fn as_stroke(&self) -> Option<&Stroke> {
+        match self {
+            Mark::Stroke(stroke) => Some(stroke),
+        }
+    }
+
+    /// Whether the mark comes within `reach` screenshot pixels of `point`.
+    pub fn touches(&self, point: (f32, f32), reach: f32) -> bool {
+        match self {
+            Mark::Stroke(stroke) => stroke.touches(point, reach),
+        }
+    }
+}
+
 /// The marks on a screenshot, with the changes made to them, for undo, and
 /// the changes undo took back, for redo.
 #[derive(Clone, Debug, Default)]
 pub struct Marks {
-    strokes: Vec<Stroke>,
+    marks: Vec<Mark>,
     done: Vec<Change>,
     undone: Vec<Change>,
 }
@@ -200,46 +223,46 @@ pub struct Marks {
 /// One change to the marks, as undo takes it back whole.
 #[derive(Clone, Debug)]
 enum Change {
-    Added(Stroke),
-    /// The strokes the eraser took in one drag, each with the place it had
+    Added(Mark),
+    /// The marks the eraser took in one drag, each with the place it had
     /// when taken, in the order taken.
-    Erased(Vec<(usize, Stroke)>),
-    /// Every stroke, by Erase all mark-ups.
-    Cleared(Vec<Stroke>),
+    Erased(Vec<(usize, Mark)>),
+    /// Every mark, by Erase all mark-ups.
+    Cleared(Vec<Mark>),
 }
 
 impl Marks {
-    pub fn strokes(&self) -> &[Stroke] {
-        &self.strokes
+    pub fn marks(&self) -> &[Mark] {
+        &self.marks
     }
 
     pub fn is_empty(&self) -> bool {
-        self.strokes.is_empty()
+        self.marks.is_empty()
     }
 
-    /// Add a finished stroke.
-    pub fn add(&mut self, stroke: Stroke) {
-        self.strokes.push(stroke.clone());
-        self.record(Change::Added(stroke));
+    /// Add a finished mark.
+    pub fn add(&mut self, mark: Mark) {
+        self.marks.push(mark.clone());
+        self.record(Change::Added(mark));
     }
 
-    /// Erase the stroke at `index`. With `joining`, it joins the eraser's
+    /// Erase the mark at `index`. With `joining`, it joins the eraser's
     /// last change, so one drag is undone in one go.
     pub fn erase(&mut self, index: usize, joining: bool) {
-        let stroke = self.strokes.remove(index);
+        let mark = self.marks.remove(index);
         if joining && let Some(Change::Erased(taken)) = self.done.last_mut() {
-            taken.push((index, stroke));
+            taken.push((index, mark));
             return;
         }
-        self.record(Change::Erased(vec![(index, stroke)]));
+        self.record(Change::Erased(vec![(index, mark)]));
     }
 
-    /// Erase every stroke. Returns whether there were any.
+    /// Erase every mark. Returns whether there were any.
     pub fn clear(&mut self) -> bool {
-        if self.strokes.is_empty() {
+        if self.marks.is_empty() {
             return false;
         }
-        let all = std::mem::take(&mut self.strokes);
+        let all = std::mem::take(&mut self.marks);
         self.record(Change::Cleared(all));
         true
     }
@@ -257,14 +280,14 @@ impl Marks {
         };
         match &change {
             Change::Added(_) => {
-                self.strokes.pop();
+                self.marks.pop();
             }
             Change::Erased(taken) => {
-                for (index, stroke) in taken.iter().rev() {
-                    self.strokes.insert(*index, stroke.clone());
+                for (index, mark) in taken.iter().rev() {
+                    self.marks.insert(*index, mark.clone());
                 }
             }
-            Change::Cleared(all) => self.strokes = all.clone(),
+            Change::Cleared(all) => self.marks = all.clone(),
         }
         self.undone.push(change);
         true
@@ -277,13 +300,13 @@ impl Marks {
             return false;
         };
         match &change {
-            Change::Added(stroke) => self.strokes.push(stroke.clone()),
+            Change::Added(mark) => self.marks.push(mark.clone()),
             Change::Erased(taken) => {
                 for (index, _) in taken {
-                    self.strokes.remove(*index);
+                    self.marks.remove(*index);
                 }
             }
-            Change::Cleared(_) => self.strokes.clear(),
+            Change::Cleared(_) => self.marks.clear(),
         }
         self.done.push(change);
         true
@@ -325,19 +348,19 @@ fn distance(point: (f32, f32), a: (f32, f32), b: (f32, f32)) -> f32 {
     (point.0 - (a.0 + t * dx)).hypot(point.1 - (a.1 + t * dy))
 }
 
-/// `strokes` drawn onto a `width` × `height` screenshot. `pixels` and the
+/// `marks` drawn onto a `width` × `height` screenshot. `pixels` and the
 /// result are four bytes a pixel with straight alpha, in either channel
 /// order; `bgr` says the first byte is blue (as GPUI draws them), so the
-/// stroke colours are swapped to match. Pen and multiply blending treat
-/// each channel alike, which makes the order free.
-pub fn draw(pixels: &[u8], width: u32, height: u32, strokes: &[Stroke], bgr: bool) -> Vec<u8> {
+/// mark colours are swapped to match. Painting over and multiply blending
+/// treat each channel alike, which makes the order free.
+pub fn draw(pixels: &[u8], width: u32, height: u32, marks: &[Mark], bgr: bool) -> Vec<u8> {
     let whole = Region {
         x: 0,
         y: 0,
         width,
         height,
     };
-    draw_region(pixels, width, whole, strokes, bgr)
+    draw_region(pixels, width, whole, marks, bgr)
 }
 
 /// A rectangle of a screenshot, pixels.
@@ -373,14 +396,14 @@ impl Stroke {
     }
 }
 
-/// `strokes` drawn onto `region` of a screenshot `width` pixels wide, as
+/// `marks` drawn onto `region` of a screenshot `width` pixels wide, as
 /// [`draw`] draws them, giving only that region: enough to show a stroke
 /// being drawn without drawing the whole screenshot each time.
 pub fn draw_region(
     pixels: &[u8],
     width: u32,
     region: Region,
-    strokes: &[Stroke],
+    marks: &[Mark],
     bgr: bool,
 ) -> Vec<u8> {
     let (row, cut) = (width as usize * 4, region.width as usize * 4);
@@ -393,8 +416,10 @@ pub fn draw_region(
     let size = IntSize::from_wh(region.width, region.height).expect("a region has an area");
     let mut canvas = Pixmap::from_vec(data, size).expect("the buffer matches its size");
     let shift = Transform::from_translate(-(region.x as f32), -(region.y as f32));
-    for stroke in strokes {
-        paint(&mut canvas, stroke, bgr, shift);
+    for mark in marks {
+        match mark {
+            Mark::Stroke(stroke) => paint(&mut canvas, stroke, bgr, shift),
+        }
     }
     let mut data = canvas.take();
     demultiply(&mut data);
@@ -611,7 +636,13 @@ mod tests {
     #[test]
     fn the_pen_paints_over_and_leaves_the_rest() {
         let red = Rgb(230, 27, 27);
-        let out = draw(&white(20), 20, 20, &[line(Tool::Pen, red, 10.)], false);
+        let out = draw(
+            &white(20),
+            20,
+            20,
+            &[Mark::Stroke(line(Tool::Pen, red, 10.))],
+            false,
+        );
         assert_eq!(pixel(&out, 20, 10, 10), [230, 27, 27, 255]);
         assert_eq!(pixel(&out, 20, 10, 2), [255, 255, 255, 255]);
     }
@@ -621,8 +652,8 @@ mod tests {
         let yellow = Rgb(255, 230, 0);
         let green = Rgb(38, 230, 0);
         let strokes = [
-            line(Tool::Highlighter, yellow, 10.),
-            line(Tool::Highlighter, green, 10.),
+            Mark::Stroke(line(Tool::Highlighter, yellow, 10.)),
+            Mark::Stroke(line(Tool::Highlighter, green, 10.)),
         ];
         let out = draw(&white(20), 20, 20, &strokes, false);
         // Yellow on white, then green over it: each channel multiplied.
@@ -640,14 +671,20 @@ mod tests {
             width: 6.,
             points: vec![(2., 2.), (18., 18.), (18., 2.), (2., 18.)],
         };
-        let out = draw(&white(20), 20, 20, &[cross], false);
+        let out = draw(&white(20), 20, 20, &[Mark::Stroke(cross)], false);
         assert_eq!(pixel(&out, 20, 10, 10), [0, 170, 204, 255]);
     }
 
     #[test]
     fn colours_follow_the_channel_order() {
         let red = Rgb(230, 27, 27);
-        let out = draw(&white(20), 20, 20, &[line(Tool::Pen, red, 10.)], true);
+        let out = draw(
+            &white(20),
+            20,
+            20,
+            &[Mark::Stroke(line(Tool::Pen, red, 10.))],
+            true,
+        );
         assert_eq!(pixel(&out, 20, 10, 10), [27, 27, 230, 255]);
     }
 
@@ -673,9 +710,9 @@ mod tests {
             width: 5.,
             points: vec![(8., 6.), (20., 15.), (30., 9.)],
         };
-        let whole = draw(&base, 40, 30, std::slice::from_ref(&stroke), false);
+        let whole = draw(&base, 40, 30, &[Mark::Stroke(stroke.clone())], false);
         let region = stroke.region(40, 30).unwrap();
-        let part = draw_region(&base, 40, region, &[stroke], false);
+        let part = draw_region(&base, 40, region, &[Mark::Stroke(stroke)], false);
         for y in 0..region.height {
             for x in 0..region.width {
                 let from = (((region.y + y) * 40 + region.x + x) * 4) as usize;
@@ -739,7 +776,7 @@ mod tests {
             width: 12.,
             points: vec![(15., 15.), (45., 15.)],
         };
-        let out = draw(&white(60), 60, 60, &[stroke], false);
+        let out = draw(&white(60), 60, 60, &[Mark::Stroke(stroke)], false);
         let inked = |x: u32, y: u32| pixel(&out, 60, x, y)[0] < 128;
         // Full height in the middle.
         assert!(inked(30, 10) && inked(30, 20));
@@ -763,30 +800,30 @@ mod tests {
     fn erasing_is_undone_in_one_go_and_redone() {
         let mut marks = Marks::default();
         for y in [5., 10., 15.] {
-            marks.add(line(Tool::Pen, Rgb(0, 0, 0), y));
+            marks.add(Mark::Stroke(line(Tool::Pen, Rgb(0, 0, 0), y)));
         }
         // One drag takes the first and, joining, the (new) first again.
         marks.erase(0, false);
         marks.erase(0, true);
-        assert_eq!(marks.strokes().len(), 1);
-        assert_eq!(marks.strokes()[0].points[0].1, 15.);
-        assert!(marks.undo());
-        assert_eq!(
+        assert_eq!(marks.marks().len(), 1);
+        let heights = |marks: &Marks| -> Vec<f32> {
             marks
-                .strokes()
+                .marks()
                 .iter()
-                .map(|s| s.points[0].1)
-                .collect::<Vec<_>>(),
-            [5., 10., 15.]
-        );
+                .filter_map(|mark| Some(mark.as_stroke()?.points[0].1))
+                .collect()
+        };
+        assert_eq!(heights(&marks), [15.]);
+        assert!(marks.undo());
+        assert_eq!(heights(&marks), [5., 10., 15.]);
         assert!(marks.redo());
-        assert_eq!(marks.strokes().len(), 1);
+        assert_eq!(marks.marks().len(), 1);
         // Erase all, undone and redone.
         assert!(marks.clear());
         assert!(marks.is_empty());
         assert!(!marks.clear());
         assert!(marks.undo());
-        assert_eq!(marks.strokes().len(), 1);
+        assert_eq!(marks.marks().len(), 1);
         assert!(marks.redo());
         assert!(marks.is_empty());
         // Undo walks back through every change to the start.
@@ -820,14 +857,14 @@ mod tests {
     #[test]
     fn undo_and_redo_walk_the_strokes() {
         let mut marks = Marks::default();
-        let stroke = line(Tool::Pen, Rgb(0, 0, 0), 5.);
+        let stroke = Mark::Stroke(line(Tool::Pen, Rgb(0, 0, 0), 5.));
         marks.add(stroke.clone());
         marks.add(stroke.clone());
         assert!(marks.undo());
-        assert_eq!(marks.strokes().len(), 1);
+        assert_eq!(marks.marks().len(), 1);
         assert!(marks.redo());
         assert!(!marks.redo());
-        assert_eq!(marks.strokes().len(), 2);
+        assert_eq!(marks.marks().len(), 2);
         marks.undo();
         // A new stroke ends what can be redone.
         marks.add(stroke);

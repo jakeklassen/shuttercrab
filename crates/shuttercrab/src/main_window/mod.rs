@@ -32,7 +32,7 @@ mod tools;
 
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
-    markup::{Stroke, Tool},
+    markup::{Mark, Tool},
     palette::{border, coral, hover, muted, recording, surface, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, Settings},
     settings_window::{Hooks, SettingsWindow},
@@ -105,7 +105,7 @@ pub struct Shot {
     pub scale: Option<f32>,
     /// The marks drawn on it, which copying, saving and opening it
     /// elsewhere include. `image` and `png` stay as they were taken.
-    pub marks: Vec<Stroke>,
+    pub marks: Vec<Mark>,
 }
 
 impl Shot {
