@@ -21,8 +21,8 @@ use crate::{
     shot_view::Xy,
 };
 use gpui_kit::{
-    AnyElement, Bounds, Context, InteractiveElement as _, IntoElement, Keystroke, MouseButton,
-    MouseUpEvent, ParentElement as _, PathBuilder, Pixels, Role, SharedString,
+    AnyElement, Bounds, ClickEvent, Context, InteractiveElement as _, IntoElement, Keystroke,
+    MouseButton, ParentElement as _, PathBuilder, Pixels, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, assets::IconName,
     canvas, component::Icon, deferred, div, point, prelude::FluentBuilder as _, px, rgb,
 };
@@ -587,12 +587,9 @@ impl MainWindow {
                 .when(highlighted, |d| d.bg(rgb(0x383838)))
                 .hover(|s| s.bg(rgb(0x383838)))
                 .cursor_pointer()
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                        this.choose_context(item, window, cx)
-                    }),
-                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                    this.choose_context(item, window, cx)
+                }))
                 .child(
                     Icon::new(match item {
                         ContextItem::Delete => IconName::Trash,

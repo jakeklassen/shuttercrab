@@ -13,8 +13,8 @@ use crate::{
     palette::{border, coral, hover, muted, tile},
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, Hsla, InteractiveElement as _, IntoElement, MouseButton,
-    MouseUpEvent, ParentElement as _, PathBuilder, Role, SharedString,
+    AppContext as _, ClickEvent, Context, Entity, Hsla, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, PathBuilder, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, Subscription, TestSupportExt as _, Window,
     assets::IconName,
     canvas,
@@ -364,12 +364,9 @@ impl MainWindow {
                     // The press stays here: the window's own press handler
                     // closes the flyout, which the release would reopen.
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                            this.take(hand, window, cx)
-                        }),
-                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.take(hand, window, cx)
+                    }))
                     .relative()
                     // Its key, small in the corner.
                     .child(
@@ -443,13 +440,10 @@ impl MainWindow {
                     .whitespace_nowrap()
                     .hover(|s| s.bg(rgb(0x383838)))
                     .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                            this.eraser_menu = false;
-                            this.erase_all(window, cx);
-                        }),
-                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                        this.eraser_menu = false;
+                        this.erase_all(window, cx);
+                    }))
                     .child(Icon::new(IconName::Trash).size(px(16.)))
                     .child(ERASE_ALL)
                     .child(div().text_xs().text_color(muted()).child("Enter")),
@@ -485,15 +479,12 @@ impl MainWindow {
                     gpui_kit::transparent_black()
                 })
                 .cursor_pointer()
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        if let Some(flyout) = &mut this.flyout {
-                            flyout.highlighted = i;
-                        }
-                        this.pick_color(tool, color, cx);
-                    }),
-                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if let Some(flyout) = &mut this.flyout {
+                        flyout.highlighted = i;
+                    }
+                    this.pick_color(tool, color, cx);
+                }))
                 .child(div().size_full().rounded_full().bg(rgb(color.hex())))
         });
         div()
@@ -547,10 +538,7 @@ impl MainWindow {
             .rounded_md()
             .when(!enabled, |d| d.opacity(0.35))
             .when(enabled, |d| d.hover(|s| s.bg(hover())).cursor_pointer())
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, window, cx| action(this, window, cx)),
-            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| action(this, window, cx)))
             .child(Icon::new(icon).size(px(18.)))
     }
 }

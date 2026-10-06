@@ -1052,3 +1052,29 @@ fn crop_frames_the_part_kept_applies_with_enter_and_undoes(cx: &mut TestAppConte
     press(cx, &opened, &["ctrl-y"]);
     assert_eq!(crop(cx), Some(kept));
 }
+
+#[gpui_kit::test]
+fn a_drag_let_go_over_apply_does_not_apply(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    press(cx, &opened, &["c", "tab", "right", "right"]);
+    // Pressed on the screenshot, let go on Apply: a drag, not a click.
+    update(cx, &opened, |window, cx| {
+        let from = window.find("canvas").bounds().center();
+        let to = window.find("crop-apply").bounds().center();
+        window.drag(from, to, cx);
+    });
+    let crop = cx.update(|cx| opened.view.read(cx).marked_shot().and_then(|s| s.crop));
+    assert_eq!(crop, None);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("crop-bar").is_some());
+    });
+    // A click on it applies.
+    update(cx, &opened, |window, cx| window.click("crop-apply", cx));
+    let crop = cx.update(|cx| opened.view.read(cx).marked_shot().and_then(|s| s.crop));
+    assert!(crop.is_some());
+}

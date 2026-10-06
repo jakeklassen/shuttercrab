@@ -48,8 +48,8 @@ use crate::{
 use canvas::{Shown, canvas_size, pointer_in_canvas};
 use chrono::NaiveDateTime;
 use gpui_kit::{
-    Animation, AnimationExt as _, App, AppContext as _, Context, Entity, FocusHandle, Hsla,
-    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseUpEvent,
+    Animation, AnimationExt as _, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
+    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
     ParentElement as _, Pixels, Render, RenderImage, Role, SharedString, Size,
     StatefulInteractiveElement as _, Styled as _, Task, TestSupportExt as _, Window,
     assets::IconName,
@@ -704,10 +704,7 @@ impl MainWindow {
             .border_color(border())
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, window, cx| this.start(window, cx)),
-            )
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start(window, cx)))
             .child(Icon::new(IconName::Plus).size(px(16.)).text_color(coral()))
             .child("New")
             .child(Self::key_hint("n"))
@@ -753,10 +750,7 @@ impl MainWindow {
                     .cursor_pointer()
             })
             .when(offered, |d| {
-                d.on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| choose(this, cx)),
-                )
+                d.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| choose(this, cx)))
             })
             .child(
                 Icon::new(icon)
@@ -860,10 +854,7 @@ impl MainWindow {
             .rounded_md()
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| action(this, cx)),
-            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
             .child(Icon::new(icon).size(px(18.)))
             .child(Self::key_hint(key))
     }
@@ -894,10 +885,7 @@ impl MainWindow {
             .rounded_md()
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, _, cx| this.copy(cx)),
-            )
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy(cx)))
             .map(|d| {
                 if self.copied {
                     // A new id per copy, so each one fades in afresh.
@@ -1021,13 +1009,10 @@ impl MainWindow {
                             .when(highlighted, |d| d.bg(rgb(0x383838)))
                             .hover(|s| s.bg(rgb(0x383838)))
                             .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                                    this.highlighted = i;
-                                    this.choose_highlighted(menu, window, cx);
-                                }),
-                            )
+                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                                this.highlighted = i;
+                                this.choose_highlighted(menu, window, cx);
+                            }))
                             .when(chosen, |d| {
                                 d.child(
                                     div()
@@ -1133,18 +1118,15 @@ impl MainWindow {
             .rounded_md()
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                    this.zoom(window, cx, |view, canvas| {
-                        if view.is_fitted() {
-                            view.zoom_to(1., None, canvas);
-                        } else {
-                            view.fit_to_canvas();
-                        }
-                    })
-                }),
-            )
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.zoom(window, cx, |view, canvas| {
+                    if view.is_fitted() {
+                        view.zoom_to(1., None, canvas);
+                    } else {
+                        view.fit_to_canvas();
+                    }
+                })
+            }))
             .child(Icon::new(IconName::ZoomIn).size(px(18.)))
             .child(div().text_xs().child(label))
     }
@@ -1221,12 +1203,9 @@ impl MainWindow {
                         .text_color(coral())
                         .hover(|s| s.bg(hover()))
                         .cursor_pointer()
-                        .on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _: &MouseUpEvent, _, cx| {
-                                (this.hooks.restart_to_update)(cx)
-                            }),
-                        )
+                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                            (this.hooks.restart_to_update)(cx)
+                        }))
                         .child(Icon::new(IconName::RotateCcw).size(px(12.)))
                         .child(label)
                         .child(Self::key_hint("u")),
@@ -1278,12 +1257,9 @@ impl MainWindow {
                             .rounded_md()
                             .hover(|s| s.bg(hover()))
                             .cursor_pointer()
-                            .on_mouse_up(
-                                MouseButton::Left,
-                                cx.listener(|this, _: &MouseUpEvent, window, cx| {
-                                    this.show(Page::Home, window, cx)
-                                }),
-                            )
+                            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                                this.show(Page::Home, window, cx)
+                            }))
                             .child(Icon::new(IconName::ArrowLeft).size(px(18.))),
                     )
                     .child(div().text_sm().child("Settings"))

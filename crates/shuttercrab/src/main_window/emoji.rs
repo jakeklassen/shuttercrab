@@ -12,7 +12,7 @@ use crate::{
     shot_view::Xy,
 };
 use gpui_kit::{
-    Context, InteractiveElement as _, IntoElement, MouseButton, MouseUpEvent, ParentElement as _,
+    ClickEvent, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,
     RenderImage, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
     TestSupportExt as _, Window, assets::IconName, component::Icon, deferred, div, img,
     prelude::FluentBuilder as _, px, rgb,
@@ -163,10 +163,7 @@ impl MainWindow {
                     .when(open, |d| d.bg(tile()))
                     .hover(|s| s.bg(hover()))
                     .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(|this, _: &MouseUpEvent, _, cx| this.toggle_emoji_menu(cx)),
-                    )
+                    .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.toggle_emoji_menu(cx)))
                     .child(
                         div()
                             .absolute()
@@ -209,12 +206,9 @@ impl MainWindow {
                     })
                     .hover(|s| s.bg(hover()))
                     .cursor_pointer()
-                    .on_mouse_up(
-                        MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, window, cx| {
-                            this.place_emoji(emoji, window, cx)
-                        }),
-                    )
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.place_emoji(emoji, window, cx)
+                    }))
                     .child(img(art).size(px(ART / 2.)))
             });
         div()

@@ -12,8 +12,8 @@ use crate::{
     palette::{border, coral, hover, muted, tile},
 };
 use gpui_kit::{
-    AppContext as _, Context, Entity, InteractiveElement as _, IntoElement, MouseButton,
-    MouseUpEvent, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
+    AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,
+    MouseButton, ParentElement as _, Role, SharedString, StatefulInteractiveElement as _,
     Styled as _, Subscription, TestSupportExt as _, Window,
     assets::IconName,
     component::{
@@ -393,10 +393,7 @@ impl MainWindow {
             .when(chosen, |d| d.bg(tile()))
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(move |this, _: &MouseUpEvent, _, cx| this.pick_shape(kind, cx)),
-            )
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.pick_shape(kind, cx)))
             .child(corner_key(key))
             .child(Icon::new(kind.icon()).size(px(18.)))
     }
@@ -452,12 +449,11 @@ impl MainWindow {
                     .when(menu.is_some(), |d| d.bg(tile()))
                     .when(!enabled, |d| d.opacity(0.35))
                     .when(enabled, |d| {
-                        d.hover(|s| s.bg(hover())).cursor_pointer().on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(move |this, _: &MouseUpEvent, _, cx| {
+                        d.hover(|s| s.bg(hover()))
+                            .cursor_pointer()
+                            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
                                 this.toggle_shape_menu(part, cx)
-                            }),
-                        )
+                            }))
                     })
                     .child(corner_key(key.into()))
                     .child(swatch)
@@ -501,15 +497,12 @@ impl MainWindow {
                     gpui_kit::transparent_black()
                 })
                 .cursor_pointer()
-                .on_mouse_up(
-                    MouseButton::Left,
-                    cx.listener(move |this, _: &MouseUpEvent, _, cx| {
-                        if let Some(menu) = &mut this.shape_menu {
-                            menu.highlighted = i;
-                        }
-                        this.pick_ink(part, color, cx);
-                    }),
-                )
+                .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                    if let Some(menu) = &mut this.shape_menu {
+                        menu.highlighted = i;
+                    }
+                    this.pick_ink(part, color, cx);
+                }))
                 .child(match color {
                     Some(color) => div()
                         .size_full()

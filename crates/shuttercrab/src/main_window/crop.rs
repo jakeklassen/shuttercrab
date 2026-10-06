@@ -19,8 +19,8 @@ use crate::{
     shot_view::Xy,
 };
 use gpui_kit::{
-    AnyElement, App, Context, CursorStyle, InteractiveElement as _, IntoElement, KeyBinding,
-    Keystroke, MouseButton, MouseUpEvent, ParentElement as _, Role, SharedString,
+    AnyElement, App, ClickEvent, Context, CursorStyle, InteractiveElement as _, IntoElement,
+    KeyBinding, Keystroke, MouseButton, ParentElement as _, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, actions,
     assets::IconName, component::Icon, div, px, rgb,
 };
@@ -449,10 +449,7 @@ impl MainWindow {
             .hover(|s| s.bg(crate::palette::hover()))
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .on_mouse_up(
-                MouseButton::Left,
-                cx.listener(|this, _: &MouseUpEvent, window, cx| this.start_crop(window, cx)),
-            )
+            .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start_crop(window, cx)))
             .child(
                 div()
                     .absolute()
@@ -508,15 +505,13 @@ impl MainWindow {
                     .shadow_lg()
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .child(
-                        button("crop-apply", "Apply", "Enter", IconName::Check).on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _: &MouseUpEvent, _, cx| this.apply_crop(cx)),
+                        button("crop-apply", "Apply", "Enter", IconName::Check).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.apply_crop(cx)),
                         ),
                     )
                     .child(
-                        button("crop-cancel", "Cancel", "Esc", IconName::X).on_mouse_up(
-                            MouseButton::Left,
-                            cx.listener(|this, _: &MouseUpEvent, _, cx| this.cancel_crop(cx)),
+                        button("crop-cancel", "Cancel", "Esc", IconName::X).on_click(
+                            cx.listener(|this, _: &ClickEvent, _, cx| this.cancel_crop(cx)),
                         ),
                     ),
             )
