@@ -10,7 +10,10 @@
 //! colours, so a highlighter stroke is drawn onto just the patch of the
 //! screenshot it covers, as the stroke grows, and shown over it.
 
-use super::{FOOTER_HEIGHT, Hand, MainWindow, Shot, TOOLBAR_HEIGHT};
+use super::{
+    FOOTER_HEIGHT, Hand, MainWindow, Shot, TOOLBAR_HEIGHT,
+    selection::{Editing, Grip, Placing},
+};
 use crate::{
     markup::{self, Drawing, Figure, Ink, Mark, Marks, Region, Shape, Stroke, Tool},
     palette::border,
@@ -42,7 +45,10 @@ pub(super) struct Shown {
     patch: Option<Patch>,
     /// A patch is being drawn; the next waits for it.
     patching: bool,
-    gesture: Option<Gesture>,
+    pub(super) gesture: Option<Gesture>,
+    /// The shape picked up to change, by its place in the marks: left out
+    /// of the drawing and painted over it.
+    pub(super) selected: Option<usize>,
 }
 
 /// The screenshot with `marks` drawn on it.
@@ -62,7 +68,7 @@ struct Patch {
 }
 
 /// What a drag on the canvas is doing.
-enum Gesture {
+pub(super) enum Gesture {
     /// Moving the screenshot; where the pointer last was, in the canvas.
     Pan(Xy),
     /// Drawing a stroke.
@@ -73,6 +79,8 @@ enum Gesture {
     /// Drawing a shape: where the press was, in the canvas, and whether the
     /// drag has gone far enough to be one.
     Shape { shape: Shape, from: Xy, drawn: bool },
+    /// Changing the selected shape.
+    Edit(Editing),
 }
 
 impl Shown {
@@ -86,6 +94,7 @@ impl Shown {
             patch: None,
             patching: false,
             gesture: None,
+            selected: None,
         }
     }
 
@@ -121,17 +130,26 @@ impl Shown {
         }
     }
 
+    /// The marks drawn into the screenshot: all but the selected shape.
+    fn background(&self) -> Vec<Mark> {
+        let marks = self.marks.marks().iter().enumerate();
+        marks
+            .filter(|(i, _)| Some(*i) != self.selected)
+            .map(|(_, mark)| mark.clone())
+            .collect()
+    }
+
     /// What to show: an image, and the finished marks not drawn into it
     /// yet. After an undo or redo, the last drawing stays, unchanged, until
     /// the next is ready: painting its marks again meanwhile would flash.
-    fn layers(&self) -> (Arc<RenderImage>, &[Mark]) {
-        let marks = self.marks.marks();
+    fn layers(&self) -> (Arc<RenderImage>, Vec<Mark>) {
+        let background = self.background();
         match &self.drawn {
-            Some(drawn) if marks.starts_with(&drawn.marks) => {
-                (drawn.image.clone(), &marks[drawn.marks.len()..])
+            Some(drawn) => {
+                let pending = missing(&background, &drawn.marks).unwrap_or_default();
+                (drawn.image.clone(), pending)
             }
-            Some(drawn) => (drawn.image.clone(), &[]),
-            None => (self.shot.image.clone(), marks),
+            None => (self.shot.image.clone(), background),
         }
     }
 
@@ -147,9 +165,43 @@ impl Shown {
 
     /// The stroke width, screenshot pixels, for a tool's `size`: in the
     /// logical pixels of the screen the screenshot was taken on.
-    fn width_for(&self, size: f32) -> f32 {
+    pub(super) fn width_for(&self, size: f32) -> f32 {
         size * self.shot.scale.unwrap_or(self.scale)
     }
+
+    /// The screenshot pixel under canvas point `at`, on the screenshot or
+    /// off it.
+    fn pixel_anywhere(&self, at: Xy, canvas: Xy) -> (f32, f32) {
+        let placing = self.placing(canvas);
+        (
+            (at.x - placing.origin.x) / placing.per_pixel,
+            (at.y - placing.origin.y) / placing.per_pixel,
+        )
+    }
+
+    /// Where the screenshot sits in a canvas of size `canvas`.
+    fn placing(&self, canvas: Xy) -> Placing {
+        let placed = self.view.placement(canvas);
+        Placing {
+            origin: placed.origin,
+            per_pixel: placed.size.x / self.shot.size().0 as f32,
+        }
+    }
+}
+
+/// The marks of `all` that `drawn` lacks, if `drawn` is some of them,
+/// in order; `None` if it has any `all` does not.
+fn missing(all: &[Mark], drawn: &[Mark]) -> Option<Vec<Mark>> {
+    let mut drawn = drawn.iter().peekable();
+    let mut lacking = Vec::new();
+    for mark in all {
+        if drawn.peek() == Some(&mark) {
+            drawn.next();
+        } else {
+            lacking.push(mark.clone());
+        }
+    }
+    drawn.peek().is_none().then_some(lacking)
 }
 
 /// A screenshot fitted to the canvas, its size in the window's logical
@@ -312,6 +364,12 @@ impl MainWindow {
     }
 
     pub(super) fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(shown) = &mut self.shown {
+            // The selected shape stays picked up if undo only changes it.
+            if shown.marks.undo_edits() != shown.selected {
+                shown.selected = None;
+            }
+        }
         if let Some(shown) = &mut self.shown
             && shown.marks.undo()
         {
@@ -321,6 +379,11 @@ impl MainWindow {
     }
 
     pub(super) fn redo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        if let Some(shown) = &mut self.shown
+            && shown.marks.redo_edits() != shown.selected
+        {
+            shown.selected = None;
+        }
         if let Some(shown) = &mut self.shown
             && shown.marks.redo()
         {
@@ -338,18 +401,18 @@ impl MainWindow {
     /// Draw the marks onto a copy of the screenshot, off the main thread,
     /// and show it once ready, unless the marks changed meanwhile (a later
     /// drawing is then on its way).
-    fn redraw(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+    pub(super) fn redraw(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let Some(shown) = &mut self.shown else {
             return;
         };
         cx.notify();
-        if shown.marks.is_empty() {
+        let (base, marks) = (shown.shot.image.clone(), shown.background());
+        if marks.is_empty() {
             if let Some(drawn) = shown.drawn.take() {
                 let _ = window.drop_image(drawn.image);
             }
             return;
         }
-        let (base, marks) = (shown.shot.image.clone(), shown.marks.marks().to_vec());
         let (width, height) = shown.shot.size();
         let (onto, drawing) = (base.clone(), marks.clone());
         cx.spawn_in(window, async move |this, cx| {
@@ -365,7 +428,7 @@ impl MainWindow {
                 let Some(shown) = &mut this.shown else {
                     return;
                 };
-                if Arc::ptr_eq(&shown.shot.image, &base) && shown.marks.marks() == marks {
+                if Arc::ptr_eq(&shown.shot.image, &base) && shown.background() == marks {
                     // The drawing now has the patch's stroke.
                     if shown.patch.as_ref().is_some_and(|p| p.index < marks.len()) {
                         shown.drop_patch(window);
@@ -397,6 +460,19 @@ impl MainWindow {
         let brush = hand
             .and_then(Hand::drawing)
             .map(|tool| (tool, self.brush(tool)));
+        // The Shapes tool and Select pick up, move and change shapes.
+        if matches!(hand, Some(Hand::Shape | Hand::Select))
+            && let Some(shown) = &self.shown
+        {
+            let (pixel, placing) = (shown.pixel_anywhere(at, canvas), shown.placing(canvas));
+            if let Some(gesture) = self.press_selection(at, pixel, placing, window, cx) {
+                if let Some(shown) = &mut self.shown {
+                    shown.gesture = Some(gesture);
+                }
+                cx.notify();
+                return;
+            }
+        }
         let style = self.shape_style();
         let Some(shown) = &mut self.shown else {
             return;
@@ -441,6 +517,24 @@ impl MainWindow {
             self.erase_to(pixel, canvas, window, cx);
         }
         cx.notify();
+    }
+
+    /// A right-click with the Shapes tool or Select: a shape's menu.
+    fn on_canvas_right_down(
+        &mut self,
+        event: &MouseDownEvent,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        if !matches!(self.hand, Some(Hand::Shape | Hand::Select)) {
+            return;
+        }
+        let (canvas, at) = (canvas_size(window), canvas_point(event.position));
+        let Some(shown) = &self.shown else {
+            return;
+        };
+        let (pixel, placing) = (shown.pixel_anywhere(at, canvas), shown.placing(canvas));
+        self.open_shape_context(at, pixel, placing, window, cx);
     }
 
     /// While erasing, take off every mark the eraser passes over on its way
@@ -557,6 +651,13 @@ impl MainWindow {
                 };
                 *drawn |= (at.x - from.x).abs() + (at.y - from.y).abs() > markup::LEAST_DRAG;
             }
+            Some(Gesture::Edit(editing)) => {
+                let pixel = (
+                    (at.x - placed.origin.x) / placed.size.x * width as f32,
+                    (at.y - placed.origin.y) / placed.size.y * height as f32,
+                );
+                Self::drag_selection(editing, pixel, at, event.modifiers.shift);
+            }
             None => {}
         }
         self.update_patch(window, cx);
@@ -639,14 +740,17 @@ impl MainWindow {
                 self.redraw(window, cx);
             }
             // A click, or a drag too short to see, is not a shape.
+            // A new shape stays picked up, to change, as in Snipping Tool.
             Some(Gesture::Shape { shape, drawn, .. }) => {
                 if drawn {
                     shown.marks.add(Mark::Shape(shape));
-                    self.redraw(window, cx);
+                    let index = shown.marks.marks().len() - 1;
+                    self.select(Some(index), window, cx);
                 } else {
                     cx.notify();
                 }
             }
+            Some(Gesture::Edit(editing)) => self.finish_editing(editing, cx),
             Some(Gesture::Pan(_) | Gesture::Erase { .. }) => cx.notify(),
             None => {}
         }
@@ -675,8 +779,8 @@ impl MainWindow {
             _ => None,
         };
         let live: Vec<Mark> = pending
-            .iter()
-            .cloned()
+            .into_iter()
+            .chain(shown.selection_now().map(Mark::Shape))
             .chain(drawing)
             .filter(paints_over)
             .collect();
@@ -693,6 +797,10 @@ impl MainWindow {
         });
         let cursor = match (&shown.gesture, self.hand, self.space_held) {
             (Some(Gesture::Pan(_)), ..) => CursorStyle::ClosedHand,
+            (Some(Gesture::Edit(editing)), ..) if editing.grip == Grip::Body => {
+                CursorStyle::ClosedHand
+            }
+            (_, Some(Hand::Select), false) => CursorStyle::Arrow,
             (_, Some(_), false) => CursorStyle::Crosshair,
             _ if shown.view.can_pan(canvas_area) => CursorStyle::OpenHand,
             _ => CursorStyle::Arrow,
@@ -707,6 +815,7 @@ impl MainWindow {
             .cursor(cursor)
             .on_scroll_wheel(cx.listener(Self::on_wheel))
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_canvas_down))
+            .on_mouse_down(MouseButton::Right, cx.listener(Self::on_canvas_right_down))
             .on_mouse_move(cx.listener(Self::on_canvas_move))
             .on_mouse_up(
                 MouseButton::Left,
@@ -738,9 +847,11 @@ impl MainWindow {
                 .absolute()
                 .size_full(),
             )
+            .children(self.selection_overlay(shown, shown.placing(canvas_area)))
             .children(self.tip(shown, per_pixel))
             .children(self.notice.map(notice))
             .children(self.shapes_bar(cx))
+            .children(self.shape_context_menu(cx))
     }
 
     /// The tool in hand's tip outlined at the pointer, while the pointer is
@@ -759,7 +870,7 @@ impl MainWindow {
             Hand::Erase => {
                 return vec![round_outline(at, 2. * ERASER_RADIUS).into_any_element()];
             }
-            Hand::Shape => (Vec::new(), 0.),
+            Hand::Shape | Hand::Select => (Vec::new(), 0.),
             Hand::Draw(tool) => {
                 let side = (shown.width_for(self.brush(tool).size) * per_pixel).max(3.);
                 let outline = match tool {

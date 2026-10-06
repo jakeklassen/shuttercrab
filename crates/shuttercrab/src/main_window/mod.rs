@@ -19,7 +19,8 @@
 //! highlighter, and pressed again open its colours and size; X picks up
 //! the eraser, which takes off whole marks, and pressed again offers to
 //! take off every one. G picks up the shapes, whose bar has keys of its own
-//! (see `shapes`). Escape puts the tool down. Dragging then draws (Shift
+//! (see `shapes`), and V picks up Select, to change a shape drawn before
+//! (see `selection`). Escape puts the tool down. Dragging then draws (Shift
 //! for a straight line, a square or a circle), and
 //! Space+drag or Ctrl+drag moves the screenshot. [ and ] change the size,
 //! Ctrl+Z and Ctrl+Y undo and redo. Escape closes a menu, or goes back
@@ -30,6 +31,7 @@
 //! so it can be tested on its own.
 
 mod canvas;
+mod selection;
 mod shapes;
 mod tools;
 
@@ -70,7 +72,7 @@ pub const SETTINGS_SIZE: Size<Pixels> = Size {
 
 /// The window's least width with a screenshot shown, logical pixels: room
 /// for the toolbar's drawing tools, zoom, Copy and Save as too.
-pub const SHOT_MIN_WIDTH: f32 = 1150.;
+pub const SHOT_MIN_WIDTH: f32 = 1200.;
 
 /// The toolbar's and the footer's heights, logical pixels: fixed, so the
 /// window can be sized around a screenshot.
@@ -283,6 +285,8 @@ pub struct MainWindow {
     eraser_menu: bool,
     /// The Shapes bar's Fill or Outline menu, if open.
     shape_menu: Option<shapes::ShapeMenu>,
+    /// The right-click menu on a shape, if open.
+    shape_context: Option<selection::ShapeContext>,
     /// A short message over the screenshot, such as that every mark was
     /// taken off, and a count for its timer, as for the size label.
     notice: Option<&'static str>,
@@ -318,6 +322,7 @@ impl MainWindow {
             flyout: None,
             eraser_menu: false,
             shape_menu: None,
+            shape_context: None,
             notice: None,
             notices: 0,
             pointer: None,
@@ -593,6 +598,9 @@ impl MainWindow {
             }
             return;
         }
+        if self.on_selection_key(keystroke, window, cx) {
+            return;
+        }
         if keystroke.modifiers.alt || keystroke.modifiers.platform {
             return;
         }
@@ -614,11 +622,12 @@ impl MainWindow {
             }
         }
         match key {
-            "p" => self.take(Hand::Draw(Tool::Pen), cx),
-            "h" => self.take(Hand::Draw(Tool::Highlighter), cx),
-            "x" => self.take(Hand::Erase, cx),
-            "g" => self.take(Hand::Shape, cx),
-            "escape" => self.put_down_tool(cx),
+            "p" => self.take(Hand::Draw(Tool::Pen), window, cx),
+            "h" => self.take(Hand::Draw(Tool::Highlighter), window, cx),
+            "x" => self.take(Hand::Erase, window, cx),
+            "g" => self.take(Hand::Shape, window, cx),
+            "v" => self.take(Hand::Select, window, cx),
+            "escape" => self.put_down_tool(window, cx),
             "space" => self.space_held = true,
             "[" => self.step_size(-1., window, cx),
             "]" => self.step_size(1., window, cx),

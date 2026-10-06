@@ -1,6 +1,6 @@
 //! The toolbar's drawing tools, as Snipping Tool's: the pen and the
 //! highlighter, each showing its colour, the eraser and the shapes, then
-//! undo and redo.
+//! undo and redo. Select, first, picks up shapes drawn before.
 //!
 //! Clicking the tool in hand, or pressing its key again, opens its flyout:
 //! its colours and a size slider over a preview stroke. Arrow keys move
@@ -28,13 +28,14 @@ use gpui_kit::{
 };
 use std::time::Duration;
 
-/// What dragging on the screenshot does: draw with a tool, erase, or draw
-/// a shape.
+/// What dragging on the screenshot does: draw with a tool, erase, draw a
+/// shape, or pick one up and change it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Hand {
     Draw(Tool),
     Erase,
     Shape,
+    Select,
 }
 
 impl Hand {
@@ -42,7 +43,7 @@ impl Hand {
     pub fn drawing(self) -> Option<Tool> {
         match self {
             Hand::Draw(tool) => Some(tool),
-            Hand::Erase | Hand::Shape => None,
+            Hand::Erase | Hand::Shape | Hand::Select => None,
         }
     }
 }
@@ -80,8 +81,9 @@ impl MainWindow {
 
     /// Pick up `hand`; if it is in hand already, open or close its flyout
     /// (the eraser's: Erase all mark-ups; the Shapes bar stays open, and
-    /// only its menu closes).
-    pub(super) fn take(&mut self, hand: Hand, cx: &mut Context<Self>) {
+    /// only its menu closes). Any other tool than the shapes and Select
+    /// lets a picked-up shape go.
+    pub(super) fn take(&mut self, hand: Hand, window: &mut Window, cx: &mut Context<Self>) {
         if self.shown.is_none() {
             return;
         }
@@ -91,19 +93,28 @@ impl MainWindow {
                 match hand {
                     Hand::Draw(tool) => self.open_flyout(tool, cx),
                     Hand::Erase => self.eraser_menu = true,
-                    Hand::Shape => {}
+                    Hand::Shape | Hand::Select => {}
                 }
             }
         } else {
             self.hand = Some(hand);
             self.close_flyouts();
+            if !matches!(hand, Hand::Shape | Hand::Select) {
+                self.select(None, window, cx);
+            }
         }
         cx.notify();
     }
 
-    /// Escape: close a flyout, or put the tool down.
-    pub(super) fn put_down_tool(&mut self, cx: &mut Context<Self>) {
-        if self.close_flyouts() || self.hand.take().is_some() {
+    /// Escape: close a flyout, let a picked-up shape go, or put the tool
+    /// down.
+    pub(super) fn put_down_tool(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let selected = self.shown.as_ref().is_some_and(|s| s.selected.is_some());
+        if self.close_flyouts() {
+            cx.notify();
+        } else if selected {
+            self.select(None, window, cx);
+        } else if self.hand.take().is_some() {
             cx.notify();
         }
     }
@@ -113,6 +124,7 @@ impl MainWindow {
         self.flyout.take().is_some()
             | std::mem::take(&mut self.eraser_menu)
             | self.shape_menu.take().is_some()
+            | self.shape_context.take().is_some()
     }
 
     fn open_flyout(&mut self, tool: Tool, cx: &mut Context<Self>) {
@@ -158,7 +170,7 @@ impl MainWindow {
     /// [ and ]: the tool in hand a size smaller or bigger, by a step its
     /// range suits.
     pub(super) fn step_size(&mut self, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
-        if self.hand == Some(Hand::Shape) {
+        if self.shapes_bar_shown() {
             return self.step_shape_size(steps, window, cx);
         }
         let Some(tool) = self.hand.and_then(Hand::drawing) else {
@@ -206,7 +218,8 @@ impl MainWindow {
             Hand::Draw(Tool::Pen) => ("Pen", self.brush(Tool::Pen).size),
             Hand::Draw(Tool::Highlighter) => ("Highlighter", self.brush(Tool::Highlighter).size),
             Hand::Shape => ("Outline", self.shape_style().size),
-            Hand::Erase => return None,
+            Hand::Select if self.shapes_bar_shown() => ("Outline", self.shape_style().size),
+            Hand::Erase | Hand::Select => return None,
         };
         Some(format!("{name} {size}").into())
     }
@@ -275,6 +288,7 @@ impl MainWindow {
             .items_center()
             .gap_1()
             .child(separator())
+            .child(self.tool_button(Hand::Select, cx))
             .child(self.tool_button(Hand::Draw(Tool::Pen), cx))
             .child(self.tool_button(Hand::Draw(Tool::Highlighter), cx))
             .child(self.tool_button(Hand::Erase, cx))
@@ -312,6 +326,7 @@ impl MainWindow {
             ),
             Hand::Erase => ("tool-eraser", "Eraser (X)", IconName::Eraser, "X"),
             Hand::Shape => ("tool-shapes", "Shapes (G)", IconName::Shapes, "G"),
+            Hand::Select => ("tool-select", "Select (V)", IconName::MousePointer2, "V"),
         };
         let brush = hand.drawing().map(|tool| (tool, self.brush(tool)));
         let in_hand = self.hand == Some(hand);
@@ -349,7 +364,9 @@ impl MainWindow {
                     .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
                     .on_mouse_up(
                         MouseButton::Left,
-                        cx.listener(move |this, _: &MouseUpEvent, _, cx| this.take(hand, cx)),
+                        cx.listener(move |this, _: &MouseUpEvent, window, cx| {
+                            this.take(hand, window, cx)
+                        }),
                     )
                     .relative()
                     // Its key, small in the corner.
@@ -363,8 +380,8 @@ impl MainWindow {
                             .child(key),
                     )
                     .child(Icon::new(icon).size(px(18.)))
-                    // The eraser and the shapes have a clear bar, to sit level
-                    // with the rest.
+                    // The other tools have a clear bar, to sit level with the
+                    // pen and the highlighter.
                     .child(
                         div()
                             .w(px(16.))

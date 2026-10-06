@@ -546,6 +546,7 @@ fn the_drawing_tools_fit_beside_the_rest_of_the_toolbar(cx: &mut TestAppContext)
         for id in [
             "tool-pen",
             "tool-highlighter",
+            "tool-select",
             "tool-eraser",
             "tool-shapes",
             "undo",
@@ -823,4 +824,108 @@ fn fill_and_outline_pick_colours_opacity_and_size_from_the_keyboard(cx: &mut Tes
     press(cx, &opened, &["t", "escape"]);
     assert!(!menu_open(cx));
     assert!(cx.update(|cx| opened.view.read(cx).hand()).is_some());
+}
+
+/// Drag on the canvas from `from` to `to`, logical pixels from its middle.
+fn drag_between(cx: &mut TestAppContext, opened: &Opened, from: (f32, f32), to: (f32, f32)) {
+    update(cx, opened, |window, cx| {
+        let middle = window.find("canvas").bounds().center();
+        let at = |(dx, dy): (f32, f32)| {
+            gpui_kit::point(middle.x + gpui_kit::px(dx), middle.y + gpui_kit::px(dy))
+        };
+        window.drag(at(from), at(to), cx);
+    });
+}
+
+fn first_shape(cx: &mut TestAppContext, opened: &Opened) -> shuttercrab::markup::Shape {
+    marks(cx, opened)[0].as_shape().unwrap().clone()
+}
+
+#[gpui_kit::test]
+fn a_new_shape_stays_picked_up_for_keys_to_move_resize_turn_and_delete(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    press(cx, &opened, &["g"]);
+    drag_between(cx, &opened, (-60., -40.), (60., 40.));
+    let drawn = first_shape(cx, &opened);
+    // Its handles show: four corners, and the rotate button.
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("handle-3").is_some());
+        assert!(window.try_find("turn-handle").is_some());
+    });
+
+    // A pixel right; ten wider; a 15° turn.
+    press(cx, &opened, &["right"]);
+    assert_eq!(first_shape(cx, &opened).start.0, drawn.start.0 + 1.);
+    press(cx, &opened, &["shift-right"]);
+    let wider = first_shape(cx, &opened);
+    assert!((wider.end.0 - wider.start.0 - (drawn.end.0 - drawn.start.0) - 10.).abs() < 0.01);
+    press(cx, &opened, &["alt-right"]);
+    assert_eq!(first_shape(cx, &opened).angle, 15.);
+
+    // The run of keys undoes in one go, and the shape stays picked up.
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(first_shape(cx, &opened), drawn);
+    press(cx, &opened, &["delete"]);
+    assert!(marks(cx, &opened).is_empty());
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(marks(cx, &opened).len(), 1);
+}
+
+#[gpui_kit::test]
+fn select_picks_up_a_shape_to_move_recolour_and_turn_from_its_menu(cx: &mut TestAppContext) {
+    use shuttercrab::{main_window::Hand, markup::SHAPE_COLORS};
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    let hand = |cx: &mut TestAppContext| cx.update(|cx| opened.view.read(cx).hand());
+    let shown = |cx: &mut TestAppContext, id: &'static str| {
+        let mut shown = false;
+        update(cx, &opened, |window, _| {
+            shown = window.try_find(id).is_some()
+        });
+        shown
+    };
+    press(cx, &opened, &["g"]);
+    drag_between(cx, &opened, (-60., -40.), (60., 40.));
+    // Escape lets the shape go, then puts the shapes down.
+    press(cx, &opened, &["escape"]);
+    assert!(!shown(cx, "turn-handle"));
+    assert_eq!(hand(cx), Some(Hand::Shape));
+    press(cx, &opened, &["escape"]);
+    assert_eq!(hand(cx), None);
+
+    // V, then a click inside the shape picks it up, with the Shapes bar.
+    press(cx, &opened, &["v"]);
+    assert_eq!(hand(cx), Some(Hand::Select));
+    assert!(!shown(cx, "shapes-bar"));
+    update(cx, &opened, |window, cx| window.click("canvas", cx));
+    assert!(shown(cx, "turn-handle") && shown(cx, "shapes-bar"));
+
+    // Outline's next colour recolours it.
+    press(cx, &opened, &["t", "right", "enter"]);
+    assert_eq!(first_shape(cx, &opened).outline.color, SHAPE_COLORS[8]);
+
+    // A drag inside moves it.
+    let before = first_shape(cx, &opened);
+    drag_between(cx, &opened, (0., 0.), (30., 0.));
+    let moved = first_shape(cx, &opened);
+    assert!(moved.start.0 > before.start.0 + 10.);
+    assert_eq!(moved.start.1, before.start.1);
+
+    // Right-click: its menu turns it a quarter.
+    update(cx, &opened, |window, cx| window.right_click("canvas", cx));
+    assert!(shown(cx, "shape-context"));
+    update(cx, &opened, |window, cx| {
+        window.click("context-turn-right", cx)
+    });
+    assert!(!shown(cx, "shape-context"));
+    assert_eq!(first_shape(cx, &opened).angle, 90.);
 }

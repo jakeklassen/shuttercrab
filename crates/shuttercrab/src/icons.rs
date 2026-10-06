@@ -40,7 +40,9 @@ icon_assets!(
         Circle,
         Slash,
         MoveUpLeft,
-        Ban
+        Ban,
+        RotateCw,
+        MousePointer2
     ]
 );
 
@@ -108,6 +110,8 @@ mod tests {
             IconName::Slash,
             IconName::MoveUpLeft,
             IconName::Ban,
+            IconName::RotateCw,
+            IconName::MousePointer2,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

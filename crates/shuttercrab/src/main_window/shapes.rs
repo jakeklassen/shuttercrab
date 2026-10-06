@@ -99,8 +99,23 @@ impl MainWindow {
         self.settings().shape_style()
     }
 
+    /// Choose `style` for the next shape; a picked-up shape takes on its
+    /// changed colours and size too.
     fn set_shape_style(&mut self, style: ShapeStyle, cx: &mut Context<Self>) {
+        let before = self.shape_style();
         self.change(cx, |settings| settings.set_shape_style(style));
+        self.restyle_selection(before, style, cx);
+    }
+
+    /// Whether the Shapes bar shows: while the shapes are in hand, or
+    /// Select with a shape picked up.
+    pub(super) fn shapes_bar_shown(&self) -> bool {
+        let selected = self.shown.as_ref().is_some_and(|s| s.selected.is_some());
+        match self.hand {
+            Some(Hand::Shape) => true,
+            Some(Hand::Select) => selected,
+            _ => false,
+        }
     }
 
     /// Draw `kind` next. Fill's menu closes for a shape without a fill.
@@ -240,7 +255,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        if self.hand != Some(Hand::Shape) {
+        if !self.shapes_bar_shown() {
             return false;
         }
         if let Some(kind) = ShapeKind::ALL.into_iter().find(|k| k.key() == key) {
@@ -290,7 +305,7 @@ impl MainWindow {
     /// The Shapes bar, over the top of the screenshot while the Shapes
     /// tool is in hand.
     pub(super) fn shapes_bar(&self, cx: &mut Context<Self>) -> Option<impl IntoElement + use<>> {
-        if self.hand != Some(Hand::Shape) {
+        if !self.shapes_bar_shown() {
             return None;
         }
         let style = self.shape_style();
