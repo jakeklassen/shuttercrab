@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.15](https://github.com/jakeklassen/shuttercrab/compare/v0.1.14...v0.1.15) - 2026-10-06
+
+### Added
+
+- Crop, as in Snipping Tool: the crop button (or C) shows the whole screenshot with a frame on the part kept. Drag a corner or an edge to resize it, the inside to move it; Tab and the arrow keys do the same from the keyboard, and the frame's size shows as it changes. Apply (Enter) keeps it, Cancel (Esc) leaves it as it was. Nothing is lost: opening crop again can widen it, and undo takes a crop back. Copy and Save give the cropped image.
+- Over the crop frame, the pointer shows which way each corner and edge drags. Over a zoomed-in screenshot it shows an open hand where it can move (hold Space, or put the tool down), and a closed hand while moving it.
+- A setting to turn the window's single-key shortcuts (N for New, P for the pen and the like) on or off, in Settings > General. They're off for now, so a stray key press does nothing; Ctrl shortcuts and Escape always work.
+
+### Fixed
+
+- A drag that ended over a button, such as Apply, Discard or a toolbar button, no longer pressed it. Buttons now need a click.
+- Pressing a key no longer hides the pointer.
+
 ## [0.1.14](https://github.com/jakeklassen/shuttercrab/compare/v0.1.13...v0.1.14) - 2026-10-06
 
 ### Added
