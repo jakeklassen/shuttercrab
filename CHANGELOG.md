@@ -11,16 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- a Notices page in Settings, with the Fluent Emoji licence
-- emoji, as in Snipping Tool's Shapes bar
-- change a shape after drawing it, and Select to pick one up again
-- shapes can be moved, resized, turned and edited with undo
-- the Shapes tool, with its bar, Fill and Outline
-- shapes as marks: rectangle, oval, line and arrow
-
-### Other
-
-- marks on a screenshot can be more than strokes
+- Shapes, as in Snipping Tool: G, or the Shapes button, shows a bar over the screenshot with Rectangle (R), Oval (O), Line (L) and Arrow (A), then Fill (F) and Outline (T). Each has 30 colours, Transparent first, and an opacity; Outline has a size from 1 to 24. Drag to draw; hold Shift for a square, a circle, or a line at 45°. Your choices are remembered.
+- A shape stays selected after you draw it: drag it to move it, a corner to resize it, or the button above it to rotate it. Arrows move it a pixel, Shift+arrows resize it, Alt+Left and Alt+Right turn it 15°, Delete removes it, and right-click offers Delete and quarter and half turns. Fill, Outline and size change the selected shape.
+- Select (V) picks up any shape you drew earlier, to change it again.
+- Emoji (E) in the Shapes bar: Snipping Tool's 18, which land in the middle of the view, ready to move, resize and rotate.
+- Settings has a Notices page, with the licence of the emoji's art (Microsoft's Fluent Emoji).
 
 ## [0.1.13](https://github.com/jakeklassen/shuttercrab/compare/v0.1.12...v0.1.13) - 2026-10-06
 
