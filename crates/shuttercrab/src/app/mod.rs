@@ -62,7 +62,8 @@ use crate::{
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{
-    AnyWindowHandle, App, AppContext as _, AsyncApp, BackgroundExecutor, Entity, QuitMode,
+    AnyWindowHandle, App, AppContext as _, AsyncApp, BackgroundExecutor, CursorHideMode, Entity,
+    QuitMode,
 };
 use recording::{
     PreviousTake, Recording, displays_changed, finish_recording, keep_previous_take, record,
@@ -279,6 +280,9 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
     // the app then, or the moment a selection finishes, before the
     // clipboard is written.
     cx.set_quit_mode(QuitMode::Explicit);
+    // GPUI hides the pointer while typing; Shuttercrab's keys type nothing,
+    // and the pointer should stay where the user drags.
+    cx.set_cursor_hide_mode(CursorHideMode::Never);
     let state = Rc::new(State {
         capture: shuttercrab.capture,
         platform: shuttercrab.platform,
