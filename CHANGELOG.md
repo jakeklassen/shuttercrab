@@ -7,6 +7,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.13](https://github.com/jakeklassen/shuttercrab/compare/v0.1.12...v0.1.13) - 2026-10-06
+
+### Added
+
+- Print Screen can be a hotkey, on its own or with Ctrl, Alt or Shift: click a hotkey in Settings and press it. While Windows keeps Print Screen for Snipping Tool, Settings says so, with a button to the Windows setting that lets it go.
+- A second screenshot hotkey, "Screenshot an area with this window" (Ctrl+Alt+Shift+S to start with), takes an area screenshot with Shuttercrab's window left in the picture.
+
+### Fixed
+
+- Starting a capture any way, by hotkey, the tray or the Capture Bar, now hides Shuttercrab's window while you choose, as Snipping Tool does, so it is not in the way. It comes back showing the screenshot.
+- When Shuttercrab's window shows a new screenshot, it now takes the keyboard, so Ctrl+C copies it from there.
+
 ## [0.1.12](https://github.com/jakeklassen/shuttercrab/compare/v0.1.11...v0.1.12) - 2026-10-05
 
 ### Added
