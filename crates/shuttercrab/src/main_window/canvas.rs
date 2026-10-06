@@ -833,8 +833,9 @@ impl MainWindow {
         cx: &mut Context<Self>,
     ) {
         let canvas = canvas_size(window);
-        if self.hand.is_some() {
-            // The tip outline follows the pointer.
+        if self.hand.is_some() || self.is_cropping() {
+            // The tip outline, or the crop frame's cursor, follows the
+            // pointer.
             cx.notify();
         }
         let Some(shown) = &mut self.shown else {
@@ -978,12 +979,17 @@ impl MainWindow {
 
     /// The pointer over the canvas: what a drag would do.
     fn cursor(&self, shown: &Shown, canvas_area: Xy) -> CursorStyle {
+        let panning = matches!(shown.gesture, Some(Gesture::Pan(_)));
+        if !(panning || self.space_held)
+            && let Some(cursor) = self.crop_cursor(shown, canvas_area)
+        {
+            return cursor;
+        }
         match (&shown.gesture, self.hand, self.space_held) {
-            (Some(Gesture::Pan(_) | Gesture::Crop(_)), ..) => CursorStyle::ClosedHand,
+            (Some(Gesture::Pan(_)), ..) => CursorStyle::ClosedHand,
             (Some(Gesture::Edit(editing)), ..) if editing.grip == Grip::Body => {
                 CursorStyle::ClosedHand
             }
-            _ if shown.cropping.is_some() && !self.space_held => CursorStyle::Arrow,
             (_, Some(Hand::Select), false) => CursorStyle::Arrow,
             (_, Some(_), false) => CursorStyle::Crosshair,
             _ if shown.view.can_pan(canvas_area) => CursorStyle::OpenHand,

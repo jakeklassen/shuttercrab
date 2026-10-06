@@ -19,8 +19,8 @@ use crate::{
     shot_view::Xy,
 };
 use gpui_kit::{
-    AnyElement, App, Context, InteractiveElement as _, IntoElement, KeyBinding, Keystroke,
-    MouseButton, MouseUpEvent, ParentElement as _, Role, SharedString,
+    AnyElement, App, Context, CursorStyle, InteractiveElement as _, IntoElement, KeyBinding,
+    Keystroke, MouseButton, MouseUpEvent, ParentElement as _, Role, SharedString,
     StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, actions,
     assets::IconName, component::Icon, div, px, rgb,
 };
@@ -197,7 +197,37 @@ pub(super) fn bind_keys(cx: &mut App) {
     ]);
 }
 
+impl Grip {
+    /// The pointer over this part: a resize arrow along the way it moves,
+    /// or a hand over the inside (closed while dragging it).
+    fn cursor(self, dragging: bool) -> CursorStyle {
+        match (self.left || self.right, self.top || self.bottom) {
+            (true, true) if self.left == self.top => CursorStyle::ResizeUpLeftDownRight,
+            (true, true) => CursorStyle::ResizeUpRightDownLeft,
+            (true, false) => CursorStyle::ResizeLeftRight,
+            (false, true) => CursorStyle::ResizeUpDown,
+            (false, false) if dragging => CursorStyle::ClosedHand,
+            (false, false) => CursorStyle::OpenHand,
+        }
+    }
+}
+
 impl MainWindow {
+    /// The pointer while cropping, over a canvas of size `canvas`: what
+    /// dragging the part of the frame under it, or being dragged, does.
+    /// `None` when not cropping.
+    pub(super) fn crop_cursor(&self, shown: &Shown, canvas: Xy) -> Option<CursorStyle> {
+        let cropping = shown.cropping.as_ref()?;
+        if let Some(Gesture::Crop(drag)) = &shown.gesture {
+            return Some(drag.grip.cursor(true));
+        }
+        let placing = shown.placing(canvas);
+        let grip = self
+            .pointer
+            .and_then(|at| cropping.frame.grip_at(at, placing));
+        Some(grip.map_or(CursorStyle::Arrow, |grip| grip.cursor(false)))
+    }
+
     /// Tab or Shift+Tab while cropping: the next part for the arrow keys,
     /// or the one before.
     pub(super) fn step_crop_focus(&mut self, back: bool, cx: &mut Context<Self>) {
@@ -567,6 +597,49 @@ mod tests {
             start.dragged(Grip::INSIDE, (500., 500.), SIZE),
             frame(200., 200., 400., 300.)
         );
+    }
+
+    #[test]
+    fn each_part_shows_the_way_it_drags() {
+        let grip = |left, top, right, bottom| Grip {
+            left,
+            top,
+            right,
+            bottom,
+        };
+        let cursors = [
+            (
+                grip(true, true, false, false),
+                CursorStyle::ResizeUpLeftDownRight,
+            ),
+            (
+                grip(false, false, true, true),
+                CursorStyle::ResizeUpLeftDownRight,
+            ),
+            (
+                grip(false, true, true, false),
+                CursorStyle::ResizeUpRightDownLeft,
+            ),
+            (
+                grip(true, false, false, true),
+                CursorStyle::ResizeUpRightDownLeft,
+            ),
+            (
+                grip(true, false, false, false),
+                CursorStyle::ResizeLeftRight,
+            ),
+            (
+                grip(false, false, true, false),
+                CursorStyle::ResizeLeftRight,
+            ),
+            (grip(false, true, false, false), CursorStyle::ResizeUpDown),
+            (grip(false, false, false, true), CursorStyle::ResizeUpDown),
+            (Grip::INSIDE, CursorStyle::OpenHand),
+        ];
+        for (grip, cursor) in cursors {
+            assert_eq!(grip.cursor(false), cursor, "{grip:?}");
+        }
+        assert_eq!(Grip::INSIDE.cursor(true), CursorStyle::ClosedHand);
     }
 
     #[test]
