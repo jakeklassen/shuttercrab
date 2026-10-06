@@ -182,6 +182,35 @@ fn hints_show_the_chords_until_the_bar_has_the_keyboard(cx: &mut TestAppContext)
 }
 
 #[gpui_kit::test]
+fn the_buttons_stay_put_when_the_bar_gains_the_keyboard(cx: &mut TestAppContext) {
+    let opened = open(cx, Duration::ZERO);
+    let ids = [
+        "record-microphone",
+        "record-system-sound",
+        "record-pause",
+        "record-stop",
+        "record-restart",
+        "record-discard",
+    ];
+    let bounds = |cx: &mut TestAppContext| {
+        let mut found = Vec::new();
+        update(cx, &opened, |window, _| {
+            found = ids.map(|id| window.find(id).bounds()).to_vec();
+        });
+        found
+    };
+    // The click that gives the bar the keyboard must be released on the
+    // button it pressed.
+    VisualTestContext::from_window(opened.handle.into(), cx).deactivate_window();
+    let before = bounds(cx);
+    activate(cx, &opened);
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-stop-key").unwrap(), "S");
+    });
+    assert_eq!(bounds(cx), before);
+}
+
+#[gpui_kit::test]
 fn letters_ask_for_each_action(cx: &mut TestAppContext) {
     let opened = open(cx, Duration::ZERO);
     activate(cx, &opened);

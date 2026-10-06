@@ -129,6 +129,13 @@ pub struct RecordKeys {
     pub undo: String,
 }
 
+/// A button's key hint: its letter, which works while the bar has the
+/// keyboard, and its global chord (empty if it has none).
+struct Hint {
+    letter: &'static str,
+    chord: SharedString,
+}
+
 /// The bar's size in logical pixels.
 pub const RECORD_BAR_WIDTH: f32 = 920.0;
 pub const RECORD_BAR_HEIGHT: f32 = 48.0;
@@ -361,41 +368,64 @@ impl RecordBar {
 
     /// The key hint for a button: its letter while the bar has the
     /// keyboard, otherwise its global chord.
-    fn hint(&self, letter: &'static str, chord: &str) -> SharedString {
-        if self.active {
-            letter.into()
-        } else {
-            chord.to_string().into()
+    fn hint(&self, letter: &'static str, chord: &str) -> Hint {
+        Hint {
+            letter,
+            chord: chord.to_string().into(),
         }
     }
 
     /// The key hint for a button with no global chord: its key while the
-    /// bar has the keyboard, otherwise none. The ready bar always shows
-    /// them: it gets the keyboard back from the microphone list, and hints
-    /// coming and going would move its buttons.
-    fn letter(&self, letter: &'static str) -> SharedString {
-        if self.active || self.mode == BarMode::Ready {
-            letter.into()
-        } else {
-            "".into()
+    /// bar has the keyboard, otherwise none.
+    fn letter(&self, letter: &'static str) -> Hint {
+        Hint {
+            letter,
+            chord: SharedString::default(),
         }
     }
 
-    /// A button's key hint, if it has one.
-    fn key_hint(id: &'static str, key: SharedString) -> Option<AnyElement> {
-        (!key.is_empty()).then(|| {
+    /// What `hint` says now. The ready bar always shows the letters: it
+    /// gets the keyboard back from the microphone list.
+    fn shown(&self, hint: &Hint) -> SharedString {
+        if self.active || self.mode == BarMode::Ready {
+            hint.letter.into()
+        } else {
+            hint.chord.clone()
+        }
+    }
+
+    /// A button's key hint, if it has one. It takes the room of the longer
+    /// of its two forms whichever is shown, so the buttons never move when
+    /// the bar gains or loses the keyboard: a click that gives the bar the
+    /// keyboard would otherwise be released beside the button it pressed.
+    fn key_hint(&self, id: &'static str, hint: &Hint) -> Option<AnyElement> {
+        let longer: SharedString = if hint.chord.len() > hint.letter.len() {
+            hint.chord.clone()
+        } else {
+            hint.letter.into()
+        };
+        if longer.is_empty() {
+            return None;
+        }
+        let shown = self.shown(hint);
+        Some(
             div()
                 .id(SharedString::from(format!("{id}-key")))
                 .role(Role::Status)
-                .aria_label(key.clone())
+                .aria_label(shown.clone())
                 .test_support()
+                .relative()
                 .text_xs()
                 .text_color(muted())
-                .child(key)
-                .into_any_element()
-        })
+                .child(
+                    div()
+                        .text_color(gpui_kit::transparent_black())
+                        .child(longer),
+                )
+                .child(div().absolute().top_0().left_0().child(shown))
+                .into_any_element(),
+        )
     }
-
     /// A switch for a sound source, its icon crossed out when off. In the
     /// ready bar it is named; while recording, the icon alone.
     fn sound_switch(&self, source: Source, cx: &mut Context<Self>) -> AnyElement {
@@ -441,7 +471,7 @@ impl RecordBar {
             )
             .child(Icon::new(icon).size(px(14.)))
             .when(self.mode == BarMode::Ready, |d| d.child(name))
-            .children(Self::key_hint(id, self.letter(letter)))
+            .children(self.key_hint(id, &self.letter(letter)))
             .into_any_element()
     }
 
@@ -474,7 +504,7 @@ impl RecordBar {
             .w(px(MICROPHONE_LIST_WIDTH))
             .child(div().flex_1().min_w_0().truncate().child(name))
             .child(Icon::new(IconName::ChevronDown).size(px(14.)))
-            .children(Self::key_hint("record-microphones", self.letter("↓")))
+            .children(self.key_hint("record-microphones", &self.letter("↓")))
             .child(
                 canvas(move |bounds, _, _| drawn.set(bounds), |_, _, _, _| {})
                     .absolute()
@@ -495,7 +525,7 @@ impl RecordBar {
         id: &'static str,
         icon: IconName,
         label: &'static str,
-        key: SharedString,
+        key: Hint,
         color: Hsla,
         cx: &mut Context<Self>,
         event: RecordBarEvent,
@@ -520,7 +550,7 @@ impl RecordBar {
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| this.ask(event, cx)))
             .child(Icon::new(icon).size(px(14.)))
             .child(label)
-            .children(Self::key_hint(id, key))
+            .children(self.key_hint(id, &key))
             .into_any_element()
     }
 
