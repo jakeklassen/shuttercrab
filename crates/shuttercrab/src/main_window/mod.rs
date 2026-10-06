@@ -49,9 +49,9 @@ use canvas::{Shown, canvas_size, pointer_in_canvas};
 use chrono::NaiveDateTime;
 use gpui_kit::{
     Animation, AnimationExt as _, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
-    Hsla, InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
-    ParentElement as _, Pixels, Render, RenderImage, Role, SharedString, Size,
-    StatefulInteractiveElement as _, Styled as _, Task, TestSupportExt as _, Window,
+    Hsla, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseButton,
+    MouseDownEvent, ParentElement as _, Pixels, Render, RenderImage, Role, SharedString, Size,
+    StatefulInteractiveElement as _, Styled as _, Task, TestSupportExt as _, Window, actions,
     assets::IconName,
     component::{Icon, Theme, ThemeMode},
     deferred, div,
@@ -188,6 +188,12 @@ pub enum Page {
     Home,
     Settings,
 }
+
+actions!(main_menu, [NextItem, PreviousItem]);
+
+/// The key context an open menu adds, for its Tab and Shift+Tab: the
+/// window's root otherwise takes those to move the focus.
+const MENU_CONTEXT: &str = "Menu";
 
 /// A menu open below its toolbar button.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -336,6 +342,11 @@ impl MainWindow {
         let focus = cx.focus_handle();
         window.focus(&focus, cx);
         crop::bind_keys(cx);
+        // Bound for each window, as crop's are.
+        cx.bind_keys([
+            KeyBinding::new("tab", NextItem, Some(MENU_CONTEXT)),
+            KeyBinding::new("shift-tab", PreviousItem, Some(MENU_CONTEXT)),
+        ]);
         Self {
             hooks,
             page: Page::Home,
@@ -645,11 +656,11 @@ impl MainWindow {
             match key {
                 "escape" => self.menu = None,
                 "up" => self.highlighted = (self.highlighted + len - 1) % len,
-                "down" | "tab" => self.highlighted = (self.highlighted + 1) % len,
+                "down" => self.highlighted = (self.highlighted + 1) % len,
                 "enter" | "space" => return self.choose_highlighted(menu, window, cx),
                 _ => {}
             }
-            if matches!(key, "escape" | "up" | "down" | "tab") {
+            if matches!(key, "escape" | "up" | "down") {
                 cx.notify();
                 return;
             }
@@ -684,6 +695,15 @@ impl MainWindow {
                     self.set_target(target, cx);
                 }
             }
+        }
+    }
+
+    /// Tab or Shift+Tab in an open menu: the next item, or the one before.
+    fn step_menu(&mut self, by: isize, cx: &mut Context<Self>) {
+        if let Some(menu) = self.menu {
+            let len = self.menu_len(menu) as isize;
+            self.highlighted = (self.highlighted as isize + by).rem_euclid(len) as usize;
+            cx.notify();
         }
     }
 
@@ -1341,6 +1361,11 @@ impl Render for MainWindow {
             .text_sm()
             .on_key_down(cx.listener(Self::on_key_down))
             .on_key_up(cx.listener(Self::on_key_up))
+            .when(self.menu.is_some(), |d| {
+                d.key_context(MENU_CONTEXT)
+                    .on_action(cx.listener(|this, _: &NextItem, _, cx| this.step_menu(1, cx)))
+                    .on_action(cx.listener(|this, _: &PreviousItem, _, cx| this.step_menu(-1, cx)))
+            })
             .when(self.is_cropping(), |d| {
                 d.key_context(crop::CONTEXT)
                     .on_action(cx.listener(|this, _: &crop::NextGrip, _, cx| {

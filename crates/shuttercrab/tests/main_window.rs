@@ -1117,3 +1117,16 @@ fn single_keys_can_be_turned_off_but_ctrl_and_escape_still_work(cx: &mut TestApp
     press(cx, &opened, &["p"]);
     assert_eq!(tool(cx), Some(Tool::Pen));
 }
+
+#[gpui_kit::test]
+fn tab_and_shift_tab_move_through_an_open_menu(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    // Tab: from Settings down to the folder.
+    update(cx, &opened, |window, cx| window.click("more", cx));
+    press(cx, &opened, &["tab", "enter"]);
+    assert_eq!(opened.seen.folders.get(), 1);
+    // Shift+Tab: from Settings round to Quit, the last.
+    update(cx, &opened, |window, cx| window.click("more", cx));
+    press(cx, &opened, &["shift-tab", "enter"]);
+    assert_eq!(opened.seen.quits.get(), 1);
+}
