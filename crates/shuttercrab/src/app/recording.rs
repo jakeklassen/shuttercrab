@@ -231,6 +231,7 @@ pub(super) async fn record(
         region,
         fps: settings.record_fps(),
         include_cursor: settings.record_cursor,
+        system_sound: settings.record_system_sound,
         // `start_take` names the file.
         path: PathBuf::new(),
     };

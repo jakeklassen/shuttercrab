@@ -51,6 +51,7 @@ struct Options {
     region: Option<(i32, i32, u32, u32)>,
     fps: u32,
     include_cursor: bool,
+    system_sound: bool,
     path: PathBuf,
 }
 
@@ -75,6 +76,7 @@ struct Summary {
     duration: Duration,
     paused: Duration,
     hardware_encoder: bool,
+    sound: bool,
     interrupted: Option<Why>,
 }
 
@@ -94,6 +96,7 @@ impl From<RecordOptions> for Options {
             region: o.region.map(|r| (r.x, r.y, r.width, r.height)),
             fps: o.fps,
             include_cursor: o.include_cursor,
+            system_sound: o.system_sound,
             path: o.path,
         }
     }
@@ -106,6 +109,7 @@ impl From<Options> for RecordOptions {
             region: o.region.map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h)),
             fps: o.fps,
             include_cursor: o.include_cursor,
+            system_sound: o.system_sound,
             path: o.path,
         }
     }
@@ -123,6 +127,7 @@ impl From<RecordingSummary> for Summary {
             duration: s.duration,
             paused: s.paused,
             hardware_encoder: s.hardware_encoder,
+            sound: s.sound,
             interrupted: s.interrupted.map(|i| match i {
                 Interruption::DisplayGone => Why::DisplayGone,
                 Interruption::DeviceLost => Why::DeviceLost,
@@ -145,6 +150,7 @@ impl From<Summary> for RecordingSummary {
             duration: s.duration,
             paused: s.paused,
             hardware_encoder: s.hardware_encoder,
+            sound: s.sound,
             interrupted: s.interrupted.map(|w| match w {
                 Why::DisplayGone => Interruption::DisplayGone,
                 Why::DeviceLost => Interruption::DeviceLost,
@@ -474,6 +480,7 @@ mod tests {
             region: Some(PhysicalRect::new(-12, 34, 1280, 720)),
             fps: 60,
             include_cursor: true,
+            system_sound: true,
             path: PathBuf::from(r"C:\Videos\Shuttercrab\Recording 1.mp4.partial"),
         };
         let mut bytes = Vec::new();
@@ -489,6 +496,7 @@ mod tests {
         assert_eq!(back.monitor, options.monitor);
         assert_eq!(back.region, options.region);
         assert_eq!(back.path, options.path);
+        assert!(back.system_sound);
         assert_eq!(
             serde_json::from_str::<Request>(lines[1]).unwrap(),
             Request::Pause
@@ -504,6 +512,7 @@ mod tests {
             duration: Duration::from_millis(60_010),
             paused: Duration::from_secs(10),
             hardware_encoder: true,
+            sound: true,
             interrupted: Some(Interruption::Failed("disk".into())),
             timing: None,
         };

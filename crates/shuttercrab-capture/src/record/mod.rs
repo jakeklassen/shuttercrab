@@ -12,13 +12,18 @@
 //! delivers no frames) keeps its duration because the last frame is
 //! repeated at the stop time.
 //!
+//! With sound, what the speakers play is captured too ([`sound`]) and
+//! written beside the picture as an AAC track, on the same clock.
+//!
 //! The pieces: [`session`] runs one recording (capture, conversion, the
 //! frame loop), [`encoder`] turns frames into NV12 and an MP4, [`exposure`]
-//! keeps HDR exposure steady, and [`timing`] measures each stage's cost.
+//! keeps HDR exposure steady, [`sound`] captures the sound, and [`timing`]
+//! measures each stage's cost.
 
 mod encoder;
 mod exposure;
 mod session;
+mod sound;
 mod timing;
 
 pub use timing::FrameTiming;
@@ -49,6 +54,8 @@ pub struct RecordOptions {
     /// 30 or 60 (PRD §13.1).
     pub fps: u32,
     pub include_cursor: bool,
+    /// Record what the speakers play (off unless asked).
+    pub system_sound: bool,
     pub path: PathBuf,
 }
 
@@ -70,6 +77,8 @@ pub struct RecordingSummary {
     pub paused: Duration,
     /// Whether Media Foundation chose a hardware encoder.
     pub hardware_encoder: bool,
+    /// Whether the file has a sound track.
+    pub sound: bool,
     /// Why the recording ended before it was stopped, if it did. What was
     /// recorded until then is still in the file.
     pub interrupted: Option<Interruption>,
@@ -137,6 +146,8 @@ enum Event {
     /// The displays changed (HDR switched on or off, say): read the
     /// recorded display's white level again.
     DisplayChanged,
+    /// Sound the speakers played.
+    Sound(sound::Packet),
 }
 
 /// A recording in progress, on its own thread.

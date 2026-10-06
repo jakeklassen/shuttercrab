@@ -85,13 +85,15 @@ USAGE
       or set it until it is changed back or Windows restarts.
 
   capture-spike record [--monitor M] [--region X,Y,W,H] [--seconds N] [--fps 30|60]
-                       [--pause AT,FOR] [--cursor on] [--out FILE.mp4] [--repeat N]
+                       [--pause AT,FOR] [--cursor on] [--sound on] [--out FILE.mp4]
+                       [--repeat N]
       Record H.264 MP4 through the Milestone 3 pipeline (default: 10 s at
       30 fps, the whole monitor, ./captures/recording-TIMESTAMP.mp4). With
       --pause, pause AT seconds in for FOR seconds, then carry on; the
       paused time is left out of the video. With --repeat, record N takes in
       a row (FILE-1.mp4, FILE-2.mp4…) and print this process's private and
-      graphics memory before and after each, to find leaks.
+      graphics memory before and after each, to find leaks. With --sound on,
+      also record what the speakers play, as an AAC track.
 
   capture-spike shots [--monitor M] [--repeat N]
       Freeze the monitor and take a full screenshot through the app's capture
@@ -307,6 +309,7 @@ fn record(mut args: Args) -> Result<()> {
         })
         .transpose()?;
     let include_cursor = args.option("--cursor")?.as_deref() == Some("on");
+    let system_sound = args.option("--sound")?.as_deref() == Some("on");
     let repeat: u32 = args
         .option("--repeat")?
         .map(|r| r.parse())
@@ -342,6 +345,7 @@ fn record(mut args: Args) -> Result<()> {
             region,
             fps,
             include_cursor,
+            system_sound,
             path,
         })?;
         // Count from when recording is running, not from before its setup.
@@ -368,7 +372,7 @@ fn record(mut args: Args) -> Result<()> {
         }
         let summary = recorder.stop()?;
         println!(
-            "{}x{}, {} frames ({} dropped: encoder busy, {} skipped: over {fps} fps), {:.3} s long, {:.3} s paused, {} encoder -> {}",
+            "{}x{}, {} frames ({} dropped: encoder busy, {} skipped: over {fps} fps), {:.3} s long, {:.3} s paused, {} encoder, {} -> {}",
             summary.width,
             summary.height,
             summary.frames,
@@ -381,6 +385,7 @@ fn record(mut args: Args) -> Result<()> {
             } else {
                 "software"
             },
+            if summary.sound { "sound" } else { "no sound" },
             summary.path.display()
         );
         if let Some(timing) = &summary.timing {

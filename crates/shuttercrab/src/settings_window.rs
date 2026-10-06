@@ -670,6 +670,22 @@ impl SettingsWindow {
         )
     }
 
+    /// The Recording page's sound: all off unless switched on.
+    fn sound(&self) -> SettingGroup {
+        SettingGroup::new()
+            .item(heading(
+                "Sound",
+                Some("Off unless switched on here, so nothing is recorded by surprise."),
+            ))
+            .item(
+                SettingItem::new(
+                    "System sound",
+                    self.switch(|s| s.record_system_sound, |s, v| s.record_system_sound = v),
+                )
+                .description("What your speakers or headphones play."),
+            )
+    }
+
     fn recording(&self) -> SettingPage {
         let folder = self.hooks.clone();
         let undo_chord = self.hooks.settings.borrow().undo_hotkey.clone();
@@ -710,6 +726,7 @@ impl SettingsWindow {
                         .description("Over the chosen area, never recorded. Esc cancels, Enter starts at once."),
                     ),
             )
+            .group(self.sound())
             .group(
                 SettingGroup::new()
                     .item(heading("Where recordings go", None))

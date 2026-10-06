@@ -66,6 +66,9 @@ pub struct Settings {
     pub recording_dir: Option<PathBuf>,
     /// Record the pointer (PRD §15: on by default for recordings).
     pub record_cursor: bool,
+    /// Record what the speakers play. Off by default: sound recorded by
+    /// surprise is a problem, at work especially.
+    pub record_system_sound: bool,
     /// Ask before Discard or Restart throws a take away; when off, they act
     /// at once and can be undone for a few seconds.
     pub confirm_discard: bool,
@@ -120,6 +123,7 @@ impl Default for Settings {
             notify_after_capture: false,
             recording_dir: None,
             record_cursor: true,
+            record_system_sound: false,
             record_fps: 30,
             recording_countdown: 0,
             screenshot_delay: 0,

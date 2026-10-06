@@ -1,6 +1,8 @@
 //! From converted frames to an MP4: RGBA to NV12 in the Direct3D video
-//! processor, then H.264 through Media Foundation's sink writer.
+//! processor, then H.264 through Media Foundation's sink writer, beside an
+//! AAC sound track if the recording has sound.
 
+use super::sound;
 use crate::gpu::Gpu;
 use anyhow::{Context, Result, ensure};
 use std::{
@@ -177,23 +179,30 @@ impl IMFAsyncCallback_Impl for Released_Impl {
     }
 }
 
-/// An H.264 MP4 file written by Media Foundation's sink writer.
+/// An H.264 MP4 file written by Media Foundation's sink writer, with an AAC
+/// sound track if asked.
 pub(super) struct Mp4Writer {
     writer: IMFSinkWriter,
     stream: u32,
+    /// The sound track's stream, if the file has one.
+    sound: Option<u32>,
     _manager: IMFDXGIDeviceManager,
     finished: bool,
 }
 
+/// The sound track's bit rate, bytes a second: 192 kbit/s, plenty for stereo
+/// AAC.
+const SOUND_BYTES_PER_SECOND: u32 = 24_000;
+
 impl Mp4Writer {
-    /// With `hardware`, Media Foundation may choose a hardware encoder.
+    /// With `hardware`, Media Foundation may choose a hardware encoder; with
+    /// `sound`, the file gets a sound track (48 kHz stereo AAC).
     pub(super) fn new(
         gpu: &Gpu,
         path: &Path,
-        w: u32,
-        h: u32,
-        fps: u32,
+        (w, h, fps): (u32, u32, u32),
         hardware: bool,
+        sound: bool,
     ) -> Result<Self> {
         unsafe {
             let mut token = 0;
@@ -226,14 +235,66 @@ impl Mp4Writer {
             writer
                 .SetInputMediaType(stream, &input, None)
                 .context("the encoder does not take NV12 at this size")?;
+            let sound = if sound {
+                let output = sound_type(&MFAudioFormat_AAC)?;
+                output.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, SOUND_BYTES_PER_SECOND)?;
+                let stream = writer.AddStream(&output).context("no AAC encoder")?;
+                let input = sound_type(&MFAudioFormat_PCM)?;
+                input.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, u32::from(sound::CHANNELS) * 2)?;
+                input.SetUINT32(
+                    &MF_MT_AUDIO_AVG_BYTES_PER_SECOND,
+                    sound::RATE * u32::from(sound::CHANNELS) * 2,
+                )?;
+                writer
+                    .SetInputMediaType(stream, &input, None)
+                    .context("the AAC encoder does not take 16-bit stereo")?;
+                Some(stream)
+            } else {
+                None
+            };
             writer.BeginWriting().context("BeginWriting failed")?;
             Ok(Self {
                 writer,
                 stream,
+                sound,
                 _manager: manager,
                 finished: false,
             })
         }
+    }
+
+    /// Whether the file has a sound track.
+    pub(super) fn has_sound(&self) -> bool {
+        self.sound.is_some()
+    }
+
+    /// Hand `samples` (16-bit, the channels interleaved) to the sound track
+    /// at `time`. Nothing if the file has none.
+    pub(super) fn write_sound(&self, samples: &[i16], time: i64) -> Result<()> {
+        let Some(stream) = self.sound else {
+            return Ok(());
+        };
+        if samples.is_empty() {
+            return Ok(());
+        }
+        let frames = samples.len() as u64 / u64::from(sound::CHANNELS);
+        let bytes = std::mem::size_of_val(samples);
+        unsafe {
+            let buffer = MFCreateMemoryBuffer(bytes as u32)?;
+            let mut data = std::ptr::null_mut();
+            buffer.Lock(&mut data, None, None)?;
+            std::ptr::copy_nonoverlapping(samples.as_ptr().cast::<u8>(), data, bytes);
+            buffer.Unlock()?;
+            buffer.SetCurrentLength(bytes as u32)?;
+            let sample = MFCreateSample()?;
+            sample.AddBuffer(&buffer)?;
+            sample.SetSampleTime(time)?;
+            sample.SetSampleDuration(sound::frames_to_ticks(frames))?;
+            self.writer
+                .WriteSample(stream, &sample)
+                .context("WriteSample (sound) failed")?;
+        }
+        Ok(())
     }
 
     /// Hand the slot's texture to the encoder at `time`.
@@ -289,6 +350,20 @@ impl Mp4Writer {
                 .and_then(|attributes| attributes.GetStringLength(&MFT_ENUM_HARDWARE_URL_Attribute))
                 .is_ok()
         }
+    }
+}
+
+/// The sound track's format, 48 kHz 16-bit stereo, in `subtype` (PCM in,
+/// AAC out).
+fn sound_type(subtype: &windows::core::GUID) -> Result<IMFMediaType> {
+    unsafe {
+        let t = MFCreateMediaType()?;
+        t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
+        t.SetGUID(&MF_MT_SUBTYPE, subtype)?;
+        t.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, sound::RATE)?;
+        t.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, u32::from(sound::CHANNELS))?;
+        t.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
+        Ok(t)
     }
 }
 

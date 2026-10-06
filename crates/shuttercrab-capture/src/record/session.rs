@@ -7,6 +7,7 @@ use super::{
     encoder::{Mp4Writer, Nv12},
     exposure::Exposure,
     qpc_ticks, recordable,
+    sound::{self, Packet, Soundtrack, SystemSound},
     timing::Timer,
 };
 use crate::{
@@ -65,6 +66,9 @@ pub(super) struct Session {
     nv12: Nv12,
     writer: Mp4Writer,
     exposure: Exposure,
+    /// The sound capture, while it runs, and where its track ends.
+    sound: Option<SystemSound>,
+    track: Soundtrack,
 }
 
 impl Session {
@@ -86,31 +90,17 @@ impl Session {
 
         let gpu = video_gpu(&monitor.adapter)?;
         let (w, h) = (region.width, region.height);
-        let crop = gpu.texture(
-            w,
-            h,
-            DXGI_FORMAT_R16G16B16A16_FLOAT,
-            D3D11_BIND_SHADER_RESOURCE,
-            None,
-        )?;
-        let sdr = gpu.texture(
-            w,
-            h,
-            DXGI_FORMAT_R8G8B8A8_TYPELESS,
-            D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE,
-            None,
-        )?;
-        let rgba = gpu.texture(
-            w,
-            h,
-            DXGI_FORMAT_R8G8B8A8_UNORM,
-            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
-            None,
-        )?;
+        let [crop, sdr, rgba] = work_textures(&gpu, w, h)?;
         let converter = VideoConverter::new(&gpu, &crop, &sdr, ANALYSE_EVERY)?;
         let nv12 = Nv12::new(&gpu, &rgba, w, h, options.fps)?;
         let hardware = w.min(h) >= HARDWARE_MIN_SIDE;
-        let writer = Mp4Writer::new(&gpu, &options.path, w, h, options.fps, hardware)?;
+        let writer = Mp4Writer::new(
+            &gpu,
+            &options.path,
+            (w, h, options.fps),
+            hardware,
+            options.system_sound,
+        )?;
 
         // The capture: FP16, two buffers, the pointer only if asked.
         ensure!(
@@ -132,6 +122,7 @@ impl Session {
             size,
         )?;
         let closed = frames.clone();
+        let sounds = frames.clone();
         let frame_token = pool.FrameArrived(&TypedEventHandler::new(move |_, _| {
             let _ = frames.send(Event::Frame);
             Ok(())
@@ -146,6 +137,7 @@ impl Session {
         capture.SetIsCursorCaptureEnabled(options.include_cursor)?;
         let _ = capture.SetIsBorderRequired(false);
         capture.StartCapture().context("StartCapture failed")?;
+        let sound = start_sound(options, sounds);
         Ok(Self {
             options: options.clone(),
             gpu,
@@ -166,6 +158,8 @@ impl Session {
                 value: None,
                 last: 0,
             },
+            sound,
+            track: Soundtrack::default(),
         })
     }
 
@@ -196,6 +190,9 @@ impl Session {
             Some(Interruption::from_error(&e))
         };
         loop {
+            if let Err(e) = self.keep_sound_up(timeline) {
+                return interrupted(e);
+            }
             // Sleep until the next still-screen repeat is due, or for good
             // while paused or before the first frame: frames and requests
             // wake the loop themselves.
@@ -222,6 +219,11 @@ impl Session {
                     return Some(Interruption::DisplayGone);
                 }
                 Event::DisplayChanged => self.reread_white_scale(),
+                Event::Sound(packet) => {
+                    if let Err(e) = self.place_sound(packet, timeline) {
+                        return interrupted(e);
+                    }
+                }
                 Event::Frame => {
                     if let Err(e) = self.take_ready_frames(timeline, counts, timer) {
                         return interrupted(e);
@@ -229,6 +231,50 @@ impl Session {
                 }
             }
         }
+    }
+
+    /// Write a packet of sound where its time puts it on the timeline,
+    /// after silence if it came late, trimmed if early. Sound while paused
+    /// is left out, as frames are.
+    fn place_sound(&mut self, packet: Packet, timeline: &Timeline) -> Result<()> {
+        if timeline.is_paused() {
+            return Ok(());
+        }
+        let frames = packet.samples.len() / usize::from(sound::CHANNELS);
+        let first = self.track.written();
+        let placement = self
+            .track
+            .place(timeline.sound_time(packet.captured), frames);
+        self.write_silence(first, placement.silence)?;
+        let at = first + placement.silence;
+        let kept = &packet.samples[placement.skip * usize::from(sound::CHANNELS)..];
+        self.writer.write_sound(kept, sound::frames_to_ticks(at))
+    }
+
+    /// Nothing playing sends no sound: fill the track with silence up to
+    /// a little before now, so it keeps up with the picture (the writer
+    /// holds frames back for the track otherwise). Not while paused.
+    fn keep_sound_up(&mut self, timeline: &Timeline) -> Result<()> {
+        if self.sound.is_none() || timeline.is_paused() {
+            return Ok(());
+        }
+        let first = self.track.written();
+        let missing = self.track.silence_until(timeline.now() - SOUND_LAG);
+        self.write_silence(first, missing)
+    }
+
+    /// Write `frames` of silence from frame `first` of the track.
+    fn write_silence(&self, first: u64, frames: u64) -> Result<()> {
+        let chunk = u64::from(sound::RATE) / 10;
+        let mut done = 0;
+        while done < frames {
+            let count = chunk.min(frames - done);
+            let zeros = vec![0; count as usize * usize::from(sound::CHANNELS)];
+            self.writer
+                .write_sound(&zeros, sound::frames_to_ticks(first + done))?;
+            done += count;
+        }
+        Ok(())
     }
 
     /// A still screen delivers no frames: repeat the last one every second,
@@ -357,6 +403,13 @@ impl Session {
             None => return Err(why(anyhow::anyhow!("no frame was captured"))),
         };
         self.stop_capture();
+        // The sound lasts as long as the picture.
+        self.sound = None;
+        if interrupted.is_none() && self.writer.has_sound() {
+            let first = self.track.written();
+            let missing = self.track.silence_until(duration_ticks(duration));
+            self.write_silence(first, missing).map_err(why)?;
+        }
         let timing = timer.map(|t| t.finish(&self.gpu.context));
         let hardware_encoder = self.writer.finish().map_err(why)?;
         Ok(RecordingSummary {
@@ -370,6 +423,7 @@ impl Session {
             duration,
             paused: ticks_to_duration(timeline.paused_ticks),
             hardware_encoder,
+            sound: self.writer.has_sound(),
             interrupted,
         })
     }
@@ -463,6 +517,44 @@ impl Drop for Session {
     }
 }
 
+/// A frame's working textures, `w`×`h`: the crop (FP16, as captured), the
+/// SDR conversion's output, and the RGBA the NV12 conversion reads.
+fn work_textures(gpu: &Gpu, w: u32, h: u32) -> Result<[ID3D11Texture2D; 3]> {
+    let crop = gpu.texture(
+        w,
+        h,
+        DXGI_FORMAT_R16G16B16A16_FLOAT,
+        D3D11_BIND_SHADER_RESOURCE,
+        None,
+    )?;
+    let sdr = gpu.texture(
+        w,
+        h,
+        DXGI_FORMAT_R8G8B8A8_TYPELESS,
+        D3D11_BIND_UNORDERED_ACCESS | D3D11_BIND_SHADER_RESOURCE,
+        None,
+    )?;
+    let rgba = gpu.texture(
+        w,
+        h,
+        DXGI_FORMAT_R8G8B8A8_UNORM,
+        D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+        None,
+    )?;
+    Ok([crop, sdr, rgba])
+}
+
+/// Start capturing what the speakers play, if `options` ask for it. Without
+/// a device to record, the track stays silent: the picture still records.
+fn start_sound(options: &RecordOptions, events: Sender<Event>) -> Option<SystemSound> {
+    if !options.system_sound {
+        return None;
+    }
+    SystemSound::start(events)
+        .inspect_err(|e| log::warn!("recording without sound: {e:#}"))
+        .ok()
+}
+
 fn next_frame(
     pool: &Direct3D11CaptureFramePool,
 ) -> Result<Option<windows::Graphics::Capture::Direct3D11CaptureFrame>> {
@@ -543,6 +635,12 @@ impl Timeline {
         qpc_ticks() - self.origin - self.paused_ticks
     }
 
+    /// When sound captured at `captured` (QPC ticks) falls on this clock:
+    /// before the start if it was captured before recording began.
+    fn sound_time(&self, captured: i64) -> i64 {
+        captured - self.origin - self.paused_ticks
+    }
+
     /// When a frame captured at `captured` (QPC ticks) falls on this clock.
     fn output_time(&self, captured: i64) -> i64 {
         (captured - self.origin - self.paused_ticks).max(0)
@@ -579,6 +677,15 @@ struct Counts {
     dropped_busy: u64,
     /// Skipped because they came faster than the frame rate.
     skipped_rate: u64,
+}
+
+/// How far behind now the sound track is kept, 100 ns ticks: sound arrives
+/// in packets a few hundredths of a second after it plays.
+const SOUND_LAG: i64 = TICKS_PER_SECOND / 5;
+
+/// A `Duration` as 100 ns ticks.
+fn duration_ticks(duration: Duration) -> i64 {
+    (duration.as_nanos() / 100) as i64
 }
 
 /// 100 ns ticks as a `Duration` (none if negative).
