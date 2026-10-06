@@ -5,7 +5,7 @@ git_only = true
 publish = false
 semver_check = false
 # Release only when the Release PR is merged, not on every push to main.
-release_always = true
+release_always = false
 # The release starts as a draft so the previous release is still "latest"
 # while the packages build, and vpk can make deltas from it. The workflow
 # attaches the installer and update feed, then publishes it.
