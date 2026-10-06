@@ -1,5 +1,5 @@
 //! Marks drawn on a screenshot in the main window, as in Snipping Tool:
-//! pen and highlighter strokes. They are kept apart from the screenshot, in
+//! pen and highlighter strokes, and shapes. They are kept apart from the screenshot, in
 //! its own pixels, until it is copied or saved; [`draw`] puts them on it.
 //! Each stays a mark of its own, so the eraser and undo take it off whole.
 //!
@@ -9,6 +9,11 @@
 //! through, and one colour over another darkens. A single stroke never
 //! darkens where it crosses itself, since it is drawn in one go.
 
+mod shape;
+
+pub use shape::{
+    Figure, Ink, LEAST_DRAG, Layer, SHAPE_COLORS, Shape, ShapeKind, ShapeStyle, constrained,
+};
 use tiny_skia::{
     BlendMode, Color, FillRule, IntSize, LineCap, LineJoin, Paint, PathBuilder, Pixmap, Shader,
     Stroke as Outline, Transform,
@@ -193,6 +198,7 @@ impl Drawing {
 #[derive(Clone, Debug, PartialEq)]
 pub enum Mark {
     Stroke(Stroke),
+    Shape(Shape),
 }
 
 impl Mark {
@@ -200,6 +206,15 @@ impl Mark {
     pub fn as_stroke(&self) -> Option<&Stroke> {
         match self {
             Mark::Stroke(stroke) => Some(stroke),
+            Mark::Shape(_) => None,
+        }
+    }
+
+    /// The shape, if the mark is one.
+    pub fn as_shape(&self) -> Option<&Shape> {
+        match self {
+            Mark::Shape(shape) => Some(shape),
+            Mark::Stroke(_) => None,
         }
     }
 
@@ -207,6 +222,7 @@ impl Mark {
     pub fn touches(&self, point: (f32, f32), reach: f32) -> bool {
         match self {
             Mark::Stroke(stroke) => stroke.touches(point, reach),
+            Mark::Shape(shape) => shape.touches(point, reach),
         }
     }
 }
@@ -419,6 +435,7 @@ pub fn draw_region(
     for mark in marks {
         match mark {
             Mark::Stroke(stroke) => paint(&mut canvas, stroke, bgr, shift),
+            Mark::Shape(shape) => paint_shape(&mut canvas, shape, bgr, shift),
         }
     }
     let mut data = canvas.take();
@@ -465,6 +482,56 @@ fn paint(canvas: &mut Pixmap, stroke: &Stroke, bgr: bool, shift: Transform) {
             canvas.stroke_path(&path, &paint, &outline, shift, None);
         }
     }
+}
+
+/// Draw one shape onto the canvas, moved by `shift`: each of its layers
+/// painted over what is under it, as see-through as its ink.
+fn paint_shape(canvas: &mut Pixmap, shape: &Shape, bgr: bool, shift: Transform) {
+    for layer in shape.layers() {
+        let Rgb(r, g, b) = layer.color;
+        let (first, third) = if bgr { (b, r) } else { (r, b) };
+        let paint = Paint {
+            shader: Shader::SolidColor(Color::from_rgba8(first, g, third, layer.alpha)),
+            anti_alias: true,
+            ..Paint::default()
+        };
+        match &layer.figure {
+            Figure::Fill(points) => {
+                if let Some(path) = polygon(points, true) {
+                    canvas.fill_path(&path, &paint, FillRule::Winding, shift, None);
+                }
+            }
+            Figure::Stroke {
+                points,
+                closed,
+                width,
+            } => {
+                let outline = Outline {
+                    width: *width,
+                    line_cap: LineCap::Butt,
+                    line_join: LineJoin::Miter,
+                    ..Outline::default()
+                };
+                if let Some(path) = polygon(points, *closed) {
+                    canvas.stroke_path(&path, &paint, &outline, shift, None);
+                }
+            }
+        }
+    }
+}
+
+/// Straight lines through `points`, back to the first if `closed`.
+fn polygon(points: &[(f32, f32)], closed: bool) -> Option<tiny_skia::Path> {
+    let (&(x0, y0), rest) = points.split_first()?;
+    let mut path = PathBuilder::new();
+    path.move_to(x0, y0);
+    for &(x, y) in rest {
+        path.line_to(x, y);
+    }
+    if closed {
+        path.close();
+    }
+    path.finish()
 }
 
 /// How far the highlighter's tip leans from upright: the tangent of 30°.
@@ -686,6 +753,29 @@ mod tests {
             true,
         );
         assert_eq!(pixel(&out, 20, 10, 10), [27, 27, 230, 255]);
+    }
+
+    #[test]
+    fn a_shape_is_outlined_over_its_see_through_fill() {
+        let rectangle = Shape {
+            kind: ShapeKind::Rectangle,
+            start: (4., 4.),
+            end: (16., 16.),
+            outline: ShapeStyle::DEFAULT.outline,
+            fill: Ink {
+                color: Some(Rgb(0, 0, 255)),
+                opacity: 50,
+            },
+            width: 2.,
+        };
+        let out = draw(&white(20), 20, 20, &[Mark::Shape(rectangle)], false);
+        // The outline, opaque red, centred on the edge.
+        assert_eq!(pixel(&out, 20, 10, 4), [230, 27, 27, 255]);
+        // Half-opaque blue over white inside; untouched outside.
+        let [r, g, b, a] = pixel(&out, 20, 10, 10);
+        assert!(r.abs_diff(128) <= 1 && g.abs_diff(128) <= 1, "{r} {g}");
+        assert_eq!((b, a), (255, 255));
+        assert_eq!(pixel(&out, 20, 1, 1), [255, 255, 255, 255]);
     }
 
     #[test]

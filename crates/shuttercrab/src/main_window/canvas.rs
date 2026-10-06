@@ -11,7 +11,7 @@
 
 use super::{FOOTER_HEIGHT, Hand, MainWindow, Shot, TOOLBAR_HEIGHT};
 use crate::{
-    markup::{self, Brush, Drawing, Mark, Marks, Region, Stroke, Tool},
+    markup::{self, Brush, Drawing, Figure, Mark, Marks, Region, Shape, Stroke, Tool},
     palette::border,
     pixels,
     shot_view::{ShotView, Xy},
@@ -751,6 +751,7 @@ impl MainWindow {
 fn paints_over(mark: &Mark) -> bool {
     match mark {
         Mark::Stroke(stroke) => stroke.tool == Tool::Pen,
+        Mark::Shape(_) => true,
     }
 }
 
@@ -768,9 +769,54 @@ fn paint_marks(window: &mut Window, marks: &[Mark], area: Bounds<Pixels>, per_pi
         for mark in marks {
             match mark {
                 Mark::Stroke(stroke) => paint_pen_stroke(window, stroke, per_pixel, to_window),
+                Mark::Shape(shape) => paint_shape(window, shape, per_pixel, to_window),
             }
         }
     });
+}
+
+/// Paint one shape's layers, as `markup::draw` paints them: flat ends,
+/// sharp corners, each as see-through as its ink.
+fn paint_shape(
+    window: &mut Window,
+    shape: &Shape,
+    per_pixel: f32,
+    to_window: impl Fn((f32, f32)) -> Point<Pixels>,
+) {
+    for layer in shape.layers() {
+        let (points, closed, builder) = match &layer.figure {
+            Figure::Fill(points) => (points, true, PathBuilder::fill()),
+            Figure::Stroke {
+                points,
+                closed,
+                width,
+            } => {
+                let width = (width * per_pixel).max(1.);
+                let options = StrokeOptions::default()
+                    .with_line_width(width)
+                    .with_line_cap(LineCap::Butt)
+                    .with_line_join(LineJoin::Miter);
+                let builder = PathBuilder::stroke(px(width)).with_style(PathStyle::Stroke(options));
+                (points, *closed, builder)
+            }
+        };
+        let Some((&first, rest)) = points.split_first() else {
+            continue;
+        };
+        let mut path = builder;
+        path.move_to(to_window(first));
+        for &at in rest {
+            path.line_to(to_window(at));
+        }
+        if closed {
+            path.close();
+        }
+        if let Ok(path) = path.build() {
+            let mut color = rgb(layer.color.hex());
+            color.a = f32::from(layer.alpha) / 255.;
+            window.paint_path(path, color);
+        }
+    }
 }
 
 /// Paint one pen stroke, its points placed by `to_window`.
