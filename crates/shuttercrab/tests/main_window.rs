@@ -52,7 +52,11 @@ fn open(cx: &mut TestAppContext) -> Opened {
 /// The window at `size`: the test window keeps it, whatever the app asks.
 fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -> Opened {
     cx.update(gpui_kit::init);
-    let settings = Rc::new(RefCell::new(Settings::default()));
+    // The keys under test: single keys are off by default.
+    let settings = Rc::new(RefCell::new(Settings {
+        single_key_shortcuts: true,
+        ..Settings::default()
+    }));
     let seen = Rc::new(Seen::default());
     let (s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone());
     let (s4, s5) = (seen.clone(), seen.clone());

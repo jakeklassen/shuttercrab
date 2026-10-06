@@ -42,7 +42,7 @@ pub struct Settings {
     pub snap_to_windows: bool,
     /// Single keys work in the main window (N for New, P for the pen, and
     /// so on); off, only Ctrl shortcuts and Escape do, against accidental
-    /// presses.
+    /// presses. Off by default for now.
     pub single_key_shortcuts: bool,
     /// Draw the pointer into screenshots (PRD §15: off by default).
     pub include_cursor: bool,
@@ -111,7 +111,7 @@ impl Default for Settings {
             output_dir: None,
             snap_to_windows: true,
             include_cursor: false,
-            single_key_shortcuts: true,
+            single_key_shortcuts: false,
             last_mode: CaptureMode::Screenshot,
             last_target: CaptureTarget::Area,
             show_in_window: true,
