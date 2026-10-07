@@ -11,10 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- fade the play bar while a recording plays
-- copy, save as, open with and clear a recording in the window
-- play recordings in the main window, as Snipping Tool does
-- *(capture)* play recordings through the Media Engine
+- Recordings open in Shuttercrab's window when they are saved, ready to play, as Snipping Tool does. Each opens paused on its first picture, with a play bar at the bottom: play or pause, the time, a slider to move through it, its length, and the volume, whose button opens a slider with mute. Keys: Space plays or pauses, Left and Right go five seconds back or forward, Home and End go to the start and the end, Up and Down change the volume, and M mutes. While playing, the bar fades and comes back when the pointer moves. The volume is remembered. Settings > Recording > "Open in Shuttercrab's window" turns this off.
+- With a recording open, Copy (Ctrl+C) puts the video file on the clipboard, to paste into a folder or a chat, and Save as (Ctrl+S) saves a copy where you choose. The ⋯ menu has Show in folder and Open with. Clear (X, or Ctrl+W) closes the recording, and Ctrl+Z brings it back where it was.
 
 ## [0.1.20](https://github.com/jakeklassen/shuttercrab/compare/v0.1.19...v0.1.20) - 2026-10-07
 
