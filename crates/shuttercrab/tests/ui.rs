@@ -270,6 +270,36 @@ fn an_area_to_record_stays_in_area_mode(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_window_to_record_is_picked_in_window_mode(cx: &mut TestAppContext) {
+    // As the app opens it: the mode chosen, then for recording.
+    let windows = vec![win(7, 150, 150, 300, 150)];
+    let mode = Rc::new(Cell::new(Mode::Window));
+    let opened = open_built(cx, (400.0, 300.0), 1.5, move |overlay| {
+        overlay
+            .with_windows(windows, false)
+            .sharing_mode(mode)
+            .for_recording()
+    });
+    update(cx, &opened, |window, cx| {
+        assert!(
+            label(window, "mode-hint")
+                .unwrap()
+                .starts_with("Click a window to record it")
+        );
+        // Space does not switch to an area: the window was chosen.
+        window.press("space", cx);
+        window.click_at("overlay", point(px(150.0), px(150.0)), cx);
+    });
+    assert_eq!(
+        *opened.events.borrow(),
+        [OverlayEvent::Window {
+            hwnd: 7,
+            visible: PhysicalRect::new(150, 150, 300, 150)
+        }]
+    );
+}
+
+#[gpui_kit::test]
 fn window_mode_highlights_the_window_under_the_pointer(cx: &mut TestAppContext) {
     // At 150%: a 300×150 window at physical (150, 150), in front of a
     // larger one; the monitor is 600×450.

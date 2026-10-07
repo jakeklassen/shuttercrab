@@ -86,14 +86,15 @@ USAGE
 
   capture-spike record [--monitor M] [--region X,Y,W,H] [--seconds N] [--fps 30|60]
                        [--pause AT,FOR] [--cursor on] [--sound on] [--out FILE.mp4]
-                       [--repeat N]
+                       [--repeat N] [--window HWND]
       Record H.264 MP4 through the Milestone 3 pipeline (default: 10 s at
       30 fps, the whole monitor, ./captures/recording-TIMESTAMP.mp4). With
       --pause, pause AT seconds in for FOR seconds, then carry on; the
       paused time is left out of the video. With --repeat, record N takes in
       a row (FILE-1.mp4, FILE-2.mp4…) and print this process's private and
       graphics memory before and after each, to find leaks. With --sound on,
-      also record what the speakers play, as an AAC track.
+      also record what the speakers play, as an AAC track. With --window,
+      record that window (its handle; 0x... for hex) wherever it goes.
 
   capture-spike shots [--monitor M] [--repeat N]
       Freeze the monitor and take a full screenshot through the app's capture
@@ -310,6 +311,15 @@ fn record(mut args: Args) -> Result<()> {
         .transpose()?;
     let include_cursor = args.option("--cursor")?.as_deref() == Some("on");
     let system_sound = args.option("--sound")?.as_deref() == Some("on");
+    // A window's handle, as a number (0x... for hex): record it instead.
+    let window = args
+        .option("--window")?
+        .map(|w| match w.strip_prefix("0x") {
+            Some(hex) => isize::from_str_radix(hex, 16),
+            None => w.parse(),
+        })
+        .transpose()
+        .context("--window takes a window handle")?;
     let repeat: u32 = args
         .option("--repeat")?
         .map(|r| r.parse())
@@ -343,6 +353,7 @@ fn record(mut args: Args) -> Result<()> {
         let recorder = Recorder::start(RecordOptions {
             monitor: MonitorId(target.hmonitor.0 as u64),
             region,
+            window,
             fps,
             include_cursor,
             system_sound,

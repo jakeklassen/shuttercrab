@@ -68,3 +68,21 @@ fn enter_starts_at_once_and_escape_cancels(cx: &mut TestAppContext) {
     cx.executor().advance_clock(Duration::from_secs(6));
     assert_eq!(*opened.events.borrow(), [CountdownEvent::Cancel]);
 }
+
+#[gpui_kit::test]
+fn closing_the_window_to_record_cancels(cx: &mut TestAppContext) {
+    let opened = open(cx, 3);
+    let cancel = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            opened
+                .handle
+                .update(cx, |countdown, _, cx| countdown.cancel(cx))
+                .unwrap()
+        })
+    };
+    cancel(cx);
+    // Once: the count running out after it changes nothing.
+    cancel(cx);
+    cx.executor().advance_clock(Duration::from_secs(4));
+    assert_eq!(*opened.events.borrow(), [CountdownEvent::Cancel]);
+}

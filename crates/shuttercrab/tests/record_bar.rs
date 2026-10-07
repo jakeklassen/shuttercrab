@@ -153,6 +153,34 @@ fn a_paused_recording_offers_resume(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn a_recording_paused_by_itself_says_why(cx: &mut TestAppContext) {
+    let opened = open(cx, Duration::from_secs(12));
+    let mut clock = opened.clock.get();
+    clock.pause(Instant::now());
+    opened.clock.set(clock);
+    let why = |cx: &mut TestAppContext, why: Option<&'static str>| {
+        cx.update(|cx| {
+            opened
+                .handle
+                .update(cx, |bar, _, cx| bar.pause_reason(why.map(Into::into), cx))
+                .unwrap()
+        })
+    };
+    why(cx, Some("the window is minimised"));
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "record-time").unwrap(),
+            "0:12 · Paused: the window is minimised"
+        );
+        assert_eq!(label(window, "record-pause").unwrap(), "Resume");
+    });
+    why(cx, None);
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-time").unwrap(), "0:12");
+    });
+}
+
+#[gpui_kit::test]
 fn hints_show_the_chords_until_the_bar_has_the_keyboard(cx: &mut TestAppContext) {
     let opened = open(cx, Duration::ZERO);
     // As it appears: the app being recorded keeps the keyboard.
@@ -593,4 +621,23 @@ fn a_microphone_not_plugged_in_gives_way_to_the_default(cx: &mut TestAppContext)
             format!("Which microphone: {DEFAULT_MICROPHONE}")
         );
     });
+}
+
+#[gpui_kit::test]
+fn closing_the_window_to_record_closes_the_ready_bar(cx: &mut TestAppContext) {
+    let opened = open_ready(cx, Sound::default());
+    let close = |cx: &mut TestAppContext| {
+        cx.update(|cx| {
+            opened
+                .handle
+                .update(cx, |bar, _, cx| bar.close(cx))
+                .unwrap()
+        })
+    };
+    close(cx);
+    assert_eq!(events(&opened), [RecordBarEvent::Close]);
+    // Once recording, the bar stays: the recording ends by itself.
+    set_mode(cx, &opened, BarMode::Controls);
+    close(cx);
+    assert_eq!(events(&opened), [RecordBarEvent::Close]);
 }

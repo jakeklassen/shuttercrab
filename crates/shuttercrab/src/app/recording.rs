@@ -30,7 +30,8 @@ use shuttercrab_capture::{
     record::{Microphone, RecordOptions, RecordingSummary, Source},
 };
 use shuttercrab_platform::{
-    frame::{Frame, FrameStyle, Rect as FrameRect},
+    WindowChange,
+    frame::{Frame, FrameStyle, NO_EDGE, Rect as FrameRect},
     window as platform_window,
 };
 use std::{
@@ -86,8 +87,114 @@ pub(super) struct Recording {
     asking: Option<Asking>,
     /// A discard that can still be undone, if any.
     pub(super) discarded: Option<Discarded>,
-    /// The dashed border around the recorded area, if it is shown.
-    frame: Option<Frame>,
+    /// The dashed border around what is recorded, if it is shown.
+    frame: Border,
+    /// Minimising or hiding the recorded window paused the recording;
+    /// showing it again resumes it.
+    paused_by_minimise: bool,
+    /// How often the window went out of sight, so a resume waiting for a
+    /// restored window to settle knows if it went again.
+    minimises: u64,
+}
+
+/// The dashed border, shared with what moves it after a recorded window.
+type Border = Rc<RefCell<Option<Frame>>>;
+
+/// A recorded window, from when it is chosen until its recording ends:
+/// Windows reports its moves, and its border and the bar follow.
+pub(super) struct Followed {
+    window: isize,
+    border: Border,
+    /// The bar, once it is on screen.
+    bar: Cell<Option<FollowingBar>>,
+    /// What waits for the user before recording starts, to cancel if the
+    /// window is closed meanwhile.
+    waiting: RefCell<Option<Waiting>>,
+}
+
+/// What waits for the user before a window's recording starts.
+enum Waiting {
+    Ready(Entity<RecordBar>),
+    Countdown(Entity<Countdown>),
+}
+
+/// Say what waits for the user now, if a window is followed.
+fn waiting_on(state: &State, waiting: Option<Waiting>) {
+    if let Some(followed) = state.followed.borrow().as_ref() {
+        followed.waiting.replace(waiting);
+    }
+}
+
+/// The bar, as it follows a recorded window.
+#[derive(Clone, Copy, Debug)]
+struct FollowingBar {
+    hwnd: isize,
+    /// Its size and its distance from the window, physical pixels.
+    size: (u32, u32),
+    gap: u32,
+}
+
+impl Followed {
+    /// Put the border and the bar around the window at `bounds`: the bar
+    /// below it, or above it, as when it was first shown.
+    fn follow(&self, bounds: FrameRect) {
+        if let Some(frame) = self.border.borrow_mut().as_mut()
+            && let Err(e) = frame.place(bounds, NO_EDGE)
+        {
+            log::warn!("could not move the recording border: {e:#}");
+        }
+        let Some(bar) = self.bar.get() else {
+            return;
+        };
+        let window = PhysicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height);
+        let work = platform_window::work_area(platform_window::monitor_of(self.window))
+            .map_or(window, |(x, y, w, h)| PhysicalRect::new(x, y, w, h));
+        let (rect, _) = recording::controls_rect(work, window, bar.size, bar.gap);
+        if let Err(e) = platform_window::cover(bar.hwnd, rect.x, rect.y, rect.width, rect.height) {
+            log::warn!("could not move the recording controls: {e:#}");
+        }
+    }
+}
+
+/// Following a chosen window. Dropped before its recording starts (it was
+/// cancelled, or could not start), it stops following; once the recording
+/// has started, the recording's end stops it.
+struct Following<'a> {
+    state: &'a State,
+    kept: bool,
+}
+
+impl<'a> Following<'a> {
+    fn start(state: &'a State, window: isize, border: Border) -> Self {
+        state.followed.replace(Some(Followed {
+            window,
+            border,
+            bar: Cell::new(None),
+            waiting: RefCell::new(None),
+        }));
+        state.platform.watch_window(Some(window));
+        Self { state, kept: false }
+    }
+
+    /// The recording started: follow until it ends.
+    fn keep(mut self) {
+        self.kept = true;
+    }
+}
+
+impl Drop for Following<'_> {
+    fn drop(&mut self) {
+        if !self.kept {
+            stop_following(self.state);
+        }
+    }
+}
+
+/// Stop following the recorded window, if one is followed.
+fn stop_following(state: &State) {
+    if state.followed.take().is_some() {
+        state.platform.watch_window(None);
+    }
 }
 
 /// The border's colours (RGB): recording, paused, and discarded.
@@ -120,7 +227,7 @@ impl Recording {
 
     /// Close the controls and remove the border.
     fn close_controls(&mut self, cx: &mut AsyncApp) {
-        self.frame = None;
+        self.frame.borrow_mut().take();
         if let Some(controls) = self.controls.take() {
             controls.popup.close(cx);
         }
@@ -178,7 +285,7 @@ impl Recording {
 
     /// Draw the border in `color`.
     fn color_frame(&self, color: [u8; 3]) {
-        if let Some(frame) = &self.frame
+        if let Some(frame) = self.frame.borrow_mut().as_mut()
             && let Err(e) = frame.recolor(color)
         {
             log::warn!("could not redraw the recording border: {e:#}");
@@ -224,12 +331,20 @@ pub(super) async fn record(
         log::info!("already recording; the new request is ignored");
         return Ok(());
     }
-    let Some((region, info)) = choose_area(state, target, monitor, pressed, cx).await? else {
+    let Some(chosen) = choose_area(state, target, monitor, pressed, cx).await? else {
         log::info!("recording cancelled");
         return Ok(());
     };
+    let (region, info, window) = (chosen.region, chosen.info, chosen.window);
     // The border shows what will be recorded: grey until recording starts.
-    let frame = show_frame(&info, region, FRAME_WAITING);
+    // Around a window, it follows the window from now on.
+    let frame: Border = Rc::new(RefCell::new(show_frame(
+        &info,
+        region,
+        window,
+        FRAME_WAITING,
+    )));
+    let following = window.map(|w| Following::start(state, w, frame.clone()));
     let settings = state.settings.borrow().clone();
     let clock = Rc::new(Cell::new(Clock::new(Instant::now())));
     let ControlFlow::Continue(opened) = ready(state, &info, region, clock.clone(), cx).await else {
@@ -238,7 +353,7 @@ pub(super) async fn record(
     };
     let (controls, requests) = opened.unzip();
     let countdown = settings.countdown();
-    if countdown > 0 && !count_down(&info, region, countdown, cx).await {
+    if countdown > 0 && !count_down(state, &info, region, countdown, cx).await {
         if let Some(controls) = controls {
             controls.popup.close(cx);
         }
@@ -257,7 +372,9 @@ pub(super) async fn record(
         // The area may be on another monitor than the one first under the
         // pointer.
         monitor: info.id,
-        region,
+        // A window is recorded wherever it goes.
+        region: if window.is_some() { None } else { region },
+        window,
         fps: settings.record_fps(),
         include_cursor: settings.record_cursor,
         system_sound: sound.system,
@@ -304,38 +421,68 @@ pub(super) async fn record(
         asking: None,
         discarded: None,
         frame,
+        paused_by_minimise: false,
+        minimises: 0,
     };
     begin(state, recording, requests, cx);
+    if let Some(following) = following {
+        following.keep();
+    }
     Ok(())
 }
 
-/// What to record for `target`: the region (`None` for all of the monitor)
-/// and its monitor. `None` when the user cancels the selection.
+/// What a recording records, as chosen.
+struct Chosen {
+    /// Physical pixels relative to the monitor; `None` for all of it. For a
+    /// window, where it is now.
+    region: Option<PhysicalRect>,
+    info: MonitorInfo,
+    /// The window to record itself, wherever it goes (its `HWND`), when
+    /// one was chosen as a window.
+    window: Option<isize>,
+}
+
+/// What to record for `target`: an area or all of a monitor, or a window.
+/// `None` when the user cancels the selection.
 async fn choose_area(
     state: &Rc<State>,
     target: CaptureTarget,
     monitor: MonitorId,
     pressed: Instant,
     cx: &mut AsyncApp,
-) -> Result<Option<(Option<PhysicalRect>, MonitorInfo)>, Failure> {
-    match target {
-        CaptureTarget::Display => Ok(Some((None, monitor_info(state, monitor).await?))),
-        // A window or a freeform shape is recorded as an area.
-        CaptureTarget::Area | CaptureTarget::Window | CaptureTarget::Freeform => {
-            let first = state.capture.freeze_monitor(monitor, false).await?;
-            let (frame, event) = select(state, first, false, Mode::Area, true, pressed, cx).await?;
-            let region = match event {
-                OverlayEvent::Selected(rect) => Some(rect),
-                OverlayEvent::Display => None,
-                OverlayEvent::Window { visible, .. } => Some(visible),
-                // Area mode draws no shapes.
-                OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) | OverlayEvent::Shape(_) => {
-                    return Ok(None);
-                }
-            };
-            Ok(Some((region, frame.info)))
-        }
+) -> Result<Option<Chosen>, Failure> {
+    if target == CaptureTarget::Display {
+        return Ok(Some(Chosen {
+            region: None,
+            info: monitor_info(state, monitor).await?,
+            window: None,
+        }));
     }
+    // A freeform shape is recorded as an area; so is a window clicked
+    // while choosing an area.
+    let mode = match target {
+        CaptureTarget::Window => Mode::Window,
+        _ => Mode::Area,
+    };
+    let first = state.capture.freeze_monitor(monitor, false).await?;
+    let (frame, event) = select(state, first, false, mode, true, pressed, cx).await?;
+    let (region, window) = match event {
+        OverlayEvent::Selected(rect) => (Some(rect), None),
+        OverlayEvent::Display => (None, None),
+        OverlayEvent::Window { hwnd, visible } => (
+            Some(visible),
+            (target == CaptureTarget::Window).then_some(hwnd),
+        ),
+        // Area and Window modes draw no shapes.
+        OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) | OverlayEvent::Shape(_) => {
+            return Ok(None);
+        }
+    };
+    Ok(Some(Chosen {
+        region,
+        info: frame.info,
+        window,
+    }))
 }
 
 /// The sound the settings record; the ready bar starts from it.
@@ -369,7 +516,21 @@ async fn ready(
     let Some((controls, mut requests)) = opened else {
         return ControlFlow::Continue(None);
     };
-    if get_ready(state, info, &controls, &mut requests, give_back, cx).await {
+    // A recorded window takes the bar along when it moves.
+    if let Some(followed) = state.followed.borrow().as_ref() {
+        let gap = (CONTROLS_GAP * info.scale_factor).round() as u32;
+        let size = (controls.rect.width, controls.rect.height);
+        followed.bar.set(
+            controls
+                .popup
+                .hwnd()
+                .map(|hwnd| FollowingBar { hwnd, size, gap }),
+        );
+    }
+    waiting_on(state, Some(Waiting::Ready(controls.view.clone())));
+    let ready = get_ready(state, info, &controls, &mut requests, give_back, cx).await;
+    waiting_on(state, None);
+    if ready {
         ControlFlow::Continue(Some((controls, requests)))
     } else {
         controls.popup.close(cx);
@@ -433,7 +594,13 @@ async fn choose_microphone(
         to_physical(CHOICE_MENU_WIDTH),
         to_physical(choice_menu_height(choices.len())),
     );
-    let (bar, gap) = (controls.rect, to_physical(LIST_GAP));
+    // Where the bar is now: it may have followed a recorded window.
+    let bar = controls
+        .popup
+        .hwnd()
+        .and_then(|hwnd| platform_window::client_bounds(hwnd).ok())
+        .map_or(controls.rect, |(x, y, w, h)| PhysicalRect::new(x, y, w, h));
+    let gap = to_physical(LIST_GAP);
     let (wx, wy, ww, wh) =
         platform_window::work_area(info.id.0).unwrap_or((bar.x, bar.y, bar.width, bar.height));
     let x = (bar.x + to_physical(f32::from(button.origin.x)))
@@ -663,7 +830,10 @@ pub(super) fn displays_changed(state: &State) {
     let Some(recorder) = &recording.recorder else {
         return;
     };
-    if shuttercrab_capture::record::attached(recording.options.monitor) {
+    // A window is recorded on whichever display it is.
+    if recording.options.window.is_some()
+        || shuttercrab_capture::record::attached(recording.options.monitor)
+    {
         log::info!("displays changed; the recorded one is still attached");
         recorder.display_changed();
     } else {
@@ -677,6 +847,7 @@ pub(super) fn displays_changed(state: &State) {
 /// The countdown takes the keyboard, so Enter and Escape work, and gives it
 /// back when it ends. Returns whether to start.
 async fn count_down(
+    state: &State,
     info: &MonitorInfo,
     region: Option<PhysicalRect>,
     seconds: u32,
@@ -698,8 +869,12 @@ async fn count_down(
         h as u32,
     );
     let give_back = platform_window::foreground_window();
+    let slot = Rc::new(RefCell::new(None));
+    let view = slot.clone();
     let opened = popup::open(info, rect, Activation::Take, cx, move |window, cx| {
-        cx.new(|cx| Countdown::new(seconds, window, cx))
+        let countdown = cx.new(|cx| Countdown::new(seconds, window, cx));
+        view.replace(Some(countdown.clone()));
+        countdown
     });
     let (popup, mut events) = match opened {
         Ok(opened) => opened,
@@ -712,7 +887,9 @@ async fn count_down(
         platform_window::round_corners(hwnd);
         exclude_from_capture(hwnd, "countdown");
     }
+    waiting_on(state, slot.take().map(Waiting::Countdown));
     let event = events.next().await.unwrap_or(CountdownEvent::Cancel);
+    waiting_on(state, None);
     popup.close(cx);
     if let Some(window) = give_back {
         platform_window::bring_to_front(window);
@@ -721,9 +898,14 @@ async fn count_down(
 }
 
 /// Show the dashed border around `region` (physical pixels relative to the
-/// monitor; `None` for all of it) in `color`, before recording starts, so
-/// it is excluded from the first frame.
-fn show_frame(info: &MonitorInfo, region: Option<PhysicalRect>, color: [u8; 3]) -> Option<Frame> {
+/// monitor; `None` for all of it), or around `window`, in `color`, before
+/// recording starts, so it is excluded from the first frame.
+fn show_frame(
+    info: &MonitorInfo,
+    region: Option<PhysicalRect>,
+    window: Option<isize>,
+    color: [u8; 3],
+) -> Option<Frame> {
     let (b, scale) = (info.bounds, info.scale_factor);
     let area = shuttercrab_capture::record::recordable(region, b.width, b.height);
     let px = |logical: f32| ((logical * scale).round() as u32).max(1);
@@ -734,6 +916,15 @@ fn show_frame(info: &MonitorInfo, region: Option<PhysicalRect>, color: [u8; 3]) 
     };
     let area = FrameRect::new(b.x + area.x, b.y + area.y, area.width, area.height);
     let bounds = FrameRect::new(b.x, b.y, b.width, b.height);
+    // A window's own picture is recorded, never the border: it goes
+    // outside the window wherever the window is.
+    let (area, bounds) = match window {
+        Some(window) => (
+            shuttercrab_platform::visible_bounds(window).unwrap_or(area),
+            NO_EDGE,
+        ),
+        None => (area, bounds),
+    };
     match Frame::show(area, bounds, style, color) {
         Ok((frame, 0)) => Some(frame),
         Ok((frame, missing)) => {
@@ -796,12 +987,14 @@ pub(super) fn toggle_pause(state: &State, cx: &mut AsyncApp) {
         return;
     }
     let view = {
-        let recording = state.recording.borrow();
-        let Some(recording) = recording.as_ref() else {
+        let mut recording = state.recording.borrow_mut();
+        let Some(recording) = recording.as_mut() else {
             return;
         };
         let paused = !recording.clock.get().is_paused();
         recording.set_paused(paused);
+        // Resumed by hand while minimised: restoring has nothing to do.
+        recording.paused_by_minimise = false;
         let clock = recording.clock.get();
         if paused {
             log::info!(
@@ -813,10 +1006,138 @@ pub(super) fn toggle_pause(state: &State, cx: &mut AsyncApp) {
         }
         recording.view()
     };
-    show(view, cx, |_, cx| cx.notify());
+    show(view, cx, |bar, cx| bar.pause_reason(None, cx));
     state.refresh_tray_menu();
 }
 
+/// The recorded window changed: its border and the bar follow it, the
+/// pointer is left out while it is dragged, and minimising it pauses the
+/// recording until it is restored.
+pub(super) fn window_changed(state: &Rc<State>, change: WindowChange, cx: &mut AsyncApp) {
+    match change {
+        WindowChange::Moved(bounds) => {
+            if let Some(followed) = state.followed.borrow().as_ref() {
+                followed.follow(bounds);
+            }
+        }
+        // Windows draws the pointer out of step with a window being
+        // dragged, so it hops about in the recording.
+        WindowChange::DragStarted | WindowChange::DragEnded => {
+            if let Some(recorder) = state
+                .recording
+                .borrow()
+                .as_ref()
+                .and_then(|r| r.recorder.as_ref())
+            {
+                recorder.show_cursor(change == WindowChange::DragEnded);
+            }
+        }
+        WindowChange::Minimized => out_of_sight(state, Some("the window is minimised"), cx),
+        WindowChange::Hidden => out_of_sight(state, Some("the window is hidden"), cx),
+        WindowChange::Restored => out_of_sight(state, None, cx),
+        WindowChange::Closed => window_closed(state, cx),
+    }
+}
+
+/// The recorded window was closed: the recording ends, as when Windows
+/// closes the capture itself. Before it starts, the ready bar or the
+/// countdown is cancelled, as Escape would.
+fn window_closed(state: &State, cx: &mut AsyncApp) {
+    if let Some(recording) = state.recording.borrow().as_ref() {
+        log::info!("the recorded window was closed");
+        if let Some(recorder) = &recording.recorder {
+            recorder.window_closed();
+        }
+        return;
+    }
+    let waiting = state
+        .followed
+        .borrow()
+        .as_ref()
+        .and_then(|f| f.waiting.take());
+    match waiting {
+        Some(Waiting::Ready(bar)) => {
+            log::info!("the window to record was closed; the ready bar closes");
+            bar.update(cx, |bar, cx| bar.close(cx));
+        }
+        Some(Waiting::Countdown(countdown)) => {
+            log::info!("the window to record was closed; the countdown stops");
+            countdown.update(cx, |countdown, cx| countdown.cancel(cx));
+        }
+        None => {}
+    }
+}
+
+/// How long a restored window takes to draw itself again. Windows hands
+/// over junk frames (a solid colour) while it animates back from the
+/// taskbar, so the recording resumes only after this.
+const RESTORE_SETTLE: Duration = Duration::from_millis(300);
+
+/// Pause while the recorded window is out of sight (`why` says how):
+/// Windows draws nothing of it meanwhile. Showing it again (`None`)
+/// resumes once it has drawn itself again, unless the recording was paused
+/// by hand before.
+fn out_of_sight(state: &Rc<State>, why: Option<&'static str>, cx: &mut AsyncApp) {
+    let Some(why) = why else {
+        let minimises = match state.recording.borrow().as_ref() {
+            Some(r) if r.paused_by_minimise => r.minimises,
+            _ => return,
+        };
+        let state = state.clone();
+        cx.spawn(async move |cx| {
+            cx.background_executor().timer(RESTORE_SETTLE).await;
+            resume_restored(&state, minimises, cx);
+        })
+        .detach();
+        return;
+    };
+    let view = {
+        let mut slot = state.recording.borrow_mut();
+        let Some(recording) = slot.as_mut() else {
+            return;
+        };
+        // A resume still waiting for an earlier restore does not happen.
+        recording.minimises += 1;
+        // A question or a discard has paused it already.
+        if recording.asking.is_some() || recording.discarded.is_some() {
+            return;
+        }
+        // Minimised, then hidden, say: still paused, for the new reason.
+        if !recording.paused_by_minimise {
+            if !recording.set_paused(true) {
+                return;
+            }
+            recording.paused_by_minimise = true;
+        }
+        log::info!("{why}; recording paused");
+        recording.view()
+    };
+    show(view, cx, |bar, cx| bar.pause_reason(Some(why.into()), cx));
+    state.refresh_tray_menu();
+}
+
+/// Resume after the window was restored, if it was not minimised again
+/// since (the `minimises` count says) and the minimise still has it paused.
+fn resume_restored(state: &State, minimises: u64, cx: &mut AsyncApp) {
+    let view = {
+        let mut slot = state.recording.borrow_mut();
+        let Some(recording) = slot.as_mut() else {
+            return;
+        };
+        if recording.minimises != minimises
+            || recording.asking.is_some()
+            || recording.discarded.is_some()
+            || !std::mem::take(&mut recording.paused_by_minimise)
+        {
+            return;
+        }
+        recording.set_paused(false);
+        log::info!("the window is back; recording resumed");
+        recording.view()
+    };
+    show(view, cx, |bar, cx| bar.pause_reason(None, cx));
+    state.refresh_tray_menu();
+}
 /// Discard or Restart was asked for: ask first, or act at once and offer
 /// undo, as the settings say. Asking for the same action again while the
 /// controls ask confirms it.
@@ -1075,6 +1396,7 @@ fn end_recording(state: &State, cx: &mut AsyncApp) -> Option<(RecorderProcess, P
     stop_asking(state, cx);
     let mut recording = state.recording.borrow_mut().take()?;
     recording.close_controls(cx);
+    stop_following(state);
     if let Some(window) = recording.discarded.and_then(|d| d.give_back) {
         platform_window::bring_to_front(window);
     }
@@ -1175,6 +1497,7 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
             if let Some(mut recording) = recording {
                 recording.close_controls(cx);
             }
+            stop_following(state);
             state.recording_changed(cx);
             let failure = Failure::new(
                 "Could not restart recording.",

@@ -14,6 +14,12 @@ use windows::Win32::{
     },
 };
 
+/// The monitor (its `HMONITOR`) most of `hwnd` is on.
+pub fn monitor_of(hwnd: isize) -> u64 {
+    use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
+    unsafe { MonitorFromWindow(HWND(hwnd as _), MONITOR_DEFAULTTONEAREST) }.0 as u64
+}
+
 /// Make the window a borderless popup covering exactly this physical
 /// rectangle (virtual-desktop pixels), above other windows.
 ///

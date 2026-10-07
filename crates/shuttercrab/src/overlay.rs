@@ -176,11 +176,11 @@ impl SelectionOverlay {
         }
     }
 
-    /// Choose an area to record rather than to capture: recordings are of
-    /// an area (PRD §7.7), so Space does not switch to Window mode.
+    /// Choose what to record rather than to capture: an area, or a window
+    /// in Window mode (PRD §7.7). Space does not switch between them: each
+    /// is recorded differently, so the choice made before stands.
     pub fn for_recording(mut self) -> Self {
         self.recording = true;
-        self.mode.set(Mode::Area);
         self
     }
 
@@ -558,6 +558,9 @@ impl SelectionOverlay {
     fn hint(&self, window: &Window) -> impl IntoElement {
         let text: SharedString = match self.mode.get() {
             Mode::Area if self.recording => "Drag to record an area  ·  Esc: cancel",
+            Mode::Window if self.recording => {
+                "Click a window to record it, or the desktop for the whole display  ·  Esc: cancel"
+            }
             Mode::Area => "Drag to capture an area  ·  Space: window  ·  Esc: cancel",
             Mode::Window => "Click a window to capture it, or the desktop for the whole display  ·  Space: area  ·  Esc: cancel",
             Mode::Freeform => "Draw around what to capture  ·  Esc: cancel",

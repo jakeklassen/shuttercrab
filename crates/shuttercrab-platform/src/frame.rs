@@ -45,6 +45,16 @@ impl Rect {
     }
 }
 
+/// Bounds with no edge anywhere near: every side of a border around a
+/// recorded window goes outside it. The window's own picture is recorded,
+/// so the border never is, even over another monitor's edge.
+pub const NO_EDGE: Rect = Rect {
+    x: -(1 << 24),
+    y: -(1 << 24),
+    width: 1 << 25,
+    height: 1 << 25,
+};
+
 /// How the border looks, physical pixels.
 #[derive(Clone, Copy, Debug)]
 pub struct FrameStyle {
@@ -119,6 +129,7 @@ pub fn dashes(strip: Rect, style: FrameStyle, color: [u8; 3]) -> Vec<u8> {
 pub struct Frame {
     strips: Vec<(Rect, LayeredWindow)>,
     style: FrameStyle,
+    color: [u8; 3],
 }
 
 impl Frame {
@@ -154,6 +165,7 @@ impl Frame {
             Self {
                 strips: shown,
                 style,
+                color,
             },
             missing,
         ))
@@ -165,7 +177,8 @@ impl Frame {
     }
 
     /// Redraw the border in `color` (RGB).
-    pub fn recolor(&self, color: [u8; 3]) -> Result<()> {
+    pub fn recolor(&mut self, color: [u8; 3]) -> Result<()> {
+        self.color = color;
         for (strip, window) in &self.strips {
             window.paint(
                 None,
@@ -173,6 +186,28 @@ impl Frame {
                 strip.height,
                 &dashes(*strip, self.style, color),
             )?;
+        }
+        Ok(())
+    }
+
+    /// Move the border to `area` on a monitor with `bounds`. Fails if the
+    /// sides would change where they go (inside or outside), so the caller
+    /// shows a new border instead.
+    pub fn place(&mut self, area: Rect, bounds: Rect) -> Result<()> {
+        let color = self.color;
+        let placed = strips(area, bounds, self.style.thickness);
+        anyhow::ensure!(
+            placed.len() == self.strips.len() && placed.iter().all(|(_, covers)| !covers),
+            "the border's sides would change"
+        );
+        for ((strip, window), (new, _)) in self.strips.iter_mut().zip(placed) {
+            window.paint(
+                Some((new.x, new.y)),
+                new.width,
+                new.height,
+                &dashes(new, self.style, color),
+            )?;
+            *strip = new;
         }
         Ok(())
     }

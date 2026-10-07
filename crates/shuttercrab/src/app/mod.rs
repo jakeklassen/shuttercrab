@@ -66,8 +66,8 @@ use gpui_kit::{
     QuitMode,
 };
 use recording::{
-    PreviousTake, Recording, displays_changed, finish_recording, keep_previous_take, record,
-    report_recording, request, stop_recording, toggle_pause, undo,
+    Followed, PreviousTake, Recording, displays_changed, finish_recording, keep_previous_take,
+    record, report_recording, request, stop_recording, toggle_pause, undo, window_changed,
 };
 use screenshot::{capture, capture_bar};
 use shuttercrab_capture::{Capture, monitor_under_pointer};
@@ -124,6 +124,9 @@ struct State {
     thumbnail_generation: Cell<u64>,
     /// The recording in progress, if any.
     recording: RefCell<Option<Recording>>,
+    /// The recorded window, followed from when it is chosen until its
+    /// recording ends.
+    followed: RefCell<Option<Followed>>,
     /// The take a restart replaced, kept until its undo window closes.
     previous_take: RefCell<Option<PreviousTake>>,
     /// Counts undo windows, so a timer knows whether its window is still
@@ -299,6 +302,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         thumbnail: RefCell::new(None),
         thumbnail_generation: Cell::new(0),
         recording: RefCell::new(None),
+        followed: RefCell::new(None),
         previous_take: RefCell::new(None),
         undo_generation: Cell::new(0),
         print_screen: RefCell::new(None),
@@ -376,6 +380,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                 }
                 PlatformEvent::NotificationClicked => notification_clicked(&state, cx),
                 PlatformEvent::DisplaysChanged => displays_changed(&state),
+                PlatformEvent::Window(change) => window_changed(&state, change, cx),
                 PlatformEvent::Hotkey(id) => print_screen_pressed(&state, id, cx),
                 PlatformEvent::TrayCommand(_) => {}
             }

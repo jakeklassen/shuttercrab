@@ -65,6 +65,11 @@ impl Countdown {
         self.left
     }
 
+    /// Cancel, as Escape does: the window to record was closed.
+    pub fn cancel(&mut self, cx: &mut Context<Self>) {
+        self.finish(CountdownEvent::Cancel, cx);
+    }
+
     /// Report once; later keys and ticks are ignored.
     fn finish(&mut self, event: CountdownEvent, cx: &mut Context<Self>) {
         if !std::mem::replace(&mut self.done, true) {

@@ -141,41 +141,41 @@ fn clicking_elsewhere_dismisses(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
-fn r_and_s_switch_modes_and_record_skips_window(cx: &mut TestAppContext) {
+fn r_and_s_switch_modes_and_record_skips_freeform(cx: &mut TestAppContext) {
     let opened = open(cx, CaptureTarget::Window);
     let mode = |cx: &mut TestAppContext| cx.update(|cx| opened.handle.read(cx).unwrap().mode());
     update(cx, &opened, |window, _| {
         assert!(window.try_find("mode-record").is_some());
     });
-    // Recordings are of an area or a display: Window and Freeform are
+    // Recordings are of an area, a window or a display: Freeform is
     // passed over.
     update(cx, &opened, |window, cx| window.press("r", cx));
     assert_eq!(mode(cx), CaptureMode::Record);
-    assert_eq!(selected(cx, &opened), CaptureTarget::Area);
+    assert_eq!(selected(cx, &opened), CaptureTarget::Window);
     update(cx, &opened, |window, cx| window.press("right", cx));
     assert_eq!(selected(cx, &opened), CaptureTarget::Display);
     update(cx, &opened, |window, cx| window.press("right", cx));
     assert_eq!(selected(cx, &opened), CaptureTarget::Area);
     update(cx, &opened, |window, cx| {
-        window.press("w", cx);
-        window.click("target-window", cx);
+        window.press("f", cx);
+        window.click("target-freeform", cx);
     });
     assert!(opened.events.borrow().is_empty());
     update(cx, &opened, |window, cx| window.press("s", cx));
     assert_eq!(mode(cx), CaptureMode::Screenshot);
-    update(cx, &opened, |window, cx| window.press("w", cx));
+    update(cx, &opened, |window, cx| window.press("f", cx));
     assert_eq!(
         *opened.events.borrow(),
         [CaptureBarEvent::Chosen(
             CaptureMode::Screenshot,
-            CaptureTarget::Window
+            CaptureTarget::Freeform
         )]
     );
 }
 
 #[gpui_kit::test]
 fn opens_in_the_last_mode_and_records_the_choice(cx: &mut TestAppContext) {
-    let opened = open_in(cx, CaptureMode::Record, CaptureTarget::Window);
+    let opened = open_in(cx, CaptureMode::Record, CaptureTarget::Freeform);
     assert_eq!(selected(cx, &opened), CaptureTarget::Area);
     update(cx, &opened, |window, cx| window.press("enter", cx));
     assert_eq!(
@@ -187,6 +187,18 @@ fn opens_in_the_last_mode_and_records_the_choice(cx: &mut TestAppContext) {
     );
 }
 
+#[gpui_kit::test]
+fn a_window_can_be_recorded(cx: &mut TestAppContext) {
+    let opened = open_in(cx, CaptureMode::Record, CaptureTarget::Area);
+    update(cx, &opened, |window, cx| window.press("w", cx));
+    assert_eq!(
+        *opened.events.borrow(),
+        [CaptureBarEvent::Chosen(
+            CaptureMode::Record,
+            CaptureTarget::Window
+        )]
+    );
+}
 #[gpui_kit::test]
 fn clicking_record_then_display_records_the_display(cx: &mut TestAppContext) {
     let opened = open(cx, CaptureTarget::Area);

@@ -21,10 +21,11 @@ use shuttercrab_capture::{
     MonitorId, PhysicalRect,
     record::{Interruption, RecordOptions, Recorder, RecordingSummary, Source},
 };
+use shuttercrab_platform::process::{Process, Spawned, spawn_quiet};
 use std::{
+    fs::File,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
-    process::{Child, ChildStderr, ChildStdin, ChildStdout, Command, Stdio},
     sync::{Mutex, MutexGuard, PoisonError, mpsc},
     thread,
     time::Duration,
@@ -47,6 +48,8 @@ enum Request {
     },
     DisplayGone,
     DisplayChanged,
+    WindowClosed,
+    ShowCursor(bool),
     Stop,
 }
 
@@ -55,6 +58,7 @@ enum Request {
 struct Options {
     monitor: u64,
     region: Option<(i32, i32, u32, u32)>,
+    window: Option<isize>,
     fps: u32,
     include_cursor: bool,
     system_sound: bool,
@@ -93,6 +97,7 @@ struct Summary {
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
 enum Why {
     DisplayGone,
+    WindowClosed,
     DeviceLost,
     DiskFull,
     Failed(String),
@@ -103,6 +108,7 @@ impl From<RecordOptions> for Options {
         Self {
             monitor: o.monitor.0,
             region: o.region.map(|r| (r.x, r.y, r.width, r.height)),
+            window: o.window,
             fps: o.fps,
             include_cursor: o.include_cursor,
             system_sound: o.system_sound,
@@ -119,6 +125,7 @@ impl From<Options> for RecordOptions {
         Self {
             monitor: MonitorId(o.monitor),
             region: o.region.map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h)),
+            window: o.window,
             fps: o.fps,
             include_cursor: o.include_cursor,
             system_sound: o.system_sound,
@@ -145,6 +152,7 @@ impl From<RecordingSummary> for Summary {
             sound: s.sound,
             interrupted: s.interrupted.map(|i| match i {
                 Interruption::DisplayGone => Why::DisplayGone,
+                Interruption::WindowClosed => Why::WindowClosed,
                 Interruption::DeviceLost => Why::DeviceLost,
                 Interruption::DiskFull => Why::DiskFull,
                 Interruption::Failed(m) => Why::Failed(m),
@@ -168,6 +176,7 @@ impl From<Summary> for RecordingSummary {
             sound: s.sound,
             interrupted: s.interrupted.map(|w| match w {
                 Why::DisplayGone => Interruption::DisplayGone,
+                Why::WindowClosed => Interruption::WindowClosed,
                 Why::DeviceLost => Interruption::DeviceLost,
                 Why::DiskFull => Interruption::DiskFull,
                 Why::Failed(m) => Interruption::Failed(m),
@@ -186,14 +195,11 @@ fn send(to: &mut impl Write, message: &impl Serialize) -> Result<()> {
     Ok(())
 }
 
-/// Windows' CREATE_NO_WINDOW: the helper gets no console window of its own.
-const CREATE_NO_WINDOW: u32 = 0x0800_0000;
-
 /// A recording in progress in the helper process.
 pub struct RecorderProcess {
-    child: Child,
+    child: Process,
     /// The helper's input; closing it stops the recording.
-    input: Mutex<Option<ChildStdin>>,
+    input: Mutex<Option<File>>,
     /// How the recording ended, once it has.
     outcome: mpsc::Receiver<Result<RecordingSummary>>,
     /// Resolves when the helper has said how the recording ended, or died.
@@ -204,28 +210,15 @@ impl RecorderProcess {
     /// Start the helper and recording in it. Returns once the capture and
     /// the encoder are running.
     pub fn start(options: RecordOptions) -> Result<Self> {
-        use std::os::windows::process::CommandExt as _;
         let exe = std::env::current_exe().context("could not find shuttercrab.exe")?;
-        let mut child = Command::new(exe)
-            .arg(FLAG)
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .creation_flags(CREATE_NO_WINDOW)
-            .spawn()
-            .context("could not start the recording process")?;
-        let mut input = child
-            .stdin
-            .take()
-            .context("no input to the recording process")?;
-        let output = child
-            .stdout
-            .take()
-            .context("no output from the recording process")?;
-        let errors = child
-            .stderr
-            .take()
-            .context("no log from the recording process")?;
+        // Without a console window, and without the busy pointer Windows
+        // would otherwise show over the recording's first seconds.
+        let Spawned {
+            process: child,
+            stdin: mut input,
+            stdout: output,
+            stderr: errors,
+        } = spawn_quiet(&exe, &[FLAG]).context("could not start the recording process")?;
         thread::Builder::new()
             .name("shuttercrab-recorder-log".into())
             .spawn(move || forward_logs(errors))?;
@@ -262,7 +255,7 @@ impl RecorderProcess {
     /// The helper's input. A panic while it was locked left at worst a
     /// partial line, which the helper logs and skips, so a poisoned lock is
     /// used anyway: giving up on the pipe would leave the helper recording.
-    fn input(&self) -> MutexGuard<'_, Option<ChildStdin>> {
+    fn input(&self) -> MutexGuard<'_, Option<File>> {
         self.input.lock().unwrap_or_else(PoisonError::into_inner)
     }
 
@@ -287,6 +280,16 @@ impl RecorderProcess {
     pub fn set_sound(&self, source: Source, on: bool) {
         let microphone = source == Source::Microphone;
         self.request(Request::SetSound { microphone, on });
+    }
+
+    /// The recorded window was closed; see [`Recorder::window_closed`].
+    pub fn window_closed(&self) {
+        self.request(Request::WindowClosed);
+    }
+
+    /// Leave the pointer out or put it back; see [`Recorder::show_cursor`].
+    pub fn show_cursor(&self, show: bool) {
+        self.request(Request::ShowCursor(show));
     }
 
     /// The recorded display is gone; see [`Recorder::display_gone`].
@@ -346,7 +349,7 @@ impl Drop for RecorderProcess {
 /// come either way. A send fails only when nobody is waiting any more (the
 /// app gave up on the recording), so those errors are ignored.
 fn read_replies(
-    output: ChildStdout,
+    output: File,
     started: mpsc::Sender<Result<()>>,
     outcome: mpsc::Sender<Result<RecordingSummary>>,
 ) {
@@ -378,7 +381,7 @@ fn read_replies(
 
 /// The helper's log, from its standard error, into the app's log until the
 /// helper exits. A read error ends it too: the log is only for diagnosis.
-fn forward_logs(errors: ChildStderr) {
+fn forward_logs(errors: File) {
     for line in BufReader::new(errors).lines().map_while(Result::ok) {
         forward_log(&line);
     }
@@ -483,6 +486,8 @@ pub fn serve() -> i32 {
             }
             Next::Asked(Request::DisplayGone) => recorder.display_gone(),
             Next::Asked(Request::DisplayChanged) => recorder.display_changed(),
+            Next::Asked(Request::ShowCursor(show)) => recorder.show_cursor(show),
+            Next::Asked(Request::WindowClosed) => recorder.window_closed(),
             Next::Asked(Request::Start(_)) => log::warn!("the recorder is already recording"),
             Next::Asked(Request::Stop) | Next::Ended => break,
         }
@@ -507,6 +512,7 @@ mod tests {
         let options = RecordOptions {
             monitor: MonitorId(0x1_0001),
             region: Some(PhysicalRect::new(-12, 34, 1280, 720)),
+            window: Some(0x0004_0A2C),
             fps: 60,
             include_cursor: true,
             system_sound: true,

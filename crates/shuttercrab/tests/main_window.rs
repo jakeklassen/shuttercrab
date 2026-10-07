@@ -135,13 +135,13 @@ fn letters_pick_the_mode_and_target_and_n_starts(cx: &mut TestAppContext) {
     press(cx, &opened, &["f"]);
     assert_eq!(choice(&opened).1, CaptureTarget::Freeform);
     press(cx, &opened, &["n"]);
+    // Record offers Window (not Freeform).
     press(cx, &opened, &["r", "w", "enter"]);
-    // Record offers no Window or Freeform: it records an area.
     assert_eq!(
         *opened.seen.captures.borrow(),
         [
             (CaptureMode::Screenshot, CaptureTarget::Freeform),
-            (CaptureMode::Record, CaptureTarget::Area)
+            (CaptureMode::Record, CaptureTarget::Window)
         ]
     );
     press(cx, &opened, &["d", "s"]);

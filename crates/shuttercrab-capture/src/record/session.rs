@@ -2,10 +2,11 @@
 //! hands frames to the encoder.
 
 use super::{
-    ANALYSE_EVERY, Event, HARDWARE_MIN_SIDE, HEARTBEAT, Interruption, RecordOptions,
+    ANALYSE_EVERY, Event, HARDWARE_MIN_SIDE, HEARTBEAT, Interruption, MIN_SIDE, RecordOptions,
     RecordingSummary, TICKS_PER_SECOND,
     encoder::{Mp4Writer, Nv12},
     exposure::Exposure,
+    fit::Fitter,
     qpc_ticks, recordable,
     sound::{self, Capture, Mixer, Packet, Source},
     timing::Timer,
@@ -32,16 +33,18 @@ use windows::{
         SizeInt32,
     },
     Win32::{
-        Foundation::HMODULE,
+        Foundation::{HMODULE, HWND},
         Graphics::{
             Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1},
             Direct3D11::*,
             Dxgi::{Common::*, IDXGIAdapter},
+            Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
         },
         System::WinRT::{
             Direct3D11::IDirect3DDxgiInterfaceAccess,
             Graphics::Capture::IGraphicsCaptureItemInterop,
         },
+        UI::WindowsAndMessaging::IsIconic,
     },
     core::{Interface, factory},
 };
@@ -69,11 +72,79 @@ pub(super) struct Session {
     /// Each source's capture while it is on (the speakers, then the
     /// microphone), and their mix.
     captures: [Option<Capture>; 2],
+    /// What following a recorded window needs; `None` for a display.
+    window: Option<WindowTarget>,
     mixer: Mixer,
     /// How each source's sound arrived, for the log.
     arrivals: [Arrivals; 2],
     /// Where captures send their sound, to start one later.
     sounds: Sender<Event>,
+}
+
+/// A recorded window, followed wherever it goes.
+struct WindowTarget {
+    hwnd: HWND,
+    /// Fits its picture into the frame once its size differs.
+    fitter: Fitter,
+    /// The size the frame pool was made for: the window's last size.
+    pool_size: SizeInt32,
+    /// The monitor it is on, whose white level the conversion uses.
+    monitor: HMONITOR,
+}
+
+/// What a recording captures: a display, or one window.
+struct Target<'a> {
+    item: GraphicsCaptureItem,
+    /// The monitor it starts on, for its GPU and white level.
+    monitor: &'a display::Monitor,
+    /// The size of the frames Windows sends.
+    size: SizeInt32,
+    /// What of each frame is recorded, which is also the video's size: for
+    /// a window, all of the size it starts at.
+    region: PhysicalRect,
+    window: Option<HWND>,
+}
+
+impl<'a> Target<'a> {
+    fn new(options: &RecordOptions, monitors: &'a [display::Monitor]) -> Result<Self> {
+        let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+        let find = |handle: HMONITOR| {
+            monitors
+                .iter()
+                .find(|m| m.hmonitor == handle)
+                .context("the monitor is no longer attached")
+        };
+        if let Some(handle) = options.window {
+            let hwnd = HWND(handle as _);
+            let monitor = find(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) })?;
+            let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd) }
+                .context("this window cannot be recorded")?;
+            let size = item.Size()?;
+            let side = |s: i32| (s.max(0) as u32).max(MIN_SIDE) & !1;
+            return Ok(Self {
+                item,
+                monitor,
+                size,
+                region: PhysicalRect::new(0, 0, side(size.Width), side(size.Height)),
+                window: Some(hwnd),
+            });
+        }
+        let monitor = find(hmonitor(options.monitor))?;
+        let item: GraphicsCaptureItem =
+            unsafe { interop.CreateForMonitor(hmonitor(options.monitor)) }
+                .context("CreateForMonitor failed")?;
+        let (width, height) = (monitor.bounds.width, monitor.bounds.height);
+        Ok(Self {
+            item,
+            monitor,
+            size: SizeInt32 {
+                Width: width as i32,
+                Height: height as i32,
+            },
+            region: recordable(options.region, width, height),
+            window: None,
+        })
+    }
 }
 
 /// How one source's sound arrived, in ticks: to tell from the log whether
@@ -94,14 +165,15 @@ impl Session {
             "a frame rate of {} is not supported",
             options.fps
         );
+        ensure!(
+            GraphicsCaptureSession::IsSupported()?,
+            "Windows.Graphics.Capture is not available"
+        );
         let monitors = display::enumerate()?;
-        let monitor = monitors
-            .iter()
-            .find(|m| m.hmonitor == hmonitor(options.monitor))
-            .context("the monitor is no longer attached")?;
+        let target = Target::new(options, &monitors)?;
+        let monitor = target.monitor;
         let white_scale = monitor.white_scale()?;
-        let (width, height) = (monitor.bounds.width, monitor.bounds.height);
-        let region = recordable(options.region, width, height);
+        let region = target.region;
         ensure!(!region.is_empty(), "the region is empty");
 
         let gpu = video_gpu(&monitor.adapter)?;
@@ -118,19 +190,18 @@ impl Session {
             options.has_sound(),
         )?;
 
-        // The capture: FP16, two buffers, the pointer only if asked.
-        ensure!(
-            GraphicsCaptureSession::IsSupported()?,
-            "Windows.Graphics.Capture is not available"
-        );
-        let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-        let item: GraphicsCaptureItem =
-            unsafe { interop.CreateForMonitor(hmonitor(options.monitor)) }
-                .context("CreateForMonitor failed")?;
-        let size = SizeInt32 {
-            Width: monitor.bounds.width as i32,
-            Height: monitor.bounds.height as i32,
+        let window = match target.window {
+            Some(hwnd) => Some(WindowTarget {
+                hwnd,
+                fitter: Fitter::new(&gpu, &crop)?,
+                pool_size: target.size,
+                monitor: monitor.hmonitor,
+            }),
+            None => None,
         };
+        let (item, size) = (target.item, target.size);
+
+        // The capture: FP16, two buffers, the pointer only if asked.
         let pool = Direct3D11CaptureFramePool::CreateFreeThreaded(
             &gpu.winrt_device()?,
             DirectXPixelFormat::R16G16B16A16Float,
@@ -143,10 +214,15 @@ impl Session {
             let _ = frames.send(Event::Frame);
             Ok(())
         }))?;
-        // Windows closes the item when its display goes away; frames just
-        // stop otherwise.
+        // Windows closes the item when its display goes away (frames just
+        // stop otherwise), or its window closes.
+        let is_window = window.is_some();
         let closed_token = item.Closed(&TypedEventHandler::new(move |_, _| {
-            let _ = closed.send(Event::DisplayGone);
+            let _ = closed.send(if is_window {
+                Event::WindowClosed
+            } else {
+                Event::DisplayGone
+            });
             Ok(())
         }))?;
         let capture = pool.CreateCaptureSession(&item)?;
@@ -178,6 +254,7 @@ impl Session {
                 last: 0,
             },
             captures,
+            window,
             mixer: Mixer::default(),
             arrivals: [Arrivals::default(); 2],
             sounds,
@@ -239,9 +316,19 @@ impl Session {
                     log::warn!("recording interrupted: the display went away");
                     return Some(Interruption::DisplayGone);
                 }
+                Event::WindowClosed => {
+                    log::info!("recording ended: the window was closed");
+                    return Some(Interruption::WindowClosed);
+                }
                 Event::DisplayChanged => self.reread_white_scale(),
                 Event::Sound(packet) => self.place_sound(&packet, timeline),
                 Event::SetSound(source, on) => self.set_sound(source, on),
+                Event::ShowCursor(show) => {
+                    let show = show && self.options.include_cursor;
+                    if let Err(e) = self.capture.SetIsCursorCaptureEnabled(show) {
+                        log::warn!("could not show or hide the pointer: {e}");
+                    }
+                }
                 Event::Frame => {
                     if let Err(e) = self.take_ready_frames(timeline, counts, timer) {
                         return interrupted(e);
@@ -327,6 +414,16 @@ impl Session {
         timer: &mut Option<Timer>,
     ) -> Result<()> {
         while let Some(frame) = next_frame(&self.pool)? {
+            // A minimised window's frames are junk (one flashed a solid
+            // colour as it minimised). The app pauses the recording, but
+            // only once Windows has told it.
+            if let Some(window) = &self.window
+                && unsafe { IsIconic(window.hwnd) }.as_bool()
+            {
+                frame.Close()?;
+                continue;
+            }
+            self.follow_window(&frame)?;
             let captured = frame.SystemRelativeTime()?.Duration;
             if timeline.is_paused() {
                 frame.Close()?;
@@ -367,7 +464,7 @@ impl Session {
                 t.stamp(&context, i, stage);
             }
         };
-        self.copy_region(frame)?;
+        self.copy_frame(frame)?;
         frame.Close()?;
         stamp(timer, 1);
         let started = Instant::now();
@@ -483,15 +580,56 @@ impl Session {
         }
     }
 
-    /// Copy the region out of the captured frame.
-    fn copy_region(
-        &self,
-        frame: &windows::Graphics::Capture::Direct3D11CaptureFrame,
-    ) -> Result<()> {
+    /// A recorded window that changed size gets a frame pool of its new
+    /// size, so its next frames hold all of it; one that moved to another
+    /// monitor takes that monitor's white level.
+    fn follow_window(&mut self, frame: &Direct3D11CaptureFrame) -> Result<()> {
+        let Some(window) = self.window.as_mut() else {
+            return Ok(());
+        };
+        let content = frame.ContentSize()?;
+        if content.Width > 0 && content.Height > 0 && content != window.pool_size {
+            self.pool.Recreate(
+                &self.gpu.winrt_device()?,
+                DirectXPixelFormat::R16G16B16A16Float,
+                2,
+                content,
+            )?;
+            window.pool_size = content;
+            log::debug!("the window is now {}×{}", content.Width, content.Height);
+        }
+        let monitor = unsafe { MonitorFromWindow(window.hwnd, MONITOR_DEFAULTTONEAREST) };
+        if monitor != window.monitor {
+            window.monitor = monitor;
+            log::info!("the window moved to another display");
+            self.reread_white_scale();
+        }
+        Ok(())
+    }
+
+    /// Copy what is recorded out of the captured frame: the region of a
+    /// display; a window as it is, or fitted into the frame once its size
+    /// differs from the size it started at.
+    fn copy_frame(&mut self, frame: &Direct3D11CaptureFrame) -> Result<()> {
         let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
         let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
         let r = self.region;
         let content = frame.ContentSize()?;
+        if let Some(window) = self.window.as_mut() {
+            let mut desc = D3D11_TEXTURE2D_DESC::default();
+            unsafe { source.GetDesc(&mut desc) };
+            // A frame from before the pool was remade is the old size.
+            let size = (
+                (content.Width.max(1) as u32).min(desc.Width),
+                (content.Height.max(1) as u32).min(desc.Height),
+            );
+            // The frame is the starting size rounded down to even: one
+            // pixel more is still the same size.
+            let same = |side: u32, frame: u32| side == frame || side == frame + 1;
+            if !(same(size.0, r.width) && same(size.1, r.height)) {
+                return window.fitter.fit(&self.gpu, &source, size);
+            }
+        }
         ensure!(
             (r.x as u32 + r.width) as i32 <= content.Width
                 && (r.y as u32 + r.height) as i32 <= content.Height,
@@ -516,9 +654,13 @@ impl Session {
     /// Read the display's white level again after a display change.
     fn reread_white_scale(&mut self) {
         let found = display::enumerate().and_then(|monitors| {
+            let handle = match &self.window {
+                Some(window) => window.monitor,
+                None => hmonitor(self.options.monitor),
+            };
             let monitor = monitors
                 .iter()
-                .find(|m| m.hmonitor == hmonitor(self.options.monitor))
+                .find(|m| m.hmonitor == handle)
                 .context("the monitor is no longer attached")?;
             monitor.white_scale()
         });
@@ -564,11 +706,12 @@ impl Drop for Session {
 /// A frame's working textures, `w`×`h`: the crop (FP16, as captured), the
 /// SDR conversion's output, and the RGBA the NV12 conversion reads.
 fn work_textures(gpu: &Gpu, w: u32, h: u32) -> Result<[ID3D11Texture2D; 3]> {
+    // Written by a copy, or by the window fit's shader.
     let crop = gpu.texture(
         w,
         h,
         DXGI_FORMAT_R16G16B16A16_FLOAT,
-        D3D11_BIND_SHADER_RESOURCE,
+        D3D11_BIND_SHADER_RESOURCE | D3D11_BIND_UNORDERED_ACCESS,
         None,
     )?;
     let sdr = gpu.texture(

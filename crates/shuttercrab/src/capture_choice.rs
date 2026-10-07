@@ -46,9 +46,9 @@ impl CaptureMode {
     }
 
     /// Whether `target` can be captured this way: recordings are of an
-    /// area or a display (PRD §7.7).
+    /// area, a window or a display (PRD §7.7).
     pub fn offers(self, target: CaptureTarget) -> bool {
-        self == Self::Screenshot || matches!(target, CaptureTarget::Area | CaptureTarget::Display)
+        self == Self::Screenshot || target != CaptureTarget::Freeform
     }
 }
 

@@ -163,6 +163,8 @@ pub struct RecordBar {
     previous_until: Option<Instant>,
     /// A short message in place of the time, until it expires.
     notice: Option<(SharedString, Instant)>,
+    /// Why the recording paused by itself, shown beside the time.
+    pause_reason: Option<SharedString>,
     /// Whether the bar has the keyboard, so the letters work.
     active: bool,
     keys: RecordKeys,
@@ -215,6 +217,7 @@ impl RecordBar {
             mode: BarMode::Controls,
             previous_until: None,
             notice: None,
+            pause_reason: None,
             active: window.is_window_active(),
             keys,
             sound: Sound::default(),
@@ -306,6 +309,13 @@ impl RecordBar {
         cx.notify();
     }
 
+    /// Say why the recording paused by itself (`the window is minimised`),
+    /// or nothing.
+    pub fn pause_reason(&mut self, why: Option<SharedString>, cx: &mut Context<Self>) {
+        self.pause_reason = why;
+        cx.notify();
+    }
+
     /// The elapsed time as shown.
     pub fn time(&self) -> String {
         clock(self.clock.get().elapsed(Instant::now()))
@@ -319,6 +329,14 @@ impl RecordBar {
         }
         cx.emit(event);
         cx.notify();
+    }
+
+    /// Close the ready bar, as Escape does: the window to record was
+    /// closed.
+    pub fn close(&mut self, cx: &mut Context<Self>) {
+        if self.mode == BarMode::Ready {
+            self.ask(RecordBarEvent::Close, cx);
+        }
     }
 
     /// Switch `source` the other way.
@@ -565,7 +583,10 @@ impl RecordBar {
         match self.mode {
             BarMode::Ready => ("Ready to record".into(), gpui_kit::white()),
             BarMode::Starting => ("Starting…".into(), muted()),
-            BarMode::Controls if is_paused => (self.time().into(), paused()),
+            BarMode::Controls if is_paused => match &self.pause_reason {
+                Some(why) => (format!("{} · Paused: {why}", self.time()).into(), paused()),
+                None => (self.time().into(), paused()),
+            },
             BarMode::Controls => (self.time().into(), gpui_kit::white()),
             BarMode::Confirm(Destructive::Discard, length) => (
                 format!("Discard this {} recording?", clock(length)).into(),

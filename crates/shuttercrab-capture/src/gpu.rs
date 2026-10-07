@@ -726,7 +726,7 @@ fn region_params(regions: &[HdrRegion]) -> RegionParams {
 }
 
 /// A constant buffer updated with `UpdateSubresource`.
-fn default_buffer(gpu: &Gpu, bytes: u32) -> Result<ID3D11Buffer> {
+pub(crate) fn default_buffer(gpu: &Gpu, bytes: u32) -> Result<ID3D11Buffer> {
     let mut buffer = None;
     unsafe {
         gpu.device.CreateBuffer(
@@ -892,7 +892,7 @@ fn read_tile_stats(gpu: &Gpu, buffer: &ID3D11Buffer, count: u32) -> Result<Vec<G
     Ok(stats.expect("a waiting read always returns the values"))
 }
 
-fn srv(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11ShaderResourceView> {
+pub(crate) fn srv(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11ShaderResourceView> {
     let mut view = None;
     unsafe {
         gpu.device
@@ -901,7 +901,7 @@ fn srv(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11ShaderResourceView>
     view.context("no shader resource view")
 }
 
-fn uav(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11UnorderedAccessView> {
+pub(crate) fn uav(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11UnorderedAccessView> {
     let mut view = None;
     unsafe {
         gpu.device
@@ -911,12 +911,23 @@ fn uav(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11UnorderedAccessView
 }
 
 fn compile(gpu: &Gpu, entry: PCSTR) -> Result<ID3D11ComputeShader> {
+    compile_source(gpu, SHADER_SOURCE, s!("hdr_to_sdr.hlsl"), entry)
+}
+
+/// Compile the compute shader `entry` of HLSL `source`, named `name` in
+/// errors.
+pub(crate) fn compile_source(
+    gpu: &Gpu,
+    source: &str,
+    name: PCSTR,
+    entry: PCSTR,
+) -> Result<ID3D11ComputeShader> {
     let (mut code, mut errors) = (None, None);
     let result = unsafe {
         D3DCompile(
-            SHADER_SOURCE.as_ptr().cast(),
-            SHADER_SOURCE.len(),
-            s!("hdr_to_sdr.hlsl"),
+            source.as_ptr().cast(),
+            source.len(),
+            name,
             None,
             None,
             entry,

@@ -15,14 +15,17 @@ mod instance;
 mod layered;
 pub mod memory;
 pub mod open;
+pub mod process;
 pub mod startup;
 pub mod targets;
+mod watch;
 pub mod window;
 
 pub use clipboard::dibv5;
 pub use console::{attach_to_parent_terminal, detach_from_terminal};
 pub use hotkey::{Hotkey, windows_takes_print_screen};
 pub use instance::{SingleInstance, single_instance};
+pub use watch::{WindowChange, visible_bounds};
 
 use anyhow::{Context, Result, anyhow};
 use futures::channel::{mpsc, oneshot};
@@ -74,6 +77,8 @@ pub enum PlatformEvent {
     NotificationClicked,
     /// A display was attached, detached or changed (`WM_DISPLAYCHANGE`).
     DisplaysChanged,
+    /// The window being watched ([`Platform::watch_window`]) changed.
+    Window(WindowChange),
 }
 
 /// A hotkey that could not be registered, usually because another
@@ -130,6 +135,7 @@ enum Command {
         title: String,
         message: String,
     },
+    Watch(Option<isize>),
 }
 
 /// Posted to the platform window to make its thread drain `commands`.
@@ -236,6 +242,13 @@ impl Platform {
     /// Replace the tray icon's context menu.
     pub fn set_tray_menu(&self, menu: Vec<MenuItem>) {
         self.send(Command::SetMenu(menu));
+    }
+
+    /// Report when `window` (an `HWND`) moves, changes size, or is minimised
+    /// or restored, as [`PlatformEvent::Window`], in place of the window
+    /// watched before; `None` stops watching.
+    pub fn watch_window(&self, window: Option<isize>) {
+        self.send(Command::Watch(window));
     }
 
     /// Show a notification from the tray icon (a toast on Windows 11).
@@ -509,6 +522,7 @@ fn run(
                         Command::Notify { title, message } => {
                             with_state(|s| notify(s, &title, &message));
                         }
+                        Command::Watch(window) => watch::watch(window),
                     }
                 }
             }

@@ -22,6 +22,7 @@
 
 mod encoder;
 mod exposure;
+mod fit;
 mod session;
 mod sound;
 mod timing;
@@ -52,6 +53,10 @@ pub struct RecordOptions {
     /// Physical pixels relative to the monitor; `None` records all of it.
     /// Rounded down to even sizes, as NV12 requires.
     pub region: Option<PhysicalRect>,
+    /// A window (its `HWND`) to record instead of the monitor: its own
+    /// picture, wherever it goes. The video keeps the size the window has
+    /// when recording starts; resized, it is fitted inside.
+    pub window: Option<isize>,
     /// 30 or 60 (PRD §13.1).
     pub fps: u32,
     pub include_cursor: bool,
@@ -106,6 +111,8 @@ pub struct RecordingSummary {
 pub enum Interruption {
     /// The recorded display was disconnected or turned off.
     DisplayGone,
+    /// The recorded window was closed.
+    WindowClosed,
     /// The graphics driver was reset or the device removed.
     DeviceLost,
     /// The file could not be written because the disk is full.
@@ -143,6 +150,7 @@ impl Interruption {
     pub fn describe(&self) -> String {
         match self {
             Self::DisplayGone => "the display was disconnected or turned off".into(),
+            Self::WindowClosed => "the window was closed".into(),
             Self::DeviceLost => "the graphics driver was reset".into(),
             Self::DiskFull => "the disk is full".into(),
             Self::Failed(_) => "something went wrong (the log has the details)".into(),
@@ -158,6 +166,8 @@ enum Event {
     /// The recorded display went away: Windows closed the capture, or the
     /// app heard that the display is no longer attached.
     DisplayGone,
+    /// Windows closed the recorded window's capture: the window is gone.
+    WindowClosed,
     /// The displays changed (HDR switched on or off, say): read the
     /// recorded display's white level again.
     DisplayChanged,
@@ -165,6 +175,8 @@ enum Event {
     Sound(sound::Packet),
     /// Switch a source on or off.
     SetSound(Source, bool),
+    /// Record the pointer again (`true`), or leave it out for now.
+    ShowCursor(bool),
 }
 
 /// A recording in progress, on its own thread.
@@ -219,6 +231,20 @@ impl Recorder {
     /// sound track ([`RecordOptions::has_sound`]).
     pub fn set_sound(&self, source: Source, on: bool) {
         let _ = self.events.send(Event::SetSound(source, on));
+    }
+
+    /// Leave the pointer out of the recording for now (`false`), or put it
+    /// back as the options say. Windows draws the pointer out of step with
+    /// a recorded window that is being dragged, so it hops about.
+    pub fn show_cursor(&self, show: bool) {
+        let _ = self.events.send(Event::ShowCursor(show));
+    }
+
+    /// The recorded window was closed: end the recording, keeping what was
+    /// recorded, as if Windows had closed the capture (it does not when an
+    /// app hides its window rather than destroying it).
+    pub fn window_closed(&self) {
+        let _ = self.events.send(Event::WindowClosed);
     }
 
     /// The recorded display is gone: end the recording, keeping what was

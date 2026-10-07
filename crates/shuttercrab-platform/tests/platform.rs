@@ -136,9 +136,9 @@ fn shuttercrabs_own_windows_are_targets_unless_excluded_from_capture() {
 fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
     use shuttercrab_platform::frame::{Frame, FrameStyle, Rect};
     use windows::Win32::{
-        Foundation::HWND,
+        Foundation::{HWND, RECT},
         UI::WindowsAndMessaging::{
-            GWL_EXSTYLE, GetWindowDisplayAffinity, GetWindowLongW, IsWindowVisible,
+            GWL_EXSTYLE, GetWindowDisplayAffinity, GetWindowLongW, GetWindowRect, IsWindowVisible,
             WDA_EXCLUDEFROMCAPTURE, WS_EX_NOACTIVATE, WS_EX_TRANSPARENT,
         },
     };
@@ -150,7 +150,7 @@ fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
         dash: 12,
         gap: 8,
     };
-    let (frame, missing) = Frame::show(area, bounds, style, [0xE5, 0x48, 0x4D]).unwrap();
+    let (mut frame, missing) = Frame::show(area, bounds, style, [0xE5, 0x48, 0x4D]).unwrap();
     assert_eq!(missing, 0);
     let windows = frame.windows();
     assert_eq!(windows.len(), 4);
@@ -167,5 +167,21 @@ fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
         }
     }
     frame.recolor([0xF5, 0xA5, 0x24]).unwrap();
+    // Moved and resized, as a recorded window is: each strip goes where a
+    // new border's would.
+    let moved = Rect::new(-29800, -29850, 500, 250);
+    frame.place(moved, bounds).unwrap();
+    let expected = shuttercrab_platform::frame::strips(moved, bounds, 3);
+    for (handle, (want, _)) in frame.windows().into_iter().zip(expected) {
+        let mut rect = RECT::default();
+        unsafe { GetWindowRect(HWND(handle as _), &mut rect).unwrap() };
+        let got = Rect::new(
+            rect.left,
+            rect.top,
+            (rect.right - rect.left) as u32,
+            (rect.bottom - rect.top) as u32,
+        );
+        assert_eq!(got, want);
+    }
     drop(frame);
 }
