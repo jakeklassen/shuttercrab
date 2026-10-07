@@ -279,9 +279,14 @@ impl MainWindow {
         true
     }
 
-    /// The pen, highlighter and eraser, then undo, redo and clear, for the
-    /// toolbar.
-    pub(super) fn drawing_tools(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+    /// The pen, highlighter and eraser, then undo, redo and clear: in the
+    /// toolbar, set apart from what comes before by `separated`, or in the
+    /// bar at the bottom of a narrow window.
+    pub(super) fn drawing_tools(
+        &self,
+        separated: bool,
+        cx: &mut Context<Self>,
+    ) -> impl IntoElement + use<> {
         let marks = self.shown.as_ref().map(|shown| &shown.marks);
         let (can_undo, can_redo) = marks.map_or((false, false), |m| (m.can_undo(), m.can_redo()));
         let separator = || div().w(px(1.)).h(px(28.)).mx_1().bg(border());
@@ -289,7 +294,7 @@ impl MainWindow {
             .flex()
             .items_center()
             .gap_1()
-            .child(separator())
+            .when(separated, |d| d.child(separator()))
             .child(self.tool_button(Hand::Select, cx))
             .child(self.tool_button(Hand::Draw(Tool::Pen), cx))
             .child(self.tool_button(Hand::Draw(Tool::Highlighter), cx))
@@ -405,59 +410,62 @@ impl MainWindow {
                 d.child(deferred(self.flyout_panel(flyout, brush, cx)).with_priority(1))
             })
             .when(menu, |d| {
-                d.child(deferred(Self::eraser_menu(cx)).with_priority(1))
+                d.child(deferred(Self::eraser_menu(self.tools_below, cx)).with_priority(1))
             })
             // [ or ] with the pointer off the screenshot, where the tip
             // would show it: the size, under the button, for a moment.
             .when_some(self.size_label().filter(|_| in_hand), |d, label| {
                 d.when(
                     flyout.is_none() && self.size_note && self.pointer.is_none(),
-                    |d| d.child(size_note(label)),
+                    |d| d.child(size_note(label, self.tools_below)),
                 )
             })
     }
 
-    /// The eraser's flyout, with its one action and its key.
-    fn eraser_menu(cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        div()
-            .id("eraser-menu")
-            .role(Role::Menu)
-            .test_support()
-            .absolute()
-            .top(px(46.))
-            .left(px(0.))
-            .p(px(5.))
-            .rounded_lg()
-            .bg(rgb(0x2C2C2C))
-            .border_1()
-            .border_color(border())
-            .shadow_lg()
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(
-                div()
-                    .id("erase-all")
-                    .role(Role::MenuItem)
-                    .aria_label(ERASE_ALL)
-                    .test_support()
-                    .flex()
-                    .items_center()
-                    .gap_2p5()
-                    .h(px(36.))
-                    .px_3()
-                    .rounded_md()
-                    .text_sm()
-                    .whitespace_nowrap()
-                    .hover(|s| s.bg(rgb(0x383838)))
-                    .cursor_pointer()
-                    .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                        this.eraser_menu = false;
-                        this.erase_all(window, cx);
-                    }))
-                    .child(Icon::new(IconName::Trash).size(px(16.)))
-                    .child(ERASE_ALL)
-                    .child(div().text_xs().text_color(muted()).child("Enter")),
-            )
+    /// The eraser's flyout, with its one action and its key: below the
+    /// button, or above it when `up` (the tools are at the bottom).
+    fn eraser_menu(up: bool, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        flyout_side(
+            div()
+                .id("eraser-menu")
+                .role(Role::Menu)
+                .test_support()
+                .absolute(),
+            up,
+        )
+        .left(px(0.))
+        .p(px(5.))
+        .rounded_lg()
+        .bg(rgb(0x2C2C2C))
+        .border_1()
+        .border_color(border())
+        .shadow_lg()
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(
+            div()
+                .id("erase-all")
+                .role(Role::MenuItem)
+                .aria_label(ERASE_ALL)
+                .test_support()
+                .flex()
+                .items_center()
+                .gap_2p5()
+                .h(px(36.))
+                .px_3()
+                .rounded_md()
+                .text_sm()
+                .whitespace_nowrap()
+                .hover(|s| s.bg(rgb(0x383838)))
+                .cursor_pointer()
+                .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                    this.eraser_menu = false;
+                    this.erase_all(window, cx);
+                }))
+                .child(Icon::new(IconName::Trash).size(px(16.)))
+                .child(ERASE_ALL)
+                .child(div().text_xs().text_color(muted()).child("Enter")),
+        )
     }
 
     /// The flyout: "Colours" in a grid of swatches, the chosen one ringed,
@@ -497,39 +505,38 @@ impl MainWindow {
                 }))
                 .child(div().size_full().rounded_full().bg(rgb(color.hex())))
         });
-        div()
-            .id("flyout")
-            .test_support()
-            .absolute()
-            .top(px(46.))
-            .left(px(0.))
-            .w(px(COLUMNS as f32 * 46. + 30.))
-            .p(px(15.))
-            .flex()
-            .flex_col()
-            .gap_3()
-            .rounded_lg()
-            .bg(rgb(0x2C2C2C))
-            .border_1()
-            .border_color(border())
-            .shadow_lg()
-            .occlude()
-            .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .child(div().text_sm().child("Colours"))
-            .child(div().flex().flex_wrap().gap(px(10.)).children(swatches))
-            .child(div().text_sm().child("Size"))
-            .child(preview(rgb(brush.color.hex()).into(), brush.size))
-            .child(Slider::new(&flyout.size).horizontal())
-            .child(
-                div()
-                    .text_xs()
-                    .text_color(muted())
-                    .child(if self.single_keys() {
-                        "Arrows and Enter pick a colour; [ and ] change the size"
-                    } else {
-                        "Arrows and Enter pick a colour"
-                    }),
-            )
+        flyout_side(
+            div().id("flyout").test_support().absolute(),
+            self.tools_below,
+        )
+        .left(px(0.))
+        .w(px(COLUMNS as f32 * 46. + 30.))
+        .p(px(15.))
+        .flex()
+        .flex_col()
+        .gap_3()
+        .rounded_lg()
+        .bg(rgb(0x2C2C2C))
+        .border_1()
+        .border_color(border())
+        .shadow_lg()
+        .occlude()
+        .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
+        .child(div().text_sm().child("Colours"))
+        .child(div().flex().flex_wrap().gap(px(10.)).children(swatches))
+        .child(div().text_sm().child("Size"))
+        .child(preview(rgb(brush.color.hex()).into(), brush.size))
+        .child(Slider::new(&flyout.size).horizontal())
+        .child(
+            div()
+                .text_xs()
+                .text_color(muted())
+                .child(if self.single_keys() {
+                    "Arrows and Enter pick a colour; [ and ] change the size"
+                } else {
+                    "Arrows and Enter pick a colour"
+                }),
+        )
     }
 
     /// Undo or redo, dimmed when there is nothing to undo or redo.
@@ -558,24 +565,37 @@ impl MainWindow {
     }
 }
 
-/// "Pen 5": a tool's size, labelled, below its button.
-fn size_note(note: SharedString) -> impl IntoElement {
-    div()
-        .id("size-note")
-        .aria_label(note.clone())
-        .test_support()
-        .absolute()
-        .top(px(46.))
-        .left(px(0.))
-        .px_1p5()
-        .py_0p5()
-        .rounded_md()
-        .bg(rgb(0x2C2C2C))
-        .border_1()
-        .border_color(border())
-        .text_xs()
-        .whitespace_nowrap()
-        .child(note)
+/// Put a flyout below its button, or above it when `up` (the tools are in
+/// the bar at the bottom of the window).
+fn flyout_side<E: gpui_kit::Styled>(flyout: E, up: bool) -> E {
+    if up {
+        flyout.bottom(px(46.))
+    } else {
+        flyout.top(px(46.))
+    }
+}
+
+/// "Pen 5": a tool's size, labelled, below its button (above it when the
+/// tools are at the bottom).
+fn size_note(note: SharedString, up: bool) -> impl IntoElement {
+    flyout_side(
+        div()
+            .id("size-note")
+            .aria_label(note.clone())
+            .test_support()
+            .absolute(),
+        up,
+    )
+    .left(px(0.))
+    .px_1p5()
+    .py_0p5()
+    .rounded_md()
+    .bg(rgb(0x2C2C2C))
+    .border_1()
+    .border_color(border())
+    .text_xs()
+    .whitespace_nowrap()
+    .child(note)
 }
 
 /// A wavy stroke `width` wide, as Snipping Tool's flyouts show a size. The

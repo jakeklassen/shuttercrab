@@ -95,6 +95,8 @@ fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut A
                 focus: true,
                 show: true,
                 kind: WindowKind::Normal,
+                // No narrower than the narrow toolbar, so nothing is cut off.
+                window_min_size: Some(main_window::MIN_SIZE),
                 ..Default::default()
             };
             cx.open_window(options, move |window, cx| {

@@ -11,7 +11,7 @@
 //! screenshot it covers, as the stroke grows, and shown over it.
 
 use super::{
-    FOOTER_HEIGHT, Hand, MainWindow, Shot, TOOLBAR_HEIGHT,
+    Hand, MainWindow, Shot, TOOLBAR_HEIGHT, bottom_height,
     crop::{CropDrag, Cropping},
     selection::{Editing, Grip, Placing},
 };
@@ -474,12 +474,13 @@ const WHEEL_LINE: f32 = 40.;
 /// same whatever the zoom.
 const ERASER_RADIUS: f32 = 8.;
 
-/// The canvas's size: the window less the toolbar and the footer.
+/// The canvas's size: the window less the toolbar and what is below the
+/// screenshot (the footer, or the tools' bar in a narrow window).
 pub(super) fn canvas_size(window: &Window) -> Xy {
     let viewport = window.viewport_size();
     Xy::new(
         f32::from(viewport.width),
-        f32::from(viewport.height) - TOOLBAR_HEIGHT - FOOTER_HEIGHT,
+        f32::from(viewport.height) - TOOLBAR_HEIGHT - bottom_height(window),
     )
 }
 

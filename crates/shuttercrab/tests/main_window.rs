@@ -9,7 +9,7 @@ use gpui_kit::{
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
-    main_window::{HOME_SIZE, MainHooks, MainWindow, Page, Place, SHOT_MIN_WIDTH, Shot},
+    main_window::{HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, Place, SHOT_MIN_WIDTH, Shot},
     settings::Settings,
     settings_window::{Diagnostics, Hooks},
 };
@@ -600,6 +600,97 @@ fn clear_empties_the_window_and_undo_brings_the_screenshot_back(cx: &mut TestApp
     assert_eq!(shown(cx), Some((400, 300)));
     update(cx, &opened, |window, _| {
         assert!(window.try_find("unclear").is_none());
+    });
+}
+
+#[gpui_kit::test]
+fn a_narrow_window_moves_the_tools_to_a_bar_at_the_bottom(cx: &mut TestAppContext) {
+    // The narrowest the window goes, tall enough to see the screenshot.
+    let narrow = gpui_kit::size(MIN_SIZE.width, gpui_kit::px(700.));
+    let opened = open_sized(cx, narrow);
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    let right_edge = f32::from(MIN_SIZE.width);
+    update(cx, &opened, |window, _| {
+        let toolbar = window.find("toolbar").bounds();
+        let bar = window.find("bottom-bar").bounds();
+        assert!(
+            window.try_find("version").is_none(),
+            "the bar replaces the footer"
+        );
+        // Everything on top is within the window, nothing cut off.
+        for id in [
+            "new",
+            "mode-record",
+            "target",
+            "delay",
+            "zoom",
+            "copy",
+            "save-as",
+            "more",
+        ] {
+            let b = window.find(id).bounds();
+            assert!(
+                f32::from(b.origin.x + b.size.width) <= right_edge,
+                "{id} is cut off"
+            );
+            assert!(toolbar.contains(&b.center()), "{id} is on top");
+        }
+        // The targets fold into the menu.
+        assert!(window.try_find("target-area").is_none());
+        // The drawing tools, crop, undo, redo and clear are at the bottom.
+        for id in [
+            "tool-select",
+            "tool-pen",
+            "tool-eraser",
+            "tool-shapes",
+            "undo",
+            "redo",
+            "clear",
+        ] {
+            let b = window.find(id).bounds();
+            assert!(bar.contains(&b.center()), "{id} is in the bottom bar");
+        }
+    });
+
+    // The target menu, by click; the target keys work as before.
+    update(cx, &opened, |window, cx| window.click("target", cx));
+    update(cx, &opened, |window, cx| {
+        assert!(window.try_find("target-menu").is_some());
+        window.click("target-choice-1", cx);
+    });
+    assert_eq!(choice(&opened).1, CaptureTarget::Window);
+    press(cx, &opened, &["d"]);
+    assert_eq!(choice(&opened).1, CaptureTarget::Display);
+
+    // A tool's flyout opens upwards from the bottom bar, inside the window.
+    press(cx, &opened, &["p", "p"]);
+    update(cx, &opened, |window, _| {
+        let flyout = window.find("flyout").bounds();
+        let pen = window.find("tool-pen").bounds();
+        assert!(flyout.origin.y + flyout.size.height <= pen.origin.y);
+        assert!(flyout.origin.y >= gpui_kit::px(0.));
+    });
+}
+
+#[gpui_kit::test]
+fn a_wide_window_keeps_one_row_of_tools(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("bottom-bar").is_none());
+        assert!(window.try_find("version").is_some());
+        assert!(window.try_find("target-area").is_some());
+        assert!(window.try_find("target").is_none());
+        let toolbar = window.find("toolbar").bounds();
+        assert!(toolbar.contains(&window.find("tool-pen").bounds().center()));
     });
 }
 

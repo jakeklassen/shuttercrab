@@ -72,14 +72,40 @@ pub const SETTINGS_SIZE: Size<Pixels> = Size {
     height: px(690.),
 };
 
-/// The window's least width with a screenshot shown, logical pixels: room
-/// for the toolbar's drawing tools, zoom, Copy and Save as too.
-pub const SHOT_MIN_WIDTH: f32 = 1250.;
+/// The least window width that fits every tool in one row, logical
+/// pixels. Narrower, with a screenshot shown, the drawing tools move to a
+/// bar at the bottom and the targets fold into one menu, as in Snipping
+/// Tool.
+pub const WIDE_WIDTH: f32 = 1300.;
+
+/// The width the window is sized to at least around a screenshot, logical
+/// pixels: wide enough for one row of tools.
+pub const SHOT_MIN_WIDTH: f32 = WIDE_WIDTH;
+
+/// The window's least size: the narrow layout's, so nothing is cut off.
+pub const MIN_SIZE: Size<Pixels> = HOME_SIZE;
 
 /// The toolbar's and the footer's heights, logical pixels: fixed, so the
 /// window can be sized around a screenshot.
 const TOOLBAR_HEIGHT: f32 = 59.;
 const FOOTER_HEIGHT: f32 = 32.;
+/// The bar of drawing tools at the bottom of a narrow window.
+const BOTTOM_BAR_HEIGHT: f32 = 56.;
+
+/// Whether the window is too narrow for one row of tools.
+pub(super) fn is_narrow(window: &Window) -> bool {
+    f32::from(window.viewport_size().width) < WIDE_WIDTH
+}
+
+/// The height below the screenshot: the footer, or the bar of drawing
+/// tools in a narrow window.
+pub(super) fn bottom_height(window: &Window) -> f32 {
+    if is_narrow(window) {
+        BOTTOM_BAR_HEIGHT
+    } else {
+        FOOTER_HEIGHT
+    }
+}
 
 /// Starts a capture of a mode and target.
 pub type CaptureHook = Rc<dyn Fn(CaptureMode, CaptureTarget, &mut Window, &mut App)>;
@@ -219,6 +245,8 @@ const MENU_CONTEXT: &str = "Menu";
 enum Menu {
     Delay,
     More,
+    /// The targets, folded into one menu in a narrow window.
+    Target,
 }
 
 /// The ⋯ menu's items.
@@ -314,6 +342,9 @@ pub struct MainWindow {
     highlighted: usize,
     /// The screenshot shown on the home page, if any.
     shown: Option<Shown>,
+    /// The drawing tools are in the bar at the bottom: the window is too
+    /// narrow for one row. Set as each frame is drawn.
+    tools_below: bool,
     /// The screenshot Clear took away, with its marks, and where the window
     /// was then: Undo brings both back until the next capture.
     cleared: Option<(Shown, Option<Place>)>,
@@ -376,6 +407,7 @@ impl MainWindow {
             menu: None,
             highlighted: 0,
             shown: None,
+            tools_below: false,
             cleared: None,
             copied: false,
             copies: 0,
@@ -493,7 +525,13 @@ impl MainWindow {
         // A screenshot pixel per screen pixel, plus the margin on each side.
         let around = 2. * shot_view::MARGIN;
         let width = (width as f32 / scale + around).max(least.0);
-        let height = (height as f32 / scale + around + TOOLBAR_HEIGHT + FOOTER_HEIGHT).max(least.1);
+        // Narrower than one row of tools, the tools' bar sits at the bottom.
+        let bottom = if width < WIDE_WIDTH {
+            BOTTOM_BAR_HEIGHT
+        } else {
+            FOOTER_HEIGHT
+        };
+        let height = (height as f32 / scale + around + TOOLBAR_HEIGHT + bottom).max(least.1);
         let physical = |logical: f32| (logical * scale).ceil() as u32;
         let fit = Fit {
             width: physical(width),
@@ -646,14 +684,31 @@ impl MainWindow {
                 choices.iter().position(|s| *s == now).unwrap_or(0)
             }
             Menu::More => 0,
+            Menu::Target => {
+                let chosen = self.target();
+                self.offered_targets()
+                    .iter()
+                    .position(|t| *t == chosen)
+                    .unwrap_or(0)
+            }
         };
         cx.notify();
+    }
+
+    /// The targets the mode offers, in order.
+    fn offered_targets(&self) -> Vec<CaptureTarget> {
+        let mode = self.mode();
+        CaptureTarget::ALL
+            .into_iter()
+            .filter(|t| mode.offers(*t))
+            .collect()
     }
 
     fn menu_len(&self, menu: Menu) -> usize {
         match menu {
             Menu::Delay => self.delay().1.len(),
             Menu::More => More::items(self.shown.is_some()).len(),
+            Menu::Target => self.offered_targets().len(),
         }
     }
 
@@ -679,6 +734,11 @@ impl MainWindow {
             Menu::More => {
                 let items = More::items(self.shown.is_some());
                 self.choose_more(items[self.highlighted.min(items.len() - 1)], window, cx)
+            }
+            Menu::Target => {
+                let targets = self.offered_targets();
+                self.menu = None;
+                self.set_target(targets[self.highlighted.min(targets.len() - 1)], cx);
             }
         }
     }
@@ -1056,8 +1116,9 @@ impl MainWindow {
             })
     }
 
-    fn menu_list(&self, menu: Menu, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let items: Vec<(String, String, Option<IconName>, bool)> = match menu {
+    /// A menu's items: label, key hint, icon, and whether it is chosen.
+    fn menu_items(&self, menu: Menu) -> Vec<(String, String, Option<IconName>, bool)> {
+        match menu {
             Menu::Delay => {
                 let (now, choices) = self.delay();
                 choices
@@ -1075,12 +1136,27 @@ impl MainWindow {
                     })
                     .collect()
             }
-        };
+            Menu::Target => {
+                let chosen = self.target();
+                self.offered_targets()
+                    .into_iter()
+                    .map(|t| {
+                        let key = self.shown_key(t.key());
+                        (t.label().into(), key.into(), Some(t.icon()), t == chosen)
+                    })
+                    .collect()
+            }
+        }
+    }
+
+    fn menu_list(&self, menu: Menu, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let items = self.menu_items(menu);
         let right = menu == Menu::More;
         div()
             .id(match menu {
                 Menu::Delay => "delay-menu",
                 Menu::More => "more-menu",
+                Menu::Target => "target-menu",
             })
             .role(Role::Menu)
             .test_support()
@@ -1108,6 +1184,7 @@ impl MainWindow {
                                 match menu {
                                     Menu::Delay => "delay",
                                     Menu::More => "more",
+                                    Menu::Target => "target-choice",
                                 }
                             )))
                             .role(Role::MenuItem)
@@ -1196,12 +1273,16 @@ impl MainWindow {
             .child(self.new_button(cx))
             .child(self.modes(cx))
             .child(div().w(px(1.)).h(px(28.)).bg(border()))
-            .child(self.targets(cx))
+            .map(|d| match self.tools_below {
+                true => d.child(self.target_button(cx)),
+                false => d.child(self.targets(cx)),
+            })
             .child(self.delay_button(cx))
             // Crop mode has its own bar over the screenshot instead.
-            .when(self.shown.is_some() && !self.is_cropping(), |d| {
-                d.child(self.drawing_tools(cx))
-            })
+            .when(
+                self.shown.is_some() && !self.is_cropping() && !self.tools_below,
+                |d| d.child(self.drawing_tools(true, cx)),
+            )
             .child(div().flex_1())
             .when_some(zoom, |d, zoom| d.child(Self::zoom_button(zoom, cx)))
             .when(self.shown.is_some() && !self.is_cropping(), |d| {
@@ -1319,8 +1400,82 @@ impl MainWindow {
             })
     }
 
-    /// Which build is running, quietly, so an update is easy to confirm; in
-    /// its place, once a newer release is downloaded, a way to restart into
+    /// In a narrow window: the target chosen, opening the menu of targets.
+    fn target_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let target = self.target();
+        let content = div()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .child(Icon::new(target.icon()).size(px(18.)))
+            .child(Icon::new(IconName::ChevronDown).size(px(14.)));
+        self.menu_button(
+            "target",
+            format!("Capture: {}", target.label()),
+            Menu::Target,
+            content,
+            cx,
+        )
+    }
+
+    /// In a narrow window with a screenshot shown: the drawing tools, crop,
+    /// undo, redo and clear, in a bar at the bottom, as in Snipping Tool;
+    /// the way to a downloaded update at its end.
+    fn bottom_bar(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .id("bottom-bar")
+            .role(Role::Toolbar)
+            .test_support()
+            .relative()
+            .flex()
+            .flex_none()
+            .items_center()
+            .justify_center()
+            .h(px(BOTTOM_BAR_HEIGHT))
+            .px_3()
+            .border_t_1()
+            .border_color(border())
+            // Crop mode has its own bar over the screenshot instead.
+            .when(!self.is_cropping(), |d| {
+                d.child(self.drawing_tools(false, cx))
+            })
+            .when_some((self.hooks.update_ready)(), |d, version| {
+                d.child(
+                    div()
+                        .absolute()
+                        .right(px(12.))
+                        .child(self.update_button(version, cx)),
+                )
+            })
+    }
+
+    /// "Restart to update to …": a downloaded release, waiting.
+    fn update_button(&self, version: String, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let label = SharedString::from(format!("Restart to update to {version}"));
+        div()
+            .id("update")
+            .role(Role::Button)
+            .aria_label(label.clone())
+            .test_support()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_0p5()
+            .rounded_md()
+            .border_1()
+            .border_color(coral().opacity(0.5))
+            .text_color(coral())
+            .text_xs()
+            .hover(|s| s.bg(hover()))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| (this.hooks.restart_to_update)(cx)))
+            .child(Icon::new(IconName::RotateCcw).size(px(12.)))
+            .child(label)
+            .child(Self::key_hint(self.shown_key("u")))
+    }
+
+    /// Which build is running, quietly, so an update is easy to confirm; in    /// its place, once a newer release is downloaded, a way to restart into
     /// it.
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let footer = div()
@@ -1331,33 +1486,7 @@ impl MainWindow {
             .h(px(FOOTER_HEIGHT))
             .text_xs();
         match (self.hooks.update_ready)() {
-            Some(version) => {
-                let label = SharedString::from(format!("Restart to update to {version}"));
-                footer.child(
-                    div()
-                        .id("update")
-                        .role(Role::Button)
-                        .aria_label(label.clone())
-                        .test_support()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .px_2()
-                        .py_0p5()
-                        .rounded_md()
-                        .border_1()
-                        .border_color(coral().opacity(0.5))
-                        .text_color(coral())
-                        .hover(|s| s.bg(hover()))
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
-                            (this.hooks.restart_to_update)(cx)
-                        }))
-                        .child(Icon::new(IconName::RotateCcw).size(px(12.)))
-                        .child(label)
-                        .child(Self::key_hint(self.shown_key("u"))),
-                )
-            }
+            Some(version) => footer.child(self.update_button(version, cx)),
             None => {
                 let version =
                     SharedString::from(format!("Shuttercrab {}", env!("CARGO_PKG_VERSION")));
@@ -1436,6 +1565,7 @@ impl Render for MainWindow {
         if self.page != Page::Home || self.shown.is_none() {
             canvas::show_pointer(window, None);
         }
+        self.tools_below = self.shown.is_some() && is_narrow(window);
         self.pointer = pointer_in_canvas(window).filter(|_| self.shown.is_some());
         let zoom = self
             .shown
@@ -1486,7 +1616,10 @@ impl Render for MainWindow {
                     Some(shown) => d.child(self.canvas(shown, window, cx)),
                     None => d.child(self.hint(cx)),
                 })
-                .child(self.footer(cx)),
+                .map(|d| match self.tools_below {
+                    true => d.child(self.bottom_bar(cx)),
+                    false => d.child(self.footer(cx)),
+                }),
         }
     }
 }
