@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.20](https://github.com/jakeklassen/shuttercrab/compare/v0.1.19...v0.1.20) - 2026-10-07
+
+### Added
+
+- record only the recorded window's app's sound
+
 ## [0.1.19](https://github.com/jakeklassen/shuttercrab/compare/v0.1.18...v0.1.19) - 2026-10-07
 
 ### Added
