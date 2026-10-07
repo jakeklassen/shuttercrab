@@ -60,6 +60,9 @@ pub enum RecordBarEvent {
     SetSound(Source, bool),
     /// Open the list of microphones.
     ChooseMicrophone,
+    /// In a window recording: the system sound is only the window's app's
+    /// (`true`), or all of it; the bar already shows it.
+    SetAppOnly(bool),
 }
 
 /// The sound a recording takes.
@@ -67,6 +70,9 @@ pub enum RecordBarEvent {
 pub struct Sound {
     /// What the speakers play.
     pub system: bool,
+    /// In a window recording, of what the speakers play only what the
+    /// window's app plays.
+    pub app_only: bool,
     pub microphone: bool,
     /// Which microphone: Windows' id for it, or `None` for Windows'
     /// default.
@@ -137,7 +143,7 @@ struct Hint {
 }
 
 /// The bar's size in logical pixels.
-pub const RECORD_BAR_WIDTH: f32 = 920.0;
+pub const RECORD_BAR_WIDTH: f32 = 1060.0;
 pub const RECORD_BAR_HEIGHT: f32 = 48.0;
 
 /// The time is redrawn once a second, just after the clock reaches the
@@ -173,6 +179,8 @@ pub struct RecordBar {
     /// The microphones plugged in when the bar opened, Windows' default
     /// first.
     microphones: Vec<Microphone>,
+    /// A window is recorded: its app's sound can be chosen alone.
+    app_choice: bool,
     /// Where the microphone list's button was last drawn, so the list can
     /// open below it.
     list_button: Rc<Cell<Bounds<Pixels>>>,
@@ -222,6 +230,7 @@ impl RecordBar {
             keys,
             sound: Sound::default(),
             microphones: Vec::new(),
+            app_choice: false,
             list_button: Rc::default(),
             focus,
         }
@@ -241,6 +250,12 @@ impl RecordBar {
         self.sound = sound;
         self.microphones = microphones;
         self
+    }
+
+    /// A window is recorded: offer its app's sound alone, or all of it.
+    pub fn offer_app_sound(&mut self, cx: &mut Context<Self>) {
+        self.app_choice = true;
+        cx.notify();
     }
 
     pub fn mode(&self) -> BarMode {
@@ -324,6 +339,7 @@ impl RecordBar {
     fn ask(&mut self, event: RecordBarEvent, cx: &mut Context<Self>) {
         match event {
             RecordBarEvent::SetSound(source, on) => self.sound.set(source, on),
+            RecordBarEvent::SetAppOnly(on) => self.sound.app_only = on,
             RecordBarEvent::Start => self.mode = BarMode::Starting,
             _ => {}
         }
@@ -357,6 +373,9 @@ impl RecordBar {
         let request = match (self.mode, key) {
             (_, "m") if self.switches_shown() => Some(self.flip(Source::Microphone)),
             (_, "a") if self.switches_shown() => Some(self.flip(Source::System)),
+            (_, "b") if self.switches_shown() && self.app_choice => {
+                Some(RecordBarEvent::SetAppOnly(!self.sound.app_only))
+            }
             (BarMode::Ready, "enter") => Some(RecordBarEvent::Start),
             (BarMode::Ready, "escape") => Some(RecordBarEvent::Close),
             (BarMode::Ready, "down") => Some(RecordBarEvent::ChooseMicrophone),
@@ -444,6 +463,54 @@ impl RecordBar {
                 .into_any_element(),
         )
     }
+    /// In a window recording, beside the system sound: whether it is only
+    /// the window's app's (B) or all of it. Nothing otherwise.
+    fn app_sound(&self, cx: &mut Context<Self>) -> AnyElement {
+        if !self.app_choice {
+            return div().into_any_element();
+        }
+        let app = self.sound.app_only;
+        let label = match (self.mode == BarMode::Ready, app) {
+            (true, true) => "This app",
+            (true, false) => "All sound",
+            (false, true) => "App",
+            (false, false) => "All",
+        };
+        let aria = if app {
+            "System sound: this app only"
+        } else {
+            "System sound: all of it"
+        };
+        div()
+            .id("record-app-sound")
+            .role(Role::Button)
+            .aria_label(aria)
+            .test_support()
+            .flex()
+            .flex_none()
+            .items_center()
+            .gap_1p5()
+            .h(px(32.))
+            .px_2()
+            .rounded_md()
+            .bg(tile())
+            .hover(|s| s.bg(hover()))
+            .cursor_pointer()
+            .text_sm()
+            // Dimmed while the system sound is off: it applies once on.
+            .text_color(if self.sound.system {
+                gpui_kit::white()
+            } else {
+                muted()
+            })
+            .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                this.ask(RecordBarEvent::SetAppOnly(!this.sound.app_only), cx)
+            }))
+            .child(label)
+            .children(self.key_hint("record-app-sound", &self.letter("B")))
+            .into_any_element()
+    }
+
     /// A switch for a sound source, its icon crossed out when off. In the
     /// ready bar it is named; while recording, the icon alone.
     fn sound_switch(&self, source: Source, cx: &mut Context<Self>) -> AnyElement {
@@ -627,6 +694,7 @@ impl RecordBar {
             self.sound_switch(Source::Microphone, cx),
             self.microphone_list(cx),
             self.sound_switch(Source::System, cx),
+            self.app_sound(cx),
             div().w(px(4.)).into_any_element(),
             self.button(
                 "record-start",
@@ -654,6 +722,7 @@ impl RecordBar {
         vec![
             self.sound_switch(Source::Microphone, cx),
             self.sound_switch(Source::System, cx),
+            self.app_sound(cx),
             div().w(px(4.)).into_any_element(),
         ]
     }
@@ -812,7 +881,8 @@ impl Render for RecordBar {
                     .aria_label(status.clone())
                     .test_support()
                     .flex_1()
-                    .min_w_0()
+                    // Never squeezed out: the time is always readable.
+                    .min_w(px(64.))
                     .truncate()
                     .text_sm()
                     .text_color(color)

@@ -79,6 +79,8 @@ pub(super) struct Recording {
     pub(super) path: PathBuf,
     /// What is recorded, for Restart.
     options: RecordOptions,
+    /// The recorded window's app, whose sound can be recorded alone.
+    app_process: Option<u32>,
     /// The output length so far, shared with the controls.
     pub(super) clock: Rc<Cell<Clock>>,
     /// The recording controls, if they are on screen.
@@ -261,6 +263,23 @@ impl Recording {
     }
 
     /// Switch `source` on or off, for this take and any restart of it.
+    /// Record only the window's app's share of the system sound, or all
+    /// of it, for this take and any restart of it.
+    fn set_app_only(&mut self, on: bool) {
+        let process = self.app_process.filter(|_| on);
+        if self.options.sound_process == process {
+            return;
+        }
+        self.options.sound_process = process;
+        if let Some(recorder) = &self.recorder {
+            recorder.set_sound_process(process);
+        }
+        log::info!(
+            "system sound: {}",
+            if on { "the app's only" } else { "all of it" }
+        );
+    }
+
     fn set_sound(&mut self, source: Source, on: bool) {
         let options = &mut self.options;
         let was = match source {
@@ -347,7 +366,9 @@ pub(super) async fn record(
     let following = window.map(|w| Following::start(state, w, frame.clone()));
     let settings = state.settings.borrow().clone();
     let clock = Rc::new(Cell::new(Clock::new(Instant::now())));
-    let ControlFlow::Continue(opened) = ready(state, &info, region, clock.clone(), cx).await else {
+    let ControlFlow::Continue(opened) =
+        ready(state, &info, region, window, clock.clone(), cx).await
+    else {
         log::info!("recording cancelled in the ready bar");
         return Ok(());
     };
@@ -366,6 +387,8 @@ pub(super) async fn record(
         Some(controls) => controls.view.read_with(cx, |bar, _| bar.sound().clone()),
         None => sound(&settings),
     };
+    // The window's app, whose sound can be recorded alone.
+    let app_process = window.and_then(platform_window::sound_process);
 
     let dir = settings.recording_dir();
     let options = RecordOptions {
@@ -378,6 +401,8 @@ pub(super) async fn record(
         fps: settings.record_fps(),
         include_cursor: settings.record_cursor,
         system_sound: sound.system,
+        // Only the recorded window's app's, if so chosen.
+        sound_process: app_process.filter(|_| sound.app_only),
         microphone: sound.microphone,
         microphone_device: sound.device,
         // The controls can switch either on mid-recording.
@@ -421,6 +446,7 @@ pub(super) async fn record(
         asking: None,
         discarded: None,
         frame,
+        app_process,
         paused_by_minimise: false,
         minimises: 0,
     };
@@ -489,6 +515,7 @@ async fn choose_area(
 fn sound(settings: &Settings) -> Sound {
     Sound {
         system: settings.record_system_sound,
+        app_only: settings.record_app_sound_only,
         microphone: settings.record_microphone,
         device: settings.microphone.clone(),
     }
@@ -501,6 +528,7 @@ async fn ready(
     state: &State,
     info: &MonitorInfo,
     region: Option<PhysicalRect>,
+    window: Option<isize>,
     clock: Rc<Cell<Clock>>,
     cx: &mut AsyncApp,
 ) -> ControlFlow<(), Option<(Controls, UnboundedReceiver<RecordBarEvent>)>> {
@@ -516,6 +544,10 @@ async fn ready(
     let Some((controls, mut requests)) = opened else {
         return ControlFlow::Continue(None);
     };
+    // A recorded window's app's sound can be had alone.
+    if window.is_some() {
+        controls.view.update(cx, |bar, cx| bar.offer_app_sound(cx));
+    }
     // A recorded window takes the bar along when it moves.
     if let Some(followed) = state.followed.borrow().as_ref() {
         let gap = (CONTROLS_GAP * info.scale_factor).round() as u32;
@@ -954,6 +986,11 @@ fn handle_controls(
                 RecordBarEvent::Confirm => confirm(&state, cx).await,
                 RecordBarEvent::Cancel => keep_take(&state, cx),
                 RecordBarEvent::Undo => undo(&state, cx),
+                RecordBarEvent::SetAppOnly(on) => {
+                    if let Some(recording) = state.recording.borrow_mut().as_mut() {
+                        recording.set_app_only(on);
+                    }
+                }
                 RecordBarEvent::SetSound(source, on) => {
                     if let Some(recording) = state.recording.borrow_mut().as_mut() {
                         recording.set_sound(source, on);

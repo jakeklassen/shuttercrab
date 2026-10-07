@@ -690,6 +690,18 @@ impl SettingsWindow {
                 )
                 .description("What your speakers or headphones play."),
             )
+            .item(
+                SettingItem::new(
+                    "In window recordings, only that app's sound",
+                    self.switch(
+                        |s| s.record_app_sound_only,
+                        |s, v| s.record_app_sound_only = v,
+                    ),
+                )
+                .description(
+                    "Leaves out music, calls and notifications. B switches it while recording.",
+                ),
+            )
             .item(SettingItem::new(
                 "Microphone",
                 self.switch(|s| s.record_microphone, |s, v| s.record_microphone = v),

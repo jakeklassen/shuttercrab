@@ -46,6 +46,38 @@ pub fn place(hwnd: isize, (x, y, width, height): (i32, i32, u32, u32)) -> Result
     .context("SetWindowPos failed")
 }
 
+/// The process whose sound is `window`'s: the window's own, or for a
+/// packaged app, whose frame belongs to ApplicationFrameHost, the app's
+/// window inside the frame.
+pub fn sound_process(window: isize) -> Option<u32> {
+    use windows::{
+        Win32::UI::WindowsAndMessaging::{FindWindowExW, GetClassNameW},
+        core::{PCWSTR, w},
+    };
+    let hwnd = HWND(window as _);
+    let process_of = |hwnd: HWND| {
+        let mut process = 0;
+        (unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) } != 0 && process != 0)
+            .then_some(process)
+    };
+    let mut name = [0u16; 64];
+    let length = unsafe { GetClassNameW(hwnd, &mut name) };
+    let class = String::from_utf16_lossy(&name[..length.max(0) as usize]);
+    if class == "ApplicationFrameWindow"
+        && let Ok(app) = unsafe {
+            FindWindowExW(
+                Some(hwnd),
+                None,
+                w!("Windows.UI.Core.CoreWindow"),
+                PCWSTR::null(),
+            )
+        }
+    {
+        return process_of(app);
+    }
+    process_of(hwnd)
+}
+
 /// The monitor (its `HMONITOR`) most of `hwnd` is on.
 pub fn monitor_of(hwnd: isize) -> u64 {
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};

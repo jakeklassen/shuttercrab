@@ -62,6 +62,9 @@ pub struct RecordOptions {
     pub include_cursor: bool,
     /// Record what the speakers play (off unless asked).
     pub system_sound: bool,
+    /// Of what the speakers play, only what this process and those it
+    /// started play (a recorded window's app); `None` for all of it.
+    pub sound_process: Option<u32>,
     /// Record a microphone (off unless asked): the one named, or Windows'
     /// default.
     pub microphone: bool,
@@ -175,6 +178,8 @@ enum Event {
     Sound(sound::Packet),
     /// Switch a source on or off.
     SetSound(Source, bool),
+    /// Record the speakers' sound of this process only, or all of it.
+    SoundProcess(Option<u32>),
     /// Record the pointer again (`true`), or leave it out for now.
     ShowCursor(bool),
 }
@@ -231,6 +236,12 @@ impl Recorder {
     /// sound track ([`RecordOptions::has_sound`]).
     pub fn set_sound(&self, source: Source, on: bool) {
         let _ = self.events.send(Event::SetSound(source, on));
+    }
+
+    /// Record only what process `process` (and those it started) plays of
+    /// the speakers' sound, or all of it with `None`, from now on.
+    pub fn set_sound_process(&self, process: Option<u32>) {
+        let _ = self.events.send(Event::SoundProcess(process));
     }
 
     /// Leave the pointer out of the recording for now (`false`), or put it

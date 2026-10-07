@@ -427,6 +427,7 @@ fn sound(cx: &mut TestAppContext, opened: &Opened) -> Sound {
 fn from_settings() -> Sound {
     Sound {
         system: false,
+        app_only: true,
         microphone: true,
         device: Some("{yeti}".into()),
     }
@@ -640,4 +641,61 @@ fn closing_the_window_to_record_closes_the_ready_bar(cx: &mut TestAppContext) {
     set_mode(cx, &opened, BarMode::Controls);
     close(cx);
     assert_eq!(events(&opened), [RecordBarEvent::Close]);
+}
+
+#[gpui_kit::test]
+fn a_window_recording_offers_its_app_sound_alone(cx: &mut TestAppContext) {
+    let opened = open_ready(cx, from_settings());
+    activate(cx, &opened);
+    // Not for an area: nothing to choose, and B does nothing.
+    update(cx, &opened, |window, cx| {
+        assert!(window.try_find("record-app-sound").is_none());
+        window.press("b", cx);
+    });
+    assert!(events(&opened).is_empty());
+
+    cx.update(|cx| {
+        opened
+            .handle
+            .update(cx, |bar, _, cx| bar.offer_app_sound(cx))
+            .unwrap()
+    });
+    update(cx, &opened, |window, cx| {
+        assert_eq!(
+            label(window, "record-app-sound").unwrap(),
+            "System sound: this app only"
+        );
+        assert_eq!(label(window, "record-app-sound-key").unwrap(), "B");
+        window.press("b", cx);
+    });
+    update(cx, &opened, |window, cx| {
+        assert_eq!(
+            label(window, "record-app-sound").unwrap(),
+            "System sound: all of it"
+        );
+        window.click("record-app-sound", cx);
+    });
+    assert_eq!(
+        events(&opened),
+        [
+            RecordBarEvent::SetAppOnly(false),
+            RecordBarEvent::SetAppOnly(true),
+        ]
+    );
+    assert!(sound(cx, &opened).app_only);
+    // Everything fits, the time readable.
+    let fits = |window: &mut Window, last: &'static str| {
+        let right = window.find(last).bounds();
+        assert!(f32::from(right.origin.x + right.size.width) <= RECORD_BAR_WIDTH);
+        assert!(window.find("record-time").bounds().size.width >= gpui_kit::px(60.));
+    };
+    update(cx, &opened, |window, _| fits(window, "record-close"));
+    // While recording, it stays beside the switch, and B still works.
+    set_mode(cx, &opened, BarMode::Controls);
+    update(cx, &opened, |window, cx| {
+        assert!(window.try_find("record-app-sound").is_some());
+        fits(window, "record-discard");
+        window.press("b", cx);
+    });
+    assert_eq!(events(&opened)[2..], [RecordBarEvent::SetAppOnly(false)]);
 }

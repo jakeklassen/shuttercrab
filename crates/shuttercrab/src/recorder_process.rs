@@ -50,6 +50,7 @@ enum Request {
     DisplayChanged,
     WindowClosed,
     ShowCursor(bool),
+    SoundProcess(Option<u32>),
     Stop,
 }
 
@@ -62,6 +63,7 @@ struct Options {
     fps: u32,
     include_cursor: bool,
     system_sound: bool,
+    sound_process: Option<u32>,
     microphone: bool,
     microphone_device: Option<String>,
     sound_track: bool,
@@ -112,6 +114,7 @@ impl From<RecordOptions> for Options {
             fps: o.fps,
             include_cursor: o.include_cursor,
             system_sound: o.system_sound,
+            sound_process: o.sound_process,
             microphone: o.microphone,
             microphone_device: o.microphone_device,
             sound_track: o.sound_track,
@@ -129,6 +132,7 @@ impl From<Options> for RecordOptions {
             fps: o.fps,
             include_cursor: o.include_cursor,
             system_sound: o.system_sound,
+            sound_process: o.sound_process,
             microphone: o.microphone,
             microphone_device: o.microphone_device,
             sound_track: o.sound_track,
@@ -280,6 +284,12 @@ impl RecorderProcess {
     pub fn set_sound(&self, source: Source, on: bool) {
         let microphone = source == Source::Microphone;
         self.request(Request::SetSound { microphone, on });
+    }
+
+    /// Only this process's share of the speakers' sound, or all of it; see
+    /// [`Recorder::set_sound_process`].
+    pub fn set_sound_process(&self, process: Option<u32>) {
+        self.request(Request::SoundProcess(process));
     }
 
     /// The recorded window was closed; see [`Recorder::window_closed`].
@@ -488,6 +498,7 @@ pub fn serve() -> i32 {
             Next::Asked(Request::DisplayChanged) => recorder.display_changed(),
             Next::Asked(Request::ShowCursor(show)) => recorder.show_cursor(show),
             Next::Asked(Request::WindowClosed) => recorder.window_closed(),
+            Next::Asked(Request::SoundProcess(process)) => recorder.set_sound_process(process),
             Next::Asked(Request::Start(_)) => log::warn!("the recorder is already recording"),
             Next::Asked(Request::Stop) | Next::Ended => break,
         }
@@ -516,6 +527,7 @@ mod tests {
             fps: 60,
             include_cursor: true,
             system_sound: true,
+            sound_process: Some(4321),
             microphone: true,
             microphone_device: Some("{0.0.1.00000000}.{mic}".into()),
             sound_track: true,

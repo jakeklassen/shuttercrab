@@ -8,7 +8,7 @@ use super::{
     exposure::Exposure,
     fit::Fitter,
     qpc_ticks, recordable,
-    sound::{self, Capture, Mixer, Packet, Source},
+    sound::{self, Capture, Device, Mixer, Packet, Source},
     timing::Timer,
 };
 use crate::{
@@ -323,6 +323,7 @@ impl Session {
                 Event::DisplayChanged => self.reread_white_scale(),
                 Event::Sound(packet) => self.place_sound(&packet, timeline),
                 Event::SetSound(source, on) => self.set_sound(source, on),
+                Event::SoundProcess(process) => self.set_sound_process(process),
                 Event::ShowCursor(show) => {
                     let show = show && self.options.include_cursor;
                     if let Err(e) = self.capture.SetIsCursorCaptureEnabled(show) {
@@ -357,7 +358,7 @@ impl Session {
         let slot = &mut self.captures[source as usize];
         match (on, slot.is_some()) {
             (true, false) => {
-                let device = self.options.microphone_device.clone();
+                let device = device_for(source, &self.options);
                 *slot = Capture::start(source, device, self.sounds.clone())
                     .inspect_err(|e| log::warn!("could not switch on {source:?}: {e:#}"))
                     .ok();
@@ -366,6 +367,36 @@ impl Session {
             _ => {}
         }
         log::info!("{source:?} {}", if on { "on" } else { "off" });
+    }
+
+    /// Record only a process's share of the speakers' sound, or all of it:
+    /// a running capture is replaced by one listening as asked. The new one
+    /// starts before the old one stops: opening takes a fifth of a second,
+    /// which would otherwise be a hole in the sound.
+    fn set_sound_process(&mut self, process: Option<u32>) {
+        if self.options.sound_process == process {
+            return;
+        }
+        self.options.sound_process = process;
+        log::info!(
+            "system sound: {}",
+            if process.is_some() {
+                "the app's"
+            } else {
+                "all"
+            }
+        );
+        let slot = &mut self.captures[Source::System as usize];
+        if slot.is_none() {
+            return;
+        }
+        let device = device_for(Source::System, &self.options);
+        match Capture::start(Source::System, device, self.sounds.clone()) {
+            // The old capture stops as it is replaced.
+            Ok(capture) => *slot = Some(capture),
+            // Better the sound as it was than none.
+            Err(e) => log::warn!("could not switch the system sound: {e:#}"),
+        }
     }
 
     /// Write the mix out up to `time` on the timeline: silence where no
@@ -731,17 +762,30 @@ fn work_textures(gpu: &Gpu, w: u32, h: u32) -> Result<[ID3D11Texture2D; 3]> {
     Ok([crop, sdr, rgba])
 }
 
+/// Where `source`'s sound comes from, as `options` say.
+fn device_for(source: Source, options: &RecordOptions) -> Device {
+    match source {
+        Source::System => options
+            .sound_process
+            .map_or(Device::Default, Device::Process),
+        Source::Microphone => options
+            .microphone_device
+            .clone()
+            .map_or(Device::Default, Device::Microphone),
+    }
+}
+
 /// Start capturing `source` if `options` switch it on. Without a device
 /// to record, its part of the track stays silent: the rest still records.
 fn start_sound(source: Source, options: &RecordOptions, events: &Sender<Event>) -> Option<Capture> {
-    let (on, device) = match source {
-        Source::System => (options.system_sound, None),
-        Source::Microphone => (options.microphone, options.microphone_device.clone()),
+    let on = match source {
+        Source::System => options.system_sound,
+        Source::Microphone => options.microphone,
     };
     if !on {
         return None;
     }
-    Capture::start(source, device, events.clone())
+    Capture::start(source, device_for(source, options), events.clone())
         .inspect_err(|e| log::warn!("recording without {source:?}: {e:#}"))
         .ok()
 }

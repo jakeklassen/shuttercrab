@@ -69,6 +69,9 @@ pub struct Settings {
     /// Record what the speakers play. Off by default: sound recorded by
     /// surprise is a problem, at work especially.
     pub record_system_sound: bool,
+    /// In window recordings, the system sound is only what the window's
+    /// app plays (not music, calls or notifications). On by default.
+    pub record_app_sound_only: bool,
     /// Record a microphone, also off by default: Windows' id for the one
     /// chosen, or `None` for Windows' default.
     pub record_microphone: bool,
@@ -128,6 +131,7 @@ impl Default for Settings {
             recording_dir: None,
             record_cursor: true,
             record_system_sound: false,
+            record_app_sound_only: true,
             record_microphone: false,
             microphone: None,
             record_fps: 30,
