@@ -1,11 +1,12 @@
-//! Putting a screenshot on the Windows clipboard as PNG and as a DIB.
+//! Putting a screenshot on the Windows clipboard as PNG and as a DIB, or
+//! files (a recording) as Explorer copies them.
 //!
 //! "PNG" is the registered format browsers, Slack, Discord and most modern
 //! apps paste. `CF_DIBV5` covers everything else; Windows synthesizes
 //! `CF_DIB` and `CF_BITMAP` from it.
 
 use anyhow::{Context, Result, bail};
-use std::time::Duration;
+use std::{os::windows::ffi::OsStrExt, path::PathBuf, time::Duration};
 use windows::{
     Win32::{
         Foundation::{GlobalFree, HANDLE, HGLOBAL, HWND},
@@ -16,7 +17,7 @@ use windows::{
                 RegisterClipboardFormatW, SetClipboardData,
             },
             Memory::{GMEM_MOVEABLE, GlobalAlloc, GlobalLock, GlobalUnlock},
-            Ole::CF_DIBV5,
+            Ole::{CF_DIBV5, CF_HDROP},
         },
         UI::ColorSystem::LCS_sRGB,
     },
@@ -138,6 +139,53 @@ pub(crate) fn write(owner: HWND, png: &[u8], rgba: &[u8], width: u32, height: u3
     if png_format == 0 {
         bail!("could not register the PNG clipboard format");
     }
+    replace(
+        owner,
+        &[(png_format, png), (CF_DIBV5.0 as u32, dib.as_slice())],
+    )
+}
+
+/// Replace the clipboard contents with files, as Explorer's Copy does:
+/// they paste into Explorer as copies, and into chat apps as attachments.
+pub(crate) fn write_files(owner: HWND, paths: &[PathBuf]) -> Result<()> {
+    let effect_format = unsafe { RegisterClipboardFormatW(w!("Preferred DropEffect")) };
+    if effect_format == 0 {
+        bail!("could not register the drop effect clipboard format");
+    }
+    let files = drop_files(paths);
+    replace(
+        owner,
+        &[
+            (CF_HDROP.0 as u32, files.as_slice()),
+            (effect_format, &DROPEFFECT_COPY.to_le_bytes()),
+        ],
+    )
+}
+
+/// What "Preferred DropEffect" holds for a copy, not a move.
+const DROPEFFECT_COPY: u32 = 1;
+
+/// A `CF_HDROP` block: a `DROPFILES` header (the list's offset, a point and
+/// two flags, the last saying the paths are UTF-16), then each path
+/// null-terminated, then one more null.
+fn drop_files(paths: &[PathBuf]) -> Vec<u8> {
+    const HEADER: u32 = 20;
+    let mut out = Vec::new();
+    for value in [HEADER, 0, 0, 0, 1] {
+        out.extend_from_slice(&value.to_le_bytes());
+    }
+    for path in paths {
+        for unit in path.as_os_str().encode_wide().chain([0]) {
+            out.extend_from_slice(&unit.to_le_bytes());
+        }
+    }
+    out.extend_from_slice(&[0, 0]);
+    out
+}
+
+/// Open the clipboard (retrying while another application holds it),
+/// empty it, and put each `(format, bytes)` on it.
+fn replace(owner: HWND, data: &[(u32, &[u8])]) -> Result<()> {
     let mut opened = false;
     for _ in 0..ATTEMPTS {
         if unsafe { OpenClipboard(Some(owner)) }.is_ok() {
@@ -154,7 +202,7 @@ pub(crate) fn write(owner: HWND, png: &[u8], rgba: &[u8], width: u32, height: u3
     }
     let result = (|| -> Result<()> {
         unsafe { EmptyClipboard() }.context("EmptyClipboard failed")?;
-        for (format, bytes) in [(png_format, png), (CF_DIBV5.0 as u32, dib.as_slice())] {
+        for &(format, bytes) in data {
             let block = global(bytes)?;
             // On success the clipboard owns the block; on failure we still do.
             if let Err(e) = unsafe { SetClipboardData(format, Some(HANDLE(block.0))) } {
@@ -200,6 +248,24 @@ mod tests {
         let dib = dibv5(&[0, 0, 0, 128, 0, 0, 0, 0], 2, 1).unwrap();
         let pixels = &dib[size_of::<BITMAPV5HEADER>()..];
         assert_eq!(pixels, [127, 127, 127, 255, 255, 255, 255, 255]);
+    }
+
+    #[test]
+    fn files_are_a_dropfiles_header_and_wide_paths_ending_in_two_nulls() {
+        let block = drop_files(&[PathBuf::from(r"C:\a.mp4"), PathBuf::from("b")]);
+        let word = |i: usize| u32::from_le_bytes(block[i..i + 4].try_into().unwrap());
+        // The paths start after the header, and are wide.
+        assert_eq!((word(0), word(16)), (20, 1));
+        let units: Vec<u16> = block[20..]
+            .as_chunks::<2>()
+            .0
+            .iter()
+            .map(|&c| u16::from_le_bytes(c))
+            .collect();
+        assert_eq!(
+            String::from_utf16(&units).unwrap(),
+            "C:\\a.mp4\u{0}b\u{0}\u{0}"
+        );
     }
 
     #[test]

@@ -72,8 +72,19 @@ pub(super) struct Video {
     volume_open: bool,
     /// The seek slider is being dragged: the player's position waits.
     scrubbing: bool,
+    /// Where to go once the file is open: where a reopened recording was.
+    start_at: Option<Duration>,
     _updates: Task<()>,
     _sliders: [Subscription; 2],
+}
+
+/// A recording Clear closed, which Undo opens again: where the window was,
+/// and where playing was.
+pub(super) struct Closed {
+    path: PathBuf,
+    size: Option<(u32, u32)>,
+    place: Option<super::Place>,
+    at: Duration,
 }
 
 impl Video {
@@ -156,6 +167,7 @@ impl MainWindow {
         if let Some((cleared, _)) = self.cleared.take() {
             cleared.release(window);
         }
+        self.closed = None;
         if let Some(video) = self.video.take() {
             video.release(window);
         }
@@ -222,6 +234,7 @@ impl MainWindow {
             volume: volume_slider,
             volume_open: false,
             scrubbing: false,
+            start_at: None,
             _updates: task,
             _sliders: sliders,
         });
@@ -244,14 +257,43 @@ impl MainWindow {
     }
 
     /// Close the recording shown, back to the start view.
+    /// Close the recording shown, back to the start view. Undo opens it
+    /// again, where it was, until the next capture.
     pub(super) fn close_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
         let Some(video) = self.video.take() else {
             return false;
         };
+        self.closed = Some(Closed {
+            path: video.path.clone(),
+            size: video.size,
+            place: (self.hooks.window_place)(window),
+            at: video.position,
+        });
         video.release(window);
         self.fit_home(window, cx);
         cx.notify();
         true
+    }
+
+    /// Open the recording Clear closed again, paused where it was, with the
+    /// window where it was. Returns whether there was one.
+    pub(super) fn reopen_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(closed) = self.closed.take() else {
+            return false;
+        };
+        self.show_recording(closed.path, closed.size, window, cx);
+        if let Some(video) = &mut self.video {
+            video.start_at = Some(closed.at).filter(|at| !at.is_zero());
+        }
+        if let Some(place) = closed.place {
+            (self.hooks.restore_place)(window, cx, place);
+        }
+        true
+    }
+
+    /// Whether Undo can open a closed recording again.
+    pub(super) fn can_reopen(&self) -> bool {
+        self.closed.is_some()
     }
 
     fn on_playback(
@@ -273,6 +315,10 @@ impl MainWindow {
                 video.duration = duration;
                 let resized = video.size != Some((width, height));
                 video.size = Some((width, height));
+                // Reopened: back where it was closed.
+                if let Some(at) = video.start_at.take() {
+                    self.seek_to(at, window, cx);
+                }
                 if resized {
                     self.fit_home(window, cx);
                 }

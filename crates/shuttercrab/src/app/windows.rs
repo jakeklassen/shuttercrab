@@ -213,6 +213,7 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
     let (ready, restarting) = (state.clone(), state.clone());
     let (copying, saving) = (state.clone(), state.clone());
     let (painting, opening) = (state.clone(), state.clone());
+    let (copying_file, saving_file) = (state.clone(), state.clone());
     MainHooks {
         settings: Rc::new(settings_hooks(state, monitors)),
         capture: Rc::new(move |mode, target, window, cx| {
@@ -279,6 +280,9 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
         }),
         open_recording: Rc::new(playback::open),
         reveal: Rc::new(|path, cx| cx.reveal_path(path)),
+        copy_file: Rc::new(move |path, cx| copy_recording(&copying_file, path, cx)),
+        save_file_as: Rc::new(move |path, cx| save_recording_as(&saving_file, path, cx)),
+        open_file_with: Rc::new(|path, _| shuttercrab_platform::open::open_with(path)),
         fit_window: Rc::new(|window, cx, fit| {
             let Some(hwnd) = popup::raw_hwnd(window) else {
                 return;
@@ -338,6 +342,70 @@ fn copy_shot(state: &Rc<State>, shot: &Shot, cx: &mut App) -> Task<bool> {
             }
         }
     })
+}
+
+/// Copy the recording the main window shows to the clipboard as a file,
+/// as Explorer does: it pastes into a folder or a chat as the MP4.
+fn copy_recording(state: &Rc<State>, path: &Path, cx: &mut App) -> Task<bool> {
+    let (state, path) = (state.clone(), path.to_path_buf());
+    cx.spawn(
+        async move |_| match state.platform.copy_files(vec![path.clone()]).await {
+            Ok(()) => {
+                log::info!(
+                    "{} copied from the window",
+                    path.file_name().unwrap_or_default().to_string_lossy()
+                );
+                true
+            }
+            Err(e) => {
+                log::error!("copy: {e:#}");
+                state.notify(
+                    "Could not copy the recording",
+                    "Another app is holding the clipboard. Try again in a moment.",
+                    None,
+                );
+                false
+            }
+        },
+    )
+}
+
+/// Ask where to save a copy of the recording the main window shows,
+/// starting beside it with its name, and copy it there.
+fn save_recording_as(state: &Rc<State>, path: &Path, cx: &mut App) {
+    let dir = path.parent().map(Path::to_path_buf).unwrap_or_default();
+    let name = path.file_name().map(|n| n.to_string_lossy().into_owned());
+    let chosen = cx.prompt_for_new_path(&dir, name.as_deref());
+    let (state, source) = (state.clone(), path.to_path_buf());
+    cx.spawn(async move |cx| {
+        let Ok(Ok(Some(mut target))) = chosen.await else {
+            return;
+        };
+        if target.extension().is_none() {
+            target.set_extension("mp4");
+        }
+        // Saved over itself: it is already there.
+        if target == source {
+            return;
+        }
+        let to = target.clone();
+        let copied = cx
+            .background_executor()
+            .spawn(async move { std::fs::copy(&source, &to) })
+            .await;
+        match copied {
+            Ok(_) => log::info!("saved the recording as {}", target.display()),
+            Err(e) => {
+                log::error!("could not save {}: {e}", target.display());
+                state.notify(
+                    "Could not save the recording",
+                    format!("{} could not be written: {e}", target.display()),
+                    None,
+                );
+            }
+        }
+    })
+    .detach();
 }
 
 /// Hand the screenshot the main window shows to another program, through

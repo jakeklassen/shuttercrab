@@ -45,6 +45,10 @@ struct Seen {
     players: RefCell<Vec<FakePlayer>>,
     /// The files shown in their folders.
     reveals: RefCell<Vec<PathBuf>>,
+    /// The recordings copied, saved as and opened with another program.
+    file_copies: RefCell<Vec<PathBuf>>,
+    file_saves: RefCell<Vec<PathBuf>>,
+    file_opens: RefCell<Vec<PathBuf>>,
 }
 
 /// The player's end of a recording's link, which the tests drive.
@@ -86,6 +90,7 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
     let (s6, s7, s8) = (seen.clone(), seen.clone(), seen.clone());
     let (s9, s10, s11) = (seen.clone(), seen.clone(), seen.clone());
     let (s12, s13) = (seen.clone(), seen.clone());
+    let (s14, s15, s16) = (seen.clone(), seen.clone(), seen.clone());
     let hooks = Rc::new(MainHooks {
         settings: Rc::new(Hooks {
             settings: settings.clone(),
@@ -122,6 +127,14 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
             link
         }),
         reveal: Rc::new(move |path, _| s13.reveals.borrow_mut().push(path.to_path_buf())),
+        copy_file: Rc::new(move |path, _| {
+            s14.file_copies.borrow_mut().push(path.to_path_buf());
+            gpui_kit::Task::ready(true)
+        }),
+        save_file_as: Rc::new(move |path, _| s15.file_saves.borrow_mut().push(path.to_path_buf())),
+        open_file_with: Rc::new(move |path, _| {
+            s16.file_opens.borrow_mut().push(path.to_path_buf())
+        }),
     });
     let out = Rc::new(RefCell::new(None));
     let slot = out.clone();
@@ -1511,4 +1524,77 @@ fn a_recording_that_cannot_play_says_so(cx: &mut TestAppContext) {
         assert!(window.try_find("play-bar").is_none());
         assert!(window.try_find("video").is_some());
     });
+}
+
+#[gpui_kit::test]
+fn a_recording_copies_saves_and_opens_as_its_file(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    show_recording(cx, &opened, (2800, 1600));
+    let file = PathBuf::from("Recording 2026-10-07 14-00-00.mp4");
+    press(cx, &opened, &["ctrl-c", "ctrl-s"]);
+    update(cx, &opened, |window, cx| {
+        window.click("copy", cx);
+        window.click("save-as", cx);
+    });
+    assert_eq!(
+        *opened.seen.file_copies.borrow(),
+        [file.clone(), file.clone()]
+    );
+    assert_eq!(
+        *opened.seen.file_saves.borrow(),
+        [file.clone(), file.clone()]
+    );
+    // The screenshot's own hooks are not used.
+    assert_eq!((opened.seen.copies.get(), opened.seen.saves.get()), (0, 0));
+    // The ⋯ menu offers Open with, but not Paint.
+    update(cx, &opened, |window, cx| window.click("more", cx));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("more-2").is_some());
+        assert!(window.try_find("more-4").is_none());
+    });
+    update(cx, &opened, |window, cx| window.click("more-2", cx));
+    assert_eq!(*opened.seen.file_opens.borrow(), [file]);
+    press(cx, &opened, &["e"]);
+    assert_eq!(opened.seen.paints.get(), 0);
+}
+
+#[gpui_kit::test]
+fn undo_opens_a_closed_recording_again_where_it_was(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    show_recording(cx, &opened, (2800, 1600));
+    loaded(cx, &opened, 20);
+    send(cx, &opened, [Update::Position(Duration::from_secs(7))]);
+    update(cx, &opened, |window, cx| window.click("clear", cx));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("video").is_none());
+        assert!(window.try_find("unclear").is_some());
+    });
+    press(cx, &opened, &["ctrl-z"]);
+    assert!(
+        opened
+            .view
+            .read_with(cx, |view, _| view.recording().is_some())
+    );
+    // A new player, the window put back, and once the file is open,
+    // playing goes back to where it was.
+    assert_eq!(opened.seen.players.borrow().len(), 2);
+    assert_eq!(opened.seen.places.borrow().last(), Some(&WHERE_IT_WAS));
+    commands(&opened);
+    loaded(cx, &opened, 20);
+    assert!(commands(&opened).contains(&Command::Seek(Duration::from_secs(7))));
+
+    // A new capture: Undo has nothing to bring back.
+    press(cx, &opened, &["ctrl-w"]);
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(400, 300), window, cx));
+    });
+    press(cx, &opened, &["ctrl-w", "ctrl-w"]);
+    press(cx, &opened, &["ctrl-z"]);
+    assert!(
+        opened
+            .view
+            .read_with(cx, |view, _| view.recording().is_none())
+    );
 }

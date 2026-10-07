@@ -132,8 +132,11 @@ pub type FolderHook = Rc<dyn Fn(Option<&Shot>, &mut App)>;
 /// Opens a recording for playing: the window's end of its player.
 pub type RecordingHook = Rc<dyn Fn(&Path) -> crate::playback::PlayerLink>;
 
-/// Shows a file in its folder, selected.
-pub type RevealHook = Rc<dyn Fn(&Path, &mut App)>;
+/// Acts on a file: the recording shown.
+pub type FileHook = Rc<dyn Fn(&Path, &mut App)>;
+
+/// Copies a file, resolving to whether it was copied.
+pub type CopyFileHook = Rc<dyn Fn(&Path, &mut App) -> Task<bool>>;
 
 /// A screenshot the window shows.
 #[derive(Clone)]
@@ -211,8 +214,15 @@ pub struct MainHooks {
     pub restore_place: RestoreHook,
     /// Open a recording to play in the window.
     pub open_recording: RecordingHook,
-    /// Show a file in its folder, selected.
-    pub reveal: RevealHook,
+    /// Show the recording shown in its folder, selected.
+    pub reveal: FileHook,
+    /// Copy the recording shown to the clipboard as a file, as Explorer
+    /// does; resolves to whether it was copied.
+    pub copy_file: CopyFileHook,
+    /// Ask where to save a copy of the recording shown, and save it there.
+    pub save_file_as: FileHook,
+    /// Ask which program should open the recording shown, and open it.
+    pub open_file_with: FileHook,
 }
 
 /// Where a window is: its outer bounds, physical virtual-desktop pixels.
@@ -278,18 +288,18 @@ enum More {
 }
 
 impl More {
-    /// The items, with or without a screenshot shown.
-    fn items(shot: bool) -> &'static [More] {
-        if shot {
-            &[
+    /// The items, with a screenshot shown, a recording, or neither.
+    fn items(shot: bool, recording: bool) -> &'static [More] {
+        match (shot, recording) {
+            (true, _) => &[
                 More::Settings,
                 More::OpenFolder,
                 More::EditInPaint,
                 More::OpenWith,
                 More::Quit,
-            ]
-        } else {
-            &[More::Settings, More::OpenFolder, More::Quit]
+            ],
+            (false, true) => &[More::Settings, More::OpenFolder, More::OpenWith, More::Quit],
+            (false, false) => &[More::Settings, More::OpenFolder, More::Quit],
         }
     }
 
@@ -363,6 +373,9 @@ pub struct MainWindow {
     /// of those shown, which tells their players' updates apart.
     video: Option<video::Video>,
     videos: u64,
+    /// The recording Clear closed, which Undo opens again until the next
+    /// capture.
+    closed: Option<video::Closed>,
     /// The drawing tools are in the bar at the bottom: the window is too
     /// narrow for one row. Set as each frame is drawn.
     tools_below: bool,
@@ -434,6 +447,7 @@ impl MainWindow {
             shown: None,
             video: None,
             videos: 0,
+            closed: None,
             tools_below: false,
             folded: false,
             cleared: None,
@@ -496,6 +510,7 @@ impl MainWindow {
         if let Some((cleared, _)) = self.cleared.take() {
             cleared.release(window);
         }
+        self.closed = None;
         self.page = Page::Home;
         self.settings = None;
         self.menu = None;
@@ -530,11 +545,11 @@ impl MainWindow {
     /// Bring back the screenshot Clear took away. Returns whether there was
     /// one.
     pub(super) fn unclear(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.shown.is_some() {
+        if self.shown.is_some() || self.video.is_some() {
             return false;
         }
         let Some((shown, place)) = self.cleared.take() else {
-            return false;
+            return self.reopen_recording(window, cx);
         };
         self.shown = Some(shown);
         // Exactly where it was, at the size it was: fitting it afresh
@@ -677,13 +692,15 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// Copy the screenshot shown; once it is on the clipboard, Copy shows a
-    /// check mark for a moment, as Snipping Tool's does.
+    /// Copy the screenshot shown, or the recording's file; once it is on the
+    /// clipboard, Copy shows a check mark for a moment, as Snipping Tool's
+    /// does.
     fn copy(&mut self, cx: &mut Context<Self>) {
-        let Some(shot) = self.marked_shot() else {
-            return;
+        let done = match (&self.video, self.marked_shot()) {
+            (Some(video), _) => (self.hooks.copy_file)(&video.path, cx),
+            (None, Some(shot)) => (self.hooks.copy)(&shot, cx),
+            (None, None) => return,
         };
-        let done = (self.hooks.copy)(&shot, cx);
         cx.spawn(async move |this, cx| {
             if !done.await {
                 return;
@@ -709,7 +726,10 @@ impl MainWindow {
     }
 
     fn save_as(&mut self, cx: &mut Context<Self>) {
-        self.with_shot(cx, |hooks| &hooks.save_as);
+        match &self.video {
+            Some(video) => (self.hooks.save_file_as)(&video.path, cx),
+            None => self.with_shot(cx, |hooks| &hooks.save_as),
+        }
     }
 
     /// Call the hook `which` picks with the screenshot shown, if any.
@@ -750,7 +770,7 @@ impl MainWindow {
     fn menu_len(&self, menu: Menu) -> usize {
         match menu {
             Menu::Delay => self.delay().1.len(),
-            Menu::More => More::items(self.shown.is_some()).len(),
+            Menu::More => More::items(self.shown.is_some(), self.video.is_some()).len(),
             Menu::Target => self.offered_targets().len(),
         }
     }
@@ -764,7 +784,10 @@ impl MainWindow {
                 None => (self.hooks.open_folder)(self.shot(), cx),
             },
             More::EditInPaint => self.with_shot(cx, |hooks| &hooks.edit_in_paint),
-            More::OpenWith => self.with_shot(cx, |hooks| &hooks.open_with),
+            More::OpenWith => match &self.video {
+                Some(video) => (self.hooks.open_file_with)(&video.path, cx),
+                None => self.with_shot(cx, |hooks| &hooks.open_with),
+            },
             More::Quit => (self.hooks.quit)(cx),
         }
         cx.notify();
@@ -778,7 +801,7 @@ impl MainWindow {
                 self.set_delay(choices[self.highlighted.min(choices.len() - 1)], cx);
             }
             Menu::More => {
-                let items = More::items(self.shown.is_some());
+                let items = More::items(self.shown.is_some(), self.video.is_some());
                 self.choose_more(items[self.highlighted.min(items.len() - 1)], window, cx)
             }
             Menu::Target => {
@@ -1178,7 +1201,7 @@ impl MainWindow {
             Menu::More => {
                 let saved =
                     self.shot().is_some_and(|shot| shot.saved.is_some()) || self.video.is_some();
-                More::items(self.shown.is_some())
+                More::items(self.shown.is_some(), self.video.is_some())
                     .iter()
                     .map(|m| {
                         let key = self.shown_key(m.key());
@@ -1333,18 +1356,33 @@ impl MainWindow {
                 self.shown.is_some() && !self.is_cropping() && !self.tools_below,
                 |d| d.child(self.drawing_tools(true, cx)),
             )
+            // A recording has nothing to draw with: only Clear.
+            .when(self.video.is_some(), |d| {
+                d.child(div().w(px(1.)).h(px(28.)).mx_1().bg(border()))
+                    .child(Self::history_button(
+                        "clear",
+                        "Clear (Ctrl+W)",
+                        IconName::X,
+                        true,
+                        cx,
+                        Self::clear,
+                    ))
+            })
             .child(div().flex_1())
             .when_some(zoom, |d, zoom| d.child(Self::zoom_button(zoom, cx)))
-            .when(self.shown.is_some() && !self.is_cropping(), |d| {
-                d.child(self.copy_button(cx)).child(Self::shot_button(
-                    "save-as",
-                    "Save as",
-                    IconName::Save,
-                    "Ctrl+S",
-                    cx,
-                    Self::save_as,
-                ))
-            })
+            .when(
+                (self.shown.is_some() && !self.is_cropping()) || self.video.is_some(),
+                |d| {
+                    d.child(self.copy_button(cx)).child(Self::shot_button(
+                        "save-as",
+                        "Save as",
+                        IconName::Save,
+                        "Ctrl+S",
+                        cx,
+                        Self::save_as,
+                    ))
+                },
+            )
             .child(self.more_button(cx))
     }
 
@@ -1379,6 +1417,13 @@ impl MainWindow {
     }
 
     fn hint(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let back = if self.cleared.is_some() {
+            Some("Bring the screenshot back")
+        } else if self.can_reopen() {
+            Some("Bring the recording back")
+        } else {
+            None
+        };
         let (bar, area) = {
             let settings = self.settings();
             (
@@ -1422,12 +1467,12 @@ impl MainWindow {
                     }),
             )
             // Just cleared: the way back.
-            .when(self.cleared.is_some(), |d| {
+            .when_some(back, |d, back| {
                 d.child(
                     div()
                         .id("unclear")
                         .role(Role::Button)
-                        .aria_label("Bring the screenshot back (Ctrl+Z)")
+                        .aria_label(format!("{back} (Ctrl+Z)"))
                         .test_support()
                         .mt_2()
                         .flex()
@@ -1444,7 +1489,7 @@ impl MainWindow {
                             this.unclear(window, cx);
                         }))
                         .child(Icon::new(IconName::Undo2).size(px(14.)))
-                        .child("Bring the screenshot back")
+                        .child(back)
                         .child(div().text_color(muted()).child("Ctrl+Z")),
                 )
             })

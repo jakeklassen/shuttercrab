@@ -540,7 +540,7 @@ impl MainWindow {
     }
 
     /// Undo or redo, dimmed when there is nothing to undo or redo.
-    fn history_button(
+    pub(super) fn history_button(
         id: &'static str,
         label: &'static str,
         icon: IconName,

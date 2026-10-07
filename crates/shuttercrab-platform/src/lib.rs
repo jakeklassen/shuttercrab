@@ -31,6 +31,7 @@ use anyhow::{Context, Result, anyhow};
 use futures::channel::{mpsc, oneshot};
 use std::{
     cell::RefCell,
+    path::PathBuf,
     sync::{
         Arc,
         mpsc::{Receiver, Sender, channel},
@@ -129,6 +130,10 @@ enum Command {
         height: u32,
         reply: oneshot::Sender<Result<()>>,
     },
+    CopyFiles {
+        paths: Vec<PathBuf>,
+        reply: oneshot::Sender<Result<()>>,
+    },
     SetHotkeys(Vec<(u32, Hotkey)>, oneshot::Sender<Vec<HotkeyConflict>>),
     SetMenu(Vec<MenuItem>),
     Notify {
@@ -213,6 +218,21 @@ impl Platform {
             height,
             reply,
         });
+        async move {
+            if !sent {
+                return Err(anyhow!("the platform thread stopped"));
+            }
+            answer
+                .await
+                .unwrap_or_else(|_| Err(anyhow!("the platform thread stopped")))
+        }
+    }
+
+    /// Put files on the clipboard, as Explorer's Copy does. Retries briefly
+    /// if another application holds the clipboard.
+    pub fn copy_files(&self, paths: Vec<PathBuf>) -> impl Future<Output = Result<()>> + use<> {
+        let (reply, answer) = oneshot::channel();
+        let sent = self.send(Command::CopyFiles { paths, reply });
         async move {
             if !sent {
                 return Err(anyhow!("the platform thread stopped"));
@@ -506,6 +526,9 @@ fn run(
                         } => {
                             let _ =
                                 reply.send(clipboard::write(window, &png, &rgba, width, height));
+                        }
+                        Command::CopyFiles { paths, reply } => {
+                            let _ = reply.send(clipboard::write_files(window, &paths));
                         }
                         Command::SetHotkeys(new, reply) => {
                             unregister_hotkeys(window, &hotkeys);
