@@ -11,7 +11,11 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- record only the recorded window's app's sound
+- In a window recording, the system sound can be only that window's app: a game or a video, without your music, calls or notifications. Beside the speaker switch on the recording bar, "This app" or "All sound" (B) chooses, before and while recording; Settings > Sound sets which it starts with (this app, by default).
+
+### Fixed
+
+- Recordings with all system sound had the sound about a fifth of a second behind the picture. It is in sync now, and switching between this app's sound and all of it leaves no gap.
 
 ## [0.1.19](https://github.com/jakeklassen/shuttercrab/compare/v0.1.18...v0.1.19) - 2026-10-07
 
