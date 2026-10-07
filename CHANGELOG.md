@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.19](https://github.com/jakeklassen/shuttercrab/compare/v0.1.18...v0.1.19) - 2026-10-07
+
+### Added
+
+- a toolbar that fits narrow windows, as Snipping Tool's does
+- clear the screenshot shown, and bring it back with Undo
+
 ## [0.1.18](https://github.com/jakeklassen/shuttercrab/compare/v0.1.17...v0.1.18) - 2026-10-07
 
 ### Added
