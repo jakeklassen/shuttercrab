@@ -18,9 +18,10 @@ use crate::{
 };
 use futures::StreamExt as _;
 use gpui_kit::{
-    AppContext as _, ClickEvent, Context, Div, Entity, InteractiveElement as _, IntoElement,
-    MouseButton, MouseDownEvent, ParentElement as _, RenderImage, Role, Stateful,
-    StatefulInteractiveElement as _, Styled as _, Subscription, Task, TestSupportExt as _, Window,
+    Animation, AnimationExt as _, AppContext as _, ClickEvent, Context, Div, Entity,
+    InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent, MouseMoveEvent,
+    ParentElement as _, RenderImage, Role, SharedString, Stateful, StatefulInteractiveElement as _,
+    Styled as _, Subscription, Task, TestSupportExt as _, Window,
     assets::IconName,
     component::{
         Icon,
@@ -45,6 +46,11 @@ const SEEK_RANGE: f32 = 1000.;
 const BAR_HEIGHT: f32 = 64.;
 const BAR_WIDTH: f32 = 760.;
 const BAR_GAP: f32 = 16.;
+
+/// How long the play bar stays while playing with the pointer still, and
+/// how long it takes to fade.
+const BAR_IDLE: Duration = Duration::from_millis(2500);
+const BAR_FADE: Duration = Duration::from_millis(300);
 
 /// A recording the window shows.
 pub(super) struct Video {
@@ -74,6 +80,13 @@ pub(super) struct Video {
     scrubbing: bool,
     /// Where to go once the file is open: where a reopened recording was.
     start_at: Option<Duration>,
+    /// The play bar has faded: playing, with the pointer still. A count of
+    /// wakes, so each fade is its own animation, and the pointer is over
+    /// the bar, which keeps it.
+    idle: bool,
+    wakes: u64,
+    bar_hovered: bool,
+    _idle_timer: Option<Task<()>>,
     _updates: Task<()>,
     _sliders: [Subscription; 2],
 }
@@ -235,6 +248,10 @@ impl MainWindow {
             volume_open: false,
             scrubbing: false,
             start_at: None,
+            idle: false,
+            wakes: 0,
+            bar_hovered: false,
+            _idle_timer: None,
             _updates: task,
             _sliders: sliders,
         });
@@ -342,7 +359,10 @@ impl MainWindow {
                         .update(cx, |slider, cx| slider.set_value(value, window, cx));
                 }
             }
-            Update::Playing(playing) => video.playing = playing,
+            Update::Playing(playing) => {
+                video.playing = playing;
+                self.wake_bar(cx);
+            }
             Update::Ended => video.playing = false,
             Update::Failed(why) => video.failed = Some(why),
         }
@@ -361,6 +381,9 @@ impl MainWindow {
         video.scrubbing = !done;
         video.position = at;
         video.link.send(Command::Seek(at));
+        if done {
+            self.wake_bar(cx);
+        }
         cx.notify();
     }
 
@@ -433,6 +456,7 @@ impl MainWindow {
             video.volume_open = !video.volume_open;
             cx.notify();
         }
+        self.wake_bar(cx);
     }
 
     /// Close the volume's slider. Returns whether it was open.
@@ -476,7 +500,51 @@ impl MainWindow {
             "escape" if self.close_volume() => cx.notify(),
             _ => return false,
         }
+        self.wake_bar(cx);
         true
+    }
+
+    /// Show the play bar, and while playing, fade it again once the pointer
+    /// and the keys have been still for a moment, as Snipping Tool does.
+    fn wake_bar(&mut self, cx: &mut Context<Self>) {
+        let Some(video) = self.video.as_mut() else {
+            return;
+        };
+        if video.idle {
+            video.idle = false;
+            cx.notify();
+        }
+        video.wakes += 1;
+        let wake = video.wakes;
+        video._idle_timer = video.playing.then(|| {
+            cx.spawn(async move |this, cx| {
+                cx.background_executor().timer(BAR_IDLE).await;
+                let _ = this.update(cx, |this, cx| this.idle_bar(wake, cx));
+            })
+        });
+    }
+
+    /// Fade the play bar, unless something since `wake` keeps it: the
+    /// pointer moving or over it, a key, a drag, the volume's slider, or a
+    /// pause.
+    fn idle_bar(&mut self, wake: u64, cx: &mut Context<Self>) {
+        let Some(video) = self.video.as_mut() else {
+            return;
+        };
+        let kept = video.wakes != wake
+            || !video.playing
+            || video.bar_hovered
+            || video.volume_open
+            || video.scrubbing;
+        if !kept {
+            video.idle = true;
+            cx.notify();
+        }
+    }
+
+    /// The play bar has faded.
+    pub fn is_bar_hidden(&self) -> bool {
+        self.video.as_ref().is_some_and(|video| video.idle)
     }
 
     /// Move the volume's slider to the volume set.
@@ -533,15 +601,27 @@ impl MainWindow {
                 .child("This recording can't be played.")
                 .child(div().text_xs().text_color(muted()).child(why))
         });
+        let (idle, wakes) = (video.idle, video.wakes);
         let bar = video.failed.is_none().then(|| {
-            div()
+            let bar = div()
                 .absolute()
                 .bottom(px(BAR_GAP))
                 .left(px(0.))
                 .right(px(0.))
                 .flex()
                 .justify_center()
-                .child(self.play_bar((area.x - 2. * BAR_GAP).min(BAR_WIDTH), cx))
+                .child(self.play_bar((area.x - 2. * BAR_GAP).min(BAR_WIDTH), cx));
+            if idle {
+                // A new id per fade, so each one runs afresh.
+                bar.with_animation(
+                    SharedString::from(format!("bar-fade-{wakes}")),
+                    Animation::new(BAR_FADE),
+                    |bar, delta| bar.opacity(1. - delta),
+                )
+                .into_any_element()
+            } else {
+                bar.into_any_element()
+            }
         });
         div()
             .id("video")
@@ -552,6 +632,7 @@ impl MainWindow {
             .flex_1()
             .min_h_0()
             .overflow_hidden()
+            .on_mouse_move(cx.listener(|this, _: &MouseMoveEvent, _, cx| this.wake_bar(cx)))
             .children(picture)
             .children(failed)
             .children(bar)
@@ -575,6 +656,12 @@ impl MainWindow {
             .role(Role::Toolbar)
             .aria_label("Playback")
             .test_support()
+            .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
+                if let Some(video) = &mut this.video {
+                    video.bar_hovered = *hovered;
+                }
+                this.wake_bar(cx);
+            }))
             .relative()
             .flex()
             .items_center()

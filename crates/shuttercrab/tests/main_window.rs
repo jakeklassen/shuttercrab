@@ -5,7 +5,8 @@
 #![cfg(windows)]
 
 use gpui_kit::{
-    App, AppContext as _, Entity, TestAppContext, Window, component::Root, test::TestWindowExt as _,
+    App, AppContext as _, Entity, InputEvent as _, TestAppContext, Window, component::Root,
+    test::TestWindowExt as _,
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
@@ -1597,4 +1598,47 @@ fn undo_opens_a_closed_recording_again_where_it_was(cx: &mut TestAppContext) {
             .view
             .read_with(cx, |view, _| view.recording().is_none())
     );
+}
+
+#[gpui_kit::test]
+fn the_play_bar_fades_while_playing_and_comes_back_when_moved(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    show_recording(cx, &opened, (2800, 1600));
+    loaded(cx, &opened, 60);
+    let hidden =
+        |cx: &mut TestAppContext| opened.view.read_with(cx, |view, _| view.is_bar_hidden());
+    let wait = |cx: &mut TestAppContext| {
+        cx.executor().advance_clock(Duration::from_millis(2600));
+        cx.run_until_parked();
+    };
+    // Paused, it stays.
+    wait(cx);
+    assert!(!hidden(cx));
+
+    send(cx, &opened, [Update::Playing(true)]);
+    wait(cx);
+    assert!(hidden(cx));
+    // A key brings it back, for a while.
+    press(cx, &opened, &["right"]);
+    assert!(!hidden(cx));
+    wait(cx);
+    assert!(hidden(cx));
+    // So does the pointer moving over the recording.
+    update(cx, &opened, |window, cx| {
+        let video = window.find("video").bounds();
+        window.dispatch_event(
+            gpui_kit::MouseMoveEvent {
+                position: video.center(),
+                pressed_button: None,
+                modifiers: Default::default(),
+            }
+            .to_platform_input(),
+            cx,
+        );
+    });
+    assert!(!hidden(cx));
+    // Paused again, it stays.
+    send(cx, &opened, [Update::Playing(false)]);
+    wait(cx);
+    assert!(!hidden(cx));
 }
