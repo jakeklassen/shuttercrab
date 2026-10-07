@@ -14,6 +14,38 @@ use windows::Win32::{
     },
 };
 
+/// The window's outer bounds, physical virtual-desktop pixels:
+/// `(x, y, width, height)`, as [`place`] takes them.
+pub fn outer_bounds(hwnd: isize) -> Result<(i32, i32, u32, u32)> {
+    let mut rect = RECT::default();
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(HWND(hwnd as _), &mut rect) }
+        .context("GetWindowRect failed")?;
+    Ok((
+        rect.left,
+        rect.top,
+        (rect.right - rect.left) as u32,
+        (rect.bottom - rect.top) as u32,
+    ))
+}
+
+/// Put the window at `bounds` (as [`outer_bounds`] gave them), without
+/// taking the keyboard or changing which windows are in front.
+pub fn place(hwnd: isize, (x, y, width, height): (i32, i32, u32, u32)) -> Result<()> {
+    use windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER;
+    unsafe {
+        SetWindowPos(
+            HWND(hwnd as _),
+            None,
+            x,
+            y,
+            width as i32,
+            height as i32,
+            SWP_NOZORDER | SWP_NOACTIVATE,
+        )
+    }
+    .context("SetWindowPos failed")
+}
+
 /// The monitor (its `HMONITOR`) most of `hwnd` is on.
 pub fn monitor_of(hwnd: isize) -> u64 {
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};

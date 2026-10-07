@@ -166,7 +166,26 @@ pub struct MainHooks {
     /// Size the window's client area to this many physical pixels, as far
     /// as its monitor allows.
     pub fit_window: FitHook,
+    /// Where the window is, so it can be put back there exactly.
+    pub window_place: PlaceHook,
+    /// Put the window back where [`MainHooks::window_place`] said it was.
+    pub restore_place: RestoreHook,
 }
+
+/// Where a window is: its outer bounds, physical virtual-desktop pixels.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct Place {
+    pub x: i32,
+    pub y: i32,
+    pub width: u32,
+    pub height: u32,
+}
+
+/// Says where the window is.
+pub type PlaceHook = Rc<dyn Fn(&Window) -> Option<Place>>;
+
+/// Puts the window back where it was.
+pub type RestoreHook = Rc<dyn Fn(&mut Window, &mut App, Place)>;
 
 /// Sizes the window's client area.
 pub type FitHook = Rc<dyn Fn(&mut Window, &mut App, Fit)>;
@@ -295,6 +314,9 @@ pub struct MainWindow {
     highlighted: usize,
     /// The screenshot shown on the home page, if any.
     shown: Option<Shown>,
+    /// The screenshot Clear took away, with its marks, and where the window
+    /// was then: Undo brings both back until the next capture.
+    cleared: Option<(Shown, Option<Place>)>,
     /// Copy shows its check mark: the screenshot was just copied.
     copied: bool,
     /// Counts copies, so the check mark's timer knows whether a later copy
@@ -354,6 +376,7 @@ impl MainWindow {
             menu: None,
             highlighted: 0,
             shown: None,
+            cleared: None,
             copied: false,
             copies: 0,
             hand: None,
@@ -406,12 +429,55 @@ impl MainWindow {
         if let Some(previous) = self.shown.replace(shown) {
             previous.release(window);
         }
+        // A new capture: the cleared one can no longer come back.
+        if let Some((cleared, _)) = self.cleared.take() {
+            cleared.release(window);
+        }
         self.page = Page::Home;
         self.settings = None;
         self.menu = None;
         self.fit_home(window, cx);
         window.focus(&self.focus, cx);
         cx.notify();
+    }
+
+    /// Clear the screenshot shown, back to the start view. It is kept, with
+    /// its marks, so Undo brings it back, until the next capture.
+    pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        let Some(mut shown) = self.shown.take() else {
+            return;
+        };
+        // It comes back as it was drawn, not mid-crop or mid-drag.
+        shown.cropping = None;
+        shown.gesture = None;
+        shown.selected = None;
+        let place = (self.hooks.window_place)(window);
+        if let Some((older, _)) = self.cleared.replace((shown, place)) {
+            older.release(window);
+        }
+        self.menu = None;
+        self.fit_home(window, cx);
+        cx.notify();
+    }
+
+    /// Bring back the screenshot Clear took away. Returns whether there was
+    /// one.
+    pub(super) fn unclear(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.shown.is_some() {
+            return false;
+        }
+        let Some((shown, place)) = self.cleared.take() else {
+            return false;
+        };
+        self.shown = Some(shown);
+        // Exactly where it was, at the size it was: fitting it afresh
+        // would centre it on the smaller start view and move it.
+        match place {
+            Some(place) => (self.hooks.restore_place)(window, cx, place),
+            None => self.fit_home(window, cx),
+        }
+        cx.notify();
+        true
     }
 
     /// Size the window for the home page: the toolbar and the hint, or the
@@ -635,6 +701,7 @@ impl MainWindow {
                 "1" => self.zoom(window, cx, |view, canvas| view.zoom_to(1., None, canvas)),
                 "c" => self.copy(cx),
                 "s" => self.save_as(cx),
+                "w" => self.clear(window, cx),
                 "z" if keystroke.modifiers.shift => self.redo(window, cx),
                 "z" => self.undo(window, cx),
                 "y" => self.redo(window, cx),
@@ -1180,7 +1247,7 @@ impl MainWindow {
             .child(div().text_xs().child(label))
     }
 
-    fn hint(&self) -> impl IntoElement + use<> {
+    fn hint(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let (bar, area) = {
             let settings = self.settings();
             (
@@ -1223,6 +1290,33 @@ impl MainWindow {
                         "Or choose above and click New"
                     }),
             )
+            // Just cleared: the way back.
+            .when(self.cleared.is_some(), |d| {
+                d.child(
+                    div()
+                        .id("unclear")
+                        .role(Role::Button)
+                        .aria_label("Bring the screenshot back (Ctrl+Z)")
+                        .test_support()
+                        .mt_2()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .px_2p5()
+                        .py_1()
+                        .rounded_md()
+                        .text_xs()
+                        .bg(tile())
+                        .hover(|s| s.bg(hover()))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.unclear(window, cx);
+                        }))
+                        .child(Icon::new(IconName::Undo2).size(px(14.)))
+                        .child("Bring the screenshot back")
+                        .child(div().text_color(muted()).child("Ctrl+Z")),
+                )
+            })
     }
 
     /// Which build is running, quietly, so an update is easy to confirm; in
@@ -1390,7 +1484,7 @@ impl Render for MainWindow {
                 .child(self.toolbar(zoom, cx))
                 .map(|d| match &self.shown {
                     Some(shown) => d.child(self.canvas(shown, window, cx)),
-                    None => d.child(self.hint()),
+                    None => d.child(self.hint(cx)),
                 })
                 .child(self.footer(cx)),
         }

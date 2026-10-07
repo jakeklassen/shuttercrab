@@ -279,7 +279,8 @@ impl MainWindow {
         true
     }
 
-    /// The pen, highlighter and eraser, then undo and redo, for the toolbar.
+    /// The pen, highlighter and eraser, then undo, redo and clear, for the
+    /// toolbar.
     pub(super) fn drawing_tools(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let marks = self.shown.as_ref().map(|shown| &shown.marks);
         let (can_undo, can_redo) = marks.map_or((false, false), |m| (m.can_undo(), m.can_redo()));
@@ -311,6 +312,14 @@ impl MainWindow {
                 can_redo,
                 cx,
                 Self::redo,
+            ))
+            .child(Self::history_button(
+                "clear",
+                "Clear (Ctrl+W)",
+                IconName::X,
+                true,
+                cx,
+                Self::clear,
             ))
     }
 

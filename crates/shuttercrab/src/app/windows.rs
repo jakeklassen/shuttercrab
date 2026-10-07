@@ -8,7 +8,7 @@ use super::{
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
     files,
-    main_window::{self, MainHooks, MainWindow, Page, Shot},
+    main_window::{self, MainHooks, MainWindow, Page, Place, Shot},
     markup, pixels, popup,
     settings_window::{Diagnostics, Hooks},
 };
@@ -214,6 +214,32 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
                 shuttercrab_platform::open::open_with(path);
                 Ok(())
             })
+        }),
+        window_place: Rc::new(|window| {
+            let hwnd = popup::raw_hwnd(window)?;
+            let (x, y, width, height) = platform_window::outer_bounds(hwnd)
+                .inspect_err(|e| log::warn!("could not read where the window is: {e:#}"))
+                .ok()?;
+            Some(Place {
+                x,
+                y,
+                width,
+                height,
+            })
+        }),
+        restore_place: Rc::new(|window, cx, place| {
+            let Some(hwnd) = popup::raw_hwnd(window) else {
+                return;
+            };
+            // After this update, as for fitting.
+            cx.foreground_executor()
+                .spawn(async move {
+                    let bounds = (place.x, place.y, place.width, place.height);
+                    if let Err(e) = platform_window::place(hwnd, bounds) {
+                        log::warn!("could not put the window back: {e:#}");
+                    }
+                })
+                .detach();
         }),
         fit_window: Rc::new(|window, cx, fit| {
             let Some(hwnd) = popup::raw_hwnd(window) else {

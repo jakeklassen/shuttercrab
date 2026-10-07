@@ -619,6 +619,10 @@ impl MainWindow {
     }
 
     pub(super) fn undo(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // With nothing shown, undo a Clear.
+        if self.unclear(window, cx) {
+            return;
+        }
         if let Some(shown) = &mut self.shown {
             // The selected shape stays picked up if undo only changes it.
             if shown.marks.undo_edits() != shown.selected {

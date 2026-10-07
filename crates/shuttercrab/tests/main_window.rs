@@ -9,7 +9,7 @@ use gpui_kit::{
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
-    main_window::{HOME_SIZE, MainHooks, MainWindow, Page, SHOT_MIN_WIDTH, Shot},
+    main_window::{HOME_SIZE, MainHooks, MainWindow, Page, Place, SHOT_MIN_WIDTH, Shot},
     settings::Settings,
     settings_window::{Diagnostics, Hooks},
 };
@@ -34,9 +34,19 @@ struct Seen {
     opens: Cell<u32>,
     /// The client sizes the window was fitted to, physical pixels.
     fits: RefCell<Vec<(u32, u32)>>,
+    /// Where the window was put back to.
+    places: RefCell<Vec<Place>>,
     /// The version the fake updater has ready, if any.
     update: RefCell<Option<String>>,
 }
+
+/// Where the fake window says it is.
+const WHERE_IT_WAS: Place = Place {
+    x: 120,
+    y: 80,
+    width: 1400,
+    height: 1000,
+};
 
 struct Opened {
     handle: gpui_kit::AnyWindowHandle,
@@ -61,7 +71,7 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
     let (s1, s2, s3) = (seen.clone(), seen.clone(), seen.clone());
     let (s4, s5) = (seen.clone(), seen.clone());
     let (s6, s7, s8) = (seen.clone(), seen.clone(), seen.clone());
-    let (s9, s10) = (seen.clone(), seen.clone());
+    let (s9, s10, s11) = (seen.clone(), seen.clone(), seen.clone());
     let hooks = Rc::new(MainHooks {
         settings: Rc::new(Hooks {
             settings: settings.clone(),
@@ -88,6 +98,8 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
         edit_in_paint: Rc::new(move |_, _| s9.paints.set(s9.paints.get() + 1)),
         open_with: Rc::new(move |_, _| s10.opens.set(s10.opens.get() + 1)),
         fit_window: Rc::new(move |_, _, fit| s8.fits.borrow_mut().push((fit.width, fit.height))),
+        window_place: Rc::new(|_| Some(WHERE_IT_WAS)),
+        restore_place: Rc::new(move |_, _, place| s11.places.borrow_mut().push(place)),
     });
     let out = Rc::new(RefCell::new(None));
     let slot = out.clone();
@@ -537,6 +549,58 @@ fn the_pen_draws_and_undo_takes_it_back(cx: &mut TestAppContext) {
     assert_eq!(drawn[1].as_stroke().unwrap().tool, Tool::Highlighter);
     press(cx, &opened, &["escape"]);
     assert_eq!(cx.update(|cx| opened.view.read(cx).tool()), None);
+}
+
+#[gpui_kit::test]
+fn clear_empties_the_window_and_undo_brings_the_screenshot_back(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    let show = |cx: &mut TestAppContext, width, height| {
+        update(cx, &opened, |window, cx| {
+            opened.view.update(cx, |view, cx| {
+                view.show_shot(shot(width, height), window, cx)
+            });
+        })
+    };
+    let shown = |cx: &mut TestAppContext| {
+        cx.update(|cx| opened.view.read(cx).shot().map(|shot| shot.size()))
+    };
+    show(cx, 800, 600);
+    press(cx, &opened, &["p"]);
+    drag_across(cx, &opened, 40.);
+    assert_eq!(marks(cx, &opened).len(), 1);
+
+    // Ctrl+W: back to the start view, with the way back offered.
+    press(cx, &opened, &["ctrl-w"]);
+    assert_eq!(shown(cx), None);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("canvas").is_none());
+        assert!(window.try_find("hint").is_some());
+        assert!(window.try_find("unclear").is_some());
+    });
+    // Undo brings it back, marks and all, and the window exactly where it
+    // was: not fitted again, which would move it.
+    let fits = opened.seen.fits.borrow().len();
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(shown(cx), Some((800, 600)));
+    assert_eq!(marks(cx, &opened).len(), 1);
+    assert_eq!(*opened.seen.places.borrow(), [WHERE_IT_WAS]);
+    assert_eq!(opened.seen.fits.borrow().len(), fits);
+
+    // The button does the same as the key, and so does the way back.
+    update(cx, &opened, |window, cx| window.click("clear", cx));
+    assert_eq!(shown(cx), None);
+    update(cx, &opened, |window, cx| window.click("unclear", cx));
+    assert_eq!(shown(cx), Some((800, 600)));
+
+    // The next capture lets the cleared one go: Undo brings back only the
+    // newer.
+    press(cx, &opened, &["ctrl-w"]);
+    show(cx, 400, 300);
+    press(cx, &opened, &["ctrl-w", "ctrl-z", "ctrl-z"]);
+    assert_eq!(shown(cx), Some((400, 300)));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("unclear").is_none());
+    });
 }
 
 #[gpui_kit::test]
