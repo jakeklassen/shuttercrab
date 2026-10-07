@@ -16,7 +16,10 @@ use windows::{
             },
         },
         Media::MediaFoundation::*,
-        System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
+        System::Com::{
+            CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
+            CoUninitialize,
+        },
     },
     core::{BSTR, Interface, implement},
 };
@@ -49,6 +52,34 @@ pub struct Player {
     picture: Option<Picture>,
     /// The display whose refresh paces the pictures, once asked for.
     output: Option<IDXGIOutput>,
+    /// Last, so it ends after everything above is released.
+    _started: Started,
+}
+
+/// COM and Media Foundation, started for the player's thread; ended when
+/// dropped.
+struct Started {
+    com: bool,
+}
+
+impl Started {
+    fn new() -> Result<Self> {
+        let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+        let started = Self { com };
+        unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) }.context("MFStartup failed")?;
+        Ok(started)
+    }
+}
+
+impl Drop for Started {
+    fn drop(&mut self) {
+        unsafe {
+            let _ = MFShutdown();
+            if self.com {
+                CoUninitialize();
+            }
+        }
+    }
 }
 
 /// A picture size's textures: the one the Media Engine draws into, and the
@@ -62,15 +93,15 @@ struct Picture {
 
 impl Player {
     /// Open `path`, paused at the start. `listener` hears about loading,
-    /// playing and errors, on one of Media Foundation's threads. The calling
-    /// thread must be in COM's multithreaded apartment.
+    /// playing and errors, on one of Media Foundation's threads. The player
+    /// stays on the thread that opens it.
     pub fn open(
         path: &Path,
         listener: impl Fn(PlayerEvent) + Send + Sync + 'static,
     ) -> Result<Self> {
+        let started = Started::new()?;
         let gpu = Gpu::video(None)?;
         unsafe {
-            MFStartup(MF_VERSION, MFSTARTUP_LITE).context("MFStartup failed")?;
             let mut token = 0;
             let mut manager = None;
             MFCreateDXGIDeviceManager(&mut token, &mut manager)?;
@@ -104,6 +135,7 @@ impl Player {
                 _manager: manager,
                 picture: None,
                 output: None,
+                _started: started,
             };
             let wide: Vec<u16> = path.as_os_str().encode_wide().collect();
             player
@@ -241,10 +273,8 @@ impl Drop for Player {
             let _ = self.engine.Shutdown();
         }
         self.picture = None;
+        // Or the driver keeps the decoder's memory: about 300 MB for 4K.
         self.gpu.trim();
-        unsafe {
-            let _ = MFShutdown();
-        }
     }
 }
 

@@ -49,8 +49,11 @@ icon_assets!(
         HandGrab,
         Mic,
         MicOff,
+        Volume1,
         Volume2,
-        VolumeX
+        VolumeX,
+        Play,
+        Pause
     ]
 );
 

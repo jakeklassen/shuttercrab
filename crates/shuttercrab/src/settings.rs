@@ -85,6 +85,12 @@ pub struct Settings {
     pub recording_countdown: u32,
     /// Show a Windows notification when a recording is saved.
     pub notify_after_recording: bool,
+    /// Open each recording in Shuttercrab's window when it is saved, ready
+    /// to play, as Snipping Tool does.
+    pub show_recordings_in_window: bool,
+    /// The player's volume, percent, and whether it is muted, as last set.
+    pub playback_volume: u32,
+    pub playback_muted: bool,
     /// 30 or 60 (PRD §13.1).
     pub record_fps: u32,
     /// The pen's and the highlighter's last colours (`#RRGGBB`) and sizes;
@@ -138,6 +144,9 @@ impl Default for Settings {
             recording_countdown: 0,
             screenshot_delay: 0,
             notify_after_recording: true,
+            show_recordings_in_window: true,
+            playback_volume: 100,
+            playback_muted: false,
             confirm_discard: true,
             undo_seconds: 10,
             pen_color: Brush::PEN.color.to_hex_string(),

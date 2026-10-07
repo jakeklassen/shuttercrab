@@ -676,6 +676,37 @@ impl SettingsWindow {
         )
     }
 
+    /// Where recordings go, and what follows when one is saved.
+    fn recording_files(&self) -> SettingGroup {
+        let folder = self.hooks.clone();
+        SettingGroup::new()
+            .item(heading("Where recordings go", None))
+            .item(SettingItem::new(
+                "Folder",
+                SettingField::render(move |_, _, _| folder_row(folder.clone(), Folder::Recordings)),
+            ))
+            .item(
+                SettingItem::new(
+                    "Open in Shuttercrab's window",
+                    self.switch(
+                        |s| s.show_recordings_in_window,
+                        |s, v| s.show_recordings_in_window = v,
+                    ),
+                )
+                .description("When a recording is saved, ready to play."),
+            )
+            .item(
+                SettingItem::new(
+                    "Show a notification",
+                    self.switch(
+                        |s| s.notify_after_recording,
+                        |s, v| s.notify_after_recording = v,
+                    ),
+                )
+                .description("When a recording is saved; click it to play the file."),
+            )
+    }
+
     /// The Recording page's sound: all off unless switched on.
     fn sound(&self) -> SettingGroup {
         SettingGroup::new()
@@ -739,7 +770,6 @@ impl SettingsWindow {
     }
 
     fn recording(&self) -> SettingPage {
-        let folder = self.hooks.clone();
         let undo_chord = self.hooks.settings.borrow().undo_hotkey.clone();
         let seconds = |s: u32| format!("{s} seconds");
         SettingPage::new("Recording")
@@ -779,26 +809,7 @@ impl SettingsWindow {
                     ),
             )
             .group(self.sound())
-            .group(
-                SettingGroup::new()
-                    .item(heading("Where recordings go", None))
-                    .item(SettingItem::new(
-                        "Folder",
-                        SettingField::render(move |_, _, _| {
-                            folder_row(folder.clone(), Folder::Recordings)
-                        }),
-                    ))
-                    .item(
-                        SettingItem::new(
-                            "Show a notification",
-                            self.switch(
-                                |s| s.notify_after_recording,
-                                |s, v| s.notify_after_recording = v,
-                            ),
-                        )
-                        .description("When a recording is saved; click it to play the file."),
-                    ),
-            )
+            .group(self.recording_files())
             .group(
                 SettingGroup::new()
                     .item(heading(

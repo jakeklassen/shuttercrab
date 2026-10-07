@@ -9,16 +9,22 @@ use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
     files,
     main_window::{self, MainHooks, MainWindow, Page, Place, Shot},
-    markup, pixels, popup,
+    markup, pixels, playback, popup,
     settings_window::{Diagnostics, Hooks},
 };
 use gpui_kit::{
-    App, AppContext as _, AsyncApp, Bounds, Task, TitlebarOptions, Window, WindowBounds,
+    App, AppContext as _, AsyncApp, Bounds, Context, Task, TitlebarOptions, Window, WindowBounds,
     WindowKind, WindowOptions, component::Root,
 };
 use shuttercrab_capture::MonitorInfo;
 use shuttercrab_platform::window as platform_window;
-use std::{cell::RefCell, path::Path, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    cell::RefCell,
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 
 /// The most of the screen's width and height the main window takes for a
 /// big screenshot, which is then scaled down to fit. Like Snipping Tool,
@@ -44,18 +50,49 @@ pub(super) fn open_main(state: &Rc<State>, page: Page, cx: &mut AsyncApp) {
 /// Show `shot` in the main window, opening it if needed, as Snipping Tool
 /// shows a new snip.
 pub(super) fn show_in_main(state: &Rc<State>, shot: Shot, cx: &mut AsyncApp) {
-    open_window(state, Page::Home, Some(shot), cx);
+    open_window(state, Page::Home, Some(Content::Shot(shot)), cx);
+}
+
+/// Show the recording at `path`, `size` physical pixels, in the main
+/// window, opening it if needed, ready to play.
+pub(super) fn show_recording_in_main(
+    state: &Rc<State>,
+    path: PathBuf,
+    size: (u32, u32),
+    cx: &mut AsyncApp,
+) {
+    open_window(state, Page::Home, Some(Content::Recording(path, size)), cx);
+}
+
+/// What the main window opens showing, other than a page.
+enum Content {
+    Shot(Shot),
+    Recording(PathBuf, (u32, u32)),
+}
+
+/// Show `content` in the main window, or `page` without it.
+fn show_content(
+    view: &mut MainWindow,
+    page: Page,
+    content: Option<Content>,
+    window: &mut Window,
+    cx: &mut Context<MainWindow>,
+) {
+    match content {
+        Some(Content::Shot(shot)) => view.show_shot(shot, window, cx),
+        Some(Content::Recording(path, size)) => view.show_recording(path, Some(size), window, cx),
+        None => view.show(page, window, cx),
+    }
 }
 
 /// Open the main window, or bring it forward with the keyboard, on `page`
-/// or showing `shot`.
-fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut AsyncApp) {
+/// or showing `content`.
+fn open_window(state: &Rc<State>, page: Page, mut content: Option<Content>, cx: &mut AsyncApp) {
     let open = state.main_window.borrow().clone();
     if let Some((window, view)) = open
         && let Ok(hwnd) = window.update(cx, |_, window, cx| {
-            view.update(cx, |view, cx| match shot.take() {
-                Some(shot) => view.show_shot(shot, window, cx),
-                None => view.show(page, window, cx),
+            view.update(cx, |view, cx| {
+                show_content(view, page, content.take(), window, cx)
             });
             popup::raw_hwnd(window)
         })
@@ -113,10 +150,7 @@ fn open_window(state: &Rc<State>, page: Page, mut shot: Option<Shot>, cx: &mut A
                 });
                 let view = cx.new(|cx| {
                     let mut view = MainWindow::new(hooks, window, cx);
-                    match shot {
-                        Some(shot) => view.show_shot(shot, window, cx),
-                        None => view.show(page, window, cx),
-                    }
+                    show_content(&mut view, page, content, window, cx);
                     view
                 });
                 slot.replace(Some(view.clone()));
@@ -243,6 +277,8 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
                 })
                 .detach();
         }),
+        open_recording: Rc::new(playback::open),
+        reveal: Rc::new(|path, cx| cx.reveal_path(path)),
         fit_window: Rc::new(|window, cx, fit| {
             let Some(hwnd) = popup::raw_hwnd(window) else {
                 return;

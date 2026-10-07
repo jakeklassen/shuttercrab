@@ -6,6 +6,7 @@ use super::{
     State,
     failure::Failure,
     screenshot::{exclude_from_capture, monitor_info, select},
+    windows::show_recording_in_main,
 };
 use crate::{
     capture_choice::CaptureTarget,
@@ -1451,7 +1452,16 @@ pub(super) fn stop_recording(state: &Rc<State>, cx: &mut AsyncApp) {
     let state = state.clone();
     cx.spawn(async move |cx| {
         let result = finish_recording(recorder, path, cx).await;
+        // Ready to play, as Snipping Tool opens each recording.
+        let opens = result
+            .as_ref()
+            .ok()
+            .filter(|_| state.settings.borrow().show_recordings_in_window)
+            .map(|summary| (summary.path.clone(), (summary.width, summary.height)));
         report_recording(&state, result);
+        if let Some((path, size)) = opens {
+            show_recording_in_main(&state, path, size, cx);
+        }
         heap::log_memory_soon("after a recording", cx);
     })
     .detach();

@@ -10,13 +10,16 @@ use gpui_kit::{
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
     main_window::{HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, Place, SHOT_MIN_WIDTH, Shot},
+    playback::{Command, PlayerLink, Update},
     settings::Settings,
     settings_window::{Diagnostics, Hooks},
 };
 use std::{
     cell::{Cell, RefCell},
+    path::PathBuf,
     rc::Rc,
     sync::Arc,
+    time::Duration,
 };
 
 /// What the fake hooks saw.
@@ -38,6 +41,16 @@ struct Seen {
     places: RefCell<Vec<Place>>,
     /// The version the fake updater has ready, if any.
     update: RefCell<Option<String>>,
+    /// The fake players of the recordings opened, latest last.
+    players: RefCell<Vec<FakePlayer>>,
+    /// The files shown in their folders.
+    reveals: RefCell<Vec<PathBuf>>,
+}
+
+/// The player's end of a recording's link, which the tests drive.
+struct FakePlayer {
+    commands: std::sync::mpsc::Receiver<Command>,
+    updates: futures::channel::mpsc::UnboundedSender<Update>,
 }
 
 /// Where the fake window says it is.
@@ -72,6 +85,7 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
     let (s4, s5) = (seen.clone(), seen.clone());
     let (s6, s7, s8) = (seen.clone(), seen.clone(), seen.clone());
     let (s9, s10, s11) = (seen.clone(), seen.clone(), seen.clone());
+    let (s12, s13) = (seen.clone(), seen.clone());
     let hooks = Rc::new(MainHooks {
         settings: Rc::new(Hooks {
             settings: settings.clone(),
@@ -100,6 +114,14 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
         fit_window: Rc::new(move |_, _, fit| s8.fits.borrow_mut().push((fit.width, fit.height))),
         window_place: Rc::new(|_| Some(WHERE_IT_WAS)),
         restore_place: Rc::new(move |_, _, place| s11.places.borrow_mut().push(place)),
+        open_recording: Rc::new(move |_| {
+            let (link, commands, _, updates) = PlayerLink::new();
+            s12.players
+                .borrow_mut()
+                .push(FakePlayer { commands, updates });
+            link
+        }),
+        reveal: Rc::new(move |path, _| s13.reveals.borrow_mut().push(path.to_path_buf())),
     });
     let out = Rc::new(RefCell::new(None));
     let slot = out.clone();
@@ -1284,4 +1306,209 @@ fn tab_and_shift_tab_move_through_an_open_menu(cx: &mut TestAppContext) {
     update(cx, &opened, |window, cx| window.click("more", cx));
     press(cx, &opened, &["shift-tab", "enter"]);
     assert_eq!(opened.seen.quits.get(), 1);
+}
+
+/// Show a `width` × `height` recording, as the app does when one is saved.
+fn show_recording(cx: &mut TestAppContext, opened: &Opened, size: (u32, u32)) {
+    update(cx, opened, |window, cx| {
+        opened.view.update(cx, |view, cx| {
+            view.show_recording(
+                PathBuf::from("Recording 2026-10-07 14-00-00.mp4"),
+                Some(size),
+                window,
+                cx,
+            )
+        });
+    });
+}
+
+/// Send the latest player `updates`, as the real one would, and let the
+/// window take them.
+fn send(cx: &mut TestAppContext, opened: &Opened, updates: impl IntoIterator<Item = Update>) {
+    {
+        let players = opened.seen.players.borrow();
+        let player = players.last().expect("a recording was opened");
+        for update in updates {
+            player.updates.unbounded_send(update).unwrap();
+        }
+    }
+    cx.run_until_parked();
+}
+
+/// The commands the latest player was sent since last asked.
+fn commands(opened: &Opened) -> Vec<Command> {
+    let players = opened.seen.players.borrow();
+    let player = players.last().expect("a recording was opened");
+    player.commands.try_iter().collect()
+}
+
+/// Load a 2800 × 1600 recording `seconds` long, with its first picture.
+fn loaded(cx: &mut TestAppContext, opened: &Opened, seconds: u64) {
+    send(
+        cx,
+        opened,
+        [
+            Update::Loaded {
+                width: 2800,
+                height: 1600,
+                duration: Duration::from_secs(seconds),
+            },
+            Update::Frame {
+                bgra: vec![60; 40 * 30 * 4],
+                width: 40,
+                height: 30,
+            },
+        ],
+    );
+}
+
+#[gpui_kit::test]
+fn a_recording_opens_paused_and_space_plays_it(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    let mut scale = 1.;
+    update(cx, &opened, |window, _| scale = window.scale_factor());
+    show_recording(cx, &opened, (2800, 1600));
+    // Sized as a screenshot of its size would be, with the footer below.
+    let expected = |logical: f32| (logical * scale).ceil() as u32;
+    assert_eq!(
+        opened.seen.fits.borrow().last().copied(),
+        Some((
+            expected(2800. / scale + 34.),
+            expected(1600. / scale + 34. + 59. + 32.)
+        ))
+    );
+    // At the volume last set, not playing, with pictures asked for at the
+    // size shown.
+    let first = commands(&opened);
+    assert_eq!(first[..2], [Command::Volume(1.), Command::Mute(false)]);
+    assert!(matches!(first[2..], [Command::Size(..)]));
+    loaded(cx, &opened, 10);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("video").is_some());
+        assert!(window.try_find("play-bar").is_some());
+        assert!(window.try_find("hint").is_none());
+        // No drawing on a recording.
+        assert!(window.try_find("tool-pen").is_none());
+    });
+    // The same size: nothing more to ask.
+    assert_eq!(commands(&opened), []);
+
+    press(cx, &opened, &["space"]);
+    assert_eq!(commands(&opened), [Command::Play]);
+    send(cx, &opened, [Update::Playing(true)]);
+    assert!(opened.view.read_with(cx, |view, _| view.is_playing()));
+    update(cx, &opened, |window, cx| window.click("play", cx));
+    assert_eq!(commands(&opened), [Command::Pause]);
+}
+
+#[gpui_kit::test]
+fn arrows_home_and_end_move_through_the_recording(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    show_recording(cx, &opened, (2800, 1600));
+    loaded(cx, &opened, 12);
+    commands(&opened);
+    press(
+        cx,
+        &opened,
+        &["right", "right", "right", "left", "end", "home"],
+    );
+    let seeks: Vec<_> = commands(&opened)
+        .into_iter()
+        .filter_map(|c| match c {
+            Command::Seek(at) => Some(at.as_secs()),
+            _ => None,
+        })
+        .collect();
+    // Five seconds a press, but no further than the end.
+    assert_eq!(seeks, [5, 10, 12, 7, 12, 0]);
+}
+
+#[gpui_kit::test]
+fn the_volume_has_keys_and_a_slider_and_is_remembered(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    show_recording(cx, &opened, (2800, 1600));
+    loaded(cx, &opened, 10);
+    commands(&opened);
+    press(cx, &opened, &["down", "down"]);
+    assert_eq!(opened.settings.borrow().playback_volume, 90);
+    assert!(commands(&opened).contains(&Command::Volume(0.9)));
+    press(cx, &opened, &["m"]);
+    assert!(opened.settings.borrow().playback_muted);
+    assert!(commands(&opened).contains(&Command::Mute(true)));
+    // Turning it up unmutes.
+    press(cx, &opened, &["up"]);
+    assert_eq!(opened.settings.borrow().playback_volume, 95);
+    assert!(!opened.settings.borrow().playback_muted);
+
+    update(cx, &opened, |window, cx| window.click("volume", cx));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("volume-flyout").is_some());
+    });
+    // Escape closes the slider, and only that.
+    press(cx, &opened, &["escape"]);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("volume-flyout").is_none());
+        assert!(window.try_find("video").is_some());
+    });
+
+    // The next recording opens at the volume set.
+    show_recording(cx, &opened, (2800, 1600));
+    assert_eq!(
+        commands(&opened)[..2],
+        [Command::Volume(0.95), Command::Mute(false)]
+    );
+}
+
+#[gpui_kit::test]
+fn ctrl_w_closes_the_recording_and_a_screenshot_replaces_it(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    show_recording(cx, &opened, (2800, 1600));
+    loaded(cx, &opened, 10);
+    press(cx, &opened, &["ctrl-w"]);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("hint").is_some());
+        assert!(window.try_find("video").is_none());
+    });
+    // Closing it closed its player.
+    assert!(commands(&opened).contains(&Command::Close));
+
+    show_recording(cx, &opened, (2800, 1600));
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(400, 300), window, cx));
+    });
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("canvas").is_some());
+        assert!(window.try_find("video").is_none());
+    });
+    assert!(commands(&opened).contains(&Command::Close));
+    assert!(
+        opened
+            .view
+            .read_with(cx, |view, _| view.recording().is_none())
+    );
+}
+
+#[gpui_kit::test]
+fn the_folder_key_shows_the_recording_in_its_folder(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    show_recording(cx, &opened, (2800, 1600));
+    press(cx, &opened, &["o"]);
+    assert_eq!(
+        *opened.seen.reveals.borrow(),
+        [PathBuf::from("Recording 2026-10-07 14-00-00.mp4")]
+    );
+    assert_eq!(opened.seen.folders.get(), 0);
+}
+
+#[gpui_kit::test]
+fn a_recording_that_cannot_play_says_so(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    show_recording(cx, &opened, (2800, 1600));
+    send(cx, &opened, [Update::Failed("no decoder".into())]);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("play-bar").is_none());
+        assert!(window.try_find("video").is_some());
+    });
 }

@@ -36,6 +36,7 @@ mod emoji;
 mod selection;
 mod shapes;
 mod tools;
+mod video;
 
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
@@ -58,9 +59,15 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     px, rgb,
 };
-use std::{path::PathBuf, rc::Rc, sync::Arc, time::Duration};
+use std::{
+    path::{Path, PathBuf},
+    rc::Rc,
+    sync::Arc,
+    time::Duration,
+};
 use tools::Flyout;
 pub use tools::Hand;
+pub use video::{clock, fitted};
 
 /// The window's size on each page, logical pixels.
 pub const HOME_SIZE: Size<Pixels> = Size {
@@ -121,6 +128,12 @@ const COPIED_FOR: Duration = Duration::from_millis(1500);
 
 /// Opens the screenshots folder, given the screenshot shown, if any.
 pub type FolderHook = Rc<dyn Fn(Option<&Shot>, &mut App)>;
+
+/// Opens a recording for playing: the window's end of its player.
+pub type RecordingHook = Rc<dyn Fn(&Path) -> crate::playback::PlayerLink>;
+
+/// Shows a file in its folder, selected.
+pub type RevealHook = Rc<dyn Fn(&Path, &mut App)>;
 
 /// A screenshot the window shows.
 #[derive(Clone)]
@@ -196,6 +209,10 @@ pub struct MainHooks {
     pub window_place: PlaceHook,
     /// Put the window back where [`MainHooks::window_place`] said it was.
     pub restore_place: RestoreHook,
+    /// Open a recording to play in the window.
+    pub open_recording: RecordingHook,
+    /// Show a file in its folder, selected.
+    pub reveal: RevealHook,
 }
 
 /// Where a window is: its outer bounds, physical virtual-desktop pixels.
@@ -342,9 +359,17 @@ pub struct MainWindow {
     highlighted: usize,
     /// The screenshot shown on the home page, if any.
     shown: Option<Shown>,
+    /// The recording shown on the home page instead, if any, and a count
+    /// of those shown, which tells their players' updates apart.
+    video: Option<video::Video>,
+    videos: u64,
     /// The drawing tools are in the bar at the bottom: the window is too
     /// narrow for one row. Set as each frame is drawn.
     tools_below: bool,
+    /// The targets are folded into one menu: the window is too narrow for
+    /// one row with a screenshot or a recording shown. Set as each frame is
+    /// drawn.
+    folded: bool,
     /// The screenshot Clear took away, with its marks, and where the window
     /// was then: Undo brings both back until the next capture.
     cleared: Option<(Shown, Option<Place>)>,
@@ -407,7 +432,10 @@ impl MainWindow {
             menu: None,
             highlighted: 0,
             shown: None,
+            video: None,
+            videos: 0,
             tools_below: false,
+            folded: false,
             cleared: None,
             copied: false,
             copies: 0,
@@ -461,6 +489,9 @@ impl MainWindow {
         if let Some(previous) = self.shown.replace(shown) {
             previous.release(window);
         }
+        if let Some(video) = self.video.take() {
+            video.release(window);
+        }
         // A new capture: the cleared one can no longer come back.
         if let Some((cleared, _)) = self.cleared.take() {
             cleared.release(window);
@@ -476,6 +507,10 @@ impl MainWindow {
     /// Clear the screenshot shown, back to the start view. It is kept, with
     /// its marks, so Undo brings it back, until the next capture.
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
+        // A recording is saved in its folder already: it just closes.
+        if self.close_recording(window, cx) {
+            return;
+        }
         let Some(mut shown) = self.shown.take() else {
             return;
         };
@@ -515,18 +550,26 @@ impl MainWindow {
     /// Size the window for the home page: the toolbar and the hint, or the
     /// screenshot shown at full size.
     fn fit_home(&self, window: &mut Window, cx: &mut App) {
-        let Some(shot) = self.shot() else {
-            window.resize(HOME_SIZE);
+        let content = match (self.shot(), &self.video) {
+            (Some(shot), _) => Some(shot.size()),
+            (None, Some(video)) => video.size,
+            (None, None) => None,
+        };
+        let Some((width, height)) = content else {
+            // A recording not yet open keeps the window as it is.
+            if self.video.is_none() {
+                window.resize(HOME_SIZE);
+            }
             return;
         };
         let scale = window.scale_factor();
-        let (width, height) = shot.size();
         let least = (SHOT_MIN_WIDTH, f32::from(HOME_SIZE.height));
         // A screenshot pixel per screen pixel, plus the margin on each side.
         let around = 2. * shot_view::MARGIN;
         let width = (width as f32 / scale + around).max(least.0);
-        // Narrower than one row of tools, the tools' bar sits at the bottom.
-        let bottom = if width < WIDE_WIDTH {
+        // Narrower than one row of tools, the tools' bar sits at the bottom;
+        // a recording has none.
+        let bottom = if width < WIDE_WIDTH && self.video.is_none() {
             BOTTOM_BAR_HEIGHT
         } else {
             FOOTER_HEIGHT
@@ -716,7 +759,10 @@ impl MainWindow {
         self.menu = None;
         match item {
             More::Settings => self.show(Page::Settings, window, cx),
-            More::OpenFolder => (self.hooks.open_folder)(self.shot(), cx),
+            More::OpenFolder => match &self.video {
+                Some(video) => (self.hooks.reveal)(&video.path, cx),
+                None => (self.hooks.open_folder)(self.shot(), cx),
+            },
             More::EditInPaint => self.with_shot(cx, |hooks| &hooks.edit_in_paint),
             More::OpenWith => self.with_shot(cx, |hooks| &hooks.open_with),
             More::Quit => (self.hooks.quit)(cx),
@@ -791,6 +837,9 @@ impl MainWindow {
                 cx.notify();
                 return;
             }
+        }
+        if self.on_video_key(key, window, cx) {
+            return;
         }
         match key {
             "escape" => self.put_down_tool(window, cx),
@@ -1127,7 +1176,8 @@ impl MainWindow {
                     .collect()
             }
             Menu::More => {
-                let saved = self.shot().is_some_and(|shot| shot.saved.is_some());
+                let saved =
+                    self.shot().is_some_and(|shot| shot.saved.is_some()) || self.video.is_some();
                 More::items(self.shown.is_some())
                     .iter()
                     .map(|m| {
@@ -1273,7 +1323,7 @@ impl MainWindow {
             .child(self.new_button(cx))
             .child(self.modes(cx))
             .child(div().w(px(1.)).h(px(28.)).bg(border()))
-            .map(|d| match self.tools_below {
+            .map(|d| match self.folded {
                 true => d.child(self.target_button(cx)),
                 false => d.child(self.targets(cx)),
             })
@@ -1561,11 +1611,15 @@ impl Render for MainWindow {
         if let Some(shown) = &self.shown {
             shown.drop_stale_pictures(window);
         }
+        if let Some(video) = &mut self.video {
+            video.drop_stale(window);
+        }
         // No screenshot to point at: none of the window's own pointers.
         if self.page != Page::Home || self.shown.is_none() {
             canvas::show_pointer(window, None);
         }
         self.tools_below = self.shown.is_some() && is_narrow(window);
+        self.folded = (self.shown.is_some() || self.video.is_some()) && is_narrow(window);
         self.pointer = pointer_in_canvas(window).filter(|_| self.shown.is_some());
         let zoom = self
             .shown
@@ -1603,7 +1657,7 @@ impl Render for MainWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    if this.menu.take().is_some() | this.close_flyouts() {
+                    if this.menu.take().is_some() | this.close_flyouts() | this.close_volume() {
                         cx.notify();
                     }
                 }),
@@ -1612,9 +1666,10 @@ impl Render for MainWindow {
             (Page::Settings, Some(settings)) => root.child(self.settings_page(settings, cx)),
             _ => root
                 .child(self.toolbar(zoom, cx))
-                .map(|d| match &self.shown {
-                    Some(shown) => d.child(self.canvas(shown, window, cx)),
-                    None => d.child(self.hint(cx)),
+                .map(|d| match (&self.shown, &self.video) {
+                    (Some(shown), _) => d.child(self.canvas(shown, window, cx)),
+                    (None, Some(_)) => d.child(self.video_view(window, cx)),
+                    (None, None) => d.child(self.hint(cx)),
                 })
                 .map(|d| match self.tools_below {
                     true => d.child(self.bottom_bar(cx)),

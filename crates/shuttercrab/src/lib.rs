@@ -21,6 +21,7 @@ pub mod markup;
 pub mod overlay;
 pub mod palette;
 pub mod pixels;
+pub mod playback;
 pub mod popup;
 pub mod record_bar;
 pub mod recorder_process;
