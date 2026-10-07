@@ -33,11 +33,10 @@ use windows::{
         SizeInt32,
     },
     Win32::{
-        Foundation::{HMODULE, HWND},
+        Foundation::HWND,
         Graphics::{
-            Direct3D::{D3D_DRIVER_TYPE_UNKNOWN, D3D_FEATURE_LEVEL_11_0, D3D_FEATURE_LEVEL_11_1},
             Direct3D11::*,
-            Dxgi::{Common::*, IDXGIAdapter},
+            Dxgi::Common::*,
             Gdi::{HMONITOR, MONITOR_DEFAULTTONEAREST, MonitorFromWindow},
         },
         System::WinRT::{
@@ -176,7 +175,7 @@ impl Session {
         let region = target.region;
         ensure!(!region.is_empty(), "the region is empty");
 
-        let gpu = video_gpu(&monitor.adapter)?;
+        let gpu = Gpu::video(Some(&monitor.adapter))?;
         let (w, h) = (region.width, region.height);
         let [crop, sdr, rgba] = work_textures(&gpu, w, h)?;
         let converter = VideoConverter::new(&gpu, &crop, &sdr, ANALYSE_EVERY)?;
@@ -800,27 +799,6 @@ fn next_frame(
         Err(e) if e.code().is_ok() => Ok(None),
         Err(e) => Err(e).context("TryGetNextFrame failed"),
     }
-}
-
-/// A hardware device on the monitor's adapter with the video APIs enabled.
-fn video_gpu(adapter: &windows::Win32::Graphics::Dxgi::IDXGIAdapter1) -> Result<Gpu> {
-    let adapter: IDXGIAdapter = adapter.cast()?;
-    let (mut device, mut context) = (None, None);
-    unsafe {
-        D3D11CreateDevice(
-            &adapter,
-            D3D_DRIVER_TYPE_UNKNOWN,
-            HMODULE::default(),
-            D3D11_CREATE_DEVICE_BGRA_SUPPORT | D3D11_CREATE_DEVICE_VIDEO_SUPPORT,
-            Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
-            D3D11_SDK_VERSION,
-            Some(&mut device),
-            None,
-            Some(&mut context),
-        )
-        .context("D3D11CreateDevice (video) failed")?;
-    }
-    Gpu::from_device(device.context("no device")?, context.context("no context")?)
 }
 
 /// The recording's clock: Windows' capture time in 100 ns ticks (QPC), with

@@ -16,7 +16,10 @@ use capture_spike::{
 };
 use std::{path::PathBuf, time::Duration};
 use windows::Win32::{
-    System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
+    System::{
+        Com::{COINIT_MULTITHREADED, CoInitializeEx},
+        WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
+    },
     UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetProcessDpiAwarenessContext},
 };
 
@@ -97,6 +100,14 @@ USAGE
       record that window (its handle; 0x... for hex) wherever it goes. With
       --sound-of, record only that process's share of the speakers' sound.
 
+  capture-spike play FILE.mp4 [--size WxH] [--seconds N] [--sound on] [--frame OUT.png]
+                     [--repeat N]
+      Play a recording through the app's player for N seconds (default 10),
+      muted unless --sound on, taking each new picture at WxH (default: fit
+      in 1600x900) at the display's refresh, and print the cost: time per
+      picture, CPU and memory, and a seek. --frame saves the first picture.
+      --repeat plays it N times over, to find leaks.
+
   capture-spike shots [--monitor M] [--repeat N]
       Freeze the monitor and take a full screenshot through the app's capture
       service N times (default 5), printing memory around each. Saves nothing.
@@ -139,6 +150,7 @@ fn run() -> Result<()> {
         Some("refresh") => refresh(args),
         Some("record") => record(args),
         Some("shots") => shots(args),
+        Some("play") => play(args),
         Some("help") | None => {
             println!("{USAGE}");
             Ok(())
@@ -755,5 +767,208 @@ fn hdr_fixture(mut args: Args) -> Result<()> {
     args.finish()?;
     fixture::write_hdr_test_image(&out)?;
     println!("Wrote {}", out.display());
+    Ok(())
+}
+
+/// Play a recording through the app's player for a while, pulling each new
+/// picture at the display's refresh as the app would, and print what that
+/// costs.
+fn play(mut args: Args) -> Result<()> {
+    let file = PathBuf::from(args.positional("FILE.mp4")?);
+    let size = args
+        .option("--size")?
+        .map(|s| -> Result<(u32, u32)> {
+            let (w, h) = s.split_once('x').context("--size takes WxH")?;
+            Ok((w.parse()?, h.parse()?))
+        })
+        .transpose()?;
+    let seconds: f64 = args
+        .option("--seconds")?
+        .map(|s| s.parse())
+        .transpose()?
+        .unwrap_or(10.0);
+    let sound = args.option("--sound")?.as_deref() == Some("on");
+    let frame_out = args.option("--frame")?.map(PathBuf::from);
+    let repeat: u32 = args
+        .option("--repeat")?
+        .map(|r| r.parse())
+        .transpose()?
+        .unwrap_or(1);
+    args.finish()?;
+    unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
+
+    print_memory("before");
+    for take in 1..=repeat {
+        if repeat > 1 {
+            println!("take {take}");
+        }
+        play_once(&file, size, seconds, sound, frame_out.as_deref())?;
+    }
+    Ok(())
+}
+
+fn play_once(
+    file: &std::path::Path,
+    size: Option<(u32, u32)>,
+    seconds: f64,
+    sound: bool,
+    frame_out: Option<&std::path::Path>,
+) -> Result<()> {
+    use shuttercrab_capture::play::{Player, PlayerEvent};
+    use std::{sync::mpsc, time::Instant};
+    let (tx, events) = mpsc::channel();
+    let opened = Instant::now();
+    let mut player = Player::open(file, move |e| {
+        let _ = tx.send(e);
+    })?;
+    print_memory("opened");
+    let wait = |want: PlayerEvent| -> Result<()> {
+        loop {
+            match events.recv_timeout(Duration::from_secs(10))? {
+                PlayerEvent::Failed(why) => bail!("cannot play: {why}"),
+                e if e == want => return Ok(()),
+                e => println!("  {e:?}"),
+            }
+        }
+    };
+    wait(PlayerEvent::Loaded)?;
+    let (w, h) = player.size().context("the file has no pictures")?;
+    let duration = player.duration();
+    println!(
+        "{w}x{h}, {:.3} s long, loaded in {} ms",
+        duration.as_secs_f64(),
+        opened.elapsed().as_millis()
+    );
+    let (fw, fh) = size.unwrap_or_else(|| {
+        let scale = (1600.0 / f64::from(w)).min(900.0 / f64::from(h)).min(1.0);
+        (
+            (f64::from(w) * scale).round() as u32,
+            (f64::from(h) * scale).round() as u32,
+        )
+    });
+    player.set_muted(!sound)?;
+    wait(PlayerEvent::FirstFrame)?;
+    let first = player.frame(fw, fh)?;
+    println!(
+        "first picture ({fw}x{fh}) after {} ms",
+        opened.elapsed().as_millis()
+    );
+    if let Some(out) = frame_out {
+        let mut rgba = first;
+        for px in rgba.as_chunks_mut::<4>().0 {
+            px.swap(0, 2);
+        }
+        png_io::write_srgb(out, fw, fh, &rgba)?;
+        println!("  saved {}", out.display());
+    }
+    print_memory("loaded");
+
+    let cpu_before = cpu_time();
+    let started = Instant::now();
+    player.play()?;
+    let (mut took, mut refreshes) = (Vec::new(), 0u32);
+    while started.elapsed().as_secs_f64() < seconds && !player.is_ended() {
+        player.wait_for_refresh()?;
+        refreshes += 1;
+        let asked = Instant::now();
+        if player.next_frame(fw, fh)?.is_some() {
+            took.push(asked.elapsed());
+        }
+        while let Ok(e) = events.try_recv() {
+            match e {
+                PlayerEvent::Failed(why) => bail!("cannot play: {why}"),
+                e => println!("  {e:?} at {:.2} s", started.elapsed().as_secs_f64()),
+            }
+        }
+    }
+    let wall = started.elapsed();
+    let cpu = cpu_time() - cpu_before;
+    print_memory("playing");
+    took.sort();
+    let ms = |i: usize| took.get(i).map_or(0.0, |d| d.as_secs_f64() * 1000.0);
+    println!(
+        "{} pictures in {:.2} s ({:.1} a second) over {refreshes} refreshes; \
+         getting one: median {:.2} ms, 95% {:.2} ms, slowest {:.2} ms; \
+         CPU {:.0}% of one core",
+        took.len(),
+        wall.as_secs_f64(),
+        took.len() as f64 / wall.as_secs_f64(),
+        ms(took.len() / 2),
+        ms(took.len() * 95 / 100),
+        ms(took.len().saturating_sub(1)),
+        cpu.as_secs_f64() / wall.as_secs_f64() * 100.0
+    );
+
+    player.pause()?;
+    seek_and_time(&mut player, &events, duration / 2, (fw, fh))?;
+    drop(player);
+    // What playing left behind, once Windows has had a moment.
+    std::thread::sleep(Duration::from_secs(2));
+    print_memory("after");
+    Ok(())
+}
+
+/// The CPU time this process has used, all threads.
+fn cpu_time() -> Duration {
+    use windows::Win32::{
+        Foundation::FILETIME,
+        System::Threading::{GetCurrentProcess, GetProcessTimes},
+    };
+    let (mut created, mut exited, mut kernel, mut user) = Default::default();
+    let ticks = |t: FILETIME| u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime);
+    unsafe {
+        if GetProcessTimes(
+            GetCurrentProcess(),
+            &mut created,
+            &mut exited,
+            &mut kernel,
+            &mut user,
+        )
+        .is_err()
+        {
+            return Duration::ZERO;
+        }
+    }
+    Duration::from_nanos((ticks(kernel) + ticks(user)) * 100)
+}
+
+/// Seek a paused player to `at`, asking for pictures until the seek has
+/// finished, and print how long the new picture and the seek took.
+fn seek_and_time(
+    player: &mut shuttercrab_capture::play::Player,
+    events: &std::sync::mpsc::Receiver<shuttercrab_capture::play::PlayerEvent>,
+    at: Duration,
+    (fw, fh): (u32, u32),
+) -> Result<()> {
+    use shuttercrab_capture::play::PlayerEvent;
+    let seeking = std::time::Instant::now();
+    player.seek(at)?;
+    // In frame server mode the engine finishes a seek only once pictures
+    // are asked for.
+    let (mut seeked, mut shown) = (None, None);
+    while seeked.is_none() || shown.is_none() {
+        ensure!(
+            seeking.elapsed() < Duration::from_secs(10),
+            "the seek did not finish"
+        );
+        player.wait_for_refresh()?;
+        if player.next_frame(fw, fh)?.is_some() && shown.is_none() {
+            shown = Some(seeking.elapsed());
+        }
+        while let Ok(e) = events.try_recv() {
+            match e {
+                PlayerEvent::Seeked => seeked = Some(seeking.elapsed()),
+                PlayerEvent::Failed(why) => bail!("cannot seek: {why}"),
+                e => println!("  {e:?}"),
+            }
+        }
+    }
+    let ms = |d: Option<Duration>| d.unwrap_or_default().as_millis();
+    println!(
+        "seek to {:.1} s: picture after {} ms, finished after {} ms",
+        at.as_secs_f64(),
+        ms(shown),
+        ms(seeked)
+    );
     Ok(())
 }

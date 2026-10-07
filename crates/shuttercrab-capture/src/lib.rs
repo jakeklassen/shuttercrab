@@ -8,6 +8,7 @@ pub mod capture;
 pub mod color;
 pub mod display;
 pub mod gpu;
+pub mod play;
 pub mod png_io;
 pub mod raw;
 pub mod record;

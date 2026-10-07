@@ -29,28 +29,42 @@ pub struct Gpu {
 impl Gpu {
     /// A hardware device on `adapter`, or on the default adapter.
     pub fn hardware(adapter: Option<&IDXGIAdapter1>) -> Result<Self> {
+        Self::on(adapter, D3D11_CREATE_DEVICE_FLAG(0))
+    }
+
+    /// A hardware device on `adapter`, or on the default adapter, with the
+    /// video APIs that Media Foundation's encoders and decoders use.
+    pub fn video(adapter: Option<&IDXGIAdapter1>) -> Result<Self> {
+        Self::on(adapter, D3D11_CREATE_DEVICE_VIDEO_SUPPORT)
+    }
+
+    /// The WARP software rasterizer, for deterministic tests on any machine.
+    pub fn warp() -> Result<Self> {
+        Self::create(None, D3D_DRIVER_TYPE_WARP, D3D11_CREATE_DEVICE_FLAG(0))
+    }
+
+    fn on(adapter: Option<&IDXGIAdapter1>, flags: D3D11_CREATE_DEVICE_FLAG) -> Result<Self> {
         let driver = if adapter.is_some() {
             D3D_DRIVER_TYPE_UNKNOWN
         } else {
             D3D_DRIVER_TYPE_HARDWARE
         };
         let adapter = adapter.map(|a| a.cast::<IDXGIAdapter>()).transpose()?;
-        Self::create(adapter.as_ref(), driver)
+        Self::create(adapter.as_ref(), driver, flags)
     }
 
-    /// The WARP software rasterizer, for deterministic tests on any machine.
-    pub fn warp() -> Result<Self> {
-        Self::create(None, D3D_DRIVER_TYPE_WARP)
-    }
-
-    fn create(adapter: Option<&IDXGIAdapter>, driver: D3D_DRIVER_TYPE) -> Result<Self> {
+    fn create(
+        adapter: Option<&IDXGIAdapter>,
+        driver: D3D_DRIVER_TYPE,
+        flags: D3D11_CREATE_DEVICE_FLAG,
+    ) -> Result<Self> {
         let (mut device, mut context) = (None, None);
         unsafe {
             D3D11CreateDevice(
                 adapter,
                 driver,
                 HMODULE::default(),
-                D3D11_CREATE_DEVICE_BGRA_SUPPORT,
+                D3D11_CREATE_DEVICE_BGRA_SUPPORT | flags,
                 Some(&[D3D_FEATURE_LEVEL_11_1, D3D_FEATURE_LEVEL_11_0]),
                 D3D11_SDK_VERSION,
                 Some(&mut device),
