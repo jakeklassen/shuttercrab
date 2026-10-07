@@ -11,7 +11,15 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- record a window, following it as it moves, resizes, minimises and closes
+- Record a window (W in Record mode): click a window, and the recording follows it wherever it goes. Only that window is recorded, so whatever passes in front of it stays out.
+  - Resize it, or maximise it, and the video keeps the size it started at, with the window fitted inside and dark bars where its shape no longer matches.
+  - Minimise it and the recording pauses, with the reason on the bar; restore it and recording carries on. Apps that hide their window instead pause the same way.
+  - Close it and the recording stops and is saved, and the notification says why. Closed before recording starts, the ready bar or the countdown simply goes away.
+  - The dashed border and the recording bar move with the window, and the pointer is left out while you drag or resize it, so it does not jump about in the video.
+
+### Fixed
+
+- Windows' busy "loading" pointer no longer shows in the first seconds of a recording.
 
 ## [0.1.17](https://github.com/jakeklassen/shuttercrab/compare/v0.1.16...v0.1.17) - 2026-10-06
 
