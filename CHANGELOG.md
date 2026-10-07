@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.19](https://github.com/jakeklassen/shuttercrab/compare/v0.1.18...v0.1.19) - 2026-10-07
+
+### Added
+
+- Clear (the X after Undo and Redo, or Ctrl+W) takes the screenshot away and puts the window back to its start view. Nothing is asked first: Ctrl+Z, or "Bring the screenshot back", restores it with your markup, and the window exactly where it was, until your next capture.
+- The window's toolbar fits narrow windows, as Snipping Tool's does: narrower than one row of tools, the drawing tools, crop, Undo, Redo and Clear move to a bar at the bottom, and the capture targets fold into one menu. The window no longer shrinks so far that tools are cut off.
+
 ## [0.1.18](https://github.com/jakeklassen/shuttercrab/compare/v0.1.17...v0.1.18) - 2026-10-07
 
 ### Added
