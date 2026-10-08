@@ -20,7 +20,8 @@
 //! the eraser, which takes off whole marks, and pressed again offers to
 //! take off every one. G picks up the shapes, whose bar has keys of its own
 //! (see `shapes`), and V picks up Select, to change a shape drawn before
-//! (see `selection`). Escape puts the tool down. Dragging then draws (Shift
+//! (see `selection`). I opens Text actions, to copy and redact the
+//! screenshot's text (see `text`). Escape puts the tool down. Dragging then draws (Shift
 //! for a straight line, a square or a circle), and
 //! Space+drag or Ctrl+drag moves the screenshot. [ and ] change the size,
 //! Ctrl+Z and Ctrl+Y undo and redo. Escape closes a menu, or goes back
@@ -35,6 +36,7 @@ mod crop;
 mod emoji;
 mod selection;
 mod shapes;
+mod text;
 mod tools;
 mod video;
 
@@ -138,6 +140,13 @@ pub type FileHook = Rc<dyn Fn(&Path, &mut App)>;
 /// Copies a file, resolving to whether it was copied.
 pub type CopyFileHook = Rc<dyn Fn(&Path, &mut App) -> Task<bool>>;
 
+/// Reads the text in a screenshot, resolving to it or to why it could not
+/// be read.
+pub type ReadTextHook = Rc<dyn Fn(&Shot, &mut App) -> Task<Result<crate::text::Text, String>>>;
+
+/// Puts text on the clipboard.
+pub type TextHook = Rc<dyn Fn(String, &mut App)>;
+
 /// A screenshot the window shows.
 #[derive(Clone)]
 pub struct Shot {
@@ -223,6 +232,10 @@ pub struct MainHooks {
     pub save_file_as: FileHook,
     /// Ask which program should open the recording shown, and open it.
     pub open_file_with: FileHook,
+    /// Read the text in the screenshot shown, for Text actions.
+    pub read_text: ReadTextHook,
+    /// Put text Text actions copied on the clipboard.
+    pub copy_text: TextHook,
 }
 
 /// Where a window is: its outer bounds, physical virtual-desktop pixels.
@@ -409,7 +422,7 @@ pub struct MainWindow {
     emoji_art: std::cell::OnceCell<Vec<Arc<RenderImage>>>,
     /// A short message over the screenshot, such as that every mark was
     /// taken off, and a count for its timer, as for the size label.
-    notice: Option<&'static str>,
+    notice: Option<SharedString>,
     notices: u64,
     /// Where the pointer is over the canvas, if it is, as of the last
     /// render: the tool's tip is outlined there.
@@ -533,6 +546,11 @@ impl MainWindow {
         shown.cropping = None;
         shown.gesture = None;
         shown.selected = None;
+        shown.texting = None;
+        // Text being read is let go of with it: it is read again if asked.
+        if matches!(shown.reading, Some(text::Reading::Pending)) {
+            shown.reading = None;
+        }
         let place = (self.hooks.window_place)(window);
         if let Some((older, _)) = self.cleared.replace((shown, place)) {
             older.release(window);
@@ -821,6 +839,9 @@ impl MainWindow {
         if self.on_crop_key(keystroke, cx) {
             return;
         }
+        if self.on_text_key(keystroke, window, cx) {
+            return;
+        }
         if keystroke.modifiers.control {
             match key {
                 "q" => (self.hooks.quit)(cx),
@@ -879,6 +900,7 @@ impl MainWindow {
             "g" => self.take(Hand::Shape, window, cx),
             "v" => self.take(Hand::Select, window, cx),
             "c" => self.start_crop(window, cx),
+            "i" => self.toggle_text(window, cx),
             "[" => self.step_size(-1., window, cx),
             "]" => self.step_size(1., window, cx),
             "n" | "enter" => self.start(window, cx),
@@ -1702,7 +1724,11 @@ impl Render for MainWindow {
             .on_mouse_down(
                 MouseButton::Left,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| {
-                    if this.menu.take().is_some() | this.close_flyouts() | this.close_volume() {
+                    if this.menu.take().is_some()
+                        | this.close_flyouts()
+                        | this.close_volume()
+                        | this.close_text_menu()
+                    {
                         cx.notify();
                     }
                 }),

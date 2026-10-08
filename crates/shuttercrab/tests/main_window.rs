@@ -14,6 +14,7 @@ use shuttercrab::{
     playback::{Command, PlayerLink, Update},
     settings::Settings,
     settings_window::{Diagnostics, Hooks},
+    text::{Line, Rect, Text, Word},
 };
 use std::{
     cell::{Cell, RefCell},
@@ -50,6 +51,11 @@ struct Seen {
     file_copies: RefCell<Vec<PathBuf>>,
     file_saves: RefCell<Vec<PathBuf>>,
     file_opens: RefCell<Vec<PathBuf>>,
+    /// How many times the screenshot's text was read, what reading it gives
+    /// (`None`: [`sample_text`]), and the text copied.
+    text_reads: Cell<u32>,
+    text_result: RefCell<Option<Result<Text, String>>>,
+    copied_text: RefCell<Vec<String>>,
 }
 
 /// The player's end of a recording's link, which the tests drive.
@@ -92,6 +98,7 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
     let (s9, s10, s11) = (seen.clone(), seen.clone(), seen.clone());
     let (s12, s13) = (seen.clone(), seen.clone());
     let (s14, s15, s16) = (seen.clone(), seen.clone(), seen.clone());
+    let (s17, s18) = (seen.clone(), seen.clone());
     let hooks = Rc::new(MainHooks {
         settings: Rc::new(Hooks {
             settings: settings.clone(),
@@ -136,6 +143,12 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
         open_file_with: Rc::new(move |path, _| {
             s16.file_opens.borrow_mut().push(path.to_path_buf())
         }),
+        read_text: Rc::new(move |_, _| {
+            s17.text_reads.set(s17.text_reads.get() + 1);
+            let result = s17.text_result.borrow().clone();
+            gpui_kit::Task::ready(result.unwrap_or_else(|| Ok(sample_text())))
+        }),
+        copy_text: Rc::new(move |text, _| s18.copied_text.borrow_mut().push(text)),
     });
     let out = Rc::new(RefCell::new(None));
     let slot = out.clone();
@@ -1641,4 +1654,286 @@ fn the_play_bar_fades_while_playing_and_comes_back_when_moved(cx: &mut TestAppCo
     send(cx, &opened, [Update::Playing(false)]);
     wait(cx);
     assert!(!hidden(cx));
+}
+
+/// Three lines of text on an 800 × 600 screenshot, big enough to aim at:
+/// a greeting, an email address across the middle, and a phone number.
+fn sample_text() -> Text {
+    let line = |y: f32, words: &[(&str, f32, f32)]| Line {
+        text: String::new(),
+        words: words
+            .iter()
+            .map(|&(text, x0, x1)| Word {
+                text: text.into(),
+                rect: Rect {
+                    x: x0,
+                    y,
+                    width: x1 - x0,
+                    height: 20.,
+                },
+            })
+            .collect(),
+    };
+    Text {
+        language: "en-US".into(),
+        angle: None,
+        lines: vec![
+            line(200., &[("Hello", 100., 300.), ("there", 500., 700.)]),
+            line(
+                290.,
+                &[
+                    ("Mail", 100., 200.),
+                    ("jane.doe@example.com", 300., 500.),
+                    ("today", 600., 700.),
+                ],
+            ),
+            line(
+                380.,
+                &[
+                    ("+1", 100., 150.),
+                    ("555", 200., 280.),
+                    ("987", 320., 400.),
+                    ("6543", 440., 540.),
+                ],
+            ),
+        ],
+    }
+}
+
+/// A window big enough to show an 800 × 600 screenshot at full size, with
+/// one shown, and Text actions opened on it.
+fn open_text_actions(cx: &mut TestAppContext) -> Opened {
+    let opened = open_sized(cx, gpui_kit::size(gpui_kit::px(1400.), gpui_kit::px(1000.)));
+    update(cx, &opened, |window, cx| {
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+    });
+    press(cx, &opened, &["i"]);
+    cx.run_until_parked();
+    opened
+}
+
+/// Where screenshot pixel `(x, y)` is in the window: the screenshot is at
+/// full size, in the middle of the canvas.
+fn at_pixel(window: &Window, (x, y): (f32, f32)) -> gpui_kit::Point<gpui_kit::Pixels> {
+    let middle = window.find("canvas").bounds().center();
+    let scale = window.scale_factor();
+    gpui_kit::point(
+        middle.x + gpui_kit::px((x - 400.) / scale),
+        middle.y + gpui_kit::px((y - 300.) / scale),
+    )
+}
+
+fn picked(cx: &mut TestAppContext, opened: &Opened) -> Option<String> {
+    opened.view.read_with(cx, |view, _| view.picked_text())
+}
+
+fn text_open(cx: &mut TestAppContext, opened: &Opened) -> bool {
+    opened
+        .view
+        .read_with(cx, |view, _| view.text_actions_open())
+}
+
+fn label_of(cx: &mut TestAppContext, opened: &Opened, id: &'static str) -> Option<String> {
+    let mut label = None;
+    update(cx, opened, |window, _| {
+        label = window
+            .try_find(id)
+            .and_then(|e| e.label().map(|l| l.to_string()));
+    });
+    label
+}
+
+fn redactions(cx: &mut TestAppContext, opened: &Opened) -> usize {
+    let redaction =
+        |m: &&shuttercrab::markup::Mark| matches!(m, shuttercrab::markup::Mark::Redaction(_));
+    marks(cx, opened).iter().filter(redaction).count()
+}
+
+#[gpui_kit::test]
+fn i_reads_the_text_once_and_ctrl_c_copies_all_of_it(cx: &mut TestAppContext) {
+    let opened = open_text_actions(cx);
+    assert!(text_open(cx, &opened));
+    assert_eq!(opened.seen.text_reads.get(), 1);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("text-bar").is_some());
+        assert!(window.try_find("text-copy-all").is_some());
+    });
+    // Nothing picked: Ctrl+C copies all of it, as lines, not the image.
+    press(cx, &opened, &["ctrl-c"]);
+    assert_eq!(
+        *opened.seen.copied_text.borrow(),
+        ["Hello there\nMail jane.doe@example.com today\n+1 555 987 6543"]
+    );
+    assert_eq!(opened.seen.copies.get(), 0);
+    assert_eq!(
+        label_of(cx, &opened, "notice").as_deref(),
+        Some("All text copied")
+    );
+    // Escape closes; opened again, the text is not read again.
+    press(cx, &opened, &["escape"]);
+    assert!(!text_open(cx, &opened));
+    update(cx, &opened, |window, cx| window.click("tool-text", cx));
+    assert!(text_open(cx, &opened));
+    assert_eq!(opened.seen.text_reads.get(), 1);
+    // The button closes them too, and Ctrl+C copies the image again.
+    update(cx, &opened, |window, cx| window.click("tool-text", cx));
+    assert!(!text_open(cx, &opened));
+    press(cx, &opened, &["ctrl-c"]);
+    assert_eq!(opened.seen.copies.get(), 1);
+}
+
+#[gpui_kit::test]
+fn arrows_and_a_drag_pick_words_and_escape_lets_go(cx: &mut TestAppContext) {
+    let opened = open_text_actions(cx);
+    assert_eq!(picked(cx, &opened), None);
+    // The first word, then Shift carries the pick on.
+    press(cx, &opened, &["right"]);
+    assert_eq!(picked(cx, &opened).as_deref(), Some("Hello"));
+    press(cx, &opened, &["shift-right"]);
+    assert_eq!(picked(cx, &opened).as_deref(), Some("Hello there"));
+    // Down from "there": the nearest word across, alone.
+    press(cx, &opened, &["down"]);
+    assert_eq!(picked(cx, &opened).as_deref(), Some("today"));
+    press(cx, &opened, &["ctrl-a"]);
+    assert_eq!(
+        picked(cx, &opened).as_deref(),
+        Some("Hello there\nMail jane.doe@example.com today\n+1 555 987 6543")
+    );
+    // A drag from "there" to "jane…" picks across the lines.
+    update(cx, &opened, |window, cx| {
+        let from = at_pixel(window, (600., 210.));
+        let to = at_pixel(window, (400., 300.));
+        window.drag(from, to, cx);
+    });
+    assert_eq!(
+        picked(cx, &opened).as_deref(),
+        Some("there\nMail jane.doe@example.com")
+    );
+    press(cx, &opened, &["ctrl-c"]);
+    assert_eq!(
+        opened.seen.copied_text.borrow().last().map(String::as_str),
+        Some("there\nMail jane.doe@example.com")
+    );
+    assert_eq!(
+        label_of(cx, &opened, "notice").as_deref(),
+        Some("Text copied")
+    );
+    // Escape lets go of the pick first, then closes.
+    press(cx, &opened, &["escape"]);
+    assert_eq!(picked(cx, &opened), None);
+    assert!(text_open(cx, &opened));
+    press(cx, &opened, &["escape"]);
+    assert!(!text_open(cx, &opened));
+}
+
+#[gpui_kit::test]
+fn r_and_the_right_click_menu_redact_the_pick(cx: &mut TestAppContext) {
+    let opened = open_text_actions(cx);
+    // A right-click on the email address picks it and opens the menu.
+    update(cx, &opened, |window, cx| window.right_click("canvas", cx));
+    assert_eq!(picked(cx, &opened).as_deref(), Some("jane.doe@example.com"));
+    update(cx, &opened, |window, cx| window.click("text-context-1", cx));
+    assert_eq!(redactions(cx, &opened), 1);
+    assert_eq!(picked(cx, &opened), None);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("text-context").is_none())
+    });
+    // R blacks out a pick made by key; undo takes it back.
+    press(cx, &opened, &["right", "shift-right", "r"]);
+    assert_eq!(redactions(cx, &opened), 2);
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(redactions(cx, &opened), 1);
+    // The menu from the keyboard: down to Redact, Enter. Already redacted:
+    // no second box over the first.
+    update(cx, &opened, |window, cx| window.right_click("canvas", cx));
+    press(cx, &opened, &["down", "enter"]);
+    assert_eq!(redactions(cx, &opened), 1);
+}
+
+#[gpui_kit::test]
+fn quick_redact_blacks_out_emails_and_phones_as_one_change(cx: &mut TestAppContext) {
+    let opened = open_text_actions(cx);
+    let notice = |cx: &mut TestAppContext| label_of(cx, &opened, "notice");
+    press(cx, &opened, &["q"]);
+    assert_eq!(redactions(cx, &opened), 2);
+    assert_eq!(notice(cx).as_deref(), Some("2 items redacted"));
+    press(cx, &opened, &["q"]);
+    assert_eq!(redactions(cx, &opened), 2);
+    assert_eq!(notice(cx).as_deref(), Some("Already redacted"));
+    // One undo takes both; redo brings them back.
+    press(cx, &opened, &["ctrl-z"]);
+    assert_eq!(redactions(cx, &opened), 0);
+    press(cx, &opened, &["ctrl-y"]);
+    assert_eq!(redactions(cx, &opened), 2);
+    // Shift+Q: the options. Remove all redactions, at the bottom.
+    press(cx, &opened, &["shift-q"]);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("redact-menu").is_some())
+    });
+    press(cx, &opened, &["up", "enter"]);
+    assert_eq!(redactions(cx, &opened), 0);
+    assert_eq!(notice(cx).as_deref(), Some("All redactions removed"));
+    // Emails off: only the phone number, and the choice is kept.
+    press(cx, &opened, &["shift-q", "enter"]);
+    assert!(!opened.settings.borrow().redact_emails);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("redact-menu").is_some())
+    });
+    press(cx, &opened, &["escape", "q"]);
+    assert_eq!(redactions(cx, &opened), 1);
+    assert_eq!(notice(cx).as_deref(), Some("1 item redacted"));
+    // Redactions are marks: the copied screenshot has them.
+    press(cx, &opened, &["escape", "ctrl-c"]);
+    assert_eq!(opened.seen.copied_marks.get(), 1);
+}
+
+#[gpui_kit::test]
+fn text_that_cannot_be_read_says_why_and_no_text_says_so(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, gpui_kit::size(gpui_kit::px(1400.), gpui_kit::px(1000.)));
+    let failed = "Couldn't read the text: no OCR language";
+    opened.seen.text_result.replace(Some(Err(failed.into())));
+    let show = |cx: &mut TestAppContext| {
+        update(cx, &opened, |window, cx| {
+            opened
+                .view
+                .update(cx, |view, cx| view.show_shot(shot(800, 600), window, cx));
+        });
+        press(cx, &opened, &["i"]);
+        cx.run_until_parked();
+    };
+    show(cx);
+    assert_eq!(
+        label_of(cx, &opened, "text-status").as_deref(),
+        Some(failed)
+    );
+    // Nothing to copy or redact.
+    press(cx, &opened, &["q", "ctrl-c"]);
+    assert!(opened.seen.copied_text.borrow().is_empty());
+    assert_eq!(redactions(cx, &opened), 0);
+    // A screenshot with no text.
+    opened.seen.text_result.replace(Some(Ok(Text::default())));
+    show(cx);
+    assert_eq!(
+        label_of(cx, &opened, "text-status").as_deref(),
+        Some("No text found")
+    );
+}
+
+#[gpui_kit::test]
+fn a_tool_or_crop_closes_text_actions(cx: &mut TestAppContext) {
+    let opened = open_text_actions(cx);
+    press(cx, &opened, &["p"]);
+    assert!(!text_open(cx, &opened));
+    assert!(opened.view.read_with(cx, |view, _| view.tool()).is_some());
+    // Opening them puts the pen down.
+    press(cx, &opened, &["i"]);
+    assert!(text_open(cx, &opened));
+    assert!(opened.view.read_with(cx, |view, _| view.tool()).is_none());
+    press(cx, &opened, &["c"]);
+    assert!(!text_open(cx, &opened));
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("crop-bar").is_some())
+    });
 }

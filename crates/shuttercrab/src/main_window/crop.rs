@@ -250,6 +250,7 @@ impl MainWindow {
         if self.shown.is_none() || self.is_cropping() {
             return;
         }
+        self.stop_text(cx);
         self.close_flyouts();
         self.menu = None;
         self.select(None, window, cx);

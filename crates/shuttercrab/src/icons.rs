@@ -53,7 +53,11 @@ icon_assets!(
         Volume2,
         VolumeX,
         Play,
-        Pause
+        Pause,
+        ScanText,
+        ClipboardType,
+        EyeOff,
+        LoaderCircle
     ]
 );
 
@@ -95,6 +99,10 @@ mod tests {
             IconName::RotateCcw,
             IconName::Trash,
             IconName::Pause,
+            IconName::ScanText,
+            IconName::ClipboardType,
+            IconName::EyeOff,
+            IconName::LoaderCircle,
             IconName::Play,
             IconName::Ellipsis,
             IconName::Lasso,

@@ -203,14 +203,29 @@ impl Drawing {
 pub enum Mark {
     Stroke(Stroke),
     Shape(Shape),
+    Redaction(Redaction),
 }
+
+/// Text blacked out: a solid black box, screenshot pixels. Not a shape, so
+/// Select cannot move it off what it hides; the eraser and undo take it
+/// off.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub struct Redaction {
+    pub x: f32,
+    pub y: f32,
+    pub width: f32,
+    pub height: f32,
+}
+
+/// What a redaction is painted with.
+pub const REDACTION_COLOR: Rgb = Rgb(0, 0, 0);
 
 impl Mark {
     /// The stroke, if the mark is one.
     pub fn as_stroke(&self) -> Option<&Stroke> {
         match self {
             Mark::Stroke(stroke) => Some(stroke),
-            Mark::Shape(_) => None,
+            Mark::Shape(_) | Mark::Redaction(_) => None,
         }
     }
 
@@ -218,7 +233,7 @@ impl Mark {
     pub fn as_shape(&self) -> Option<&Shape> {
         match self {
             Mark::Shape(shape) => Some(shape),
-            Mark::Stroke(_) => None,
+            Mark::Stroke(_) | Mark::Redaction(_) => None,
         }
     }
 
@@ -227,6 +242,11 @@ impl Mark {
         match self {
             Mark::Stroke(stroke) => stroke.touches(point, reach),
             Mark::Shape(shape) => shape.touches(point, reach),
+            Mark::Redaction(r) => {
+                let (x, y) = point;
+                (r.x - reach..=r.x + r.width + reach).contains(&x)
+                    && (r.y - reach..=r.y + r.height + reach).contains(&y)
+            }
         }
     }
 }
@@ -247,6 +267,8 @@ pub struct Marks {
 #[derive(Clone, Debug)]
 enum Change {
     Added(Mark),
+    /// Several marks at once, as Quick redact adds them.
+    AddedAll(Vec<Mark>),
     /// The marks the eraser took in one drag, each with the place it had
     /// when taken, in the order taken.
     Erased(Vec<(usize, Mark)>),
@@ -292,6 +314,38 @@ impl Marks {
     pub fn add(&mut self, mark: Mark) {
         self.marks.push(mark.clone());
         self.record(Change::Added(mark));
+    }
+
+    /// Add finished marks, as one change. Nothing to add is no change.
+    pub fn add_all(&mut self, marks: Vec<Mark>) {
+        if marks.is_empty() {
+            return;
+        }
+        self.marks.extend(marks.iter().cloned());
+        self.record(Change::AddedAll(marks));
+    }
+
+    /// Take off every redaction, as one change. Returns how many there
+    /// were.
+    pub fn remove_redactions(&mut self) -> usize {
+        let mut taken = Vec::new();
+        // From the end, so each place stays right for the ones before.
+        for index in (0..self.marks.len()).rev() {
+            if matches!(self.marks[index], Mark::Redaction(_)) {
+                taken.push((index, self.marks.remove(index)));
+            }
+        }
+        let count = taken.len();
+        if count > 0 {
+            self.record(Change::Erased(taken));
+        }
+        count
+    }
+
+    /// How many redactions there are.
+    pub fn redactions(&self) -> usize {
+        let redaction = |mark: &&Mark| matches!(mark, Mark::Redaction(_));
+        self.marks.iter().filter(redaction).count()
     }
 
     /// Erase the mark at `index`. With `joining`, it joins the eraser's
@@ -390,6 +444,9 @@ impl Marks {
             Change::Added(_) => {
                 self.marks.pop();
             }
+            Change::AddedAll(added) => {
+                self.marks.truncate(self.marks.len() - added.len());
+            }
             Change::Erased(taken) => {
                 for (index, mark) in taken.iter().rev() {
                     self.marks.insert(*index, mark.clone());
@@ -411,6 +468,7 @@ impl Marks {
         };
         match &change {
             Change::Added(mark) => self.marks.push(mark.clone()),
+            Change::AddedAll(added) => self.marks.extend(added.iter().cloned()),
             Change::Erased(taken) => {
                 for (index, _) in taken {
                     self.marks.remove(*index);
@@ -539,11 +597,34 @@ pub fn draw_region(
                 }
                 _ => paint_shape(&mut canvas, shape, bgr, shift),
             },
+            Mark::Redaction(hidden) => paint_redaction(&mut canvas, hidden, bgr, shift),
         }
     }
     let mut data = canvas.take();
     demultiply(&mut data);
     data
+}
+
+/// Black out a redaction, moved by `shift`: opaque, not smoothed, and out
+/// to whole pixels, so nothing at its edges shows through.
+fn paint_redaction(canvas: &mut Pixmap, hidden: &Redaction, bgr: bool, shift: Transform) {
+    let Rgb(r, g, b) = REDACTION_COLOR;
+    let (first, third) = if bgr { (b, r) } else { (r, b) };
+    let paint = Paint {
+        shader: Shader::SolidColor(Color::from_rgba8(first, g, third, 255)),
+        anti_alias: false,
+        ..Paint::default()
+    };
+    let (left, top) = (hidden.x.floor(), hidden.y.floor());
+    let rect = tiny_skia::Rect::from_ltrb(
+        left,
+        top,
+        (hidden.x + hidden.width).ceil().max(left + 1.),
+        (hidden.y + hidden.height).ceil().max(top + 1.),
+    );
+    if let Some(rect) = rect {
+        canvas.fill_rect(rect, &paint, shift, None);
+    }
 }
 
 /// Draw one stroke onto the canvas, moved by `shift`.
@@ -1118,6 +1199,69 @@ mod tests {
         // Undo past the add: nothing to edit.
         assert!(marks.undo() && marks.undo());
         assert_eq!(marks.undo_edits(), None);
+    }
+
+    fn redaction(x: f32) -> Mark {
+        Mark::Redaction(Redaction {
+            x,
+            y: 4.5,
+            width: 6.,
+            height: 3.2,
+        })
+    }
+
+    #[test]
+    fn a_redaction_is_solid_black_out_to_whole_pixels() {
+        let out = draw(&white(20), 20, 20, &[redaction(2.4)], false);
+        // From x 2 to 9 (8.4 rounded out), y 4 to 8 (7.7 rounded out).
+        for (x, y) in [(2, 4), (8, 7), (5, 6)] {
+            assert_eq!(pixel(&out, 20, x, y), [0, 0, 0, 255], "{x},{y}");
+        }
+        for (x, y) in [(1, 5), (9, 5), (5, 3), (5, 8)] {
+            assert_eq!(pixel(&out, 20, x, y), [255, 255, 255, 255], "{x},{y}");
+        }
+        // Over Freeform's transparent outside it is opaque all the same.
+        let clear = vec![0; 20 * 20 * 4];
+        let out = draw(&clear, 20, 20, &[redaction(2.4)], true);
+        assert_eq!(pixel(&out, 20, 5, 6), [0, 0, 0, 255]);
+    }
+
+    #[test]
+    fn redactions_added_together_undo_together_and_come_off_together() {
+        let mut marks = Marks::default();
+        let pen = Mark::Stroke(line(Tool::Pen, Rgb(0, 0, 0), 5.));
+        marks.add(redaction(0.));
+        marks.add(pen.clone());
+        marks.add_all(vec![redaction(10.), redaction(20.)]);
+        assert_eq!(marks.redactions(), 3);
+        // One undo takes both of the last two; redo brings them back.
+        assert!(marks.undo());
+        assert_eq!(marks.marks(), [redaction(0.), pen.clone()]);
+        assert!(marks.redo());
+        assert_eq!(marks.redactions(), 3);
+        // Taking every redaction off leaves the pen stroke, as one change.
+        assert_eq!(marks.remove_redactions(), 3);
+        assert_eq!(marks.marks(), std::slice::from_ref(&pen));
+        assert!(marks.undo());
+        assert_eq!(
+            marks.marks(),
+            [redaction(0.), pen.clone(), redaction(10.), redaction(20.)]
+        );
+        assert!(marks.redo());
+        assert_eq!(marks.marks(), [pen]);
+        // None left: no change, and nothing to add is none either.
+        assert_eq!(marks.remove_redactions(), 0);
+        marks.add_all(Vec::new());
+        assert!(marks.undo());
+        assert_eq!(marks.redactions(), 3);
+    }
+
+    #[test]
+    fn a_redaction_is_touched_inside_and_within_reach() {
+        let hidden = redaction(2.);
+        assert!(hidden.touches((5., 6.), 0.));
+        assert!(!hidden.touches((9., 6.), 0.));
+        assert!(hidden.touches((9., 6.), 1.5));
     }
 
     #[test]

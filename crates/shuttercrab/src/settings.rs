@@ -109,6 +109,10 @@ pub struct Settings {
     pub shape_fill_color: String,
     pub shape_fill_opacity: u8,
     pub shape_size: f32,
+    /// What Text actions' Quick redact blacks out: email addresses and
+    /// phone numbers.
+    pub redact_emails: bool,
+    pub redact_phones: bool,
 }
 
 impl Default for Settings {
@@ -159,6 +163,8 @@ impl Default for Settings {
             shape_fill_color: ink_text(ShapeStyle::DEFAULT.fill),
             shape_fill_opacity: ShapeStyle::DEFAULT.fill.opacity,
             shape_size: ShapeStyle::DEFAULT.size,
+            redact_emails: true,
+            redact_phones: true,
         }
     }
 }

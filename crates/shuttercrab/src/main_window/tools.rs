@@ -87,6 +87,7 @@ impl MainWindow {
         if self.shown.is_none() {
             return;
         }
+        self.stop_text(cx);
         if self.hand == Some(hand) {
             let was_open = self.close_flyouts();
             if !was_open {
@@ -194,9 +195,9 @@ impl MainWindow {
     }
 
     /// Show `text` at the foot of the screenshot for a moment.
-    pub(super) fn show_notice(&mut self, text: &'static str, cx: &mut Context<Self>) {
+    pub(super) fn show_notice(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
         self.notices += 1;
-        self.notice = Some(text);
+        self.notice = Some(text.into());
         let shown = self.notices;
         cx.spawn(async move |this, cx| {
             cx.background_executor().timer(NOTICE_FOR).await;
@@ -301,6 +302,7 @@ impl MainWindow {
             .child(self.tool_button(Hand::Erase, cx))
             .child(self.tool_button(Hand::Shape, cx))
             .child(Self::crop_button(self.shown_key("C"), cx))
+            .child(self.text_button(cx))
             .child(separator())
             .child(Self::history_button(
                 "undo",

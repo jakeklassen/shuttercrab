@@ -283,6 +283,14 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
         copy_file: Rc::new(move |path, cx| copy_recording(&copying_file, path, cx)),
         save_file_as: Rc::new(move |path, cx| save_recording_as(&saving_file, path, cx)),
         open_file_with: Rc::new(|path, _| shuttercrab_platform::open::open_with(path)),
+        read_text: Rc::new(read_text),
+        copy_text: Rc::new(|text, cx| {
+            log::info!(
+                "{} characters of text copied from the window",
+                text.chars().count()
+            );
+            cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
+        }),
         fit_window: Rc::new(|window, cx, fit| {
             let Some(hwnd) = popup::raw_hwnd(window) else {
                 return;
@@ -305,6 +313,31 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
                 .detach();
         }),
     }
+}
+
+/// Read the text in the screenshot the main window shows, off the main
+/// thread: as taken, marks aside, and twice as large if it was taken at a
+/// small scale, where OCR misreads small text.
+fn read_text(shot: &Shot, cx: &mut App) -> Task<Result<crate::text::Text, String>> {
+    use shuttercrab_platform::ocr;
+    let image = shot.image.clone();
+    let (width, height) = shot.size();
+    let enlarge = ocr::enlargement(shot.scale.unwrap_or(1.));
+    cx.background_executor().spawn(async move {
+        let started = std::time::Instant::now();
+        let bgra = image.as_bytes(0).unwrap_or_default();
+        let read = ocr::read(bgra, width, height, None, enlarge);
+        match &read {
+            Ok(text) => log::info!(
+                "read {} lines of text ({}) from a {width}×{height} screenshot, ×{enlarge}, in {} ms",
+                text.lines.len(),
+                text.language,
+                started.elapsed().as_millis()
+            ),
+            Err(e) => log::warn!("could not read the screenshot's text: {e:#}"),
+        }
+        read.map_err(|e| format!("Couldn't read the text: {e:#}"))
+    })
 }
 
 /// Copy the screenshot the main window shows to the clipboard.

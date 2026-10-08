@@ -14,6 +14,7 @@ use super::{
     Hand, MainWindow, Shot, TOOLBAR_HEIGHT, bottom_height,
     crop::{CropDrag, Cropping},
     selection::{Editing, Grip, Placing},
+    text::{Reading, TextActions},
 };
 use crate::{
     cursors,
@@ -28,8 +29,8 @@ use gpui_kit::{
     AnyElement, Bounds, ContentMask, Context, Corners, CursorStyle, InteractiveElement as _,
     IntoElement, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ParentElement as _, PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent,
-    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window, canvas, div, img,
-    point, px, rgb, size,
+    SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
+    canvas, div, img, point, px, rgb, size,
 };
 use lyon_tessellation::{LineCap, LineJoin, StrokeOptions};
 use shuttercrab_platform::cursor::{Cursor, CursorOver};
@@ -61,6 +62,10 @@ pub(super) struct Shown {
     view_area: Region,
     /// Crop mode, while open.
     pub(super) cropping: Option<Cropping>,
+    /// Its text, once Text actions asked for it: kept, so it is read once.
+    pub(super) reading: Option<Reading>,
+    /// Text actions, while open.
+    pub(super) texting: Option<TextActions>,
 }
 
 /// Emoji drawn for the screen, each kept while it looks the same there, so
@@ -155,6 +160,8 @@ pub(super) enum Gesture {
     Edit(Editing),
     /// Resizing or moving the crop frame.
     Crop(CropDrag),
+    /// Picking text, from the word pressed.
+    Text,
 }
 
 impl Shown {
@@ -179,6 +186,8 @@ impl Shown {
             selected: None,
             emoji_pictures: RefCell::default(),
             cropping: None,
+            reading: None,
+            texting: None,
         }
     }
 
@@ -506,7 +515,7 @@ fn round_outline(at: Xy, size: f32) -> impl IntoElement {
 
 /// A short message at the foot of the canvas, such as that every mark was
 /// taken off.
-fn notice(text: &'static str) -> impl IntoElement {
+fn notice(text: SharedString) -> impl IntoElement {
     div()
         .absolute()
         .bottom(px(16.))
@@ -517,7 +526,7 @@ fn notice(text: &'static str) -> impl IntoElement {
         .child(
             div()
                 .id("notice")
-                .aria_label(text)
+                .aria_label(text.clone())
                 .test_support()
                 .px_3()
                 .py_1p5()
@@ -739,6 +748,21 @@ impl MainWindow {
             cx.notify();
             return;
         }
+        // Text actions: picking text, or moving the screenshot (with Space
+        // or Ctrl held, or away from the text).
+        if let Some(shown) = &mut self.shown
+            && shown.texting.is_some()
+        {
+            let pixel = shown.pixel_anywhere(at, canvas);
+            let panning = self.space_held || event.modifiers.control;
+            let gesture = (!panning)
+                .then(|| shown.press_text(pixel, event.modifiers.shift))
+                .flatten()
+                .or_else(|| shown.view.can_pan(canvas).then_some(Gesture::Pan(at)));
+            shown.gesture = gesture;
+            cx.notify();
+            return;
+        }
         // The Shapes tool and Select pick up, move and change shapes.
         if matches!(hand, Some(Hand::Shape | Hand::Select))
             && let Some(shown) = &self.shown
@@ -805,10 +829,18 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
+        let (canvas, at) = (canvas_size(window), canvas_point(event.position));
+        if let Some(shown) = &mut self.shown
+            && shown.texting.is_some()
+        {
+            let pixel = shown.pixel_anywhere(at, canvas);
+            shown.open_text_context(at, pixel);
+            cx.notify();
+            return;
+        }
         if !matches!(self.hand, Some(Hand::Shape | Hand::Select)) {
             return;
         }
-        let (canvas, at) = (canvas_size(window), canvas_point(event.position));
         let Some(shown) = &self.shown else {
             return;
         };
@@ -928,6 +960,7 @@ impl MainWindow {
             Some(Gesture::Edit(editing)) => {
                 Self::drag_selection(editing, pixel, at, event.modifiers.shift);
             }
+            Some(Gesture::Text) => shown.drag_text(pixel),
             Some(Gesture::Crop(_)) | None => {}
         }
         self.update_patch(window, cx);
@@ -1021,7 +1054,9 @@ impl MainWindow {
                 }
             }
             Some(Gesture::Edit(editing)) => self.finish_editing(editing, cx),
-            Some(Gesture::Pan(_) | Gesture::Erase { .. } | Gesture::Crop(_)) => cx.notify(),
+            Some(Gesture::Pan(_) | Gesture::Erase { .. } | Gesture::Crop(_) | Gesture::Text) => {
+                cx.notify()
+            }
             None => {}
         }
     }
@@ -1032,7 +1067,9 @@ impl MainWindow {
     fn pointer(&self, shown: &Shown, canvas_area: Xy) -> Pointer {
         let panning = matches!(shown.gesture, Some(Gesture::Pan(_)));
         if !(panning || self.space_held)
-            && let Some(pointer) = self.crop_pointer(shown, canvas_area)
+            && let Some(pointer) = self
+                .crop_pointer(shown, canvas_area)
+                .or_else(|| self.text_pointer(shown, canvas_area))
         {
             return pointer;
         }
@@ -1106,8 +1143,9 @@ impl MainWindow {
             )
             .children(self.selection_overlay(shown, placing))
             .children(self.crop_overlay(shown, placing, cx))
+            .children(self.text_overlay(shown, placing, cx))
             .children(self.tip(shown, per_pixel))
-            .children(self.notice.map(notice))
+            .children(self.notice.clone().map(notice))
             .children(self.shapes_bar(cx))
             .children(self.shape_context_menu(cx))
     }
@@ -1169,7 +1207,7 @@ impl MainWindow {
 fn paints_over(mark: &Mark) -> bool {
     match mark {
         Mark::Stroke(stroke) => stroke.tool == Tool::Pen,
-        Mark::Shape(_) => true,
+        Mark::Shape(_) | Mark::Redaction(_) => true,
     }
 }
 
@@ -1208,6 +1246,23 @@ fn paint_marks(
             match mark {
                 Mark::Stroke(stroke) => paint_pen_stroke(window, stroke, per_pixel, to_window),
                 Mark::Shape(shape) => paint_shape(window, shape, per_pixel, to_window),
+                Mark::Redaction(r) => {
+                    let corners = [
+                        (r.x, r.y),
+                        (r.x + r.width, r.y),
+                        (r.x + r.width, r.y + r.height),
+                        (r.x, r.y + r.height),
+                    ];
+                    let mut path = PathBuilder::fill();
+                    path.move_to(to_window(corners[0]));
+                    for &corner in &corners[1..] {
+                        path.line_to(to_window(corner));
+                    }
+                    path.close();
+                    if let Ok(path) = path.build() {
+                        window.paint_path(path, rgb(markup::REDACTION_COLOR.hex()));
+                    }
+                }
             }
         }
     });
