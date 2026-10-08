@@ -108,6 +108,12 @@ USAGE
       picture, CPU and memory, and a seek. --frame saves the first picture.
       --repeat plays it N times over, to find leaks.
 
+  capture-spike ocr IMAGE.png [--language TAG] [--upscale N] [--boxes OUT.png]
+      Read the text in an image with Windows' OCR, as the app's text actions
+      do, and print the OCR languages installed, the time it took, and each
+      line with its words' boxes. --upscale reads it N times larger first;
+      --boxes saves the image with each word outlined.
+
   capture-spike shots [--monitor M] [--repeat N]
       Freeze the monitor and take a full screenshot through the app's capture
       service N times (default 5), printing memory around each. Saves nothing.
@@ -151,6 +157,7 @@ fn run() -> Result<()> {
         Some("record") => record(args),
         Some("shots") => shots(args),
         Some("play") => play(args),
+        Some("ocr") => ocr(args),
         Some("help") | None => {
             println!("{USAGE}");
             Ok(())
@@ -768,6 +775,123 @@ fn hdr_fixture(mut args: Args) -> Result<()> {
     fixture::write_hdr_test_image(&out)?;
     println!("Wrote {}", out.display());
     Ok(())
+}
+
+/// Read an image's text with the app's OCR, and print what it found.
+fn ocr(mut args: Args) -> Result<()> {
+    use shuttercrab_platform::ocr;
+    let image = PathBuf::from(args.positional("IMAGE.png")?);
+    let language = args.option("--language")?;
+    let upscale: u32 = args
+        .option("--upscale")?
+        .map(|n| n.parse())
+        .transpose()?
+        .unwrap_or(1);
+    let boxes = args.option("--boxes")?.map(PathBuf::from);
+    args.finish()?;
+    ensure!(upscale >= 1, "--upscale takes 1 or more");
+
+    let installed: Vec<String> = ocr::languages()?
+        .into_iter()
+        .map(|l| format!("{} ({})", l.tag, l.name))
+        .collect();
+    println!("OCR languages: {}", installed.join(", "));
+    println!("Largest side: {} px", ocr::max_side()?);
+
+    let (width, height, rgba) = png_io::read_rgba8(&image)?;
+    let (width, height, rgba) = enlarge(width, height, &rgba, upscale);
+    let mut bgra = rgba.clone();
+    for px in bgra.as_chunks_mut::<4>().0 {
+        px.swap(0, 2);
+    }
+    let started = std::time::Instant::now();
+    let text = ocr::read(&bgra, width, height, language.as_deref())?;
+    let took = started.elapsed();
+    let words: usize = text.lines.iter().map(|l| l.words.len()).sum();
+    println!(
+        "Read {width}x{height} in {} ms as {}: {} lines, {words} words, angle {:?}",
+        took.as_millis(),
+        text.language,
+        text.lines.len(),
+        text.angle
+    );
+    for line in &text.lines {
+        println!("  {}", line.text);
+        let placed: Vec<String> = line
+            .words
+            .iter()
+            .map(|w| {
+                let r = w.rect;
+                let n = upscale as f32;
+                format!(
+                    "{}@{:.0},{:.0},{:.0}x{:.0}",
+                    w.text,
+                    r.x / n,
+                    r.y / n,
+                    r.width / n,
+                    r.height / n
+                )
+            })
+            .collect();
+        println!("    {}", placed.join(" "));
+    }
+    if let Some(out) = boxes {
+        let mut outlined = rgba;
+        for word in text.lines.iter().flat_map(|l| &l.words) {
+            outline(&mut outlined, width, height, word.rect);
+        }
+        png_io::write_srgb(&out, width, height, &outlined)?;
+        println!("Wrote {}", out.display());
+    }
+    Ok(())
+}
+
+/// The image `by` times larger, each pixel repeated: what OCR makes of
+/// small text drawn bigger.
+fn enlarge(width: u32, height: u32, rgba: &[u8], by: u32) -> (u32, u32, Vec<u8>) {
+    if by == 1 {
+        return (width, height, rgba.to_vec());
+    }
+    let (w, h) = (width * by, height * by);
+    let mut out = Vec::with_capacity((w * h * 4) as usize);
+    let at = |x: u32, y: u32, c: usize| f32::from(rgba[((y * width + x) * 4) as usize + c]);
+    // Bilinear: each new pixel blends the four nearest.
+    for y in 0..h {
+        let sy = ((y as f32 + 0.5) / by as f32 - 0.5).clamp(0., (height - 1) as f32);
+        let (y0, fy) = (sy.floor() as u32, sy.fract());
+        let y1 = (y0 + 1).min(height - 1);
+        for x in 0..w {
+            let sx = ((x as f32 + 0.5) / by as f32 - 0.5).clamp(0., (width - 1) as f32);
+            let (x0, fx) = (sx.floor() as u32, sx.fract());
+            let x1 = (x0 + 1).min(width - 1);
+            for c in 0..4 {
+                let top = at(x0, y0, c) * (1. - fx) + at(x1, y0, c) * fx;
+                let bottom = at(x0, y1, c) * (1. - fx) + at(x1, y1, c) * fx;
+                out.push((top * (1. - fy) + bottom * fy).round() as u8);
+            }
+        }
+    }
+    (w, h, out)
+}
+
+/// A magenta box around `rect`, a pixel wide.
+fn outline(rgba: &mut [u8], width: u32, height: u32, rect: shuttercrab_platform::ocr::Rect) {
+    let x0 = (rect.x.max(0.) as u32).min(width - 1);
+    let y0 = (rect.y.max(0.) as u32).min(height - 1);
+    let x1 = ((rect.x + rect.width) as u32).min(width - 1);
+    let y1 = ((rect.y + rect.height) as u32).min(height - 1);
+    let mut set = |x: u32, y: u32| {
+        let at = ((y * width + x) * 4) as usize;
+        rgba[at..at + 4].copy_from_slice(&[255, 0, 255, 255]);
+    };
+    for x in x0..=x1 {
+        set(x, y0);
+        set(x, y1);
+    }
+    for y in y0..=y1 {
+        set(x0, y);
+        set(x1, y);
+    }
 }
 
 /// Play a recording through the app's player for a while, pulling each new

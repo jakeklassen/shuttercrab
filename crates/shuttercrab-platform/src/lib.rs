@@ -14,6 +14,7 @@ pub mod icon;
 mod instance;
 mod layered;
 pub mod memory;
+pub mod ocr;
 pub mod open;
 pub mod process;
 pub mod startup;
