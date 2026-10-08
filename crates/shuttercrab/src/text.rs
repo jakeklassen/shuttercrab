@@ -54,29 +54,90 @@ pub fn all(text: &Text) -> Option<Span> {
     })
 }
 
+/// What a redacted word copies as, as in Snipping Tool.
+pub const REDACTED: &str = "[REDACTED]";
+
 /// The words of `span`, as lines: a line's words joined as its language
-/// writes them, lines by line breaks.
-pub fn copy(text: &Text, span: Span) -> String {
+/// writes them; lines side by side (a line number and its code, say) by a
+/// space, and rows by line breaks. Words under one of `hidden` copy as
+/// [`REDACTED`], a run of them once.
+pub fn copy(text: &Text, span: Span, hidden: &[Redaction]) -> String {
     // Chinese and Japanese leave no spaces between words.
     let joiner = if ["zh", "ja"].iter().any(|l| text.language.starts_with(l)) {
         ""
     } else {
         " "
     };
-    let mut lines: Vec<String> = Vec::new();
-    let mut current = None;
+    let is_hidden = |r: &Rect| {
+        let (x, y) = (r.x + r.width / 2., r.y + r.height / 2.);
+        hidden
+            .iter()
+            .any(|h| (h.x..=h.x + h.width).contains(&x) && (h.y..=h.y + h.height).contains(&y))
+    };
+    let mut rows: Vec<String> = Vec::new();
+    let mut current: Option<usize> = None;
+    let mut redacting = false;
     for (at, word) in words(text).filter(|(at, _)| span.contains(*at)) {
-        if current != Some(at.line) {
-            current = Some(at.line);
-            lines.push(String::new());
-        } else if let Some(line) = lines.last_mut() {
-            line.push_str(joiner);
+        let row = rows.last_mut();
+        match (current, row) {
+            (Some(line), Some(row)) if line == at.line => row.push_str(joiner),
+            (Some(line), Some(row)) if same_row(&text.lines[line], &text.lines[at.line]) => {
+                row.push(' ');
+                redacting = false;
+            }
+            _ => {
+                rows.push(String::new());
+                redacting = false;
+            }
         }
-        if let Some(line) = lines.last_mut() {
-            line.push_str(&word.text);
+        current = Some(at.line);
+        let Some(row) = rows.last_mut() else {
+            continue;
+        };
+        if !is_hidden(&word.rect) {
+            redacting = false;
+            row.push_str(&word.text);
+        } else if !redacting {
+            redacting = true;
+            row.push_str(REDACTED);
+        } else {
+            // One [REDACTED] for the run: take back the joiner.
+            row.truncate(row.len() - joiner.len());
         }
     }
-    lines.join("\n")
+    rows.join("\n")
+}
+
+/// Whether two lines sit side by side on one row: their middles within
+/// half the shorter one's height of each other.
+fn same_row(a: &Line, b: &Line) -> bool {
+    let (Some(a), Some(b)) = (line_box(a), line_box(b)) else {
+        return false;
+    };
+    let middle = |r: Rect| r.y + r.height / 2.;
+    (middle(a) - middle(b)).abs() <= a.height.min(b.height) / 2.
+}
+
+/// `text` with its lines in reading order: rows top to bottom, and the
+/// lines on a row left to right. OCR gives them grouped its own way (in a
+/// code editor, every line number first, then the code).
+pub fn reading_order(mut text: Text) -> Text {
+    let middle = |line: &Line| line_box(line).map_or(0., |r| r.y + r.height / 2.);
+    text.lines.sort_by(|a, b| middle(a).total_cmp(&middle(b)));
+    // Rows: each line joins the row before if it sits beside its first.
+    let mut rows: Vec<Vec<Line>> = Vec::new();
+    for line in text.lines {
+        match rows.last_mut() {
+            Some(row) if same_row(&row[0], &line) => row.push(line),
+            _ => rows.push(vec![line]),
+        }
+    }
+    let left = |line: &Line| line_box(line).map_or(0., |r| r.x);
+    for row in &mut rows {
+        row.sort_by(|a, b| left(a).total_cmp(&left(b)));
+    }
+    text.lines = rows.into_iter().flatten().collect();
+    text
 }
 
 /// The box around a line's words.
@@ -452,9 +513,12 @@ mod tests {
     fn copying_joins_words_with_spaces_and_lines_with_breaks() {
         let text = sample();
         let span = Span::between(at(1, 2), at(0, 1));
-        assert_eq!(copy(&text, span), "there\nMail jane.doe@example.com, or");
         assert_eq!(
-            copy(&text, all(&text).unwrap()),
+            copy(&text, span, &[]),
+            "there\nMail jane.doe@example.com, or"
+        );
+        assert_eq!(
+            copy(&text, all(&text).unwrap(), &[]),
             "Hello there\nMail jane.doe@example.com, or call\n+1 555 987 6543 today."
         );
         // Japanese leaves the spaces out.
@@ -463,7 +527,7 @@ mod tests {
             ..text
         };
         assert_eq!(
-            copy(&japanese, Span::between(at(0, 0), at(0, 1))),
+            copy(&japanese, Span::between(at(0, 0), at(0, 1)), &[]),
             "Hellothere"
         );
         assert_eq!(all(&Text::default()), None);
@@ -483,6 +547,46 @@ mod tests {
         // A drag reaches the nearest word wherever it goes.
         assert_eq!(word_toward(&text, (900., 5.)), Some(at(0, 1)));
         assert_eq!(word_toward(&text, (5., 200.)), Some(at(2, 0)));
+    }
+
+    #[test]
+    fn redacted_words_copy_as_redacted_once_a_run() {
+        let text = sample();
+        let finds = Finds {
+            emails: true,
+            phones: true,
+        };
+        let hidden: Vec<Redaction> = sensitive(&text, finds)
+            .into_iter()
+            .flat_map(|span| cover(&text, span, 2.))
+            .collect();
+        assert_eq!(
+            copy(&text, all(&text).unwrap(), &hidden),
+            "Hello there\nMail [REDACTED] or call\n[REDACTED] today."
+        );
+    }
+
+    #[test]
+    fn lines_are_put_in_reading_order_and_a_row_copies_as_one() {
+        // As OCR gives a code editor: the line numbers first, then the
+        // code, the second line before the first.
+        let shifted = |mut l: Line, by: f32| {
+            for word in &mut l.words {
+                word.rect.x += by;
+            }
+            l
+        };
+        let text = text(vec![
+            line(0., &["1"]),
+            line(20., &["2"]),
+            shifted(line(20., &["let", "b"]), 40.),
+            shifted(line(0., &["let", "a"]), 40.),
+        ]);
+        let ordered = reading_order(text);
+        assert_eq!(
+            copy(&ordered, all(&ordered).unwrap(), &[]),
+            "1 let a\n2 let b"
+        );
     }
 
     #[test]
@@ -512,7 +616,7 @@ mod tests {
             height: 35.,
         };
         let kept = within(&text, area);
-        assert_eq!(copy(&kept, all(&kept).unwrap()), "Hello there\nMail");
+        assert_eq!(copy(&kept, all(&kept).unwrap(), &[]), "Hello there\nMail");
     }
 
     #[test]

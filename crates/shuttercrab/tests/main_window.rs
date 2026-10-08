@@ -1859,6 +1859,12 @@ fn quick_redact_blacks_out_emails_and_phones_as_one_change(cx: &mut TestAppConte
     press(cx, &opened, &["q"]);
     assert_eq!(redactions(cx, &opened), 2);
     assert_eq!(notice(cx).as_deref(), Some("2 items redacted"));
+    // What is redacted copies as [REDACTED].
+    press(cx, &opened, &["ctrl-c"]);
+    assert_eq!(
+        opened.seen.copied_text.borrow().last().map(String::as_str),
+        Some("Hello there\nMail [REDACTED] today\n[REDACTED]")
+    );
     press(cx, &opened, &["q"]);
     assert_eq!(redactions(cx, &opened), 2);
     assert_eq!(notice(cx).as_deref(), Some("Already redacted"));

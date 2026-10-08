@@ -174,6 +174,17 @@ impl Shown {
         texting.menu = Some(TextMenu::Context { at, highlighted: 0 });
     }
 
+    /// The redactions on it.
+    fn redactions(&self) -> Vec<Redaction> {
+        let marks = self.marks.marks().iter();
+        marks
+            .filter_map(|mark| match mark {
+                Mark::Redaction(hidden) => Some(*hidden),
+                _ => None,
+            })
+            .collect()
+    }
+
     /// Add the redactions not there already, as one change. Returns how
     /// many were added.
     fn add_redactions(&mut self, boxes: Vec<Redaction>) -> usize {
@@ -202,7 +213,12 @@ impl MainWindow {
     /// The text picked in Text actions, as Ctrl+C would copy it, if any.
     pub fn picked_text(&self) -> Option<String> {
         let texting = self.texting()?;
-        Some(text::copy(texting.text.as_ref()?, texting.picked()?))
+        let hidden = self.shown.as_ref()?.redactions();
+        Some(text::copy(
+            texting.text.as_ref()?,
+            texting.picked()?,
+            &hidden,
+        ))
     }
 
     fn texting(&self) -> Option<&TextActions> {
@@ -282,7 +298,7 @@ impl MainWindow {
                     return;
                 }
                 let reading = match result {
-                    Ok(text) => Reading::Read(Arc::new(text)),
+                    Ok(text) => Reading::Read(Arc::new(text::reading_order(text))),
                     Err(why) => Reading::Failed(why.into()),
                 };
                 let visible = match &reading {
@@ -485,7 +501,12 @@ impl MainWindow {
                 None => return,
             },
         };
-        (self.hooks.copy_text)(text::copy(&text, span), cx);
+        let hidden = self
+            .shown
+            .as_ref()
+            .map(Shown::redactions)
+            .unwrap_or_default();
+        (self.hooks.copy_text)(text::copy(&text, span, &hidden), cx);
         self.show_notice(
             if whole {
                 "All text copied"
