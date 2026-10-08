@@ -83,10 +83,26 @@ pub fn max_side() -> Result<u32> {
     OcrEngine::MaxImageDimension().context("could not ask OCR for its largest image")
 }
 
+/// How much larger to read a screenshot taken at display `scale`: text at
+/// 100% and 125% is small enough that OCR misreads it (9 as g, $ as 5,
+/// words run together), and reads right drawn twice as large and smooth.
+/// From 150% it reads right as it is.
+pub fn enlargement(scale: f32) -> u32 {
+    if scale < 1.5 { 2 } else { 1 }
+}
+
 /// Read the text in a `width` × `height` image of BGRA pixels, as GPUI
-/// draws them. `language` is a BCP-47 tag; `None` reads in the first of
-/// the user's languages that OCR has, or failing that any it has.
-pub fn read(bgra: &[u8], width: u32, height: u32, language: Option<&str>) -> Result<Text> {
+/// draws them, `enlarge` times larger (smoothly; less if that would pass
+/// [`max_side`]). Boxes are in the image's own pixels either way.
+/// `language` is a BCP-47 tag; `None` reads in the first of the user's
+/// languages that OCR has, or failing that any it has.
+pub fn read(
+    bgra: &[u8],
+    width: u32,
+    height: u32,
+    language: Option<&str>,
+    enlarge: u32,
+) -> Result<Text> {
     if bgra.len() != (width as usize * height as usize * 4) || width == 0 || height == 0 {
         bail!("image buffer does not match {width}x{height}");
     }
@@ -94,8 +110,16 @@ pub fn read(bgra: &[u8], width: u32, height: u32, language: Option<&str>) -> Res
     if width > most || height > most {
         bail!("OCR reads images up to {most} pixels a side; this is {width}x{height}");
     }
+    let by = enlarge.clamp(1, most / width.max(height));
     let engine = engine(language)?;
-    let bitmap = bitmap(bgra, width, height)?;
+    let bitmap = bitmap(width * by, height * by, |y, row| {
+        if by == 1 {
+            let at = y * width as usize * 4;
+            row.copy_from_slice(&bgra[at..at + row.len()]);
+        } else {
+            enlarged_row(bgra, width, height, by, y, row);
+        }
+    })?;
     let result = engine
         .RecognizeAsync(&bitmap)
         .context("could not start OCR")?
@@ -104,7 +128,7 @@ pub fn read(bgra: &[u8], width: u32, height: u32, language: Option<&str>) -> Res
     let lines = result
         .Lines()?
         .into_iter()
-        .map(|line| line_of(&line))
+        .map(|line| line_of(&line, by as f32))
         .collect::<Result<_>>()?;
     Ok(Text {
         language: engine.RecognizerLanguage()?.LanguageTag()?.to_string(),
@@ -138,9 +162,13 @@ fn engine(language: Option<&str>) -> Result<OcrEngine> {
     OcrEngine::TryCreateFromLanguage(&first).context("could not start OCR")
 }
 
-/// A `SoftwareBitmap` holding a copy of the pixels, row by row into its
-/// own stride.
-fn bitmap(bgra: &[u8], width: u32, height: u32) -> Result<SoftwareBitmap> {
+/// A `width` × `height` `SoftwareBitmap` whose rows `fill` writes, top to
+/// bottom, straight into its own buffer.
+fn bitmap(
+    width: u32,
+    height: u32,
+    mut fill: impl FnMut(usize, &mut [u8]),
+) -> Result<SoftwareBitmap> {
     let bitmap = SoftwareBitmap::CreateWithAlpha(
         BitmapPixelFormat::Bgra8,
         width as i32,
@@ -155,22 +183,19 @@ fn bitmap(bgra: &[u8], width: u32, height: u32) -> Result<SoftwareBitmap> {
         let access: IMemoryBufferByteAccess = reference.cast()?;
         let (mut data, mut capacity) = (std::ptr::null_mut(), 0);
         // SAFETY: the buffer is locked for writing until `reference` and
-        // `buffer` drop at the end of this block.
+        // `buffer` close at the end of this block.
         unsafe { access.GetBuffer(&mut data, &mut capacity)? };
         let (row, stride) = (width as usize * 4, plane.Stride as usize);
         let start = plane.StartIndex as usize;
-        if start + stride * (height as usize - 1) + row > capacity as usize {
+        if stride < row || start + stride * (height as usize - 1) + row > capacity as usize {
             bail!("the OCR bitmap's buffer is smaller than its image");
         }
         for y in 0..height as usize {
-            // SAFETY: checked just above to lie within the buffer.
-            unsafe {
-                std::ptr::copy_nonoverlapping(
-                    bgra.as_ptr().add(y * row),
-                    data.add(start + y * stride),
-                    row,
-                );
-            }
+            // SAFETY: checked just above to lie within the buffer, which
+            // nothing else touches while it is locked.
+            let target =
+                unsafe { std::slice::from_raw_parts_mut(data.add(start + y * stride), row) };
+            fill(y, target);
         }
         reference.Close()?;
         buffer.Close()?;
@@ -178,7 +203,32 @@ fn bitmap(bgra: &[u8], width: u32, height: u32) -> Result<SoftwareBitmap> {
     Ok(bitmap)
 }
 
-fn line_of(line: &OcrLine) -> Result<Line> {
+/// Row `y` of the `width` × `height` image `bgra`, `by` times larger:
+/// each pixel blended from the four nearest (bilinear), so text stays
+/// smooth. Blocky, pixel-repeated text reads worse than the original.
+fn enlarged_row(bgra: &[u8], width: u32, height: u32, by: u32, y: usize, row: &mut [u8]) {
+    let source = |n: usize, most: u32| {
+        let at = ((n as f32 + 0.5) / by as f32 - 0.5).clamp(0., (most - 1) as f32);
+        let low = at.floor() as usize;
+        (low, (low + 1).min(most as usize - 1), at - low as f32)
+    };
+    let (y0, y1, fy) = source(y, height);
+    let line = width as usize * 4;
+    let (top, bottom) = (&bgra[y0 * line..][..line], &bgra[y1 * line..][..line]);
+    for (x, out) in row.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+        let (x0, x1, fx) = source(x, width);
+        for c in 0..4 {
+            let blend = |row: &[u8]| {
+                f32::from(row[x0 * 4 + c]) * (1. - fx) + f32::from(row[x1 * 4 + c]) * fx
+            };
+            out[c] = (blend(top) * (1. - fy) + blend(bottom) * fy).round() as u8;
+        }
+    }
+}
+
+/// A line as OCR found it, its boxes brought back from an image `by`
+/// times larger.
+fn line_of(line: &OcrLine, by: f32) -> Result<Line> {
     let words = line
         .Words()?
         .into_iter()
@@ -187,10 +237,10 @@ fn line_of(line: &OcrLine) -> Result<Line> {
             Ok(Word {
                 text: word.Text()?.to_string(),
                 rect: Rect {
-                    x: rect.X,
-                    y: rect.Y,
-                    width: rect.Width,
-                    height: rect.Height,
+                    x: rect.X / by,
+                    y: rect.Y / by,
+                    width: rect.Width / by,
+                    height: rect.Height / by,
                 },
             })
         })
@@ -207,7 +257,27 @@ mod tests {
 
     #[test]
     fn mismatched_buffers_are_refused_before_ocr_starts() {
-        assert!(read(&[0; 12], 2, 2, None).is_err());
-        assert!(read(&[], 0, 0, None).is_err());
+        assert!(read(&[0; 12], 2, 2, None, 1).is_err());
+        assert!(read(&[], 0, 0, None, 1).is_err());
+    }
+
+    #[test]
+    fn enlarging_blends_between_pixels_and_keeps_the_edges() {
+        // One row, black then white, twice as wide.
+        let bgra = [0, 0, 0, 255, 255, 255, 255, 255];
+        let mut row = [0; 16];
+        enlarged_row(&bgra, 2, 1, 2, 0, &mut row);
+        let firsts: Vec<u8> = row.as_chunks::<4>().0.iter().map(|px| px[0]).collect();
+        // The ends stay as they were; between, a quarter and three quarters.
+        assert_eq!(firsts, [0, 64, 191, 255]);
+        assert!(row.as_chunks::<4>().0.iter().all(|px| px[3] == 255));
+    }
+
+    #[test]
+    fn small_scales_are_read_twice_as_large() {
+        assert_eq!(enlargement(1.), 2);
+        assert_eq!(enlargement(1.25), 2);
+        assert_eq!(enlargement(1.5), 1);
+        assert_eq!(enlargement(2.), 1);
     }
 }

@@ -111,7 +111,7 @@ USAGE
   capture-spike ocr IMAGE.png [--language TAG] [--upscale N] [--boxes OUT.png]
       Read the text in an image with Windows' OCR, as the app's text actions
       do, and print the OCR languages installed, the time it took, and each
-      line with its words' boxes. --upscale reads it N times larger first;
+      line with its words' boxes. --upscale reads it N times larger (smoothly) first;
       --boxes saves the image with each word outlined.
 
   capture-spike shots [--monitor M] [--repeat N]
@@ -799,17 +799,16 @@ fn ocr(mut args: Args) -> Result<()> {
     println!("Largest side: {} px", ocr::max_side()?);
 
     let (width, height, rgba) = png_io::read_rgba8(&image)?;
-    let (width, height, rgba) = enlarge(width, height, &rgba, upscale);
     let mut bgra = rgba.clone();
     for px in bgra.as_chunks_mut::<4>().0 {
         px.swap(0, 2);
     }
     let started = std::time::Instant::now();
-    let text = ocr::read(&bgra, width, height, language.as_deref())?;
+    let text = ocr::read(&bgra, width, height, language.as_deref(), upscale)?;
     let took = started.elapsed();
     let words: usize = text.lines.iter().map(|l| l.words.len()).sum();
     println!(
-        "Read {width}x{height} in {} ms as {}: {} lines, {words} words, angle {:?}",
+        "Read {width}x{height} x{upscale} in {} ms as {}: {} lines, {words} words, angle {:?}",
         took.as_millis(),
         text.language,
         text.lines.len(),
@@ -822,14 +821,9 @@ fn ocr(mut args: Args) -> Result<()> {
             .iter()
             .map(|w| {
                 let r = w.rect;
-                let n = upscale as f32;
                 format!(
                     "{}@{:.0},{:.0},{:.0}x{:.0}",
-                    w.text,
-                    r.x / n,
-                    r.y / n,
-                    r.width / n,
-                    r.height / n
+                    w.text, r.x, r.y, r.width, r.height
                 )
             })
             .collect();
@@ -844,34 +838,6 @@ fn ocr(mut args: Args) -> Result<()> {
         println!("Wrote {}", out.display());
     }
     Ok(())
-}
-
-/// The image `by` times larger, each pixel repeated: what OCR makes of
-/// small text drawn bigger.
-fn enlarge(width: u32, height: u32, rgba: &[u8], by: u32) -> (u32, u32, Vec<u8>) {
-    if by == 1 {
-        return (width, height, rgba.to_vec());
-    }
-    let (w, h) = (width * by, height * by);
-    let mut out = Vec::with_capacity((w * h * 4) as usize);
-    let at = |x: u32, y: u32, c: usize| f32::from(rgba[((y * width + x) * 4) as usize + c]);
-    // Bilinear: each new pixel blends the four nearest.
-    for y in 0..h {
-        let sy = ((y as f32 + 0.5) / by as f32 - 0.5).clamp(0., (height - 1) as f32);
-        let (y0, fy) = (sy.floor() as u32, sy.fract());
-        let y1 = (y0 + 1).min(height - 1);
-        for x in 0..w {
-            let sx = ((x as f32 + 0.5) / by as f32 - 0.5).clamp(0., (width - 1) as f32);
-            let (x0, fx) = (sx.floor() as u32, sx.fract());
-            let x1 = (x0 + 1).min(width - 1);
-            for c in 0..4 {
-                let top = at(x0, y0, c) * (1. - fx) + at(x1, y0, c) * fx;
-                let bottom = at(x0, y1, c) * (1. - fx) + at(x1, y1, c) * fx;
-                out.push((top * (1. - fy) + bottom * fy).round() as u8);
-            }
-        }
-    }
-    (w, h, out)
 }
 
 /// A magenta box around `rect`, a pixel wide.
