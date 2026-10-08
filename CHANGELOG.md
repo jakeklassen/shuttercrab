@@ -11,14 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
-- Text actions: copy and redact a screenshot's text
-- *(platform)* read small text twice as large, smoothly
-- *(platform)* read the text in an image with Windows' OCR
-
-### Fixed
-
-- copied text says [REDACTED], in reading order
-- Quick redact finds an email OCR misread or split
+- Text actions, as in Snipping Tool: with a screenshot open, press I (or the new button after Crop) and Shuttercrab reads its text, on your PC with Windows' own text recognition. The screenshot dims and each line of text is outlined. Drag across words, or use the arrow keys (Shift extends), to pick text; Ctrl+A picks it all, and Ctrl+C copies the pick, or all the text when nothing is picked, top to bottom with side-by-side text on one line.
+- Quick redact (Q) blacks out the email addresses and phone numbers in one go, and says how many; Shift+Q chooses which and removes every redaction. R, or Redact text in the right-click menu, blacks out the text picked. Redactions are solid black boxes: Ctrl+Z takes them back, Copy and Save as include them, and copied text says [REDACTED] in their place.
 
 ## [0.1.21](https://github.com/jakeklassen/shuttercrab/compare/v0.1.20...v0.1.21) - 2026-10-07
 
