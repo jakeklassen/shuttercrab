@@ -7,6 +7,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.22](https://github.com/jakeklassen/shuttercrab/compare/v0.1.21...v0.1.22) - 2026-10-08
+
+### Added
+
+- Text actions: copy and redact a screenshot's text
+- *(platform)* read small text twice as large, smoothly
+- *(platform)* read the text in an image with Windows' OCR
+
+### Fixed
+
+- copied text says [REDACTED], in reading order
+- Quick redact finds an email OCR misread or split
+
 ## [0.1.21](https://github.com/jakeklassen/shuttercrab/compare/v0.1.20...v0.1.21) - 2026-10-07
 
 ### Added
