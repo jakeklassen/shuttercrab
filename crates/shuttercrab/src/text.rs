@@ -257,6 +257,11 @@ pub fn sensitive(text: &Text, finds: Finds) -> Vec<Span> {
             for (word, w) in l.words.iter().enumerate() {
                 if is_email(&w.text) {
                     found.push(Span::between(at(word), at(word)));
+                } else if word > 0
+                    && email_domain(&w.text).is_some_and(|(local, _)| local.is_empty())
+                {
+                    // Read apart at the @: the word before is its name.
+                    found.push(Span::between(at(word - 1), at(word)));
                 }
             }
         }
@@ -277,25 +282,34 @@ const CLOSERS: &[char] = &[
 ];
 
 /// Whether `word` is an email address, punctuation around it aside:
-/// something, an @, and a domain with a dot and letters after the last.
+/// anything, an @, and a domain with a dot and letters after the last.
+/// What comes before the @ may be misread (OCR reads a name underlined by
+/// a squiggle as `jß&gsgpgey`), and it is where the address is, not what
+/// it says, that a redaction needs; a domain is read well.
 fn is_email(word: &str) -> bool {
+    email_domain(word).is_some_and(|(local, _)| !local.is_empty())
+}
+
+/// The part of `word` before its last @, and whether what follows is a
+/// domain, punctuation around the word aside: `None` without both an @ and
+/// a domain.
+fn email_domain(word: &str) -> Option<(&str, &str)> {
     let word = word.trim_start_matches(OPENERS).trim_end_matches(CLOSERS);
-    let Some((local, domain)) = word.split_once('@') else {
-        return false;
-    };
-    let local_ok = !local.is_empty()
-        && local
-            .chars()
-            .all(|c| c.is_alphanumeric() || "._%+-'".contains(c));
+    let (local, domain) = word.rsplit_once('@')?;
+    is_domain(domain).then_some((local, domain))
+}
+
+/// Whether `domain` is one: labels of letters, digits and hyphens, at
+/// least two, the last all letters.
+fn is_domain(domain: &str) -> bool {
     let labels: Vec<&str> = domain.split('.').collect();
-    let domain_ok = labels.len() >= 2
+    labels.len() >= 2
         && labels.iter().all(|label| {
             !label.is_empty() && label.chars().all(|c| c.is_alphanumeric() || c == '-')
         })
         && labels
             .last()
-            .is_some_and(|tld| tld.chars().count() >= 2 && tld.chars().all(char::is_alphabetic));
-    local_ok && domain_ok
+            .is_some_and(|tld| tld.chars().count() >= 2 && tld.chars().all(char::is_alphabetic))
 }
 
 /// The runs of words in a line that make phone numbers, by their first and
@@ -529,9 +543,21 @@ mod tests {
             "(support@shuttercrab.dev).",
             "a+tag@mail.example.co.uk",
             "<o'brien@example.ie>",
+            // A name OCR misread, under an editor's error squiggle.
+            "jß&gsgpgey@example.com",
         ] {
             assert!(is_email(yes), "{yes}");
         }
+        // Read apart at the @, the word before goes with it.
+        let text = text(vec![line(0., &["Mail", "jane", "@example.com", "now"])]);
+        let emails = Finds {
+            emails: true,
+            phones: false,
+        };
+        assert_eq!(
+            sensitive(&text, emails),
+            [Span::between(at(0, 1), at(0, 2))]
+        );
         for no in [
             "@handle",
             "jane@",
