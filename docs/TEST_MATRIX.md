@@ -545,7 +545,8 @@ the message). Manual check, for the owner:
    that disconnects it; some monitors stay attached when off, and then
    the recording simply carries on with a still picture).
 3. Within a second the bar and border go, and a notification says
-   "Recording stopped: the display was disconnected or turned off" with
+   "Recording stopped: the display was disconnected or turned off, or the
+   graphics driver restarted" with
    the length and name saved. Clicking it plays the file, up to the
    moment the display went.
 
@@ -1058,7 +1059,8 @@ Hardening (PRD §22–§25):
   wake or a driver update): the cached Direct3D device is dropped and the
   capture retried once with a new one. Before, every later capture failed
   until Shuttercrab was restarted. Unit tests: the retry policy and the
-  recognised HRESULTs (a device loss cannot be forced from a test).
+  recognised HRESULTs (a device loss cannot be forced from a test). Seen
+  working in a real driver update: "A graphics driver update", below.
 - **Display changed mid-capture** (HDR toggled, resolution changed):
   captured again once instead of failing.
 - **Messages** (PRD §24): notifications say what happened and what to do
@@ -1403,6 +1405,27 @@ Windows for frames no closer than 3/4 of a frame period
 reverted.
 
 Still to test: Batman: Arkham Origins (true exclusive fullscreen).
+
+## A graphics driver update (2026-10-09)
+
+An NVIDIA driver update (RTX 4090, both monitors 4K HDR) resets the
+graphics device, which a test cannot do. Before the install the owner took
+a screenshot, so the capture service held a device for the update to kill,
+then recorded an area of the screen through the install, about 2 minutes.
+
+| | Result |
+|---|---|
+| The recording | Stopped by itself as the driver took the displays away; 132.55 s saved, 5,417 frames, 0 dropped, 1 skipped; plays cleanly up to the flicker |
+| Its notification | "Recording stopped: the display was disconnected or turned off" (Windows removed the displays before any device error) |
+| Shuttercrab's windows | GPUI lost its device twice: about 6 s on the Microsoft Basic Render Driver while NVIDIA's was out, then back on the 4090; no crash |
+| The video window | Opened 4 s after the recording ended, mid-install: the player's new device was lost at once ("could not play …: 0x887A0005"); the owner saw the window's previous screenshot, likely a stale picture while GPUI could not resize its swap chain |
+| First screenshot after | "the graphics device was lost; creating a new one", then fine: the lost-device retry works on real hardware |
+| Afterwards | Overlays on both monitors (now `\\.\DISPLAY22` and `23`), short recordings, playback: all fine |
+
+Fixed after: the player opens again, once a second for up to 15 s, when its
+device is lost; the display-gone notification also names a driver restart
+("…disconnected or turned off, or the graphics driver restarted"). An edge
+case (few people record through a driver install); not re-run.
 
 ## Known issues
 
