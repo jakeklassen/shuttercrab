@@ -476,11 +476,13 @@ fn is_phone(run: &[(usize, String)]) -> bool {
     !(date || address || (plain && digits < 10))
 }
 
-/// The black boxes that hide `span`: one for each line it reaches, from its
-/// first word there to its last, the line's full height, and `pad` more
-/// each way so no edge of a letter shows.
+/// The black boxes that hide `span`: one for each row it reaches, from its
+/// first word there to its last, the row's full height, and `pad` more
+/// each way so no edge of a letter shows. Lines OCR read apart on one row
+/// share a box.
 pub fn cover(text: &Text, span: Span, pad: f32) -> Vec<Redaction> {
-    let mut boxes = Vec::new();
+    let mut boxes: Vec<Rect> = Vec::new();
+    let mut last_line: Option<&Line> = None;
     for (index, line) in text.lines.iter().enumerate() {
         let Some(band) = line_box(line) else {
             continue;
@@ -494,14 +496,29 @@ pub fn cover(text: &Text, span: Span, pad: f32) -> Vec<Redaction> {
         let Some(across) = picked.map(|(_, w)| w.rect).reduce(union) else {
             continue;
         };
-        boxes.push(Redaction {
+        let hide = Rect {
             x: across.x - pad,
             y: band.y - pad,
             width: across.width + 2. * pad,
             height: band.height + 2. * pad,
-        });
+        };
+        match boxes.last_mut() {
+            Some(last) if last_line.is_some_and(|before| same_row(before, line)) => {
+                *last = union(*last, hide);
+            }
+            _ => boxes.push(hide),
+        }
+        last_line = Some(line);
     }
     boxes
+        .into_iter()
+        .map(|r| Redaction {
+            x: r.x,
+            y: r.y,
+            width: r.width,
+            height: r.height,
+        })
+        .collect()
 }
 
 #[cfg(test)]
@@ -705,6 +722,10 @@ mod tests {
             shift(line(0., &["or", "call", "+1", "555"]), 70.),
         ]));
         assert_eq!(sensitive(&row, finds), [Span::between(at(0, 2), at(1, 1))]);
+        // One box from +1 to 6543, the gap between the lines too.
+        let boxes = cover(&row, Span::between(at(0, 2), at(1, 1)), 2.);
+        assert_eq!(boxes.len(), 1);
+        assert_eq!((boxes[0].x, boxes[0].width), (148., 154.));
         // A line number far to the left of the code is not part of it.
         let code = reading_order(text(vec![
             line(0., &["548"]),
