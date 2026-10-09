@@ -416,11 +416,17 @@ mod tests {
             let id = MonitorId(m.hmonitor.0 as u64);
             assert!(attached(id), "{} is attached", m.device_name);
         }
-        // A handle that names no display, as one unplugged does. GitHub's
-        // hosted runners have only a virtual display, and Windows there
-        // reports this handle as attached too; there is nothing to unplug.
+        // A handle that names no display, as one unplugged does: a real
+        // one's slot with another generation in its high word. A made-up
+        // handle can land on a real display's slot (0x7FFF_0001 did after a
+        // driver update, when a display had 0x2_0001), and Windows matches
+        // some generations to any. GitHub's hosted runners have only a
+        // virtual display, and Windows there reports such handles as
+        // attached too; there is nothing to unplug.
         if std::env::var_os("CI").is_none() {
-            assert!(!attached(MonitorId(0x7FFF_0001)));
+            let real = monitors[0].hmonitor.0 as u64;
+            let stale = (real & 0xFFFF) | ((((real >> 16) & 0xFFFF) ^ 0x5A5A) << 16);
+            assert!(!attached(MonitorId(stale)), "{stale:#x}");
         }
     }
 
