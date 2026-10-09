@@ -112,7 +112,8 @@ pub struct RecordingSummary {
 /// Why a recording ended by itself.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum Interruption {
-    /// The recorded display was disconnected or turned off.
+    /// The recorded display was disconnected or turned off, or went away
+    /// while the graphics driver restarted (a driver update).
     DisplayGone,
     /// The recorded window was closed.
     WindowClosed,
@@ -152,7 +153,10 @@ impl Interruption {
     /// Why recording stopped, to finish "Recording stopped: …".
     pub fn describe(&self) -> String {
         match self {
-            Self::DisplayGone => "the display was disconnected or turned off".into(),
+            Self::DisplayGone => {
+                "the display was disconnected or turned off, or the graphics driver restarted"
+                    .into()
+            }
             Self::WindowClosed => "the window was closed".into(),
             Self::DeviceLost => "the graphics driver was reset".into(),
             Self::DiskFull => "the disk is full".into(),
@@ -445,7 +449,7 @@ mod tests {
         ));
         assert_eq!(
             Interruption::DisplayGone.describe(),
-            "the display was disconnected or turned off"
+            "the display was disconnected or turned off, or the graphics driver restarted"
         );
     }
 
