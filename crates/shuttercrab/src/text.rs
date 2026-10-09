@@ -315,14 +315,9 @@ pub fn sensitive(text: &Text, finds: Finds) -> Vec<Span> {
     for (line, l) in text.lines.iter().enumerate() {
         let at = |word| WordAt { line, word };
         if finds.emails {
-            for (word, w) in l.words.iter().enumerate() {
-                if is_email(&w.text) {
-                    found.push(Span::between(at(word), at(word)));
-                } else if word > 0
-                    && email_domain(&w.text).is_some_and(|(local, _)| local.is_empty())
-                {
-                    // Read apart at the @: the word before is its name.
-                    found.push(Span::between(at(word - 1), at(word)));
+            for word in 0..l.words.len() {
+                if let Some((first, last)) = email_at(&l.words, word) {
+                    found.push(Span::between(at(first), at(last)));
                 }
             }
         }
@@ -349,6 +344,37 @@ const CLOSERS: &[char] = &[
 /// it says, that a redaction needs; a domain is read well.
 fn is_email(word: &str) -> bool {
     email_domain(word).is_some_and(|(local, _)| !local.is_empty())
+}
+
+/// The first and last of `words` that the email address with its @ in
+/// `word` covers, if it is one. OCR reads some apart: at the @, the word
+/// before is its name; at a dot (`jane@example`, `.`, `com` in a code
+/// editor), the words after are the rest of its domain, as many as there are.
+fn email_at(words: &[Word], word: usize) -> Option<(usize, usize)> {
+    let text = |i: usize| words.get(i).map(|w| w.text.as_str());
+    // The word, then with each more of its domain: the text and last word.
+    let mut joins = vec![(text(word).filter(|w| w.contains('@'))?.to_string(), word)];
+    loop {
+        let (joined, last) = &joins[joins.len() - 1];
+        let longer = match (text(last + 1), text(last + 2)) {
+            (Some("."), Some(after)) => (format!("{joined}.{after}"), last + 2),
+            (Some(next), _) if next.len() > 1 && next.starts_with('.') => {
+                (format!("{joined}{next}"), last + 1)
+            }
+            _ => break,
+        };
+        joins.push(longer);
+    }
+    joins.iter().rev().find_map(|(joined, last)| {
+        if is_email(joined) {
+            Some((word, *last))
+        } else if email_domain(joined).is_some() {
+            // Nothing before the @: the word before is its name.
+            (word > 0).then(|| (word - 1, *last))
+        } else {
+            None
+        }
+    })
 }
 
 /// The part of `word` before its last @, and whether what follows is a
@@ -662,6 +688,19 @@ mod tests {
             sensitive(&text, emails),
             [Span::between(at(0, 1), at(0, 2))]
         );
+        // Read apart at a dot, as in a code editor, the words after go too.
+        let found = |words: &[&str]| sensitive(&self::text(vec![line(0., words)]), emails);
+        assert_eq!(
+            found(&["&[\"Mail\",", "\"jane.doe@exampte", ".", "com,\","]),
+            [Span::between(at(0, 1), at(0, 3))]
+        );
+        assert_eq!(
+            found(&["to", "jane@example", ".co", ".uk", "now"]),
+            [Span::between(at(0, 1), at(0, 3))]
+        );
+        // But not a sentence after one, nor dots without an @.
+        assert!(found(&["at", "me@home.", "Thanks"]).is_empty());
+        assert!(found(&["see", "notes", ".", "txt"]).is_empty());
         for no in [
             "@handle",
             "jane@",
