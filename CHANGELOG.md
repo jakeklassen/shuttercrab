@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.24](https://github.com/jakeklassen/shuttercrab/compare/v0.1.23...v0.1.24) - 2026-10-09
+
+### Fixed
+
+- one redaction box for a row OCR read as two lines
+- Quick redact finds a phone number OCR read as two lines
+- Quick redact finds an email read apart at a dot
+
 ## [0.1.23](https://github.com/jakeklassen/shuttercrab/compare/v0.1.22...v0.1.23) - 2026-10-09
 
 ### Fixed
