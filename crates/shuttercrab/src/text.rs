@@ -312,23 +312,44 @@ pub struct Finds {
 /// as the words it covers.
 pub fn sensitive(text: &Text, finds: Finds) -> Vec<Span> {
     let mut found = Vec::new();
-    for (line, l) in text.lines.iter().enumerate() {
-        let at = |word| WordAt { line, word };
+    for run in runs(text) {
+        let words: Vec<Word> = run
+            .iter()
+            .map(|at| text.lines[at.line].words[at.word].clone())
+            .collect();
+        let span = |(first, last): (usize, usize)| Span::between(run[first], run[last]);
         if finds.emails {
-            for word in 0..l.words.len() {
-                if let Some((first, last)) = email_at(&l.words, word) {
-                    found.push(Span::between(at(first), at(last)));
-                }
-            }
+            found.extend((0..words.len()).filter_map(|word| email_at(&words, word).map(span)));
         }
         if finds.phones {
-            for (first, last) in phone_runs(&l.words) {
-                found.push(Span::between(at(first), at(last)));
-            }
+            found.extend(phone_runs(&words).into_iter().map(span));
         }
     }
     found.sort_by_key(|span| span.first);
     found
+}
+
+/// The words of `text`, in runs of lines that read on from each other: on
+/// one row and near, as OCR can read a row as several lines, with a phone
+/// number's parts in two. A line far along the row (code after its line
+/// number) starts a run of its own. `text` is in reading order.
+fn runs(text: &Text) -> Vec<Vec<WordAt>> {
+    let mut runs: Vec<Vec<WordAt>> = Vec::new();
+    for (line, l) in text.lines.iter().enumerate() {
+        let reads_on = line > 0 && {
+            let before = &text.lines[line - 1];
+            same_row(before, l)
+                && line_box(before)
+                    .zip(line_box(l))
+                    .is_some_and(|(a, b)| b.x - (a.x + a.width) <= 2. * a.height.min(b.height))
+        };
+        let words = (0..l.words.len()).map(|word| WordAt { line, word });
+        match runs.last_mut() {
+            Some(run) if reads_on => run.extend(words),
+            _ => runs.push(words.collect()),
+        }
+    }
+    runs
 }
 
 /// Punctuation that sits around a word in a sentence, not in it.
@@ -664,6 +685,32 @@ mod tests {
             phones: false,
         };
         assert_eq!(sensitive(&text, emails).len(), 1);
+    }
+
+    #[test]
+    fn quick_redact_reads_on_across_lines_on_one_row() {
+        let shift = |mut l: Line, dx: f32| {
+            for w in &mut l.words {
+                w.rect.x += dx;
+            }
+            l
+        };
+        let finds = Finds {
+            emails: true,
+            phones: true,
+        };
+        // OCR read the row as two lines, the number's parts in both.
+        let row = reading_order(text(vec![
+            shift(line(0., &["987", "6543", "today."]), 220.),
+            shift(line(0., &["or", "call", "+1", "555"]), 70.),
+        ]));
+        assert_eq!(sensitive(&row, finds), [Span::between(at(0, 2), at(1, 1))]);
+        // A line number far to the left of the code is not part of it.
+        let code = reading_order(text(vec![
+            line(0., &["548"]),
+            shift(line(0., &["555", "1234", "5678"]), 70.),
+        ]));
+        assert_eq!(sensitive(&code, finds), [Span::between(at(1, 0), at(1, 2))]);
     }
 
     #[test]
