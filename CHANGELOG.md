@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.23](https://github.com/jakeklassen/shuttercrab/compare/v0.1.22...v0.1.23) - 2026-10-09
+
+### Fixed
+
+- the video player opens again after a driver update
+- a stopped recording's notice names a driver restart
+
 ## [0.1.22](https://github.com/jakeklassen/shuttercrab/compare/v0.1.21...v0.1.22) - 2026-10-08
 
 ### Added
