@@ -11,9 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- one redaction box for a row OCR read as two lines
-- Quick redact finds a phone number OCR read as two lines
-- Quick redact finds an email read apart at a dot
+- Quick redact finds email addresses in code editors, where the text is often read with a gap at the dot (jane@example . com).
+- Quick redact finds a phone number that was read in pieces along one line, and hides it with one black box instead of several.
 
 ## [0.1.23](https://github.com/jakeklassen/shuttercrab/compare/v0.1.22...v0.1.23) - 2026-10-09
 
