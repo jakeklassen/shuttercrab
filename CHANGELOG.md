@@ -11,8 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- the video player opens again after a driver update
-- a stopped recording's notice names a driver restart
+- A recording that opens while the graphics driver is restarting (during a driver update, say) now plays once the driver is back, instead of showing an error.
+- When a recording stops because its display went away, the notification now says this can also be the graphics driver restarting: "the display was disconnected or turned off, or the graphics driver restarted".
 
 ## [0.1.22](https://github.com/jakeklassen/shuttercrab/compare/v0.1.21...v0.1.22) - 2026-10-08
 
