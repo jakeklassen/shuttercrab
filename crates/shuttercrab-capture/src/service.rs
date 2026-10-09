@@ -712,10 +712,10 @@ fn retry_once<S, T>(
 /// DXGI_ERROR_DEVICE_REMOVED, _HUNG, _RESET and DXGI_ERROR_DRIVER_INTERNAL_ERROR.
 pub(crate) const DEVICE_LOST: [u32; 4] = [0x887A_0005, 0x887A_0006, 0x887A_0007, 0x887A_0020];
 
-/// A failure as the user should hear it: a lost device, or `code` with
-/// `message`.
-fn classify(e: anyhow::Error, code: CaptureErrorCode, message: &str) -> CaptureError {
-    let lost = e.chain().any(|cause| {
+/// Whether `e` means the Direct3D device is gone ([`DEVICE_LOST`]), as a
+/// Windows error anywhere in its chain or as a code in its text.
+pub fn is_device_lost(e: &anyhow::Error) -> bool {
+    e.chain().any(|cause| {
         cause
             .downcast_ref::<windows::core::Error>()
             .is_some_and(|e| DEVICE_LOST.contains(&(e.code().0 as u32)))
@@ -724,8 +724,13 @@ fn classify(e: anyhow::Error, code: CaptureErrorCode, message: &str) -> CaptureE
         DEVICE_LOST
             .iter()
             .any(|hr| text.contains(&format!("0X{hr:08X}")))
-    };
-    if lost {
+    }
+}
+
+/// A failure as the user should hear it: a lost device, or `code` with
+/// `message`.
+fn classify(e: anyhow::Error, code: CaptureErrorCode, message: &str) -> CaptureError {
+    if is_device_lost(&e) {
         CaptureError::new(
             CaptureErrorCode::DeviceLost,
             "The graphics device was reset; try again",

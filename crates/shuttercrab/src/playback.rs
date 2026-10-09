@@ -3,13 +3,17 @@
 //! sends back [`Update`]s, among them each new picture at the size the
 //! window shows it. While paused it sleeps until told something; while
 //! playing or seeking it asks for a picture at each refresh of the display.
+//! If its graphics device is lost (a driver update), it opens again.
 
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
-use shuttercrab_capture::play::{Player, PlayerEvent};
+use shuttercrab_capture::{
+    play::{Player, PlayerEvent},
+    service::is_device_lost,
+};
 use std::{
     path::{Path, PathBuf},
-    sync::mpsc::{Receiver, Sender, TryRecvError, channel},
-    time::Duration,
+    sync::mpsc::{Receiver, RecvTimeoutError, Sender, TryRecvError, channel},
+    time::{Duration, Instant},
 };
 
 /// What the window asks of the player.
@@ -109,50 +113,66 @@ fn run(
 ) {
     let name = path.file_name().unwrap_or_default().to_string_lossy();
     log::info!("playing {name}");
-    if let Err(e) = play(&path, &inbox, engine, &updates) {
-        log::error!("could not play {name}: {e:#}");
-        let _ = updates.unbounded_send(Update::Failed(format!("{e:#}")));
+    let mut size = None;
+    let mut retries = 0;
+    loop {
+        match play(&path, &inbox, engine.clone(), &updates, &mut size) {
+            Ok(()) => break,
+            // A driver update takes the device away for a few seconds.
+            Err(e) if is_device_lost(&e) && retries < DEVICE_RETRIES => {
+                retries += 1;
+                log::warn!("the graphics device was lost playing {name}; trying again: {e:#}");
+                if !wait_for_retry(&inbox, &mut size) {
+                    break;
+                }
+            }
+            Err(e) => {
+                log::error!("could not play {name}: {e:#}");
+                let _ = updates.unbounded_send(Update::Failed(format!("{e:#}")));
+                break;
+            }
+        }
     }
     log::info!("player closed");
 }
 
+/// How many times a player whose graphics device was lost opens again,
+/// [`RETRY_WAIT`] apart: a driver update had it back after about 6 s.
+const DEVICE_RETRIES: u32 = 15;
+
+const RETRY_WAIT: Duration = Duration::from_secs(1);
+
+/// Wait [`RETRY_WAIT`] before opening the player again, keeping the size the
+/// window asks for and dropping the lost player's last words. False if the
+/// window closed meanwhile.
+fn wait_for_retry(inbox: &Receiver<Command>, size: &mut Option<(u32, u32)>) -> bool {
+    let until = Instant::now() + RETRY_WAIT;
+    loop {
+        match inbox.recv_timeout(until.saturating_duration_since(Instant::now())) {
+            Ok(Command::Close) | Err(RecvTimeoutError::Disconnected) => return false,
+            Ok(Command::Size(width, height)) => *size = Some((width, height)),
+            Ok(_) => {}
+            Err(RecvTimeoutError::Timeout) => return true,
+        }
+    }
+}
+
+/// Open `path` and play it until the window closes. `size` is the size the
+/// window asked for, kept across a player opened again.
 fn play(
     path: &Path,
     inbox: &Receiver<Command>,
     engine: Sender<Command>,
     updates: &UnboundedSender<Update>,
+    size: &mut Option<(u32, u32)>,
 ) -> anyhow::Result<()> {
     let player = Player::open(path, move |event| {
         let _ = engine.send(Command::Engine(event));
     })?;
-    let mut looper = Looper::new(player, updates.clone());
-    loop {
-        // Asleep until told something, unless pictures are due.
-        let first = if looper.busy() {
-            match inbox.try_recv() {
-                Ok(command) => Some(command),
-                Err(TryRecvError::Empty) => None,
-                Err(TryRecvError::Disconnected) => return Ok(()),
-            }
-        } else {
-            match inbox.recv() {
-                Ok(command) => Some(command),
-                Err(_) => return Ok(()),
-            }
-        };
-        for command in first
-            .into_iter()
-            .chain(std::iter::from_fn(|| inbox.try_recv().ok()))
-        {
-            if !looper.handle(command)? {
-                return Ok(());
-            }
-        }
-        if looper.busy() {
-            looper.player.wait_for_refresh()?;
-            looper.show()?;
-        }
-    }
+    let mut looper = Looper::new(player, updates.clone(), *size);
+    let result = looper.run(inbox);
+    *size = looper.size;
+    result
 }
 
 /// The player thread's state.
@@ -182,11 +202,11 @@ const POSITION_STEP: Duration = Duration::from_millis(100);
 const END_SLACK: Duration = Duration::from_millis(50);
 
 impl Looper {
-    fn new(player: Player, updates: UnboundedSender<Update>) -> Self {
+    fn new(player: Player, updates: UnboundedSender<Update>, size: Option<(u32, u32)>) -> Self {
         Self {
             player,
             updates,
-            size: None,
+            size,
             loaded: false,
             first_ready: false,
             playing: false,
@@ -194,6 +214,37 @@ impl Looper {
             next_seek: None,
             redraw: false,
             sent_position: None,
+        }
+    }
+
+    /// Take commands until the window closes.
+    fn run(&mut self, inbox: &Receiver<Command>) -> anyhow::Result<()> {
+        loop {
+            // Asleep until told something, unless pictures are due.
+            let first = if self.busy() {
+                match inbox.try_recv() {
+                    Ok(command) => Some(command),
+                    Err(TryRecvError::Empty) => None,
+                    Err(TryRecvError::Disconnected) => return Ok(()),
+                }
+            } else {
+                match inbox.recv() {
+                    Ok(command) => Some(command),
+                    Err(_) => return Ok(()),
+                }
+            };
+            for command in first
+                .into_iter()
+                .chain(std::iter::from_fn(|| inbox.try_recv().ok()))
+            {
+                if !self.handle(command)? {
+                    return Ok(());
+                }
+            }
+            if self.busy() {
+                self.player.wait_for_refresh()?;
+                self.show()?;
+            }
         }
     }
 
@@ -333,5 +384,27 @@ impl Looper {
             self.sent_position = Some(at);
             self.send(Update::Position(at));
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn waiting_to_retry_keeps_the_size_and_stops_on_close() {
+        let (commands, inbox) = channel();
+        let mut size = None;
+        commands.send(Command::Size(640, 360)).unwrap();
+        // The lost player's last words are dropped.
+        commands.send(Command::Engine(PlayerEvent::Loaded)).unwrap();
+        assert!(wait_for_retry(&inbox, &mut size));
+        assert_eq!(size, Some((640, 360)));
+        assert!(inbox.try_recv().is_err());
+
+        commands.send(Command::Close).unwrap();
+        assert!(!wait_for_retry(&inbox, &mut size));
+        drop(commands);
+        assert!(!wait_for_retry(&inbox, &mut size));
     }
 }
