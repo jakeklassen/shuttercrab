@@ -3,8 +3,8 @@
 //! recording and playback. See docs/COLOR_PIPELINE.md.
 //!
 //! Each public module is the same on every OS. What only an OS can do lives
-//! in `sys`, one backend per OS; Windows is the only one so far.
-#![cfg(windows)]
+//! in `sys`, one backend per OS; Windows is the only one so far, and other
+//! OSes get one that says they are not supported yet.
 
 pub mod color;
 pub mod play;
