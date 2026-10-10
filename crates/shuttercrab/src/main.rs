@@ -34,12 +34,16 @@ fn main() {
     // hook here and exit, or apply a downloaded update and restart. The
     // recording helper above never does, so an update can't end a
     // recording.
-    velopack::VelopackApp::build()
-        .on_before_uninstall_fast_callback(|_| {
+    let mut velopack = velopack::VelopackApp::build();
+    // Velopack runs install and uninstall hooks only on Windows.
+    #[cfg(windows)]
+    {
+        velopack = velopack.on_before_uninstall_fast_callback(|_| {
             // Don't leave a startup entry pointing at a deleted program.
             let _ = startup::set_launch_at_startup(false);
-        })
-        .run();
+        });
+    }
+    velopack.run();
     // Release builds have no console; print to the terminal that started us.
     #[cfg(not(debug_assertions))]
     shuttercrab_platform::attach_to_parent_terminal();
