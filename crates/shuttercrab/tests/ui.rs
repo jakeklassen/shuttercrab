@@ -6,11 +6,12 @@
 #![cfg(windows)]
 
 use gpui_kit::{
-    App, AppContext as _, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent, Pixels,
-    Point, TestAppContext, Window, WindowHandle, point, px, size, test::TestWindowExt as _,
+    App, AppContext as _, Context, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, Pixels, Point, TestAppContext, Window, WindowHandle, point, px, size,
+    test::TestWindowExt as _,
 };
 use shuttercrab::{
-    overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
+    overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay, Siblings},
     selection::ScreenWindow,
 };
 use shuttercrab_capture::PhysicalRect;
@@ -49,6 +50,16 @@ fn open_built(
     scale: f32,
     build: impl FnOnce(SelectionOverlay) -> SelectionOverlay + 'static,
 ) -> Opened {
+    open_in(cx, logical, scale, move |overlay, _| build(overlay))
+}
+
+/// As [`open_built`], with the overlay's context to build with.
+fn open_in(
+    cx: &mut TestAppContext,
+    logical: (f32, f32),
+    scale: f32,
+    build: impl FnOnce(SelectionOverlay, &mut Context<SelectionOverlay>) -> SelectionOverlay + 'static,
+) -> Opened {
     cx.update(gpui_kit::init);
     let (w, h) = ((logical.0 * scale) as u32, (logical.1 * scale) as u32);
     // A mid-grey frame, as a monitor would deliver it.
@@ -58,7 +69,8 @@ fn open_built(
     let handle = cx.open_window(size(px(logical.0), px(logical.1)), move |window, cx| {
         cx.subscribe_self(move |_, event: &OverlayEvent, _| sink.borrow_mut().push(event.clone()))
             .detach();
-        build(SelectionOverlay::new(frame, window, cx))
+        let overlay = SelectionOverlay::new(frame, window, cx);
+        build(overlay, cx)
     });
     Opened { handle, events }
 }
@@ -495,4 +507,65 @@ fn a_freeform_scribble_too_small_to_capture_is_ignored(cx: &mut TestAppContext) 
         window.drag(point(px(50.0), px(50.0)), point(px(51.0), px(50.0)), cx);
     });
     assert!(opened.events.borrow().is_empty());
+}
+
+fn release_at(window: &mut Window, position: Point<Pixels>, cx: &mut App) {
+    window.dispatch_event(
+        MouseUpEvent {
+            button: MouseButton::Left,
+            position,
+            modifiers: Default::default(),
+            click_count: 1,
+        }
+        .to_platform_input(),
+        cx,
+    );
+    window.render_frame(cx);
+}
+
+/// Two monitors side by side: 600×450 physical at 150% on the left, and
+/// 300×200 at 100% to its right.
+fn two_monitors(cx: &mut TestAppContext) -> (Opened, Opened) {
+    let siblings = Siblings::default();
+    let other = siblings.clone();
+    let left = open_in(cx, (400.0, 300.0), 1.5, move |o, cx| {
+        o.among(siblings, PhysicalRect::new(0, 0, 600, 450), cx)
+    });
+    let right = open_in(cx, (300.0, 200.0), 1.0, move |o, cx| {
+        o.among(other, PhysicalRect::new(600, 0, 300, 200), cx)
+    });
+    (left, right)
+}
+
+#[gpui_kit::test]
+fn a_drag_let_go_on_another_monitor_ends_at_the_edge_of_its_own(cx: &mut TestAppContext) {
+    let (left, right) = two_monitors(cx);
+    update(cx, &left, |window, cx| {
+        press_at(window, point(px(20.0), px(30.0)), cx);
+        drag_to(window, point(px(390.0), px(100.0)), cx);
+    });
+    // Let go 50 logical pixels into the right monitor, 60 down.
+    update(cx, &right, |window, cx| {
+        release_at(window, point(px(50.0), px(60.0)), cx)
+    });
+    assert_eq!(
+        *left.events.borrow(),
+        [OverlayEvent::Selected(PhysicalRect::new(30, 45, 570, 15))]
+    );
+    assert!(right.events.borrow().is_empty());
+}
+
+#[gpui_kit::test]
+fn a_drag_let_go_unheard_ends_where_it_last_was(cx: &mut TestAppContext) {
+    let opened = open(cx, (400.0, 300.0), 1.0);
+    update(cx, &opened, |window, cx| {
+        press_at(window, point(px(20.0), px(30.0)), cx);
+        drag_to(window, point(px(120.0), px(80.0)), cx);
+        // The button came up somewhere else; the pointer is back unpressed.
+        hover(window, point(px(300.0), px(200.0)), cx);
+    });
+    assert_eq!(
+        *opened.events.borrow(),
+        [OverlayEvent::Selected(PhysicalRect::new(20, 30, 100, 50))]
+    );
 }
