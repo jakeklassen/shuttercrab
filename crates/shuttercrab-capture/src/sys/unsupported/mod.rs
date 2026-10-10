@@ -4,6 +4,7 @@
 
 pub mod play;
 pub mod record;
+#[cfg(not(target_os = "linux"))]
 pub mod service;
 
 /// The error for `what`, which this OS cannot do yet.

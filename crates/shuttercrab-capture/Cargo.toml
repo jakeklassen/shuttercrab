@@ -57,5 +57,8 @@ features = [
   "Win32_UI_WindowsAndMessaging",
 ]
 
+[target.'cfg(target_os = "linux")'.dependencies]
+x11rb = { version = "0.13", features = ["randr", "resource_manager"] }
+
 [lints]
 workspace = true
