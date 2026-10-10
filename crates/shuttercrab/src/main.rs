@@ -9,7 +9,7 @@ use shuttercrab::{
     update::{UpdateBackend, Velopack},
 };
 use shuttercrab_capture::Capture;
-use shuttercrab_platform::{Hotkey, Platform, PlatformEvent, Tray, startup};
+use shuttercrab_platform::{Hotkey, Platform, PlatformEvent, Request, Tray, startup};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -48,10 +48,13 @@ fn main() {
     #[cfg(not(debug_assertions))]
     shuttercrab_platform::attach_to_parent_terminal();
 
+    // What this start asks for: `--screenshot` and the like, from a desktop
+    // shortcut, or to show the window.
+    let request = Request::from_args(std::env::args().skip(1));
     let Some(_instance) = shuttercrab_platform::single_instance("Shuttercrab") else {
         // The log file belongs to the running instance; leave it alone.
         eprintln!("Shuttercrab is already running.");
-        shuttercrab_platform::signal_running_instance();
+        shuttercrab_platform::signal_running_instance(request);
         return;
     };
     // Started by Windows at sign-in: the tray only. Every other start opens
@@ -115,7 +118,7 @@ fn main() {
                     settings_path,
                     log_dir: log_file.as_ref().and_then(|f| f.parent().map(Into::into)),
                     updates,
-                    open_window: !background,
+                    start: (!background).then_some(request),
                 },
                 events,
                 cx,
@@ -284,13 +287,15 @@ fn start_platform(
         }
     }
     if first_run && conflicts.is_empty() {
-        notices.push((
-            "Shuttercrab is running".to_string(),
+        let how = if shuttercrab_platform::os::os().global_hotkeys {
             format!(
                 "Press {} to capture, or {} for an area.",
                 settings.capture_bar_hotkey, settings.screenshot_hotkey
-            ),
-        ));
+            )
+        } else {
+            "To capture with a key, add a desktop shortcut. Settings has the commands.".to_string()
+        };
+        notices.push(("Shuttercrab is running".to_string(), how));
     }
     (platform, events)
 }

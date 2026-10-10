@@ -8,9 +8,10 @@ fn unsupported(what: &str) -> anyhow::Error {
     anyhow::anyhow!("{what} is not supported on this OS yet")
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod platform {
     use super::unsupported;
-    use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Tray};
+    use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray};
     use anyhow::Result;
     use futures::channel::mpsc;
     use shuttercrab_types::WindowId;
@@ -65,7 +66,7 @@ pub mod platform {
         }
     }
 
-    pub fn signal_running_instance() -> bool {
+    pub fn signal_running_instance(_request: Request) -> bool {
         false
     }
 }
@@ -76,6 +77,7 @@ pub mod console {
     pub fn detach_from_terminal() {}
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod instance {
     /// Held while this is the only Shuttercrab running. Nothing checks here.
     pub struct SingleInstance;
@@ -296,6 +298,7 @@ pub mod open {
     pub fn open_with(_path: &Path) {}
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod os {
     use crate::os::Os;
 
@@ -307,10 +310,12 @@ pub mod os {
             image_editor: None,
             default_microphone: "The default microphone",
             print_screen_setting: None,
+            global_hotkeys: false,
         }
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod process {
     use super::unsupported;
     use crate::process::Spawned;

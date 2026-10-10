@@ -41,14 +41,60 @@ pub enum PlatformEvent {
     TrayActivated,
     /// A tray menu item was chosen; the id is the caller's.
     TrayCommand(u32),
-    /// Shuttercrab was started again while this instance was running.
-    AnotherInstance,
+    /// Shuttercrab was started again while this instance was running, and
+    /// asked it for something.
+    AnotherInstance(Request),
     /// The user clicked the latest notification.
     NotificationClicked,
     /// A display was attached, detached or changed.
     DisplaysChanged,
     /// The window being watched ([`Platform::watch_window`]) changed.
     Window(WindowChange),
+}
+
+/// What a second start of Shuttercrab asks the running one to do: on the
+/// command line, `--capture-bar`, `--screenshot` or `--record`, as if that
+/// hotkey were pressed, or nothing, to show its window. Where the OS has no
+/// global hotkeys, a desktop shortcut runs these instead.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Request {
+    Show,
+    CaptureBar,
+    Screenshot,
+    Record,
+}
+
+impl Request {
+    pub(crate) const ALL: [Request; 4] = [
+        Request::Show,
+        Request::CaptureBar,
+        Request::Screenshot,
+        Request::Record,
+    ];
+
+    /// Its name on the command line, without the `--`, and between the two
+    /// processes.
+    pub fn name(self) -> &'static str {
+        match self {
+            Request::Show => "show",
+            Request::CaptureBar => "capture-bar",
+            Request::Screenshot => "screenshot",
+            Request::Record => "record",
+        }
+    }
+
+    /// The request named `name`, as [`Request::name`] writes it.
+    pub fn from_name(name: &str) -> Option<Self> {
+        Self::ALL.into_iter().find(|r| r.name() == name)
+    }
+
+    /// The request a command line asks for: the first `--name` of one, or
+    /// [`Request::Show`].
+    pub fn from_args(args: impl IntoIterator<Item = impl AsRef<str>>) -> Self {
+        args.into_iter()
+            .find_map(|arg| Self::from_name(arg.as_ref().strip_prefix("--")?))
+            .unwrap_or(Request::Show)
+    }
 }
 
 /// What happened to the watched window.
@@ -108,4 +154,26 @@ impl MenuItem {
 pub struct Tray {
     pub tooltip: String,
     pub menu: Vec<MenuItem>,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn requests_come_from_the_command_line_and_round_trip_by_name() {
+        assert_eq!(Request::from_args(["shuttercrab"]), Request::Show);
+        assert_eq!(
+            Request::from_args(["shuttercrab", "--screenshot"]),
+            Request::Screenshot
+        );
+        assert_eq!(
+            Request::from_args(["shuttercrab", "--background", "--capture-bar"]),
+            Request::CaptureBar
+        );
+        assert_eq!(Request::from_args(["--nonsense"]), Request::Show);
+        for request in Request::ALL {
+            assert_eq!(Request::from_name(request.name()), Some(request));
+        }
+    }
 }

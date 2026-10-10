@@ -12,6 +12,7 @@ pub fn describe() -> Os {
         image_editor: Some("Paint"),
         default_microphone: "Windows' default",
         print_screen_setting: Some("ms-settings:devices-keyboard"),
+        global_hotkeys: true,
     }
 }
 
