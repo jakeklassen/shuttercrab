@@ -65,3 +65,38 @@ jobs:
 
       - name: Tests
         run: cargo test --locked
+
+  # A Linux build of each pull request, to download and try on a desktop
+  # (Ubuntu 24.04 first) while the Linux backend is built up. Not a release.
+  linux-build:
+    name: Linux build to try
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Linux packages
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential pkg-config clang libfontconfig-dev libfreetype-dev \
+            libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev \
+            libxcb1-dev libssl-dev libzstd-dev libvulkan1
+
+      - uses: jdx/mise-action@v5
+      - uses: Swatinem/rust-cache@v2
+
+      - name: Build
+        run: cargo build --release --locked -p shuttercrab
+
+      # A tarball keeps the program executable through the artifact's zip.
+      - name: Pack
+        run: tar -czf shuttercrab-linux-x86_64.tar.gz -C target/release shuttercrab
+
+      - uses: actions/upload-artifact@v7
+        with:
+          name: shuttercrab-linux-x86_64
+          path: shuttercrab-linux-x86_64.tar.gz
+          retention-days: 14
