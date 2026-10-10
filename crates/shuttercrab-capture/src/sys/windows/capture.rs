@@ -1,6 +1,6 @@
 //! One frame of a monitor or a window through Windows.Graphics.Capture.
 
-use crate::gpu::Gpu;
+use super::gpu::Gpu;
 use anyhow::{Context, Result, bail, ensure};
 use std::{
     sync::mpsc::Receiver,

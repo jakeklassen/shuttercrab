@@ -11,7 +11,8 @@
 //! picture. A microphone switched off is not opened at all, so Windows does
 //! not show it as in use.
 
-use super::{Event, TICKS_PER_SECOND, qpc_ticks};
+use super::{Event, qpc_ticks};
+use crate::record::{Microphone, Source, TICKS_PER_SECOND};
 use anyhow::{Context, Result};
 use std::{
     sync::{
@@ -70,15 +71,6 @@ pub(super) const RATE: u32 = 48_000;
 /// The track's channels: stereo.
 pub(super) const CHANNELS: u16 = 2;
 
-/// Where a recording's sound comes from.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Source {
-    /// What the speakers play.
-    System,
-    /// A microphone.
-    Microphone,
-}
-
 impl Source {
     fn index(self) -> usize {
         match self {
@@ -86,15 +78,6 @@ impl Source {
             Source::Microphone => 1,
         }
     }
-}
-
-/// A microphone Windows knows of.
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct Microphone {
-    /// Windows' id for it, to record from it.
-    pub id: String,
-    /// Its name, as Windows' sound settings show it.
-    pub name: String,
 }
 
 /// The microphones plugged in and on, Windows' default first.

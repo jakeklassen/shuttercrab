@@ -2,21 +2,25 @@
 //! hands frames to the encoder.
 
 use super::{
-    ANALYSE_EVERY, Event, HARDWARE_MIN_SIDE, HEARTBEAT, Interruption, MIN_SIDE, RecordOptions,
-    RecordingSummary, TICKS_PER_SECOND,
+    ANALYSE_EVERY, Event, HEARTBEAT,
     encoder::{Mp4Writer, Nv12},
-    exposure::Exposure,
     fit::Fitter,
-    qpc_ticks, recordable,
-    sound::{self, Capture, Device, Mixer, Packet, Source},
+    qpc_ticks,
+    sound::{self, Capture, Device, Mixer, Packet},
     timing::Timer,
 };
 use crate::{
     color::Highlights,
-    display,
-    gpu::{Gpu, VideoConverter},
+    record::{
+        HARDWARE_MIN_SIDE, Interruption, MIN_SIDE, RecordOptions, RecordingSummary, Source,
+        TICKS_PER_SECOND, exposure::Exposure, recordable,
+    },
     screen::PhysicalRect,
-    service::hmonitor,
+    sys::imp::{
+        display,
+        gpu::{Gpu, VideoConverter},
+        service::hmonitor,
+    },
 };
 use anyhow::{Context, Result, ensure};
 use std::{
