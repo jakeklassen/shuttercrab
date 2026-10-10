@@ -22,6 +22,7 @@ use shuttercrab_capture::{
     record::{Interruption, RecordOptions, Recorder, RecordingSummary, Source},
 };
 use shuttercrab_platform::process::{Process, Spawned, spawn_quiet};
+use shuttercrab_types::WindowId;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
@@ -59,7 +60,7 @@ enum Request {
 struct Options {
     monitor: u64,
     region: Option<(i32, i32, u32, u32)>,
-    window: Option<isize>,
+    window: Option<u64>,
     fps: u32,
     include_cursor: bool,
     system_sound: bool,
@@ -108,9 +109,9 @@ enum Why {
 impl From<RecordOptions> for Options {
     fn from(o: RecordOptions) -> Self {
         Self {
-            monitor: o.monitor.0,
+            monitor: o.monitor.raw(),
             region: o.region.map(|r| (r.x, r.y, r.width, r.height)),
-            window: o.window,
+            window: o.window.map(WindowId::raw),
             fps: o.fps,
             include_cursor: o.include_cursor,
             system_sound: o.system_sound,
@@ -126,9 +127,9 @@ impl From<RecordOptions> for Options {
 impl From<Options> for RecordOptions {
     fn from(o: Options) -> Self {
         Self {
-            monitor: MonitorId(o.monitor),
+            monitor: MonitorId::from_raw(o.monitor),
             region: o.region.map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h)),
-            window: o.window,
+            window: o.window.map(WindowId::from_raw),
             fps: o.fps,
             include_cursor: o.include_cursor,
             system_sound: o.system_sound,
@@ -521,9 +522,9 @@ mod tests {
     #[test]
     fn requests_and_replies_round_trip_as_json_lines() {
         let options = RecordOptions {
-            monitor: MonitorId(0x1_0001),
+            monitor: MonitorId::from_raw(0x1_0001),
             region: Some(PhysicalRect::new(-12, 34, 1280, 720)),
-            window: Some(0x0004_0A2C),
+            window: Some(WindowId::from_raw(0x0004_0A2C)),
             fps: 60,
             include_cursor: true,
             system_sound: true,

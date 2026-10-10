@@ -6,6 +6,7 @@
 
 use crate::cursor::CursorOver;
 use anyhow::{Context, Result};
+use shuttercrab_types::WindowId;
 use std::{cell::RefCell, collections::HashMap};
 use windows::Win32::{
     Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
@@ -88,7 +89,8 @@ const SUBCLASS: usize = 0x5348_4352; // "SHCR"
 /// Show `over` over part of window `hwnd`, or let GPUI choose again with
 /// `None`. Call from the window's own thread; the first call subclasses
 /// it. The cursor changes at once if the pointer is over the window.
-pub fn show(hwnd: isize, over: Option<CursorOver>) {
+pub fn show(window: WindowId, over: Option<CursorOver>) {
+    let hwnd = window.raw() as isize;
     let changed = SHOWN.with(|shown| {
         let mut shown = shown.borrow_mut();
         let first = !shown.contains_key(&hwnd);

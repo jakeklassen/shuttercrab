@@ -256,9 +256,10 @@ fn window(mut args: Args) -> Result<()> {
     let out = PathBuf::from(args.positional("OUT.png")?);
     args.finish()?;
     let hwnd = match hwnd.strip_prefix("0x") {
-        Some(hex) => isize::from_str_radix(hex, 16)?,
+        Some(hex) => u64::from_str_radix(hex, 16)?,
         None => hwnd.parse()?,
     };
+    let hwnd = shuttercrab_capture::WindowId::from_raw(hwnd);
     let capture = shuttercrab_capture::Capture::start()?;
     let shot = futures::executor::block_on(capture.capture_window(hwnd, false))?;
     std::fs::write(&out, shot.png.as_slice())?;
@@ -341,11 +342,12 @@ fn record(mut args: Args) -> Result<()> {
     let window = args
         .option("--window")?
         .map(|w| match w.strip_prefix("0x") {
-            Some(hex) => isize::from_str_radix(hex, 16),
+            Some(hex) => u64::from_str_radix(hex, 16),
             None => w.parse(),
         })
         .transpose()
-        .context("--window takes a window handle")?;
+        .context("--window takes a window handle")?
+        .map(shuttercrab_capture::WindowId::from_raw);
     let repeat: u32 = args
         .option("--repeat")?
         .map(|r| r.parse())
@@ -377,7 +379,7 @@ fn record(mut args: Args) -> Result<()> {
             out.clone()
         };
         let recorder = Recorder::start(RecordOptions {
-            monitor: MonitorId(target.hmonitor.0 as u64),
+            monitor: MonitorId::from_raw(target.hmonitor.0 as u64),
             region,
             window,
             fps,
@@ -464,7 +466,7 @@ fn shots(mut args: Args) -> Result<()> {
     args.finish()?;
     let monitors = display::enumerate()?;
     let target = display::select(&monitors, monitor.as_deref())?;
-    let id = MonitorId(target.hmonitor.0 as u64);
+    let id = MonitorId::from_raw(target.hmonitor.0 as u64);
     let capture = Capture::start()?;
     print_memory("before");
     for shot in 1..=repeat {

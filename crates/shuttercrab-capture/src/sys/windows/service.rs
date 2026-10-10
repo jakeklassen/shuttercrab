@@ -16,7 +16,7 @@ use crate::{
     color::{ColorMode, Highlights, SCREENSHOT_ANCHOR},
     screen::{
         CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Result,
-        Screenshot, encode_png, premultiplied_bgra_to_rgba,
+        Screenshot, WindowId, encode_png, premultiplied_bgra_to_rgba,
     },
 };
 use futures::channel::oneshot;
@@ -42,7 +42,7 @@ enum Request {
     WarmUp,
     Monitors(oneshot::Sender<Result<Vec<MonitorInfo>>>),
     Freeze(MonitorId, bool, oneshot::Sender<Result<FrozenFrame>>),
-    Window(isize, bool, oneshot::Sender<Result<Screenshot>>),
+    Window(WindowId, bool, oneshot::Sender<Result<Screenshot>>),
 }
 
 /// A handle to the capture service thread. Cloning is cheap.
@@ -105,16 +105,16 @@ impl Capture {
         self.ask(Request::Freeze(monitor, include_cursor, reply), answer)
     }
 
-    /// Capture the top-level window `hwnd` directly (PRD §7.3): its own
+    /// Capture the top-level window `window` directly (PRD §7.3): its own
     /// content, including parts covered by other windows, converted to SDR
     /// for the monitor it is mostly on. Rounded corners stay transparent.
     pub fn capture_window(
         &self,
-        hwnd: isize,
+        window: WindowId,
         include_cursor: bool,
     ) -> impl Future<Output = Result<Screenshot>> + use<> {
         let (reply, answer) = oneshot::channel();
-        self.ask(Request::Window(hwnd, include_cursor, reply), answer)
+        self.ask(Request::Window(window, include_cursor, reply), answer)
     }
 }
 
@@ -128,7 +128,7 @@ pub fn monitor_under_pointer() -> Option<MonitorId> {
     let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
     unsafe { SetThreadDpiAwarenessContext(previous) };
     found.ok()?;
-    (!monitor.is_invalid()).then_some(MonitorId(monitor.0 as u64))
+    (!monitor.is_invalid()).then_some(monitor_id(monitor))
 }
 
 fn stopped() -> CaptureError {
@@ -175,10 +175,10 @@ impl Service {
                     self.trim();
                     let _ = reply.send(frozen);
                 }
-                Request::Window(hwnd, include_cursor, reply) => {
+                Request::Window(window, include_cursor, reply) => {
                     let captured = retry_once(
                         &mut self,
-                        |s| s.capture_window(hwnd, include_cursor),
+                        |s| s.capture_window(window, include_cursor),
                         Service::recover,
                     );
                     self.trim();
@@ -228,7 +228,7 @@ impl Service {
         let monitors = list_monitors()?;
         let monitor = monitors
             .iter()
-            .find(|m| m.hmonitor.0 as u64 == id.0)
+            .find(|m| monitor_id(m.hmonitor) == id)
             .ok_or_else(|| {
                 CaptureError::new(
                     CaptureErrorCode::MonitorGone,
@@ -298,9 +298,9 @@ impl Service {
         Ok(&self.gpus[&key])
     }
 
-    fn capture_window(&mut self, hwnd: isize, include_cursor: bool) -> Result<Screenshot> {
+    fn capture_window(&mut self, id: WindowId, include_cursor: bool) -> Result<Screenshot> {
         let started = Instant::now();
-        let window = HWND(hwnd as _);
+        let window = hwnd(id);
         let nearest = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
         let monitors = list_monitors()?;
         let monitor = monitors
@@ -310,7 +310,7 @@ impl Service {
                 CaptureError::new(
                     CaptureErrorCode::WindowGone,
                     "The window is not on a monitor",
-                    format!("{hwnd:#x}"),
+                    format!("{:#x}", id.raw()),
                 )
             })?;
         let white_scale = white_scale(monitor)?;
@@ -513,7 +513,7 @@ fn classify(e: anyhow::Error, code: CaptureErrorCode, message: &str) -> CaptureE
 fn describe(monitor: &display::Monitor) -> MonitorInfo {
     let b = monitor.bounds;
     MonitorInfo {
-        id: MonitorId(monitor.hmonitor.0 as u64),
+        id: monitor_id(monitor.hmonitor),
         device_name: monitor.device_name.clone(),
         name: monitor.friendly_name.clone(),
         bounds: PhysicalRect::new(b.x, b.y, b.width, b.height),
@@ -525,10 +525,19 @@ fn describe(monitor: &display::Monitor) -> MonitorInfo {
     }
 }
 
-// Keep the HMONITOR type reachable for callers that match GPUI display ids.
-#[doc(hidden)]
+/// The `HMONITOR` a [`MonitorId`] names.
 pub fn hmonitor(id: MonitorId) -> HMONITOR {
-    HMONITOR(id.0 as _)
+    HMONITOR(id.raw() as _)
+}
+
+/// The [`MonitorId`] for an `HMONITOR`.
+pub fn monitor_id(monitor: HMONITOR) -> MonitorId {
+    MonitorId::from_raw(monitor.0 as u64)
+}
+
+/// The `HWND` a [`WindowId`] names.
+pub fn hwnd(id: WindowId) -> HWND {
+    HWND(id.raw() as _)
 }
 
 #[cfg(test)]

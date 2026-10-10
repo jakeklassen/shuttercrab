@@ -1,0 +1,11 @@
+[package]
+name = "shuttercrab-types"
+version = "0.1.25"
+description = "The identities Shuttercrab's crates pass between them: windows and monitors, the same on every OS"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[lints]
+workspace = true

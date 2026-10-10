@@ -24,6 +24,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _, px, size,
 };
 use shuttercrab_capture::PhysicalRect;
+use shuttercrab_types::WindowId;
 use std::{cell::Cell, rc::Rc, sync::Arc};
 
 /// An edge catches the pointer within this many logical pixels…
@@ -73,7 +74,7 @@ pub enum OverlayEvent {
     /// pixels relative to the monitor) in case it cannot be captured
     /// directly.
     Window {
-        hwnd: isize,
+        os_window: WindowId,
         visible: PhysicalRect,
     },
     /// The whole monitor.
@@ -475,7 +476,7 @@ impl SelectionOverlay {
                 let target = self.target_at(at);
                 cx.emit(match target {
                     Target::Window(w) => OverlayEvent::Window {
-                        hwnd: w.hwnd,
+                        os_window: w.os_window,
                         visible: self.target_rects(target).0,
                     },
                     Target::Display => OverlayEvent::Display,

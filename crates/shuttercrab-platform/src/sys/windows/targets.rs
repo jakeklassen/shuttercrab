@@ -1,5 +1,6 @@
 //! Finding the windows a screenshot can target on Windows.
 
+use super::window::to_window_id;
 use crate::targets::{Bounds, WindowTarget};
 use windows::{
     Win32::{
@@ -95,7 +96,7 @@ fn describe(hwnd: HWND) -> Option<WindowTarget> {
         let length = GetClassNameW(hwnd, &mut name);
         let class = String::from_utf16_lossy(&name[..length.max(0) as usize]);
         Some(WindowTarget {
-            hwnd: hwnd.0 as isize,
+            id: to_window_id(hwnd),
             bounds: Bounds {
                 x: rect.left,
                 y: rect.top,

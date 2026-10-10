@@ -23,6 +23,6 @@ pub use sys::windows::{capture, display, gpu};
 
 pub use screen::{
     CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot,
-    cut, cut_shape, encode_png, premultiplied_bgra_to_rgba,
+    WindowId, cut, cut_shape, encode_png, premultiplied_bgra_to_rgba,
 };
 pub use service::{Capture, monitor_under_pointer};

@@ -12,6 +12,9 @@ anyhow = "1"
 futures = "0.3"
 log = "0.4"
 png = "0.18"
+# The GPUI window a platform call is for.
+raw-window-handle = "0.6"
+shuttercrab-types = { path = "../shuttercrab-types" }
 # The COM `implement` macro refers to windows-core by name.
 windows-core = "0.62"
 

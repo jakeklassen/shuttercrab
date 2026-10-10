@@ -1,7 +1,9 @@
-//! Window behaviour GPUI does not expose, applied to a GPUI window's `HWND`
-//! (obtained through `HasWindowHandle`, PRD §17).
+//! Window behaviour GPUI does not expose, applied to a window by its
+//! `HWND` (PRD §17).
 
 use anyhow::{Context, Result};
+use raw_window_handle::{HasWindowHandle, RawWindowHandle};
+use shuttercrab_types::{MonitorId, WindowId};
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
     Graphics::Gdi::ClientToScreen,
@@ -16,9 +18,9 @@ use windows::Win32::{
 
 /// The window's outer bounds, physical virtual-desktop pixels:
 /// `(x, y, width, height)`, as [`place`] takes them.
-pub fn outer_bounds(hwnd: isize) -> Result<(i32, i32, u32, u32)> {
+pub fn outer_bounds(hwnd: WindowId) -> Result<(i32, i32, u32, u32)> {
     let mut rect = RECT::default();
-    unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(HWND(hwnd as _), &mut rect) }
+    unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(to_hwnd(hwnd), &mut rect) }
         .context("GetWindowRect failed")?;
     Ok((
         rect.left,
@@ -30,11 +32,11 @@ pub fn outer_bounds(hwnd: isize) -> Result<(i32, i32, u32, u32)> {
 
 /// Put the window at `bounds` (as [`outer_bounds`] gave them), without
 /// taking the keyboard or changing which windows are in front.
-pub fn place(hwnd: isize, (x, y, width, height): (i32, i32, u32, u32)) -> Result<()> {
+pub fn place(hwnd: WindowId, (x, y, width, height): (i32, i32, u32, u32)) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER;
     unsafe {
         SetWindowPos(
-            HWND(hwnd as _),
+            to_hwnd(hwnd),
             None,
             x,
             y,
@@ -49,12 +51,12 @@ pub fn place(hwnd: isize, (x, y, width, height): (i32, i32, u32, u32)) -> Result
 /// The process whose sound is `window`'s: the window's own, or for a
 /// packaged app, whose frame belongs to ApplicationFrameHost, the app's
 /// window inside the frame.
-pub fn sound_process(window: isize) -> Option<u32> {
+pub fn sound_process(window: WindowId) -> Option<u32> {
     use windows::{
         Win32::UI::WindowsAndMessaging::{FindWindowExW, GetClassNameW},
         core::{PCWSTR, w},
     };
-    let hwnd = HWND(window as _);
+    let hwnd = to_hwnd(window);
     let process_of = |hwnd: HWND| {
         let mut process = 0;
         (unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) } != 0 && process != 0)
@@ -79,9 +81,11 @@ pub fn sound_process(window: isize) -> Option<u32> {
 }
 
 /// The monitor (its `HMONITOR`) most of `hwnd` is on.
-pub fn monitor_of(hwnd: isize) -> u64 {
+pub fn monitor_of(hwnd: WindowId) -> MonitorId {
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
-    unsafe { MonitorFromWindow(HWND(hwnd as _), MONITOR_DEFAULTTONEAREST) }.0 as u64
+    MonitorId::from_raw(
+        unsafe { MonitorFromWindow(to_hwnd(hwnd), MONITOR_DEFAULTTONEAREST) }.0 as u64,
+    )
 }
 
 /// Make the window a borderless popup covering exactly this physical
@@ -93,8 +97,8 @@ pub fn monitor_of(hwnd: isize) -> u64 {
 /// and bottom at 150%. Replacing the frame styles with `WS_POPUP` makes the
 /// client area the whole window. Positioning in physical pixels also avoids
 /// the one-pixel gaps logical bounds can leave at fractional scale factors.
-pub fn cover(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<()> {
-    let hwnd = HWND(hwnd as _);
+pub fn cover(hwnd: WindowId, x: i32, y: i32, width: u32, height: u32) -> Result<()> {
+    let hwnd = to_hwnd(hwnd);
     unsafe {
         let frame =
             (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX).0 as isize;
@@ -115,8 +119,8 @@ pub fn cover(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> Result<()>
 }
 
 /// The window's client area in screen coordinates: `(x, y, width, height)`.
-pub fn client_bounds(hwnd: isize) -> Result<(i32, i32, u32, u32)> {
-    let hwnd = HWND(hwnd as _);
+pub fn client_bounds(hwnd: WindowId) -> Result<(i32, i32, u32, u32)> {
+    let hwnd = to_hwnd(hwnd);
     let mut rect = RECT::default();
     let mut origin = POINT::default();
     unsafe {
@@ -132,8 +136,8 @@ pub fn client_bounds(hwnd: isize) -> Result<(i32, i32, u32, u32)> {
 /// (Escape) and the pointer at once. A process that just received a global
 /// hotkey may take the foreground; if Windows still refuses, attach to the
 /// current foreground thread's input for the call.
-pub fn bring_to_front(hwnd: isize) {
-    let hwnd = HWND(hwnd as _);
+pub fn bring_to_front(hwnd: WindowId) {
+    let hwnd = to_hwnd(hwnd);
     unsafe {
         if SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd {
             return;
@@ -153,31 +157,31 @@ pub fn bring_to_front(hwnd: isize) {
 
 /// The window that has the keyboard, to give it back later with
 /// [`bring_to_front`].
-pub fn foreground_window() -> Option<isize> {
+pub fn foreground_window() -> Option<WindowId> {
     let hwnd = unsafe { GetForegroundWindow() };
-    (!hwnd.is_invalid()).then_some(hwnd.0 as isize)
+    (!hwnd.is_invalid()).then_some(to_window_id(hwnd))
 }
 
 /// Hide the window without destroying it. Hiding a GPUI window before
 /// removing it lets GPUI handle the deactivation while it still knows the
 /// window; otherwise the deactivation arrives during destruction and GPUI
 /// logs "window not found".
-pub fn hide(hwnd: isize) {
-    let _ = unsafe { ShowWindow(HWND(hwnd as _), SW_HIDE) };
+pub fn hide(hwnd: WindowId) {
+    let _ = unsafe { ShowWindow(to_hwnd(hwnd), SW_HIDE) };
 }
 
 /// Leave the window out of every screen capture, Shuttercrab's own and other
 /// applications' (PRD §7.6): it is simply not there in the captured image.
-pub fn exclude_from_capture(hwnd: isize) -> Result<()> {
+pub fn exclude_from_capture(hwnd: WindowId) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
     };
-    unsafe { SetWindowDisplayAffinity(HWND(hwnd as _), WDA_EXCLUDEFROMCAPTURE) }
+    unsafe { SetWindowDisplayAffinity(to_hwnd(hwnd), WDA_EXCLUDEFROMCAPTURE) }
         .context("SetWindowDisplayAffinity failed")?;
     // PRD §13.6: check what Windows applied. Before Windows 10 2004 the
     // call succeeds with WDA_MONITOR instead, which shows a black box.
     let mut applied = 0;
-    unsafe { GetWindowDisplayAffinity(HWND(hwnd as _), &mut applied) }
+    unsafe { GetWindowDisplayAffinity(to_hwnd(hwnd), &mut applied) }
         .context("GetWindowDisplayAffinity failed")?;
     anyhow::ensure!(
         applied == WDA_EXCLUDEFROMCAPTURE.0,
@@ -188,27 +192,27 @@ pub fn exclude_from_capture(hwnd: isize) -> Result<()> {
 
 /// Let screen captures see the window again, after
 /// [`exclude_from_capture`].
-pub fn include_in_capture(hwnd: isize) {
+pub fn include_in_capture(hwnd: WindowId) {
     use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_NONE};
-    let _ = unsafe { SetWindowDisplayAffinity(HWND(hwnd as _), WDA_NONE) };
+    let _ = unsafe { SetWindowDisplayAffinity(to_hwnd(hwnd), WDA_NONE) };
 }
 
 /// Whether the window is on screen: shown and not minimised.
-pub fn is_on_screen(hwnd: isize) -> bool {
+pub fn is_on_screen(hwnd: WindowId) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
-    let hwnd = HWND(hwnd as _);
+    let hwnd = to_hwnd(hwnd);
     unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
 }
 
 /// Give a borderless window Windows 11's rounded corners.
-pub fn round_corners(hwnd: isize) {
+pub fn round_corners(hwnd: WindowId) {
     use windows::Win32::Graphics::Dwm::{
         DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
     };
     let preference = DWMWCP_ROUND;
     let _ = unsafe {
         DwmSetWindowAttribute(
-            HWND(hwnd as _),
+            to_hwnd(hwnd),
             DWMWA_WINDOW_CORNER_PREFERENCE,
             &preference as *const _ as _,
             size_of_val(&preference) as u32,
@@ -218,18 +222,18 @@ pub fn round_corners(hwnd: isize) {
 
 /// Keep the window from ever becoming the active window, even when
 /// clicked, so the keyboard stays with the user's application.
-pub fn never_activate(hwnd: isize) {
+pub fn never_activate(hwnd: WindowId) {
     use windows::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, WS_EX_NOACTIVATE};
-    let hwnd = HWND(hwnd as _);
+    let hwnd = to_hwnd(hwnd);
     unsafe {
         let style = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize);
     }
 }
 
-/// The part of monitor `hmonitor` not covered by the taskbar (physical
+/// The part of `monitor` not covered by the taskbar (physical
 /// pixels, virtual-desktop coordinates): x, y, width, height.
-pub fn work_area(hmonitor: u64) -> Option<(i32, i32, u32, u32)> {
+pub fn work_area(monitor: MonitorId) -> Option<(i32, i32, u32, u32)> {
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
@@ -241,7 +245,7 @@ pub fn work_area(hmonitor: u64) -> Option<(i32, i32, u32, u32)> {
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         )
     };
-    let found = unsafe { GetMonitorInfoW(HMONITOR(hmonitor as _), &mut info) }.as_bool();
+    let found = unsafe { GetMonitorInfoW(HMONITOR(monitor.raw() as _), &mut info) }.as_bool();
     unsafe { windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(previous) };
     let r = info.rcWork;
     (found && r.right > r.left && r.bottom > r.top).then(|| {
@@ -261,7 +265,7 @@ pub fn work_area(hmonitor: u64) -> Option<(i32, i32, u32, u32)> {
 /// only as far as needed to stay on that monitor. Works on a hidden window
 /// too.
 pub fn fit_client_area(
-    hwnd: isize,
+    hwnd: WindowId,
     (width, height): (u32, u32),
     share: f32,
     least: (u32, u32),
@@ -272,7 +276,7 @@ pub fn fit_client_area(
         },
         UI::WindowsAndMessaging::{GetWindowRect, SWP_NOZORDER},
     };
-    let hwnd = HWND(hwnd as _);
+    let hwnd = to_hwnd(hwnd);
     let (mut window, mut client) = (RECT::default(), RECT::default());
     let mut monitor = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
@@ -311,8 +315,27 @@ pub fn fit_client_area(
 /// Show the window normally and bring it to the front. A launcher's "start
 /// hidden" or "start minimised" applies to a process's first window shown
 /// the usual way; this overrides it.
-pub fn show_normal(hwnd: isize) {
+pub fn show_normal(hwnd: WindowId) {
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
-    let _ = unsafe { ShowWindow(HWND(hwnd as _), SW_SHOWNORMAL) };
+    let _ = unsafe { ShowWindow(to_hwnd(hwnd), SW_SHOWNORMAL) };
     bring_to_front(hwnd);
+}
+
+/// The `HWND` a [`WindowId`] names.
+pub(crate) fn to_hwnd(id: WindowId) -> HWND {
+    HWND(id.raw() as _)
+}
+
+/// The [`WindowId`] for an `HWND`.
+pub(crate) fn to_window_id(hwnd: HWND) -> WindowId {
+    WindowId::from_raw(hwnd.0 as u64)
+}
+
+/// The window behind a GPUI window (or anything else with a native
+/// handle), if it is a Win32 one.
+pub fn of(window: &impl HasWindowHandle) -> Option<WindowId> {
+    match window.window_handle().ok()?.as_raw() {
+        RawWindowHandle::Win32(win32) => Some(WindowId::from_raw(win32.hwnd.get() as u64)),
+        _ => None,
+    }
 }

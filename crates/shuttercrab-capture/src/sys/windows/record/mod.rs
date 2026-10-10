@@ -281,13 +281,14 @@ fn record(
 mod tests {
     use super::*;
     use crate::sys::imp::display;
+    use crate::sys::imp::service::monitor_id;
 
     #[test]
     fn attached_displays_are_present_and_a_stale_handle_is_not() {
         let monitors = display::enumerate().unwrap();
         assert!(!monitors.is_empty());
         for m in &monitors {
-            let id = MonitorId(m.hmonitor.0 as u64);
+            let id = monitor_id(m.hmonitor);
             assert!(attached(id), "{} is attached", m.device_name);
         }
         // A handle that names no display, as one unplugged does: a real
@@ -300,7 +301,7 @@ mod tests {
         if std::env::var_os("CI").is_none() {
             let real = monitors[0].hmonitor.0 as u64;
             let stale = (real & 0xFFFF) | ((((real >> 16) & 0xFFFF) ^ 0x5A5A) << 16);
-            assert!(!attached(MonitorId(stale)), "{stale:#x}");
+            assert!(!attached(MonitorId::from_raw(stale)), "{stale:#x}");
         }
     }
 

@@ -4,6 +4,7 @@
 use super::{layered::LayeredWindow, window::exclude_from_capture};
 use crate::frame::{FrameStyle, Rect, dashes, strips};
 use anyhow::Result;
+use shuttercrab_types::WindowId;
 
 /// The border on screen. Dropping it removes it; drop it on the thread
 /// that showed it.
@@ -27,7 +28,7 @@ impl Frame {
         let mut missing = 0;
         for (strip, covers) in strips(area, bounds, style.thickness) {
             let window = LayeredWindow::new()?;
-            let excluded = capturable || exclude_from_capture(window.hwnd).is_ok();
+            let excluded = capturable || exclude_from_capture(window.id()).is_ok();
             if covers && !excluded {
                 // It would be in the recording.
                 missing += 1;
@@ -53,8 +54,8 @@ impl Frame {
     }
 
     /// The strips' windows, for platform calls and tests.
-    pub fn windows(&self) -> Vec<isize> {
-        self.strips.iter().map(|(_, w)| w.hwnd).collect()
+    pub fn windows(&self) -> Vec<WindowId> {
+        self.strips.iter().map(|(_, w)| w.id()).collect()
     }
 
     /// Redraw the border in `color` (RGB).

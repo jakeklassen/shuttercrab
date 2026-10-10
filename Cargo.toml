@@ -1,5 +1,11 @@
 [workspace]
-members = ["crates/capture-spike", "crates/shuttercrab", "crates/shuttercrab-capture", "crates/shuttercrab-platform"]
+members = [
+  "crates/capture-spike",
+  "crates/shuttercrab",
+  "crates/shuttercrab-capture",
+  "crates/shuttercrab-platform",
+  "crates/shuttercrab-types",
+]
 exclude = ["vendor"]
 resolver = "3"
 

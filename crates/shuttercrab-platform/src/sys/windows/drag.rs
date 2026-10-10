@@ -7,9 +7,13 @@
 //! always drawn at about 74% opacity, and above about 300 pixels with a
 //! heavy fade; Shuttercrab's is drawn exactly as given.
 
-use super::{layered::LayeredWindow, window::exclude_from_capture};
+use super::{
+    layered::LayeredWindow,
+    window::{exclude_from_capture, to_hwnd},
+};
 use crate::drag::DragImage;
 use anyhow::{Context, Result, ensure};
+use shuttercrab_types::WindowId;
 use std::path::Path;
 use windows::{
     Win32::{
@@ -139,7 +143,7 @@ impl Ghost {
         // Never part of a screenshot (SHUTTERCRAB_CAPTURABLE_UI keeps it
         // capturable, for screenshots of Shuttercrab itself).
         if std::env::var_os("SHUTTERCRAB_CAPTURABLE_UI").is_none() {
-            let _ = exclude_from_capture(window.hwnd);
+            let _ = exclude_from_capture(window.id());
         }
         // Premultiplied BGRA, as layered windows take it.
         let bgra: Vec<u8> = image
@@ -177,8 +181,8 @@ impl Ghost {
 /// target; a window that is itself the source of drags should not be one.
 /// GPUI's target is swapped for one that always answers "no drop", so
 /// GPUI can still revoke a registered target when the window closes.
-pub fn refuse_drops(hwnd: isize) -> Result<()> {
-    let hwnd = HWND(hwnd as _);
+pub fn refuse_drops(window: WindowId) -> Result<()> {
+    let hwnd = to_hwnd(window);
     unsafe {
         let _ = RevokeDragDrop(hwnd);
         let target: IDropTarget = NoDrop.into();

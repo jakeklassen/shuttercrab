@@ -5,6 +5,7 @@ use super::{clipboard, icon, watch};
 use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Tray};
 use anyhow::{Context, Result, anyhow};
 use futures::channel::{mpsc, oneshot};
+use shuttercrab_types::WindowId;
 use std::{
     cell::RefCell,
     path::PathBuf,
@@ -56,7 +57,7 @@ enum Command {
         title: String,
         message: String,
     },
-    Watch(Option<isize>),
+    Watch(Option<WindowId>),
 }
 
 /// Posted to the platform window to make its thread drain `commands`.
@@ -180,10 +181,10 @@ impl Platform {
         self.send(Command::SetMenu(menu));
     }
 
-    /// Report when `window` (an `HWND`) moves, changes size, or is minimised
+    /// Report when `window` moves, changes size, or is minimised
     /// or restored, as [`PlatformEvent::Window`], in place of the window
     /// watched before; `None` stops watching.
-    pub fn watch_window(&self, window: Option<isize>) {
+    pub fn watch_window(&self, window: Option<WindowId>) {
         self.send(Command::Watch(window));
     }
 
