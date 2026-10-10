@@ -1,10 +1,7 @@
 //! Steady HDR exposure across a recording's frames.
 
 use super::TICKS_PER_SECOND;
-use crate::{
-    color::{HdrRegion, SCREENSHOT_ANCHOR, anchor_regions},
-    gpu::Analysis,
-};
+use crate::color::{Analysis, HdrRegion, SCREENSHOT_ANCHOR, anchor_regions};
 
 /// Keeps HDR exposure steady across frames: the 90th-percentile anchor of
 /// each frame, eased towards over half a second, so video neither pumps nor

@@ -264,6 +264,16 @@ pub struct HdrRegion {
     pub peak: f32,
 }
 
+/// What the analysis passes found in a frame: the per-tile summary and the
+/// HDR regions built from it.
+pub struct Analysis {
+    pub tiles: Vec<TileStats>,
+    pub tiles_x: u32,
+    pub regions: Vec<HdrRegion>,
+    /// Peak of the frame relative to SDR white. Above 1 means HDR content.
+    pub frame_peak: f32,
+}
+
 impl HdrRegion {
     pub fn contains(&self, x: u32, y: u32) -> bool {
         (self.x0..=self.x1).contains(&x) && (self.y0..=self.y1).contains(&y)

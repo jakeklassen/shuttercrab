@@ -1,7 +1,8 @@
 //! Direct3D 11 device, texture helpers, and the GPU color transform.
 
 use crate::color::{
-    Anchor, HdrRegion, Highlights, MAX_REGIONS, TILE, TileStats, anchor_regions, find_regions,
+    Analysis, Anchor, HdrRegion, Highlights, MAX_REGIONS, TILE, TileStats, anchor_regions,
+    find_regions,
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
 use windows::{
@@ -809,16 +810,6 @@ fn read_staging(
     };
     unsafe { gpu.context.Unmap(staging, 0) };
     Ok(Some(values))
-}
-
-/// What the analysis passes found in a frame: the per-tile summary and the
-/// HDR regions built from it.
-pub struct Analysis {
-    pub tiles: Vec<TileStats>,
-    pub tiles_x: u32,
-    pub regions: Vec<HdrRegion>,
-    /// Peak of the frame relative to SDR white. Above 1 means HDR content.
-    pub frame_peak: f32,
 }
 
 /// An `R32_UINT` view of a 32-bit texture, for the packed RGBA the convert
