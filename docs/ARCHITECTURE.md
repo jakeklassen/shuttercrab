@@ -9,13 +9,14 @@ records the others as they are made.
 | Crate | Owns | PRD §30 equivalent |
 |---|---|---|
 | [`shuttercrab`](../crates/shuttercrab) | The GPUI Kit application: the selection overlay and the screenshot flow | `app` |
-| [`shuttercrab-capture`](../crates/shuttercrab-capture) | Monitors and their color state, Windows.Graphics.Capture, the HDR/WCG → SDR transform, cropping and PNG encoding, behind the capture service | `capture-core`, `color`, `screenshot` (without clipboard) |
-| [`shuttercrab-platform`](../crates/shuttercrab-platform) | Global hotkeys, the clipboard, window behaviour applied to GPUI windows' `HWND`s | `windows-platform` |
+| [`shuttercrab-capture`](../crates/shuttercrab-capture) | Monitors and their color state, capture, the HDR/WCG → SDR transform, cropping and PNG encoding behind the capture service; recording and playback | `capture-core`, `color`, `screenshot` (without clipboard) |
+| [`shuttercrab-platform`](../crates/shuttercrab-platform) | Global hotkeys, the tray, the clipboard, window behaviour applied to GPUI windows, text recognition, and what the OS is called | `windows-platform` |
+| [`shuttercrab-types`](../crates/shuttercrab-types) | The window and monitor identities the other crates pass between them | — |
 | [`capture-spike`](../crates/capture-spike) | Milestone 0's measurement tools and the HDR-off / HDR-on gate | — |
 
 PRD §30 allows simpler boundaries. `capture-core`, `color` and `screenshot`
 share one Direct3D device and one thread, so they are one crate; the
-clipboard sits with the other Win32 integration in `shuttercrab-platform`.
+clipboard sits with the other OS integration in `shuttercrab-platform`.
 
 ## ADR 1 — Windows.Graphics.Capture
 
@@ -94,6 +95,39 @@ Accepted (Milestone 1).
 Accepted for now. A screenshot covers the monitor under the pointer when the
 hotkey is pressed; a drag stops at that monitor's edges (PRD §21, MVP).
 Cross-monitor areas remain post-MVP.
+
+## ADR 10 — One backend per OS (issue #49)
+
+Accepted. Shuttercrab ships for Windows, and macOS and Linux are to
+follow. The capture and platform crates each have one public module per
+area that is the same on every OS, and an OS backend under `src/sys`:
+
+| Crate | Public, the same on every OS | `sys/windows` |
+|---|---|---|
+| `shuttercrab-capture` | `screen` (rectangles, monitors, frozen frames, screenshots, errors, cutting, PNG), `color`, `shape`, `raw`, `png_io`; `record` (options, summary, interruptions, sources, microphones, exposure smoothing, sizes); `play` (the player's events) | the capture service, Windows.Graphics.Capture, Direct3D 11 and the shaders, Media Foundation recording and playback, WASAPI sound |
+| `shuttercrab-platform` | the platform thread's events, tray and hotkey types; `hotkey` (parsing, `Key`); `frame` (the border's strips and dashes); `targets`, `icon`, `memory`, `ocr` (text types), `os` | the message-only window, tray, hotkeys, clipboard, WinEvent watching, layered windows, OLE drag, cursors, Windows.Media.Ocr, the registry |
+
+`src/sys/mod.rs` picks the backend as `sys::imp`, and the public modules
+re-export the rest from it, so the app's paths are the same on every OS.
+An OS with no backend yet gets `sys/unsupported`: the app builds and
+starts, and every capture, recording, playback and system call fails or
+does nothing, saying it is not supported there
+(`CaptureErrorCode::Unsupported`). CI builds and tests on Linux and macOS
+to keep it that way.
+
+Windows and monitors cross the crates as `shuttercrab_types::WindowId` and
+`MonitorId`: opaque, made and read only by a backend, and never saved. On
+Windows they are the `HWND` and the `HMONITOR`, which GPUI also uses as its
+display id; another OS's GPUI backend will need a mapping in `popup.rs`.
+The recorder process receives them as numbers. A hotkey's key is a `Key`,
+which the Windows backend turns into a virtual-key code. What the user is
+told about the OS (its name and version, its image editor, its default
+microphone, its Print Screen setting) comes from `os()`.
+
+Traits were considered and not used: the services already sit behind
+handles the app holds, and only one backend is real. Separate per-OS
+crates were too: they would add crates to release before there is a
+second backend to put in them.
 
 ## Defaults awaiting settings (Milestone 2)
 
