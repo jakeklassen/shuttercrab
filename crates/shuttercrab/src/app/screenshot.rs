@@ -6,7 +6,7 @@ use super::{Busy, State, delivery::deliver, failure::Failure, recording::record}
 use crate::{
     capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent},
     capture_choice::{CaptureMode, CaptureTarget},
-    overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay, Siblings},
+    overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     popup::{self, Activation},
     selection::ScreenWindow,
 };
@@ -240,11 +240,9 @@ pub(super) async fn select(
 ) -> Result<(Frozen, OverlayEvent), Failure> {
     let frozen = pressed.elapsed();
     let mode = Rc::new(Cell::new(mode));
-    let siblings = Siblings::default();
     let snap = state.settings.borrow().snap_to_windows;
     let open = |frame: &Frozen, activation, cx: &mut AsyncApp| {
-        let shared = (mode.clone(), siblings.clone());
-        open_overlay(frame, shared, recording, snap, activation, cx)
+        open_overlay(frame, mode.clone(), recording, snap, activation, cx)
     };
     let first = Frozen::new(first);
     let (popup, outcome) = open(&first, Activation::Take, cx)?;
@@ -313,11 +311,11 @@ pub(super) async fn select(
     Ok((frames.swap_remove(index), event))
 }
 
-/// Open the selection overlay over `frame`, sharing the mode with the other
-/// monitors' overlays, and joining them.
+/// Open the selection overlay over `frame`, sharing `mode` with the other
+/// monitors' overlays.
 fn open_overlay(
     frozen: &Frozen,
-    (mode, siblings): (Rc<Cell<Mode>>, Siblings),
+    mode: Rc<Cell<Mode>>,
     recording: bool,
     snap: bool,
     activation: Activation,
@@ -331,8 +329,7 @@ fn open_overlay(
         cx.new(|cx| {
             let overlay = SelectionOverlay::new(overlay_frame, window, cx)
                 .with_windows(windows, snap)
-                .sharing_mode(mode)
-                .among(siblings, info.bounds, cx);
+                .sharing_mode(mode);
             if recording {
                 overlay.for_recording()
             } else {

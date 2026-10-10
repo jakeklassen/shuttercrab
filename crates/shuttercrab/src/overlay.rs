@@ -19,20 +19,11 @@ use gpui_kit::{
     Bounds, Context, CursorStyle, EventEmitter, FocusHandle, Hsla, InteractiveElement as _,
     IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
     ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, TestSupportExt as _,
-    WeakEntity, Window, canvas, div, fill, hsla, img, point, prelude::FluentBuilder as _, px, size,
+    StatefulInteractiveElement as _, Styled as _, StyledImage as _, TestSupportExt as _, Window,
+    canvas, div, fill, hsla, img, point, prelude::FluentBuilder as _, px, size,
 };
 use shuttercrab_capture::PhysicalRect;
-use std::{
-    cell::{Cell, RefCell},
-    rc::Rc,
-    sync::Arc,
-};
-
-/// The overlays open together, one per monitor, each with its monitor's
-/// bounds (physical pixels, the virtual screen's): a drag let go of over
-/// another monitor's overlay still ends on the one it began on.
-pub type Siblings = Rc<RefCell<Vec<(WeakEntity<SelectionOverlay>, PhysicalRect)>>>;
+use std::{cell::Cell, rc::Rc, sync::Arc};
 
 /// An edge catches the pointer within this many logical pixels…
 const SNAP_CATCH: f32 = 10.0;
@@ -117,8 +108,6 @@ pub struct SelectionOverlay {
     mode: Rc<Cell<Mode>>,
     /// One of several overlays, one per monitor.
     shared: bool,
-    /// The other monitors' overlays, and this one's monitor bounds.
-    siblings: Option<(Siblings, PhysicalRect)>,
     drag: Option<Drag>,
     /// The edges the drag's start and end are held to.
     start_stuck: Stuck,
@@ -177,7 +166,6 @@ impl SelectionOverlay {
             snap: false,
             mode: Rc::new(Cell::new(Mode::Area)),
             shared: false,
-            siblings: None,
             drag: None,
             start_stuck: Stuck::default(),
             end_stuck: Stuck::default(),
@@ -201,14 +189,6 @@ impl SelectionOverlay {
     pub fn sharing_mode(mut self, mode: Rc<Cell<Mode>>) -> Self {
         self.mode = mode;
         self.shared = true;
-        self
-    }
-
-    /// One of `siblings`, over the monitor at `bounds` (physical pixels, the
-    /// virtual screen's).
-    pub fn among(mut self, siblings: Siblings, bounds: PhysicalRect, cx: &Context<Self>) -> Self {
-        siblings.borrow_mut().push((cx.weak_entity(), bounds));
-        self.siblings = Some((siblings, bounds));
         self
     }
 
@@ -406,52 +386,21 @@ impl SelectionOverlay {
     }
 
     fn on_left_up(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if self.dragging || self.pressed {
-            self.let_go(Some(event.position), cx);
-        } else {
-            self.pass_release(event.position, cx);
-        }
+        self.let_go(Some(event.position), cx);
     }
 
-    /// Let go over this monitor of a drag begun on another: that overlay
-    /// ends it here, held to its own monitor's edges.
-    fn pass_release(&self, position: Point<Pixels>, cx: &mut Context<Self>) {
-        let Some((siblings, here)) = &self.siblings else {
-            return;
-        };
-        let scale = self.frame.scale;
-        let at = (
-            here.x as f32 + f32::from(position.x) * scale,
-            here.y as f32 + f32::from(position.y) * scale,
-        );
-        let me = cx.entity_id();
-        let others: Vec<_> = siblings
-            .borrow()
-            .iter()
-            .map(|(other, _)| other.clone())
-            .filter(|other| other.entity_id() != me)
-            .collect();
-        for other in others {
-            let _ = other.update(cx, |other, cx| other.released_elsewhere(at, cx));
-        }
-    }
-
-    /// The pointer was let go at `at` (physical pixels, the virtual
-    /// screen's), over another monitor: a drag begun here ends at the
-    /// nearest point on this monitor. A window pressed here is let be.
-    fn released_elsewhere(&mut self, (x, y): (f32, f32), cx: &mut Context<Self>) {
-        let Some((_, here)) = &self.siblings else {
-            return;
-        };
+    /// Let go off this overlay, over another monitor. The overlay keeps the
+    /// pointer while its button is down, so a drag begun here ends here, at
+    /// the nearest point on this monitor. A window pressed is let be.
+    fn on_left_up_out(&mut self, event: &MouseUpEvent, _: &mut Window, cx: &mut Context<Self>) {
         if self.mode.get() == Mode::Window {
             return self.let_go(None, cx);
         }
         let scale = self.frame.scale;
-        let near =
-            |v: f32, origin: i32, side: u32| (v - origin as f32).clamp(0., side as f32) / scale;
+        let near = |v: Pixels, side: u32| px(f32::from(v).clamp(0., side as f32 / scale));
         let at = point(
-            px(near(x, here.x, self.frame.width)),
-            px(near(y, here.y, self.frame.height)),
+            near(event.position.x, self.frame.width),
+            near(event.position.y, self.frame.height),
         );
         self.let_go(Some(at), cx);
     }
@@ -705,6 +654,7 @@ impl Render for SelectionOverlay {
             .on_mouse_down(MouseButton::Left, cx.listener(Self::on_left_down))
             .on_mouse_move(cx.listener(Self::on_move))
             .on_mouse_up(MouseButton::Left, cx.listener(Self::on_left_up))
+            .on_mouse_up_out(MouseButton::Left, cx.listener(Self::on_left_up_out))
             .on_mouse_down(
                 MouseButton::Right,
                 cx.listener(|this, _: &MouseDownEvent, _, cx| this.cancel(cx)),

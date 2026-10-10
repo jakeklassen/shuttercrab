@@ -6,12 +6,12 @@
 #![cfg(windows)]
 
 use gpui_kit::{
-    App, AppContext as _, Context, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,
+    App, AppContext as _, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,
     MouseUpEvent, Pixels, Point, TestAppContext, Window, WindowHandle, point, px, size,
     test::TestWindowExt as _,
 };
 use shuttercrab::{
-    overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay, Siblings},
+    overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     selection::ScreenWindow,
 };
 use shuttercrab_capture::PhysicalRect;
@@ -50,16 +50,6 @@ fn open_built(
     scale: f32,
     build: impl FnOnce(SelectionOverlay) -> SelectionOverlay + 'static,
 ) -> Opened {
-    open_in(cx, logical, scale, move |overlay, _| build(overlay))
-}
-
-/// As [`open_built`], with the overlay's context to build with.
-fn open_in(
-    cx: &mut TestAppContext,
-    logical: (f32, f32),
-    scale: f32,
-    build: impl FnOnce(SelectionOverlay, &mut Context<SelectionOverlay>) -> SelectionOverlay + 'static,
-) -> Opened {
     cx.update(gpui_kit::init);
     let (w, h) = ((logical.0 * scale) as u32, (logical.1 * scale) as u32);
     // A mid-grey frame, as a monitor would deliver it.
@@ -69,8 +59,7 @@ fn open_in(
     let handle = cx.open_window(size(px(logical.0), px(logical.1)), move |window, cx| {
         cx.subscribe_self(move |_, event: &OverlayEvent, _| sink.borrow_mut().push(event.clone()))
             .detach();
-        let overlay = SelectionOverlay::new(frame, window, cx);
-        build(overlay, cx)
+        build(SelectionOverlay::new(frame, window, cx))
     });
     Opened { handle, events }
 }
@@ -523,36 +512,35 @@ fn release_at(window: &mut Window, position: Point<Pixels>, cx: &mut App) {
     window.render_frame(cx);
 }
 
-/// Two monitors side by side: 600×450 physical at 150% on the left, and
-/// 300×200 at 100% to its right.
-fn two_monitors(cx: &mut TestAppContext) -> (Opened, Opened) {
-    let siblings = Siblings::default();
-    let other = siblings.clone();
-    let left = open_in(cx, (400.0, 300.0), 1.5, move |o, cx| {
-        o.among(siblings, PhysicalRect::new(0, 0, 600, 450), cx)
+#[gpui_kit::test]
+fn a_drag_let_go_off_the_monitor_ends_at_its_edge(cx: &mut TestAppContext) {
+    let opened = open(cx, (400.0, 300.0), 1.5);
+    update(cx, &opened, |window, cx| {
+        press_at(window, point(px(20.0), px(30.0)), cx);
+        drag_to(window, point(px(390.0), px(100.0)), cx);
+        // The overlay keeps the pointer while the button is down: let go
+        // 50 logical pixels into the monitor to the right, 40 down.
+        release_at(window, point(px(450.0), px(40.0)), cx);
     });
-    let right = open_in(cx, (300.0, 200.0), 1.0, move |o, cx| {
-        o.among(other, PhysicalRect::new(600, 0, 300, 200), cx)
-    });
-    (left, right)
+    assert_eq!(
+        *opened.events.borrow(),
+        [OverlayEvent::Selected(PhysicalRect::new(30, 45, 570, 15))]
+    );
 }
 
 #[gpui_kit::test]
-fn a_drag_let_go_on_another_monitor_ends_at_the_edge_of_its_own(cx: &mut TestAppContext) {
-    let (left, right) = two_monitors(cx);
-    update(cx, &left, |window, cx| {
+fn a_freeform_outline_let_go_off_the_monitor_ends_at_its_edge(cx: &mut TestAppContext) {
+    let opened = open_built(cx, (400.0, 300.0), 1.0, |o| o.with_mode(Mode::Freeform));
+    update(cx, &opened, |window, cx| {
         press_at(window, point(px(20.0), px(30.0)), cx);
         drag_to(window, point(px(390.0), px(100.0)), cx);
+        release_at(window, point(px(450.0), px(-20.0)), cx);
     });
-    // Let go 50 logical pixels into the right monitor, 60 down.
-    update(cx, &right, |window, cx| {
-        release_at(window, point(px(50.0), px(60.0)), cx)
-    });
-    assert_eq!(
-        *left.events.borrow(),
-        [OverlayEvent::Selected(PhysicalRect::new(30, 45, 570, 15))]
-    );
-    assert!(right.events.borrow().is_empty());
+    let events = opened.events.borrow();
+    let [OverlayEvent::Shape(outline)] = events.as_slice() else {
+        panic!("expected one shape, got {events:?}");
+    };
+    assert_eq!(outline.last(), Some(&(400.0, 0.0)));
 }
 
 #[gpui_kit::test]
