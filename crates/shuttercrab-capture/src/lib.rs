@@ -12,10 +12,12 @@ pub mod play;
 pub mod png_io;
 pub mod raw;
 pub mod record;
+pub mod screen;
 pub mod service;
 pub mod shape;
 
-pub use service::{
-    Capture, CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect,
-    Screenshot, cut, cut_shape, encode_png, monitor_under_pointer, premultiplied_bgra_to_rgba,
+pub use screen::{
+    CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot,
+    cut, cut_shape, encode_png, premultiplied_bgra_to_rgba,
 };
+pub use service::{Capture, monitor_under_pointer};

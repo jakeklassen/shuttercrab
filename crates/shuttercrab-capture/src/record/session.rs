@@ -15,7 +15,8 @@ use crate::{
     color::Highlights,
     display,
     gpu::{Gpu, VideoConverter},
-    service::{PhysicalRect, hmonitor},
+    screen::PhysicalRect,
+    service::hmonitor,
 };
 use anyhow::{Context, Result, ensure};
 use std::{
