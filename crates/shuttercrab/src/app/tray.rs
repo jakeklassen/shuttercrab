@@ -100,6 +100,10 @@ pub enum TrayRecording {
 /// closed before the screen is frozen.
 pub(super) const TRAY_DELAY: Duration = Duration::from_millis(250);
 
+/// How long a hidden window takes to leave the screen where the OS cannot
+/// leave it out of captures (X11): a few frames of the compositor.
+pub(super) const FADE_OUT: Duration = Duration::from_millis(100);
+
 /// The tray icon's context menu for the current settings and recording.
 /// `update` is a downloaded release's version, offered as "Restart to
 /// update" only while nothing is recording.

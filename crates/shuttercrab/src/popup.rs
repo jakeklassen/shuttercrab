@@ -97,7 +97,9 @@ where
         is_resizable: false,
         is_minimizable: false,
         // GPUI on Windows knows a display by its HMONITOR, as MonitorId does.
-        display_id: Some(DisplayId::new(monitor.id.raw())),
+        // On X11 it has one display, the whole screen, which the origin
+        // above is already relative to.
+        display_id: cfg!(windows).then(|| DisplayId::new(monitor.id.raw())),
         window_background: WindowBackgroundAppearance::Opaque,
         ..Default::default()
     };
