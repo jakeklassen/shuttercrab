@@ -67,6 +67,8 @@ pub enum CaptureErrorCode {
     EncodeFailed,
     /// The window closed, was minimised, or cannot be captured.
     WindowGone,
+    /// This OS has no backend for it yet.
+    Unsupported,
 }
 
 /// A capture failure: a stable code, a message for the user, and detail for
@@ -88,6 +90,15 @@ impl CaptureError {
             code,
             message: message.into(),
             detail: Some(format!("{detail:#}")),
+        }
+    }
+
+    /// What this OS has no backend for yet: `what` is not supported here.
+    pub fn unsupported(what: &str) -> Self {
+        Self {
+            code: CaptureErrorCode::Unsupported,
+            message: format!("{what} is not supported on this OS yet"),
+            detail: None,
         }
     }
 }

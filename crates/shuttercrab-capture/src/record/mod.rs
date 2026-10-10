@@ -6,9 +6,14 @@
 //! the OS backend. `exposure` keeps HDR exposure steady and `size` says
 //! what of a monitor can be recorded, for every backend.
 
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the Windows backend records yet")
+)]
 pub(crate) mod exposure;
 mod size;
 
+#[cfg(windows)]
 pub(crate) use size::HARDWARE_MIN_SIDE;
 pub use size::{MIN_SIDE, recordable};
 
@@ -18,6 +23,10 @@ use crate::screen::{MonitorId, PhysicalRect, WindowId};
 use std::{path::PathBuf, time::Duration};
 
 /// 100-nanosecond units: the recorder's clock.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the Windows backend records yet")
+)]
 pub(crate) const TICKS_PER_SECOND: i64 = 10_000_000;
 
 /// What to record.

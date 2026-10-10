@@ -4,8 +4,8 @@
 //! code calls this crate; it never touches the OS itself.
 //!
 //! Each public module is the same on every OS. What only an OS can do lives
-//! in `sys`, one backend per OS; Windows is the only one so far.
-#![cfg(windows)]
+//! in `sys`, one backend per OS; Windows is the only one so far, and other
+//! OSes get one that says they are not supported yet.
 
 pub mod cursor;
 pub mod drag;
@@ -23,8 +23,9 @@ pub mod targets;
 pub mod window;
 
 pub use hotkey::{Hotkey, Key, print_screen_taken};
+#[cfg(windows)]
+pub use sys::imp::clipboard::dibv5;
 pub use sys::imp::{
-    clipboard::dibv5,
     console::{attach_to_parent_terminal, detach_from_terminal},
     instance::{SingleInstance, single_instance},
     platform::{Platform, signal_running_instance},

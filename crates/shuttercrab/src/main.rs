@@ -125,7 +125,7 @@ fn main() {
 /// install folder, the updater cannot replace that folder: every update
 /// fails until they close.
 fn leave_install_folder() {
-    let Some(home) = std::env::var_os("USERPROFILE") else {
+    let Some(home) = dirs::home_dir() else {
         return;
     };
     if let Err(e) = std::env::set_current_dir(&home) {

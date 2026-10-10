@@ -10,6 +10,10 @@ pub const MIN_SIDE: u32 = 64;
 /// Hardware encoders have minimum sizes of their own (NVENC's H.264 needs
 /// at least 145×49, and fails only once frames arrive), so smaller
 /// recordings use the software encoder, which is quick at such sizes.
+#[cfg_attr(
+    not(windows),
+    allow(dead_code, reason = "only the Windows backend records yet")
+)]
 pub(crate) const HARDWARE_MIN_SIDE: u32 = 256;
 
 /// What of a `width`×`height` monitor is recorded for `region`: all of it

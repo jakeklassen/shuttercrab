@@ -6,6 +6,10 @@
 use std::{env, fs, path::PathBuf};
 
 fn main() {
+    // The icon and version information are Windows resources.
+    if env::var("CARGO_CFG_TARGET_OS").as_deref() != Ok("windows") {
+        return;
+    }
     println!("cargo:rerun-if-changed=assets/shuttercrab.ico");
     let version = env::var("CARGO_PKG_VERSION").expect("Cargo sets the version");
     let numbers: Vec<u32> = version
