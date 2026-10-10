@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.25](https://github.com/jakeklassen/shuttercrab/compare/v0.1.24...v0.1.25) - 2026-10-10
+
+### Fixed
+
+- a selection dragged off its monitor follows flush with the edge
+- a selection let go of on another monitor is taken at once
+- a selection let go of on another monitor is taken
+
 ## [0.1.24](https://github.com/jakeklassen/shuttercrab/compare/v0.1.23...v0.1.24) - 2026-10-09
 
 ### Fixed
