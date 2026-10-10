@@ -5,6 +5,7 @@ pub mod console;
 pub mod cursor;
 pub mod drag;
 pub mod frame;
+pub mod hotkey;
 pub mod icon;
 pub mod instance;
 pub mod layered;

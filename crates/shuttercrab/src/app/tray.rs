@@ -2,7 +2,7 @@
 //! apply when, and what the menu offers.
 
 use crate::settings::Settings;
-use shuttercrab_platform::{Hotkey, MenuItem};
+use shuttercrab_platform::{Hotkey, Key, MenuItem};
 use std::time::Duration;
 
 /// Ids for the hotkeys the platform thread registers.
@@ -37,13 +37,10 @@ pub fn print_screen_hotkey(id: u32) -> Option<Hotkey> {
             alt: mix & 2 != 0,
             shift: mix & 4 != 0,
             win: false,
-            key: VK_PRINT_SCREEN,
+            key: Key::PrintScreen,
         }
     })
 }
-
-/// Print Screen's Win32 virtual-key code.
-const VK_PRINT_SCREEN: u32 = 0x2C;
 
 /// Ids for the tray menu's items.
 pub const MENU_SCREENSHOT: u32 = 1;

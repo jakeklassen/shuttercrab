@@ -1,7 +1,11 @@
 //! The platform thread on Windows: a hidden window whose message loop
 //! owns the tray icon, the hotkeys, the clipboard and the window watching.
 
-use super::{clipboard, icon, watch};
+use super::{
+    clipboard,
+    hotkey::{modifiers, virtual_key},
+    icon, watch,
+};
 use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Tray};
 use anyhow::{Context, Result, anyhow};
 use futures::channel::{mpsc, oneshot};
@@ -375,9 +379,14 @@ fn notify(s: &State, title: &str, message: &str) {
 fn register_hotkeys(window: HWND, hotkeys: &[(u32, Hotkey)]) -> Vec<HotkeyConflict> {
     let mut conflicts = Vec::new();
     for (id, hotkey) in hotkeys {
-        if let Err(e) =
-            unsafe { RegisterHotKey(Some(window), *id as i32, hotkey.modifiers(), hotkey.key) }
-        {
+        if let Err(e) = unsafe {
+            RegisterHotKey(
+                Some(window),
+                *id as i32,
+                modifiers(hotkey),
+                virtual_key(hotkey.key),
+            )
+        } {
             conflicts.push(HotkeyConflict {
                 id: *id,
                 hotkey: *hotkey,
