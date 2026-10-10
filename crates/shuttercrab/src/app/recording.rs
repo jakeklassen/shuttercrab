@@ -35,6 +35,7 @@ use shuttercrab_platform::{
     frame::{Frame, FrameStyle, NO_EDGE, Rect as FrameRect},
     window as platform_window,
 };
+use shuttercrab_types::WindowId;
 use std::{
     cell::{Cell, RefCell},
     ops::ControlFlow,
@@ -58,7 +59,7 @@ struct Asking {
     /// The recording was running when asked, and resumes if kept.
     resume: bool,
     /// The window that had the keyboard before the bar took it to ask.
-    give_back: Option<isize>,
+    give_back: Option<WindowId>,
 }
 
 /// A discard that can still be undone: the recording is paused meanwhile.
@@ -68,7 +69,7 @@ pub(super) struct Discarded {
     resume: bool,
     generation: u64,
     /// The window that had the keyboard before the controls took it.
-    give_back: Option<isize>,
+    give_back: Option<WindowId>,
 }
 
 /// A recording in progress.
@@ -106,7 +107,7 @@ type Border = Rc<RefCell<Option<Frame>>>;
 /// A recorded window, from when it is chosen until its recording ends:
 /// Windows reports its moves, and its border and the bar follow.
 pub(super) struct Followed {
-    window: isize,
+    window: WindowId,
     border: Border,
     /// The bar, once it is on screen.
     bar: Cell<Option<FollowingBar>>,
@@ -131,7 +132,7 @@ fn waiting_on(state: &State, waiting: Option<Waiting>) {
 /// The bar, as it follows a recorded window.
 #[derive(Clone, Copy, Debug)]
 struct FollowingBar {
-    hwnd: isize,
+    os_window: WindowId,
     /// Its size and its distance from the window, physical pixels.
     size: (u32, u32),
     gap: u32,
@@ -153,7 +154,9 @@ impl Followed {
         let work = platform_window::work_area(platform_window::monitor_of(self.window))
             .map_or(window, |(x, y, w, h)| PhysicalRect::new(x, y, w, h));
         let (rect, _) = recording::controls_rect(work, window, bar.size, bar.gap);
-        if let Err(e) = platform_window::cover(bar.hwnd, rect.x, rect.y, rect.width, rect.height) {
+        if let Err(e) =
+            platform_window::cover(bar.os_window, rect.x, rect.y, rect.width, rect.height)
+        {
             log::warn!("could not move the recording controls: {e:#}");
         }
     }
@@ -168,7 +171,7 @@ struct Following<'a> {
 }
 
 impl<'a> Following<'a> {
-    fn start(state: &'a State, window: isize, border: Border) -> Self {
+    fn start(state: &'a State, window: WindowId, border: Border) -> Self {
         state.followed.replace(Some(Followed {
             window,
             border,
@@ -466,7 +469,7 @@ struct Chosen {
     info: MonitorInfo,
     /// The window to record itself, wherever it goes (its `HWND`), when
     /// one was chosen as a window.
-    window: Option<isize>,
+    window: Option<WindowId>,
 }
 
 /// What to record for `target`: an area or all of a monitor, or a window.
@@ -496,9 +499,9 @@ async fn choose_area(
     let (region, window) = match event {
         OverlayEvent::Selected(rect) => (Some(rect), None),
         OverlayEvent::Display => (None, None),
-        OverlayEvent::Window { hwnd, visible } => (
+        OverlayEvent::Window { os_window, visible } => (
             Some(visible),
-            (target == CaptureTarget::Window).then_some(hwnd),
+            (target == CaptureTarget::Window).then_some(os_window),
         ),
         // Area and Window modes draw no shapes.
         OverlayEvent::Cancelled | OverlayEvent::ModeChanged(_) | OverlayEvent::Shape(_) => {
@@ -529,7 +532,7 @@ async fn ready(
     state: &State,
     info: &MonitorInfo,
     region: Option<PhysicalRect>,
-    window: Option<isize>,
+    window: Option<WindowId>,
     clock: Rc<Cell<Clock>>,
     cx: &mut AsyncApp,
 ) -> ControlFlow<(), Option<(Controls, UnboundedReceiver<RecordBarEvent>)>> {
@@ -553,12 +556,13 @@ async fn ready(
     if let Some(followed) = state.followed.borrow().as_ref() {
         let gap = (CONTROLS_GAP * info.scale_factor).round() as u32;
         let size = (controls.rect.width, controls.rect.height);
-        followed.bar.set(
-            controls
-                .popup
-                .hwnd()
-                .map(|hwnd| FollowingBar { hwnd, size, gap }),
-        );
+        followed
+            .bar
+            .set(controls.popup.os_window().map(|os_window| FollowingBar {
+                os_window,
+                size,
+                gap,
+            }));
     }
     waiting_on(state, Some(Waiting::Ready(controls.view.clone())));
     let ready = get_ready(state, info, &controls, &mut requests, give_back, cx).await;
@@ -580,11 +584,11 @@ async fn get_ready(
     info: &MonitorInfo,
     controls: &Controls,
     requests: &mut UnboundedReceiver<RecordBarEvent>,
-    give_back: Option<isize>,
+    give_back: Option<WindowId>,
     cx: &mut AsyncApp,
 ) -> bool {
-    if let Some(hwnd) = controls.popup.hwnd() {
-        platform_window::bring_to_front(hwnd);
+    if let Some(os_window) = controls.popup.os_window() {
+        platform_window::bring_to_front(os_window);
     }
     let start = loop {
         match requests.next().await {
@@ -630,12 +634,12 @@ async fn choose_microphone(
     // Where the bar is now: it may have followed a recorded window.
     let bar = controls
         .popup
-        .hwnd()
-        .and_then(|hwnd| platform_window::client_bounds(hwnd).ok())
+        .os_window()
+        .and_then(|os_window| platform_window::client_bounds(os_window).ok())
         .map_or(controls.rect, |(x, y, w, h)| PhysicalRect::new(x, y, w, h));
     let gap = to_physical(LIST_GAP);
     let (wx, wy, ww, wh) =
-        platform_window::work_area(info.id.0).unwrap_or((bar.x, bar.y, bar.width, bar.height));
+        platform_window::work_area(info.id).unwrap_or((bar.x, bar.y, bar.width, bar.height));
     let x = (bar.x + to_physical(f32::from(button.origin.x)))
         .min(wx + ww as i32 - w)
         .max(wx);
@@ -656,14 +660,14 @@ async fn choose_microphone(
             return None;
         }
     };
-    if let Some(hwnd) = popup.hwnd() {
-        platform_window::round_corners(hwnd);
-        exclude_from_capture(hwnd, "microphone list");
+    if let Some(os_window) = popup.os_window() {
+        platform_window::round_corners(os_window);
+        exclude_from_capture(os_window, "microphone list");
     }
     let event = events.next().await.unwrap_or(ChoiceMenuEvent::Cancel);
     popup.close(cx);
-    if let Some(hwnd) = controls.popup.hwnd() {
-        platform_window::bring_to_front(hwnd);
+    if let Some(os_window) = controls.popup.os_window() {
+        platform_window::bring_to_front(os_window);
     }
     let ChoiceMenuEvent::Chose(index) = event else {
         return None;
@@ -766,7 +770,7 @@ fn open_controls(
         recorded.width,
         recorded.height,
     );
-    let work = platform_window::work_area(info.id.0)
+    let work = platform_window::work_area(info.id)
         .map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h))
         .unwrap_or(b);
     let size = (
@@ -791,10 +795,10 @@ fn open_controls(
         }
     };
     let view = view.take()?;
-    let excluded = match popup.hwnd() {
-        Some(hwnd) => {
-            platform_window::round_corners(hwnd);
-            exclude_from_capture(hwnd, "recording controls")
+    let excluded = match popup.os_window() {
+        Some(os_window) => {
+            platform_window::round_corners(os_window);
+            exclude_from_capture(os_window, "recording controls")
         }
         None => false,
     };
@@ -916,9 +920,9 @@ async fn count_down(
             return true;
         }
     };
-    if let Some(hwnd) = popup.hwnd() {
-        platform_window::round_corners(hwnd);
-        exclude_from_capture(hwnd, "countdown");
+    if let Some(os_window) = popup.os_window() {
+        platform_window::round_corners(os_window);
+        exclude_from_capture(os_window, "countdown");
     }
     waiting_on(state, slot.take().map(Waiting::Countdown));
     let event = events.next().await.unwrap_or(CountdownEvent::Cancel);
@@ -936,7 +940,7 @@ async fn count_down(
 fn show_frame(
     info: &MonitorInfo,
     region: Option<PhysicalRect>,
-    window: Option<isize>,
+    window: Option<WindowId>,
     color: [u8; 3],
 ) -> Option<Frame> {
     let (b, scale) = (info.bounds, info.scale_factor);
@@ -1212,7 +1216,7 @@ pub(super) async fn request(state: &Rc<State>, action: Destructive, cx: &mut Asy
 /// Pause and ask before `action` throws the take away. The controls take
 /// the keyboard so Enter or Escape answers; it goes back afterwards.
 fn ask(state: &State, action: Destructive, cx: &mut AsyncApp) {
-    let (view, hwnd, length) = {
+    let (view, os_window, length) = {
         let mut slot = state.recording.borrow_mut();
         let Some(recording) = slot.as_mut() else {
             return;
@@ -1221,15 +1225,18 @@ fn ask(state: &State, action: Destructive, cx: &mut AsyncApp) {
             return;
         }
         let resume = recording.set_paused(true);
-        let hwnd = recording.controls.as_ref().and_then(|c| c.popup.hwnd());
-        let give_back = platform_window::foreground_window().filter(|w| Some(*w) != hwnd);
+        let os_window = recording
+            .controls
+            .as_ref()
+            .and_then(|c| c.popup.os_window());
+        let give_back = platform_window::foreground_window().filter(|w| Some(*w) != os_window);
         recording.asking = Some(Asking {
             action,
             resume,
             give_back,
         });
         let length = recording.clock.get().elapsed(Instant::now());
-        (recording.view(), hwnd, length)
+        (recording.view(), os_window, length)
     };
     log::info!(
         "asking before {action:?} of a {} take",
@@ -1238,8 +1245,8 @@ fn ask(state: &State, action: Destructive, cx: &mut AsyncApp) {
     show(view, cx, |bar, cx| {
         bar.set_mode(BarMode::Confirm(action, length), cx)
     });
-    if let Some(hwnd) = hwnd {
-        platform_window::bring_to_front(hwnd);
+    if let Some(os_window) = os_window {
+        platform_window::bring_to_front(os_window);
     }
     state.refresh_tray_menu();
 }
@@ -1307,7 +1314,7 @@ fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
     let generation = state.next_generation();
     let window = state.settings.borrow().undo_window();
     let until = Instant::now() + window;
-    let (view, hwnd) = {
+    let (view, os_window) = {
         let mut slot = state.recording.borrow_mut();
         let Some(recording) = slot.as_mut() else {
             return;
@@ -1317,14 +1324,17 @@ fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
         }
         let resume = recording.set_paused(true);
         recording.color_frame(FRAME_DISCARDED);
-        let hwnd = recording.controls.as_ref().and_then(|c| c.popup.hwnd());
-        let give_back = platform_window::foreground_window().filter(|w| Some(*w) != hwnd);
+        let os_window = recording
+            .controls
+            .as_ref()
+            .and_then(|c| c.popup.os_window());
+        let give_back = platform_window::foreground_window().filter(|w| Some(*w) != os_window);
         recording.discarded = Some(Discarded {
             resume,
             generation,
             give_back,
         });
-        (recording.view(), hwnd)
+        (recording.view(), os_window)
     };
     log::info!(
         "recording discarded; it can be undone for {} s",
@@ -1333,8 +1343,8 @@ fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
     show(view, cx, |bar, cx| {
         bar.set_mode(BarMode::Discarded { until }, cx)
     });
-    if let Some(hwnd) = hwnd {
-        platform_window::bring_to_front(hwnd);
+    if let Some(os_window) = os_window {
+        platform_window::bring_to_front(os_window);
     }
     state.recording_changed(cx);
     let state = state.clone();

@@ -16,6 +16,7 @@ log = "0.4"
 windows-core = "0.62"
 png = "0.18"
 serde_json = "1"
+shuttercrab-types = { path = "../shuttercrab-types" }
 
 # 0.62 is the version GPUI's Windows backend uses, so Direct3D objects can be
 # shared with it in later milestones.

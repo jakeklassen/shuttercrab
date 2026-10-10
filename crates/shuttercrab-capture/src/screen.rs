@@ -39,10 +39,7 @@ impl PhysicalRect {
     }
 }
 
-/// A monitor, identified by its `HMONITOR` (which GPUI also uses as its
-/// display id on Windows).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct MonitorId(pub u64);
+pub use shuttercrab_types::{MonitorId, WindowId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonitorInfo {

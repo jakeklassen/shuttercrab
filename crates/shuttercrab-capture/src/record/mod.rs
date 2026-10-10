@@ -3,7 +3,7 @@
 //! MP4, with the speakers' and a microphone's sound as an AAC track.
 //!
 //! This module is what the app sees on every OS; the recorder itself is in
-//! the OS backend. [`exposure`] keeps HDR exposure steady and [`size`] says
+//! the OS backend. `exposure` keeps HDR exposure steady and `size` says
 //! what of a monitor can be recorded, for every backend.
 
 pub(crate) mod exposure;
@@ -14,7 +14,7 @@ pub use size::{MIN_SIDE, recordable};
 
 pub use crate::sys::imp::record::{Recorder, attached, microphones};
 
-use crate::screen::{MonitorId, PhysicalRect};
+use crate::screen::{MonitorId, PhysicalRect, WindowId};
 use std::{path::PathBuf, time::Duration};
 
 /// 100-nanosecond units: the recorder's clock.
@@ -27,10 +27,10 @@ pub struct RecordOptions {
     /// Physical pixels relative to the monitor; `None` records all of it.
     /// Rounded down to even sizes, as NV12 requires.
     pub region: Option<PhysicalRect>,
-    /// A window (its `HWND`) to record instead of the monitor: its own
-    /// picture, wherever it goes. The video keeps the size the window has
+    /// A window to record instead of the monitor: its own picture,
+    /// wherever it goes. The video keeps the size the window has
     /// when recording starts; resized, it is fitted inside.
-    pub window: Option<isize>,
+    pub window: Option<WindowId>,
     /// 30 or 60 (PRD §13.1).
     pub fps: u32,
     pub include_cursor: bool,

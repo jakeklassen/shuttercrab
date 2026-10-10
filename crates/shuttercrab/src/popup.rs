@@ -11,9 +11,9 @@ use gpui_kit::{
     AnyWindowHandle, App, AsyncApp, Bounds, DisplayId, Entity, EventEmitter, Render, Window,
     WindowBackgroundAppearance, WindowBounds, WindowKind, WindowOptions, point, px, size,
 };
-use raw_window_handle::{HasWindowHandle, RawWindowHandle};
 use shuttercrab_capture::{MonitorInfo, PhysicalRect};
 use shuttercrab_platform::window as platform_window;
+use shuttercrab_types::WindowId;
 use std::time::Duration;
 
 /// How long a hidden popup lingers before it is removed.
@@ -34,13 +34,13 @@ pub enum Activation {
 /// An open popup.
 pub struct Popup {
     window: AnyWindowHandle,
-    hwnd: Option<isize>,
+    os_window: Option<WindowId>,
 }
 
 impl Popup {
     /// The window handle, for platform calls.
-    pub fn hwnd(&self) -> Option<isize> {
-        self.hwnd
+    pub fn os_window(&self) -> Option<WindowId> {
+        self.os_window
     }
 
     /// Redraw the popup, after something its view reads changed elsewhere.
@@ -52,8 +52,8 @@ impl Popup {
     /// deactivation that hiding causes on a later turn of the main thread,
     /// and logs "window not found" if the window is gone by then.
     pub fn close(self, cx: &mut AsyncApp) {
-        if let Some(hwnd) = self.hwnd {
-            platform_window::hide(hwnd);
+        if let Some(os_window) = self.os_window {
+            platform_window::hide(os_window);
         }
         let window = self.window;
         cx.spawn(async move |cx| {
@@ -96,7 +96,8 @@ where
         is_movable: false,
         is_resizable: false,
         is_minimizable: false,
-        display_id: Some(DisplayId::new(monitor.id.0)),
+        // GPUI on Windows knows a display by its HMONITOR, as MonitorId does.
+        display_id: Some(DisplayId::new(monitor.id.raw())),
         window_background: WindowBackgroundAppearance::Opaque,
         ..Default::default()
     };
@@ -113,19 +114,19 @@ where
     // Place the window outside GPUI's update: moving it calls GPUI back,
     // which fails ("RefCell already borrowed") while the app is borrowed,
     // and GPUI would miss the new bounds.
-    let hwnd = window
-        .update(cx, |_, window, _| raw_hwnd(window))
+    let os_window = window
+        .update(cx, |_, window, _| os_window(window))
         .ok()
         .flatten();
-    match hwnd {
-        Some(hwnd) => {
+    match os_window {
+        Some(os_window) => {
             let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
-            if let Err(e) = platform_window::cover(hwnd, x, y, w, h) {
+            if let Err(e) = platform_window::cover(os_window, x, y, w, h) {
                 log::error!("could not place a popup: {e:#}");
             }
             // Views map pointer positions assuming the drawable area is
             // exactly the rectangle.
-            match platform_window::client_bounds(hwnd) {
+            match platform_window::client_bounds(os_window) {
                 Ok(client) if client != (x, y, w, h) => {
                     log::error!("popup area {client:?} does not match {rect:?}")
                 }
@@ -133,9 +134,9 @@ where
                 Err(e) => log::error!("could not read a popup's area: {e:#}"),
             }
             match activation {
-                Activation::Take => platform_window::bring_to_front(hwnd),
+                Activation::Take => platform_window::bring_to_front(os_window),
                 Activation::OnClick => {}
-                Activation::Never => platform_window::never_activate(hwnd),
+                Activation::Never => platform_window::never_activate(os_window),
             }
         }
         None => log::error!("a popup has no window handle to place"),
@@ -143,25 +144,22 @@ where
     Ok((
         Popup {
             window: window.into(),
-            hwnd,
+            os_window,
         },
         outcome,
     ))
 }
 
-/// A GPUI window's `HWND`, for platform calls (PRD §17).
-pub fn raw_hwnd(window: &Window) -> Option<isize> {
-    match HasWindowHandle::window_handle(window).ok()?.as_raw() {
-        RawWindowHandle::Win32(win32) => Some(win32.hwnd.get()),
-        _ => None,
-    }
+/// The OS window behind a GPUI window, for platform calls (PRD §17).
+pub fn os_window(window: &Window) -> Option<WindowId> {
+    platform_window::of(window)
 }
 
 /// Close a window from inside its own view: hide it at once, remove it a
 /// moment later (see [`Popup::close`] for why).
 pub fn close_window(window: &mut Window, cx: &mut App) {
-    if let Some(hwnd) = raw_hwnd(window) {
-        platform_window::hide(hwnd);
+    if let Some(os_window) = os_window(window) {
+        platform_window::hide(os_window);
     }
     let handle = Window::window_handle(window);
     cx.spawn(async move |cx| {

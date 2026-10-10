@@ -70,7 +70,7 @@ fn hooks() -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
             version: "0.1.0".into(),
             windows_build: 26200,
             monitors: vec![MonitorInfo {
-                id: MonitorId(1),
+                id: MonitorId::from_raw(1),
                 device_name: r"\\.\DISPLAY1".into(),
                 name: "Test Monitor".into(),
                 bounds: PhysicalRect::new(0, 0, 3840, 2160),

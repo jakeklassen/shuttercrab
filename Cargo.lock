@@ -6289,12 +6289,12 @@ dependencies = [
  "image",
  "log",
  "lyon_tessellation",
- "raw-window-handle",
  "resvg 0.45.1",
  "serde",
  "serde_json",
  "shuttercrab-capture",
  "shuttercrab-platform",
+ "shuttercrab-types",
  "tiny-skia",
  "velopack",
 ]
@@ -6309,6 +6309,7 @@ dependencies = [
  "log",
  "png 0.18.1",
  "serde_json",
+ "shuttercrab-types",
  "windows 0.62.2",
  "windows-core 0.62.2",
 ]
@@ -6321,9 +6322,15 @@ dependencies = [
  "futures",
  "log",
  "png 0.18.1",
+ "raw-window-handle",
+ "shuttercrab-types",
  "windows 0.62.2",
  "windows-core 0.62.2",
 ]
+
+[[package]]
+name = "shuttercrab-types"
+version = "0.1.25"
 
 [[package]]
 name = "signal-hook-registry"

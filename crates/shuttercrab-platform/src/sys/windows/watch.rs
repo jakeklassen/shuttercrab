@@ -5,7 +5,9 @@
 //! polled).
 
 use super::platform::with_state;
+use super::window::{to_hwnd, to_window_id};
 use crate::{PlatformEvent, WindowChange, frame::Rect};
+use shuttercrab_types::WindowId;
 use std::cell::RefCell;
 use windows::Win32::{
     Foundation::{HWND, RECT},
@@ -82,7 +84,7 @@ thread_local! {
 
 /// Watch `window` (an `HWND`) in place of the one watched before, or stop
 /// watching with `None`. Runs on the platform thread.
-pub(crate) fn watch(window: Option<isize>) {
+pub(crate) fn watch(window: Option<WindowId>) {
     WATCHED.with(|watched| {
         if let Some(old) = watched.borrow_mut().take() {
             for hook in old.hooks {
@@ -92,7 +94,7 @@ pub(crate) fn watch(window: Option<isize>) {
         let Some(window) = window else {
             return;
         };
-        let hwnd = HWND(window as _);
+        let hwnd = to_hwnd(window);
         let mut process = 0;
         if unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) } == 0 {
             log::warn!("the window to watch is gone");
@@ -138,11 +140,11 @@ pub(crate) fn watch(window: Option<isize>) {
 
 /// `window`'s visible bounds, without the invisible resize border and the
 /// shadow.
-pub fn visible_bounds(window: isize) -> Option<Rect> {
+pub fn visible_bounds(window: WindowId) -> Option<Rect> {
     let mut rect = RECT::default();
     unsafe {
         DwmGetWindowAttribute(
-            HWND(window as _),
+            to_hwnd(window),
             DWMWA_EXTENDED_FRAME_BOUNDS,
             (&raw mut rect).cast(),
             size_of::<RECT>() as u32,
@@ -201,7 +203,7 @@ unsafe extern "system" fn on_event(
         if seen != Seen::Shown || event != EVENT_OBJECT_LOCATIONCHANGE {
             return None;
         }
-        let bounds = visible_bounds(hwnd.0 as isize)?;
+        let bounds = visible_bounds(to_window_id(hwnd))?;
         (watched.last.replace(bounds) != Some(bounds)).then_some(WindowChange::Moved(bounds))
     });
     if let Some(change) = change {

@@ -15,6 +15,7 @@ use shuttercrab::{
     selection::ScreenWindow,
 };
 use shuttercrab_capture::PhysicalRect;
+use shuttercrab_types::WindowId;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -174,9 +175,9 @@ fn the_overlay_takes_focus_so_escape_works_at_once(cx: &mut TestAppContext) {
     });
 }
 
-fn win(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> ScreenWindow {
+fn win(id: u64, x: i32, y: i32, width: u32, height: u32) -> ScreenWindow {
     ScreenWindow {
-        hwnd,
+        os_window: WindowId::from_raw(id),
         bounds: PhysicalRect::new(x, y, width, height),
     }
 }
@@ -294,7 +295,7 @@ fn a_window_to_record_is_picked_in_window_mode(cx: &mut TestAppContext) {
     assert_eq!(
         *opened.events.borrow(),
         [OverlayEvent::Window {
-            hwnd: 7,
+            os_window: WindowId::from_raw(7),
             visible: PhysicalRect::new(150, 150, 300, 150)
         }]
     );
@@ -351,7 +352,7 @@ fn clicking_a_window_captures_it_with_its_visible_part(cx: &mut TestAppContext) 
         [
             OverlayEvent::ModeChanged(Mode::Window),
             OverlayEvent::Window {
-                hwnd: 7,
+                os_window: WindowId::from_raw(7),
                 visible: PhysicalRect::new(500, 300, 100, 150)
             }
         ]

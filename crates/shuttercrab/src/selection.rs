@@ -4,6 +4,7 @@
 
 use gpui_kit::{Bounds, Pixels, Point, point, px, size};
 use shuttercrab_capture::PhysicalRect;
+use shuttercrab_types::WindowId;
 
 /// A drag in progress or finished, in logical window pixels: where the
 /// pointer went down, and where it is now.
@@ -71,7 +72,7 @@ fn min_max(a: Pixels, b: Pixels) -> (Pixels, Pixels) {
 /// monitor's top-left. It may extend past the monitor.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ScreenWindow {
-    pub hwnd: isize,
+    pub os_window: WindowId,
     pub bounds: PhysicalRect,
 }
 
@@ -130,7 +131,7 @@ pub fn snap(
     // The window must be the front-most one on its own edge, level with the
     // pointer (or as close as its extent allows, within reach).
     let visible_edge = |w: &ScreenWindow, edge_x: i32, edge_y: i32| {
-        window_at(windows, edge_x, edge_y).is_some_and(|front| front.hwnd == w.hwnd)
+        window_at(windows, edge_x, edge_y).is_some_and(|front| front.os_window == w.os_window)
     };
     let (px, py) = (x.round() as i32, y.round() as i32);
     let vertical: Vec<i32> = [0, width as i32]
@@ -260,9 +261,9 @@ mod tests {
         );
     }
 
-    fn win(hwnd: isize, x: i32, y: i32, width: u32, height: u32) -> ScreenWindow {
+    fn win(id: u64, x: i32, y: i32, width: u32, height: u32) -> ScreenWindow {
         ScreenWindow {
-            hwnd,
+            os_window: WindowId::from_raw(id),
             bounds: PhysicalRect::new(x, y, width, height),
         }
     }
@@ -270,10 +271,19 @@ mod tests {
     #[test]
     fn the_front_most_window_is_hit() {
         let windows = [win(1, 50, 50, 100, 100), win(2, 0, 0, 400, 300)];
-        assert_eq!(window_at(&windows, 60, 60).map(|w| w.hwnd), Some(1));
-        assert_eq!(window_at(&windows, 10, 10).map(|w| w.hwnd), Some(2));
+        assert_eq!(
+            window_at(&windows, 60, 60).map(|w| w.os_window.raw()),
+            Some(1)
+        );
+        assert_eq!(
+            window_at(&windows, 10, 10).map(|w| w.os_window.raw()),
+            Some(2)
+        );
         // Right and bottom edges are exclusive.
-        assert_eq!(window_at(&windows, 150, 60).map(|w| w.hwnd), Some(2));
+        assert_eq!(
+            window_at(&windows, 150, 60).map(|w| w.os_window.raw()),
+            Some(2)
+        );
         assert_eq!(window_at(&windows, 500, 10), None);
     }
 

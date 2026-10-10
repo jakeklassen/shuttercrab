@@ -428,12 +428,12 @@ pub(super) enum Pointer {
 /// under the toolbar), if it is one GPUI lacks; otherwise, or with
 /// `None`, leave the pointer to GPUI.
 pub(super) fn show_pointer(window: &Window, over: Option<(Pointer, Xy)>) {
-    let Some(hwnd) = popup::raw_hwnd(window) else {
+    let Some(os_window) = popup::os_window(window) else {
         return;
     };
     let scale = window.scale_factor();
     let Some((pointer, canvas)) = over else {
-        return shuttercrab_platform::cursor::show(hwnd, None);
+        return shuttercrab_platform::cursor::show(os_window, None);
     };
     let cursor = match pointer {
         Pointer::Hand(hand) => cursors::hand(hand, scale),
@@ -448,7 +448,7 @@ pub(super) fn show_pointer(window: &Window, over: Option<(Pointer, Xy)>) {
         physical(canvas.y),
     );
     let over = cursor.map(|cursor| CursorOver { cursor, area });
-    shuttercrab_platform::cursor::show(hwnd, over);
+    shuttercrab_platform::cursor::show(os_window, over);
 }
 
 /// The marks of `all` that `drawn` lacks, if `drawn` is some of them,

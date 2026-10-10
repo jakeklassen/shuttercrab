@@ -365,7 +365,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             monitor,
             seconds,
         } = pending;
-        let work = platform_window::work_area(monitor.id.0)
+        let work = platform_window::work_area(monitor.id)
             .map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h))
             .unwrap_or(monitor.bounds);
         let rect = thumbnail_rect(work, monitor.scale_factor, size);
@@ -381,13 +381,13 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
                 return;
             }
         };
-        if let Some(hwnd) = card.hwnd() {
-            platform_window::round_corners(hwnd);
+        if let Some(os_window) = card.os_window() {
+            platform_window::round_corners(os_window);
             // Drags start here; it is never where they end.
-            if let Err(e) = shuttercrab_platform::drag::refuse_drops(hwnd) {
+            if let Err(e) = shuttercrab_platform::drag::refuse_drops(os_window) {
                 log::warn!("the thumbnail still accepts drops: {e:#}");
             }
-            exclude_from_capture(hwnd, "thumbnail");
+            exclude_from_capture(os_window, "thumbnail");
         }
         log::debug!("thumbnail up for {seconds} s");
         let generation = state.thumbnail_generation.get() + 1;

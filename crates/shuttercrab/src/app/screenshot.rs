@@ -19,6 +19,7 @@ use shuttercrab_capture::{
     CaptureError, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot, cut, cut_shape,
 };
 use shuttercrab_platform::{targets, window as platform_window};
+use shuttercrab_types::WindowId;
 use std::{cell::Cell, rc::Rc, sync::Arc, time::Instant};
 
 /// The Capture Bar's distance from the top of the monitor, logical pixels.
@@ -56,11 +57,11 @@ pub(super) async fn capture_bar(
         move |window, cx| cx.new(|cx| CaptureBar::new(target, window, cx).with_mode(mode)),
     )
     .map_err(|e| Failure::new("Could not open the Capture Bar.", e))?;
-    if let Some(hwnd) = bar.hwnd() {
-        platform_window::round_corners(hwnd);
+    if let Some(os_window) = bar.os_window() {
+        platform_window::round_corners(os_window);
         // Never part of a screenshot, even if the screen is frozen while
         // the bar is still fading out.
-        exclude_from_capture(hwnd, "Capture Bar");
+        exclude_from_capture(os_window, "Capture Bar");
     }
     log::info!(
         "Capture Bar up {} ms after the request",
@@ -97,11 +98,11 @@ pub(super) async fn capture_bar(
 /// §13.6). SHUTTERCRAB_CAPTURABLE_UI leaves them capturable, for screenshots
 /// of Shuttercrab itself. Returns whether Windows confirmed the exclusion (or
 /// it was left out on purpose).
-pub(super) fn exclude_from_capture(hwnd: isize, what: &str) -> bool {
+pub(super) fn exclude_from_capture(os_window: WindowId, what: &str) -> bool {
     if std::env::var_os("SHUTTERCRAB_CAPTURABLE_UI").is_some() {
         return true;
     }
-    match platform_window::exclude_from_capture(hwnd) {
+    match platform_window::exclude_from_capture(os_window) {
         Ok(()) => true,
         Err(e) => {
             log::warn!("could not exclude the {what} from capture: {e:#}");
@@ -167,9 +168,13 @@ pub(super) async fn capture(
         OverlayEvent::Selected(rect) => frozen.cut(Cut::Region(rect), cx).await,
         OverlayEvent::Shape(outline) => frozen.cut(Cut::Shape(outline), cx).await,
         OverlayEvent::Display => frozen.cut(Cut::Region(whole), cx).await,
-        OverlayEvent::Window { hwnd, visible } => {
+        OverlayEvent::Window { os_window, visible } => {
             let include_cursor = state.settings.borrow().include_cursor;
-            match state.capture.capture_window(hwnd, include_cursor).await {
+            match state
+                .capture
+                .capture_window(os_window, include_cursor)
+                .await
+            {
                 Ok(shot) => Ok(shot),
                 // Some windows refuse direct capture; what the user saw of
                 // the window is the next best thing.
@@ -340,8 +345,8 @@ fn open_overlay(
     .map_err(|e| Failure::new("Could not open the selection screen.", e))?;
     // A screenshot's own screen is frozen before the overlay appears, but a
     // recording may be running (PRD §13.5), or about to start as it goes.
-    if let Some(hwnd) = overlay.hwnd() {
-        exclude_from_capture(hwnd, "selection overlay");
+    if let Some(os_window) = overlay.os_window() {
+        exclude_from_capture(os_window, "selection overlay");
     }
     Ok((overlay, outcome))
 }
@@ -392,7 +397,7 @@ fn screen_windows(bounds: PhysicalRect) -> Vec<ScreenWindow> {
         .into_iter()
         .filter(|w| !w.desktop && w.bounds.intersect(&monitor).is_some())
         .map(|w| ScreenWindow {
-            hwnd: w.hwnd,
+            os_window: w.id,
             bounds: PhysicalRect::new(
                 w.bounds.x - bounds.x,
                 w.bounds.y - bounds.y,
@@ -410,7 +415,7 @@ mod tests {
     #[test]
     fn the_capture_bar_sits_centred_near_the_top() {
         let monitor = MonitorInfo {
-            id: MonitorId(1),
+            id: MonitorId::from_raw(1),
             device_name: String::new(),
             name: String::new(),
             bounds: PhysicalRect::new(3840, 0, 3840, 2160),

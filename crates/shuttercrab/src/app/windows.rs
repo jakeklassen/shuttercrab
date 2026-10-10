@@ -90,11 +90,11 @@ fn show_content(
 fn open_window(state: &Rc<State>, page: Page, mut content: Option<Content>, cx: &mut AsyncApp) {
     let open = state.main_window.borrow().clone();
     if let Some((window, view)) = open
-        && let Ok(hwnd) = window.update(cx, |_, window, cx| {
+        && let Ok(os_window) = window.update(cx, |_, window, cx| {
             view.update(cx, |view, cx| {
                 show_content(view, page, content.take(), window, cx)
             });
-            popup::raw_hwnd(window)
+            popup::os_window(window)
         })
     {
         // Restored if minimised, and brought forward; but left hidden while
@@ -102,9 +102,9 @@ fn open_window(state: &Rc<State>, page: Page, mut content: Option<Content>, cx: 
         // this update, which the window's activation would interrupt, and
         // after the window is sized for a screenshot.
         if state.hidden_main.get().is_none()
-            && let Some(hwnd) = hwnd
+            && let Some(os_window) = os_window
         {
-            cx.spawn(async move |_| platform_window::show_normal(hwnd))
+            cx.spawn(async move |_| platform_window::show_normal(os_window))
                 .detach();
         }
         return;
@@ -160,12 +160,12 @@ fn open_window(state: &Rc<State>, page: Page, mut content: Option<Content>, cx: 
         match opened.map(|window| (window, out.borrow_mut().take())) {
             Ok((window, Some(view))) => {
                 log::info!("main window opened");
-                let hwnd = window
-                    .update(cx, |_, window, _| popup::raw_hwnd(window))
+                let os_window = window
+                    .update(cx, |_, window, _| popup::os_window(window))
                     .ok()
                     .flatten();
-                if let Some(hwnd) = hwnd {
-                    platform_window::show_normal(hwnd);
+                if let Some(os_window) = os_window {
+                    platform_window::show_normal(os_window);
                 }
                 state.main_window.replace(Some((window.into(), view)));
             }
@@ -190,9 +190,9 @@ fn start_from_main(
         log::info!("{mode:?} ignored: a capture is already open");
         return;
     }
-    if let Some(hwnd) = popup::raw_hwnd(window) {
-        platform_window::hide(hwnd);
-        state.hidden_main.set(Some(hwnd));
+    if let Some(os_window) = popup::os_window(window) {
+        platform_window::hide(os_window);
+        state.hidden_main.set(Some(os_window));
     }
     let (what, wait) = match mode {
         CaptureMode::Screenshot => (
@@ -253,8 +253,8 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
             })
         }),
         window_place: Rc::new(|window| {
-            let hwnd = popup::raw_hwnd(window)?;
-            let (x, y, width, height) = platform_window::outer_bounds(hwnd)
+            let os_window = popup::os_window(window)?;
+            let (x, y, width, height) = platform_window::outer_bounds(os_window)
                 .inspect_err(|e| log::warn!("could not read where the window is: {e:#}"))
                 .ok()?;
             Some(Place {
@@ -265,14 +265,14 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
             })
         }),
         restore_place: Rc::new(|window, cx, place| {
-            let Some(hwnd) = popup::raw_hwnd(window) else {
+            let Some(os_window) = popup::os_window(window) else {
                 return;
             };
             // After this update, as for fitting.
             cx.foreground_executor()
                 .spawn(async move {
                     let bounds = (place.x, place.y, place.width, place.height);
-                    if let Err(e) = platform_window::place(hwnd, bounds) {
+                    if let Err(e) = platform_window::place(os_window, bounds) {
                         log::warn!("could not put the window back: {e:#}");
                     }
                 })
@@ -292,7 +292,7 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
             cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(text));
         }),
         fit_window: Rc::new(|window, cx, fit| {
-            let Some(hwnd) = popup::raw_hwnd(window) else {
+            let Some(os_window) = popup::os_window(window) else {
                 return;
             };
             // After this update, as GPUI resizes its own windows: Windows
@@ -301,7 +301,7 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
             cx.foreground_executor()
                 .spawn(async move {
                     let fitted = platform_window::fit_client_area(
-                        hwnd,
+                        os_window,
                         (fit.width, fit.height),
                         MAX_SCREEN_SHARE,
                         (fit.least_width, fit.least_height),

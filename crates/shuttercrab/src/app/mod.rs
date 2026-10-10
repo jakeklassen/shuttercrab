@@ -31,6 +31,7 @@
 //!   window or as a thumbnail.
 //! - `failure`: what a failure tells the user and the log.
 
+use shuttercrab_types::WindowId;
 mod delivery;
 mod failure;
 mod recording;
@@ -109,7 +110,7 @@ struct State {
     main_window: RefCell<Option<(AnyWindowHandle, Entity<MainWindow>)>>,
     /// The main window, hidden while a capture it started is chosen and
     /// taken (or recorded); shown again when that is over.
-    hidden_main: Cell<Option<isize>>,
+    hidden_main: Cell<Option<WindowId>>,
     /// What clicking the latest notification opens, if anything.
     notified: RefCell<Option<PathBuf>>,
     settings_path: Option<PathBuf>,
@@ -164,18 +165,20 @@ impl State {
             return;
         }
         let open = self.main_window.borrow().clone();
-        let hwnd = open.and_then(|(window, _)| {
+        let os_window = open.and_then(|(window, _)| {
             window
-                .update(cx, |_, window, _| popup::raw_hwnd(window))
+                .update(cx, |_, window, _| popup::os_window(window))
                 .ok()
                 .flatten()
         });
-        if let Some(hwnd) = hwnd.filter(|hwnd| platform_window::is_on_screen(*hwnd)) {
-            if let Err(e) = platform_window::exclude_from_capture(hwnd) {
+        if let Some(os_window) =
+            os_window.filter(|os_window| platform_window::is_on_screen(*os_window))
+        {
+            if let Err(e) = platform_window::exclude_from_capture(os_window) {
                 log::warn!("the main window may show in the capture: {e:#}");
             }
-            platform_window::hide(hwnd);
-            self.hidden_main.set(Some(hwnd));
+            platform_window::hide(os_window);
+            self.hidden_main.set(Some(os_window));
         }
     }
 
@@ -184,10 +187,10 @@ impl State {
     fn show_hidden_main(&self) {
         if self.busy.get() == Busy::Idle
             && self.recording.borrow().is_none()
-            && let Some(hwnd) = self.hidden_main.take()
+            && let Some(os_window) = self.hidden_main.take()
         {
-            platform_window::include_in_capture(hwnd);
-            platform_window::show_normal(hwnd);
+            platform_window::include_in_capture(os_window);
+            platform_window::show_normal(os_window);
         }
     }
 

@@ -4,6 +4,7 @@
 //! and the pointer always passes through to it.
 
 use anyhow::{Context, Result, ensure};
+use shuttercrab_types::WindowId;
 use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, SIZE, WPARAM},
@@ -39,6 +40,11 @@ pub(crate) struct LayeredWindow {
 }
 
 impl LayeredWindow {
+    /// The window, for the platform calls that take one.
+    pub(crate) fn id(&self) -> WindowId {
+        WindowId::from_raw(self.hwnd as u64)
+    }
+
     pub(crate) fn new() -> Result<Self> {
         unsafe {
             let instance = GetModuleHandleW(None)?;

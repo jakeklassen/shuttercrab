@@ -16,13 +16,13 @@ git_release_name = "Shuttercrab {{ version }}"
 # docs: commit on its own ships nothing.
 release_commits = "^(feat|fix|perf|refactor|revert)[(:!]"
 
-# The app and its two libraries share one version, one tag and one
-# changelog: a change in either library is a change in the app.
+# The app and its libraries share one version, one tag and one changelog:
+# a change in a library is a change in the app.
 [[package]]
 name = "shuttercrab"
 version_group = "app"
 changelog_path = "CHANGELOG.md"
-changelog_include = ["shuttercrab-capture", "shuttercrab-platform"]
+changelog_include = ["shuttercrab-capture", "shuttercrab-platform", "shuttercrab-types"]
 
 [[package]]
 name = "shuttercrab-capture"
@@ -33,6 +33,13 @@ git_release_enable = false
 
 [[package]]
 name = "shuttercrab-platform"
+version_group = "app"
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+
+[[package]]
+name = "shuttercrab-types"
 version_group = "app"
 changelog_update = false
 git_tag_enable = false

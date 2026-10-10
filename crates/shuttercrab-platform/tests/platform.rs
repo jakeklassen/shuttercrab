@@ -7,6 +7,7 @@
 
 use futures::executor::block_on;
 use shuttercrab_platform::{Hotkey, Platform};
+use shuttercrab_types::WindowId;
 
 #[test]
 fn registers_hotkeys_and_reports_conflicts() {
@@ -79,7 +80,7 @@ fn cover_makes_the_client_area_the_whole_rectangle() {
             None,
         )
         .unwrap();
-        let handle = hwnd.0 as isize;
+        let handle = WindowId::from_raw(hwnd.0 as u64);
         let before = client_bounds(handle).unwrap();
         assert_ne!(
             before,
@@ -121,10 +122,10 @@ fn shuttercrabs_own_windows_are_targets_unless_excluded_from_capture() {
             None,
         )
         .unwrap();
-        let handle = hwnd.0 as isize;
+        let handle = WindowId::from_raw(hwnd.0 as u64);
         // Shown far off-screen, so nothing flashes on the desktop.
         cover(handle, -30000, -30000, 320, 200).unwrap();
-        let listed = || visible_windows().iter().any(|w| w.hwnd == handle);
+        let listed = || visible_windows().iter().any(|w| w.id == handle);
         assert!(listed(), "an ordinary window of this process is a target");
         exclude_from_capture(handle).unwrap();
         assert!(!listed(), "a window excluded from capture is not");
@@ -155,7 +156,7 @@ fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
     let windows = frame.windows();
     assert_eq!(windows.len(), 4);
     for handle in windows {
-        let hwnd = HWND(handle as _);
+        let hwnd = HWND(handle.raw() as _);
         unsafe {
             assert!(IsWindowVisible(hwnd).as_bool());
             let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
@@ -174,7 +175,7 @@ fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
     let expected = shuttercrab_platform::frame::strips(moved, bounds, 3);
     for (handle, (want, _)) in frame.windows().into_iter().zip(expected) {
         let mut rect = RECT::default();
-        unsafe { GetWindowRect(HWND(handle as _), &mut rect).unwrap() };
+        unsafe { GetWindowRect(HWND(handle.raw() as _), &mut rect).unwrap() };
         let got = Rect::new(
             rect.left,
             rect.top,

@@ -45,7 +45,7 @@ impl Bounds {
 /// A window on screen.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct WindowTarget {
-    pub hwnd: isize,
+    pub id: WindowId,
     /// What the user sees of the window, without the invisible resize
     /// borders: the area a window capture takes.
     pub bounds: Bounds,
@@ -57,6 +57,7 @@ pub struct WindowTarget {
 
 /// Visible top-level windows, front to back. Minimised, cloaked (other
 pub use crate::sys::imp::targets::visible_windows;
+use shuttercrab_types::WindowId;
 
 #[cfg(test)]
 mod tests {

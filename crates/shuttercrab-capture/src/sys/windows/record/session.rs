@@ -19,7 +19,7 @@ use crate::{
     sys::imp::{
         display,
         gpu::{Gpu, VideoConverter},
-        service::hmonitor,
+        service::{hmonitor, hwnd},
     },
 };
 use anyhow::{Context, Result, ensure};
@@ -118,8 +118,8 @@ impl<'a> Target<'a> {
                 .find(|m| m.hmonitor == handle)
                 .context("the monitor is no longer attached")
         };
-        if let Some(handle) = options.window {
-            let hwnd = HWND(handle as _);
+        if let Some(window) = options.window {
+            let hwnd = hwnd(window);
             let monitor = find(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) })?;
             let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd) }
                 .context("this window cannot be recorded")?;
