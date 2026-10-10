@@ -557,3 +557,27 @@ fn a_drag_let_go_unheard_ends_where_it_last_was(cx: &mut TestAppContext) {
         [OverlayEvent::Selected(PhysicalRect::new(20, 30, 100, 50))]
     );
 }
+
+#[gpui_kit::test]
+fn a_drag_off_the_monitor_follows_flush_with_its_edge(cx: &mut TestAppContext) {
+    let opened = open(cx, (400.0, 300.0), 1.5);
+    let selection =
+        |cx: &mut TestAppContext| cx.update(|cx| opened.handle.read(cx).unwrap().selection());
+    update(cx, &opened, |window, cx| {
+        press_at(window, point(px(20.0), px(30.0)), cx);
+        drag_to(window, point(px(200.0), px(100.0)), cx);
+        // A fast flick: the next move the overlay hears is well past its
+        // right edge, over the next monitor.
+        drag_to(window, point(px(650.0), px(120.0)), cx);
+    });
+    assert_eq!(selection(cx), Some(PhysicalRect::new(30, 45, 570, 135)));
+    // Off the bottom too, then back over the monitor.
+    update(cx, &opened, |window, cx| {
+        drag_to(window, point(px(700.0), px(500.0)), cx)
+    });
+    assert_eq!(selection(cx), Some(PhysicalRect::new(30, 45, 570, 405)));
+    update(cx, &opened, |window, cx| {
+        drag_to(window, point(px(100.0), px(80.0)), cx)
+    });
+    assert_eq!(selection(cx), Some(PhysicalRect::new(30, 45, 120, 75)));
+}

@@ -16,11 +16,12 @@ use crate::selection::{
     Drag, ScreenWindow, Snapping, Stuck, dimensions, snap, to_logical, window_at,
 };
 use gpui_kit::{
-    Bounds, Context, CursorStyle, EventEmitter, FocusHandle, Hsla, InteractiveElement as _,
-    IntoElement, KeyDownEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ObjectFit, ParentElement as _, Pixels, Point, Render, RenderImage, Role, SharedString,
-    StatefulInteractiveElement as _, Styled as _, StyledImage as _, TestSupportExt as _, Window,
-    canvas, div, fill, hsla, img, point, prelude::FluentBuilder as _, px, size,
+    Bounds, Context, CursorStyle, DispatchPhase, EventEmitter, FocusHandle, Hsla,
+    InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,
+    MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, Pixels, Point, Render,
+    RenderImage, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    StyledImage as _, TestSupportExt as _, Window, canvas, div, fill, hsla, img, point,
+    prelude::FluentBuilder as _, px, size,
 };
 use shuttercrab_capture::PhysicalRect;
 use std::{cell::Cell, rc::Rc, sync::Arc};
@@ -353,7 +354,37 @@ impl SelectionOverlay {
     }
 
     fn on_move(&mut self, event: &MouseMoveEvent, _: &mut Window, cx: &mut Context<Self>) {
-        if (self.dragging || self.pressed) && event.pressed_button != Some(MouseButton::Left) {
+        self.moved(event.position, event.pressed_button, cx);
+    }
+
+    /// A move off this overlay, over another monitor, while a drag begun
+    /// here goes on. The overlay keeps the pointer while its button is down,
+    /// so it hears these too: the drag follows at the nearest point on this
+    /// monitor, flush with its edge however fast the pointer left.
+    fn on_move_out(&mut self, event: &MouseMoveEvent, cx: &mut Context<Self>) {
+        let near = self.nearest(event.position);
+        if near != event.position {
+            self.moved(near, event.pressed_button, cx);
+        }
+    }
+
+    /// The point on this monitor nearest `position` (logical pixels).
+    fn nearest(&self, position: Point<Pixels>) -> Point<Pixels> {
+        let scale = self.frame.scale;
+        let near = |v: Pixels, side: u32| px(f32::from(v).clamp(0., side as f32 / scale));
+        point(
+            near(position.x, self.frame.width),
+            near(position.y, self.frame.height),
+        )
+    }
+
+    fn moved(
+        &mut self,
+        position: Point<Pixels>,
+        pressed: Option<MouseButton>,
+        cx: &mut Context<Self>,
+    ) {
+        if (self.dragging || self.pressed) && pressed != Some(MouseButton::Left) {
             // Let go where this overlay did not hear it: end the drag where
             // it last was, rather than have it follow an unpressed pointer.
             return self.let_go(None, cx);
@@ -361,7 +392,7 @@ impl SelectionOverlay {
         match self.mode.get() {
             Mode::Area => {
                 if self.dragging {
-                    let (end, stuck) = self.snapped(event.position, self.end_stuck);
+                    let (end, stuck) = self.snapped(position, self.end_stuck);
                     self.end_stuck = stuck;
                     if let Some(drag) = &mut self.drag {
                         drag.end = end;
@@ -374,11 +405,11 @@ impl SelectionOverlay {
             Mode::Freeform => {
                 // A point every logical pixel or so is plenty.
                 let far = |last: &Point<Pixels>| {
-                    let (dx, dy) = (event.position.x - last.x, event.position.y - last.y);
+                    let (dx, dy) = (position.x - last.x, position.y - last.y);
                     f32::from(dx).abs() + f32::from(dy).abs() >= 1.0
                 };
                 if self.dragging && self.outline.last().is_none_or(far) {
-                    self.outline.push(event.position);
+                    self.outline.push(position);
                     cx.notify();
                 }
             }
@@ -396,13 +427,7 @@ impl SelectionOverlay {
         if self.mode.get() == Mode::Window {
             return self.let_go(None, cx);
         }
-        let scale = self.frame.scale;
-        let near = |v: Pixels, side: u32| px(f32::from(v).clamp(0., side as f32 / scale));
-        let at = point(
-            near(event.position.x, self.frame.width),
-            near(event.position.y, self.frame.height),
-        );
-        self.let_go(Some(at), cx);
+        self.let_go(Some(self.nearest(event.position)), cx);
     }
 
     /// End the drag or press at `at`, or where it last was: capture what it
@@ -587,6 +612,25 @@ impl SelectionOverlay {
         .size_full()
     }
 
+    /// Hears moves off this overlay while a drag goes on, for
+    /// [`Self::on_move_out`]: an element's own move listener hears only the
+    /// moves over it.
+    fn moves_out(cx: &Context<Self>) -> impl IntoElement + use<> {
+        let this = cx.weak_entity();
+        canvas(
+            |_, _, _| {},
+            move |_, _, window, _| {
+                window.on_mouse_event(move |event: &MouseMoveEvent, phase, _, cx| {
+                    if phase == DispatchPhase::Bubble {
+                        let _ = this.update(cx, |this, cx| this.on_move_out(event, cx));
+                    }
+                });
+            },
+        )
+        .absolute()
+        .size_0()
+    }
+
     /// A short hint at the top: what the mouse does and how to switch.
     fn hint(&self, window: &Window) -> impl IntoElement {
         let text: SharedString = match self.mode.get() {
@@ -730,6 +774,9 @@ impl Render for SelectionOverlay {
                     )
                     .child(Self::label("dimensions", label, b, window));
             }
+        }
+        if self.dragging {
+            root = root.child(Self::moves_out(cx));
         }
         root.child(self.hint(window))
     }
