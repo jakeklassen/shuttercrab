@@ -38,7 +38,7 @@ pub(crate) fn virtual_key(key: Key) -> u32 {
 /// Print screen key to open screen capture"). While it does, a Print
 /// Screen hotkey registers but never fires. Windows 11 has it on until the
 /// user turns it off, which is when the value is first written.
-pub fn windows_takes_print_screen() -> bool {
+pub fn print_screen_taken() -> bool {
     use windows::{
         Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
         core::w,

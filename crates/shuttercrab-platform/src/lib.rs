@@ -15,13 +15,14 @@ pub mod icon;
 pub mod memory;
 pub mod ocr;
 pub mod open;
+pub mod os;
 pub mod process;
 pub mod startup;
 mod sys;
 pub mod targets;
 pub mod window;
 
-pub use hotkey::{Hotkey, Key, windows_takes_print_screen};
+pub use hotkey::{Hotkey, Key, print_screen_taken};
 pub use sys::imp::{
     clipboard::dibv5,
     console::{attach_to_parent_terminal, detach_from_terminal},

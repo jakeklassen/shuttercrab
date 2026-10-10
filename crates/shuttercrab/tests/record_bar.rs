@@ -10,8 +10,8 @@ use gpui_kit::{
 };
 use shuttercrab::{
     record_bar::{
-        BarMode, DEFAULT_MICROPHONE, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar,
-        RecordBarEvent, RecordKeys, Sound,
+        BarMode, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent,
+        RecordKeys, Sound, default_microphone,
     },
     recording::Clock,
 };
@@ -582,7 +582,11 @@ fn choosing_a_microphone(cx: &mut TestAppContext) {
     let (names, chosen) = choices(cx);
     assert_eq!(
         names,
-        [DEFAULT_MICROPHONE, "Yeti Stereo Microphone", "C920 webcam"]
+        [
+            default_microphone(),
+            "Yeti Stereo Microphone",
+            "C920 webcam"
+        ]
     );
     assert_eq!(chosen, 1);
     let choose = |cx: &mut TestAppContext, index| {
@@ -619,7 +623,7 @@ fn a_microphone_not_plugged_in_gives_way_to_the_default(cx: &mut TestAppContext)
     update(cx, &opened, |window, _| {
         assert_eq!(
             label(window, "record-microphones").unwrap(),
-            format!("Which microphone: {DEFAULT_MICROPHONE}")
+            format!("Which microphone: {}", default_microphone())
         );
     });
 }

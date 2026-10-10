@@ -99,8 +99,10 @@ impl Sound {
 /// short.
 const MICROPHONE_LIST_WIDTH: f32 = 220.0;
 
-/// How the microphone list names Windows' default.
-pub const DEFAULT_MICROPHONE: &str = "Windows' default";
+/// How the microphone list names the OS's default: "Windows' default".
+pub fn default_microphone() -> &'static str {
+    shuttercrab_platform::os::os().default_microphone
+}
 
 /// An action that throws a take away.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -269,7 +271,7 @@ impl RecordBar {
     /// The microphone list's choices: Windows' default, then each one
     /// plugged in. The second value is the index of the one chosen.
     pub fn microphone_choices(&self) -> (Vec<SharedString>, usize) {
-        let names = std::iter::once(DEFAULT_MICROPHONE.into())
+        let names = std::iter::once(default_microphone().into())
             .chain(self.microphones.iter().map(|m| m.name.clone().into()))
             .collect();
         let chosen = self

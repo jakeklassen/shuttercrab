@@ -210,8 +210,10 @@ pub struct MainHooks {
     pub copy: CopyHook,
     /// Ask where to save the screenshot shown, and save it there.
     pub save_as: ShotHook,
-    /// Open the screenshot shown in Paint.
-    pub edit_in_paint: ShotHook,
+    /// The image editor the OS has, which Edit in opens: Paint on Windows.
+    pub image_editor: Option<&'static str>,
+    /// Open the screenshot shown in [`MainHooks::image_editor`].
+    pub edit_in_editor: ShotHook,
     /// Ask which program should open the screenshot shown, and open it.
     pub open_with: ShotHook,
     /// Size the window's client area to this many physical pixels, as far
@@ -294,38 +296,43 @@ enum Menu {
 enum More {
     Settings,
     OpenFolder,
-    /// With a screenshot shown, as the rest below.
-    EditInPaint,
+    /// With a screenshot shown, as the rest below: in the OS's image editor.
+    EditIn,
     OpenWith,
     Quit,
 }
 
 impl More {
-    /// The items, with a screenshot shown, a recording, or neither.
-    fn items(shot: bool, recording: bool) -> &'static [More] {
-        match (shot, recording) {
+    /// The items, with a screenshot shown, a recording, or neither; Edit in
+    /// only with an image editor.
+    fn items(shot: bool, recording: bool, editor: bool) -> Vec<More> {
+        let all: &[More] = match (shot, recording) {
             (true, _) => &[
                 More::Settings,
                 More::OpenFolder,
-                More::EditInPaint,
+                More::EditIn,
                 More::OpenWith,
                 More::Quit,
             ],
             (false, true) => &[More::Settings, More::OpenFolder, More::OpenWith, More::Quit],
             (false, false) => &[More::Settings, More::OpenFolder, More::Quit],
-        }
+        };
+        all.iter()
+            .copied()
+            .filter(|item| editor || *item != More::EditIn)
+            .collect()
     }
 
     /// `saved`: a screenshot shown, saved in the folder, which opens with
-    /// it selected.
-    fn label(self, saved: bool) -> &'static str {
+    /// it selected. `editor`: the image editor Edit in opens.
+    fn label(self, saved: bool, editor: &str) -> String {
         match self {
-            More::Settings => "Settings",
-            More::OpenFolder if saved => "Show in folder",
-            More::OpenFolder => "Open screenshots folder",
-            More::EditInPaint => "Edit in Paint",
-            More::OpenWith => "Open with…",
-            More::Quit => "Quit Shuttercrab",
+            More::Settings => "Settings".into(),
+            More::OpenFolder if saved => "Show in folder".into(),
+            More::OpenFolder => "Open screenshots folder".into(),
+            More::EditIn => format!("Edit in {editor}"),
+            More::OpenWith => "Open with…".into(),
+            More::Quit => "Quit Shuttercrab".into(),
         }
     }
 
@@ -333,7 +340,7 @@ impl More {
         match self {
             More::Settings => ",",
             More::OpenFolder => "O",
-            More::EditInPaint => "E",
+            More::EditIn => "E",
             More::OpenWith => "",
             More::Quit => "Ctrl+Q",
         }
@@ -343,7 +350,7 @@ impl More {
         match self {
             More::Settings => IconName::Settings,
             More::OpenFolder => IconName::FolderOpen,
-            More::EditInPaint => IconName::Brush,
+            More::EditIn => IconName::Brush,
             More::OpenWith => IconName::AppWindow,
             More::Quit => IconName::Power,
         }
@@ -785,10 +792,19 @@ impl MainWindow {
             .collect()
     }
 
+    /// The ⋯ menu's items now.
+    fn more_items(&self) -> Vec<More> {
+        More::items(
+            self.shown.is_some(),
+            self.video.is_some(),
+            self.hooks.image_editor.is_some(),
+        )
+    }
+
     fn menu_len(&self, menu: Menu) -> usize {
         match menu {
             Menu::Delay => self.delay().1.len(),
-            Menu::More => More::items(self.shown.is_some(), self.video.is_some()).len(),
+            Menu::More => self.more_items().len(),
             Menu::Target => self.offered_targets().len(),
         }
     }
@@ -801,7 +817,7 @@ impl MainWindow {
                 Some(video) => (self.hooks.reveal)(&video.path, cx),
                 None => (self.hooks.open_folder)(self.shot(), cx),
             },
-            More::EditInPaint => self.with_shot(cx, |hooks| &hooks.edit_in_paint),
+            More::EditIn => self.with_shot(cx, |hooks| &hooks.edit_in_editor),
             More::OpenWith => match &self.video {
                 Some(video) => (self.hooks.open_file_with)(&video.path, cx),
                 None => self.with_shot(cx, |hooks| &hooks.open_with),
@@ -819,7 +835,7 @@ impl MainWindow {
                 self.set_delay(choices[self.highlighted.min(choices.len() - 1)], cx);
             }
             Menu::More => {
-                let items = More::items(self.shown.is_some(), self.video.is_some());
+                let items = self.more_items();
                 self.choose_more(items[self.highlighted.min(items.len() - 1)], window, cx)
             }
             Menu::Target => {
@@ -909,7 +925,7 @@ impl MainWindow {
             "t" => self.step_delay(cx),
             "," => self.choose_more(More::Settings, window, cx),
             "o" => self.choose_more(More::OpenFolder, window, cx),
-            "e" => self.choose_more(More::EditInPaint, window, cx),
+            "e" if self.hooks.image_editor.is_some() => self.choose_more(More::EditIn, window, cx),
             "u" if (self.hooks.update_ready)().is_some() => (self.hooks.restart_to_update)(cx),
             _ => {
                 if let Some(target) = CaptureTarget::ALL.into_iter().find(|t| t.key() == key) {
@@ -1223,11 +1239,12 @@ impl MainWindow {
             Menu::More => {
                 let saved =
                     self.shot().is_some_and(|shot| shot.saved.is_some()) || self.video.is_some();
-                More::items(self.shown.is_some(), self.video.is_some())
+                let editor = self.hooks.image_editor.unwrap_or_default();
+                self.more_items()
                     .iter()
                     .map(|m| {
                         let key = self.shown_key(m.key());
-                        (m.label(saved).into(), key.into(), Some(m.icon()), false)
+                        (m.label(saved, editor), key.into(), Some(m.icon()), false)
                     })
                     .collect()
             }

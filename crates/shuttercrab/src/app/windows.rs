@@ -212,7 +212,8 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
     let (capture, folder, quitting) = (state.clone(), state.clone(), state.clone());
     let (ready, restarting) = (state.clone(), state.clone());
     let (copying, saving) = (state.clone(), state.clone());
-    let (painting, opening) = (state.clone(), state.clone());
+    let opening = state.clone();
+    let editor = shuttercrab_platform::os::os().image_editor;
     let (copying_file, saving_file) = (state.clone(), state.clone());
     MainHooks {
         settings: Rc::new(settings_hooks(state, monitors)),
@@ -238,14 +239,8 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
         }),
         copy: Rc::new(move |shot, cx| copy_shot(&copying, shot, cx)),
         save_as: Rc::new(move |shot, cx| save_shot_as(&saving, shot, cx)),
-        edit_in_paint: Rc::new(move |shot, cx| {
-            open_shot_file(&painting, shot, cx, |path| {
-                shuttercrab_platform::open::edit_in_paint(path).map_err(|e| {
-                    log::error!("{e:#}");
-                    "Paint could not be started. Is it installed?"
-                })
-            })
-        }),
+        image_editor: editor,
+        edit_in_editor: edit_in_editor(state, editor.unwrap_or_default()),
         open_with: Rc::new(move |shot, cx| {
             open_shot_file(&opening, shot, cx, |path| {
                 shuttercrab_platform::open::open_with(path);
@@ -445,11 +440,24 @@ fn save_recording_as(state: &Rc<State>, path: &Path, cx: &mut App) {
 /// `open`: its file in the screenshots folder, or, if it was not saved
 /// there, one written to the temporary folder for it. `open` may answer
 /// with a message for the user.
+/// Open the screenshot shown in `editor`, the OS's image editor.
+fn edit_in_editor(state: &Rc<State>, editor: &'static str) -> crate::main_window::ShotHook {
+    let state = state.clone();
+    Rc::new(move |shot, cx| {
+        open_shot_file(&state, shot, cx, move |path| {
+            shuttercrab_platform::open::edit_in_paint(path).map_err(|e| {
+                log::error!("{e:#}");
+                format!("{editor} could not be started. Is it installed?")
+            })
+        })
+    })
+}
+
 fn open_shot_file(
     state: &Rc<State>,
     shot: &Shot,
     cx: &mut App,
-    open: impl FnOnce(&Path) -> Result<(), &'static str> + 'static,
+    open: impl FnOnce(&Path) -> Result<(), String> + 'static,
 ) {
     // A marked-up or cropped screenshot is never the saved file, which is
     // as taken.
@@ -471,7 +479,7 @@ fn open_shot_file(
             Ok(path) => open(&path),
             Err(e) => {
                 log::error!("could not write the screenshot: {e:#}");
-                Err("The screenshot could not be written to a file.")
+                Err("The screenshot could not be written to a file.".into())
             }
         };
         if let Err(message) = opened {
@@ -591,7 +599,7 @@ fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
                 taken
             })
         }),
-        windows_takes_print_screen: Rc::new(shuttercrab_platform::windows_takes_print_screen),
+        print_screen_taken: Rc::new(shuttercrab_platform::print_screen_taken),
         launch_at_startup: Rc::new(shuttercrab_platform::startup::launch_at_startup),
         set_launch_at_startup: Rc::new(|enabled| {
             match shuttercrab_platform::startup::set_launch_at_startup(enabled) {
@@ -601,7 +609,7 @@ fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
         }),
         diagnostics: Diagnostics {
             version: env!("CARGO_PKG_VERSION").to_string(),
-            windows_build: shuttercrab_capture::display::windows_build(),
+            os: shuttercrab_platform::os::os(),
             monitors,
             log_dir: state.log_dir.clone(),
             settings_path: state.settings_path.clone(),

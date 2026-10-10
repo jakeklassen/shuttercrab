@@ -4,7 +4,7 @@
 use anyhow::{Result, bail};
 use std::fmt;
 
-pub use crate::sys::imp::hotkey::windows_takes_print_screen;
+pub use crate::sys::imp::hotkey::print_screen_taken;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct Hotkey {
