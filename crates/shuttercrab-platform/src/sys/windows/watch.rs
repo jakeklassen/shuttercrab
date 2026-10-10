@@ -4,7 +4,8 @@
 //! events arrive on the platform thread's message loop; nothing is
 //! polled).
 
-use crate::{PlatformEvent, frame::Rect, with_state};
+use super::platform::with_state;
+use crate::{PlatformEvent, WindowChange, frame::Rect};
 use std::cell::RefCell;
 use windows::Win32::{
     Foundation::{HWND, RECT},
@@ -20,25 +21,6 @@ use windows::Win32::{
         },
     },
 };
-
-/// What happened to the watched window.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum WindowChange {
-    /// It moved or changed size: its visible bounds now, physical pixels.
-    Moved(Rect),
-    /// Dragging it to move or resize it began.
-    DragStarted,
-    /// The drag ended.
-    DragEnded,
-    Minimized,
-    /// Hidden or cloaked without being minimised: some apps do this when
-    /// closed to the tray, or closed while they keep running.
-    Hidden,
-    /// Shown again after being minimised or hidden.
-    Restored,
-    /// It no longer exists.
-    Closed,
-}
 
 /// Whether the window can be seen.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
