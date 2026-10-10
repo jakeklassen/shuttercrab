@@ -2,7 +2,6 @@
 //! hooks standing in for the rest of Shuttercrab (PRD §26, §33).
 //!
 //!   cargo test -p shuttercrab --test settings_window
-#![cfg(windows)]
 
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, TestAppContext, Window, component::Root, px, size,

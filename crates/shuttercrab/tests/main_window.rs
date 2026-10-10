@@ -2,7 +2,6 @@
 //! standing in for the rest of Shuttercrab.
 //!
 //!   cargo test -p shuttercrab --test main_window
-#![cfg(windows)]
 
 use gpui_kit::{
     App, AppContext as _, Entity, InputEvent as _, TestAppContext, Window, component::Root,

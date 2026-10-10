@@ -2,7 +2,6 @@
 //! pointer and keyboard events (PRD §7.5, §33).
 //!
 //!   cargo test -p shuttercrab --test capture_bar
-#![cfg(windows)]
 
 use gpui_kit::{
     App, AppContext as _, TestAppContext, VisualTestContext, Window, WindowHandle, px, size,
