@@ -11,9 +11,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
-- a selection dragged off its monitor follows flush with the edge
-- a selection let go of on another monitor is taken at once
-- a selection let go of on another monitor is taken
+- With two monitors, a selection let go of on the other monitor is now taken at once: the part on the monitor you started on, up to its edge. Before, nothing happened, the selection kept following the pointer with the button up, and the next click started over.
+- Dragging a selection fast onto another monitor no longer leaves it short of the edge: it stays flush with the edge, and follows along it, until the pointer comes back.
 
 ## [0.1.24](https://github.com/jakeklassen/shuttercrab/compare/v0.1.23...v0.1.24) - 2026-10-09
 
