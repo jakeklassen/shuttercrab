@@ -18,6 +18,10 @@ pub struct Os {
     /// The page of the OS's settings that lets it give up Print Screen, if
     /// it can keep the key for its own screenshots.
     pub print_screen_setting: Option<&'static str>,
+    /// Whether Shuttercrab can register hotkeys that work in every app.
+    /// Where it cannot (Wayland), a desktop shortcut runs a [`crate::Request`]
+    /// on the command line instead.
+    pub global_hotkeys: bool,
 }
 
 /// This OS, described once.

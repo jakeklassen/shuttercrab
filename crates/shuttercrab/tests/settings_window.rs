@@ -13,7 +13,7 @@ use shuttercrab::{
     settings_window::{Diagnostics, Hooks, HotkeyField, HotkeyKind, OnPrintScreen, SettingsWindow},
 };
 use shuttercrab_capture::{MonitorId, MonitorInfo, PhysicalRect};
-use shuttercrab_platform::Hotkey;
+use shuttercrab_platform::{Hotkey, os::Os};
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -40,8 +40,19 @@ struct Opened {
     seen: Rc<Seen>,
 }
 
-/// Hooks that record what the window asks of Shuttercrab.
+/// Hooks that record what the window asks of Shuttercrab, on an OS with
+/// global hotkeys.
 fn hooks() -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
+    hooks_on(true)
+}
+
+/// As [`hooks`], on an OS with or without `global_hotkeys`, whichever runs
+/// the tests.
+fn hooks_on(global_hotkeys: bool) -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
+    let os: &'static Os = Box::leak(Box::new(Os {
+        global_hotkeys,
+        ..shuttercrab_platform::os::os().clone()
+    }));
     let settings = Rc::new(RefCell::new(Settings::default()));
     let seen = Rc::new(Seen::default());
     let (s1, s2, s3, s4) = (seen.clone(), seen.clone(), seen.clone(), seen.clone());
@@ -67,7 +78,7 @@ fn hooks() -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
         set_launch_at_startup: Rc::new(|_| {}),
         diagnostics: Diagnostics {
             version: "0.1.0".into(),
-            os: shuttercrab_platform::os::os(),
+            os,
             monitors: vec![MonitorInfo {
                 id: MonitorId::from_raw(1),
                 device_name: r"\\.\DISPLAY1".into(),
@@ -87,8 +98,12 @@ fn hooks() -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
 }
 
 fn open(cx: &mut TestAppContext) -> Opened {
+    open_on(cx, true)
+}
+
+fn open_on(cx: &mut TestAppContext, global_hotkeys: bool) -> Opened {
     cx.update(gpui_kit::init);
-    let (hooks, settings, seen) = hooks();
+    let (hooks, settings, seen) = hooks_on(global_hotkeys);
     let handle = cx.open_window(size(px(880.0), px(640.0)), move |window, cx| {
         let view = cx.new(|cx| SettingsWindow::new(hooks, window, cx));
         Root::new(view, window, cx)
@@ -385,4 +400,21 @@ fn backing_out_of_a_refused_hotkey_clears_the_message(cx: &mut TestAppContext) {
         assert_eq!(label(window, "hotkey-undo-message"), None);
         assert_eq!(label(window, "hotkey-undo").as_deref(), Some("Ctrl+Alt+Z"));
     });
+}
+
+#[gpui_kit::test]
+fn without_global_hotkeys_it_shows_the_commands_for_desktop_shortcuts(cx: &mut TestAppContext) {
+    let opened = open_on(cx, false);
+    update(cx, &opened, |window, cx| {
+        assert!(window.try_find("hotkey-capture-bar").is_none());
+        window.click("copy-screenshot", cx);
+    });
+    let copied = cx.update(|cx| cx.read_from_clipboard().and_then(|item| item.text()));
+    assert_eq!(
+        copied,
+        Some(shuttercrab::app::shortcut_command(
+            shuttercrab_platform::Request::Screenshot
+        ))
+    );
+    assert!(copied.unwrap().ends_with(" --screenshot"));
 }

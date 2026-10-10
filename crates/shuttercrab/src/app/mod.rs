@@ -72,7 +72,7 @@ use recording::{
 };
 use screenshot::{capture, capture_bar};
 use shuttercrab_capture::{Capture, monitor_under_pointer};
-use shuttercrab_platform::{Hotkey, Platform, PlatformEvent, window as platform_window};
+use shuttercrab_platform::{Hotkey, Platform, PlatformEvent, Request, window as platform_window};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -94,8 +94,9 @@ pub struct Shuttercrab {
     pub log_dir: Option<PathBuf>,
     /// Updates from GitHub Releases; `None` when not installed by Velopack.
     pub updates: Option<Arc<dyn UpdateBackend>>,
-    /// Open the window at once: every start but one at sign-in.
-    pub open_window: bool,
+    /// What to do at once: show the window (a plain start), what a
+    /// command line asked for, or nothing (a start at sign-in).
+    pub start: Option<Request>,
 }
 
 struct State {
@@ -311,11 +312,12 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         print_screen: RefCell::new(None),
     });
     watch_for_updates(&state, cx);
-    let open_window = shuttercrab.open_window;
+    let first = shuttercrab.start;
     cx.spawn(async move |cx| {
-        // Shuttercrab's window, on the taskbar like any app's, until closed.
-        if open_window {
-            open_main(&state, Page::Home, cx);
+        // Shuttercrab's window, on the taskbar like any app's, until closed;
+        // or what the command line asked for.
+        if let Some(request) = first {
+            requested(&state, request, cx);
         }
         heap::log_memory_soon("idle after start", cx);
         let mut events = events;
@@ -347,15 +349,9 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     request(&state, Destructive::Discard, cx).await
                 }
                 PlatformEvent::Hotkey(UNDO_HOTKEY) => undo(&state, cx),
-                // One hotkey starts a recording and stops it.
-                PlatformEvent::Hotkey(RECORD_HOTKEY) | PlatformEvent::TrayCommand(MENU_RECORD) => {
-                    if state.recording.borrow().is_some() {
-                        stop_recording(&state, cx);
-                    } else {
-                        let tray = matches!(event, PlatformEvent::TrayCommand(_));
-                        let delay = tray.then_some(TRAY_DELAY);
-                        start(&state, Start::Record(CaptureTarget::Area), delay, cx);
-                    }
+                PlatformEvent::Hotkey(RECORD_HOTKEY) => toggle_recording(&state, None, cx),
+                PlatformEvent::TrayCommand(MENU_RECORD) => {
+                    toggle_recording(&state, Some(TRAY_DELAY), cx)
                 }
                 PlatformEvent::TrayCommand(MENU_OPEN_FOLDER) => open_folder(&state, cx),
                 // Clicking the tray icon opens the window, as in any tray app.
@@ -375,11 +371,9 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     quit(&state, cx).await
                 }
                 PlatformEvent::TrayCommand(MENU_UPDATE) => restart_to_update(&state, cx).await,
-                // Starting Shuttercrab again (say, from the Start menu) shows its
-                // window, as starting any running app does.
-                PlatformEvent::AnotherInstance => {
-                    log::info!("Shuttercrab was started again; showing its window");
-                    open_main(&state, Page::Home, cx);
+                PlatformEvent::AnotherInstance(request) => {
+                    log::info!("Shuttercrab was started again, for {}", request.name());
+                    requested(&state, request, cx);
                 }
                 PlatformEvent::NotificationClicked => notification_clicked(&state, cx),
                 PlatformEvent::DisplaysChanged => displays_changed(&state),
@@ -503,6 +497,44 @@ async fn restart_to_update(state: &Rc<State>, cx: &mut AsyncApp) {
                 None,
             );
         }
+    }
+}
+
+/// The command a desktop shortcut runs for `request`: this program, where
+/// it was started from (the AppImage, when it is one), and the request's
+/// flag. For a system without global hotkeys.
+pub fn shortcut_command(request: Request) -> String {
+    let program = std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .map_or_else(|| "shuttercrab".to_string(), |p| p.display().to_string());
+    let program = if program.contains(' ') {
+        format!("\"{program}\"")
+    } else {
+        program
+    };
+    format!("{program} --{}", request.name())
+}
+
+/// Do what a start of Shuttercrab asked for: a plain start shows the
+/// window, as starting any running app does; the others act as their
+/// hotkey would.
+fn requested(state: &Rc<State>, request: Request, cx: &mut AsyncApp) {
+    match request {
+        Request::Show => open_main(state, Page::Home, cx),
+        Request::CaptureBar => start(state, Start::CaptureBar, None, cx),
+        Request::Screenshot => start(state, Start::Screenshot(CaptureTarget::Area), None, cx),
+        Request::Record => toggle_recording(state, None, cx),
+    }
+}
+
+/// One hotkey starts a recording and stops it. `delay` lets a menu that
+/// asked close first.
+fn toggle_recording(state: &Rc<State>, delay: Option<Duration>, cx: &mut AsyncApp) {
+    if state.recording.borrow().is_some() {
+        stop_recording(state, cx);
+    } else {
+        start(state, Start::Record(CaptureTarget::Area), delay, cx);
     }
 }
 

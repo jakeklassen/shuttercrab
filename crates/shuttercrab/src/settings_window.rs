@@ -23,7 +23,7 @@ use gpui_kit::{
 };
 use shuttercrab_capture::{MonitorInfo, record::Microphone};
 use shuttercrab_platform::{
-    Hotkey,
+    Hotkey, Request,
     os::{Os, os},
 };
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
@@ -527,34 +527,12 @@ impl SettingsWindow {
                 ),
             )
             .group(
-                SettingGroup::new()
-                    .item(heading(
-                        "Hotkeys",
-                        Some("Select a shortcut and press Enter (or click it), then press the new keys."),
-                    ))
-                    .item(SettingItem::new(
-                        "Open the Capture Bar",
-                        self.hotkey(HotkeyKind::CaptureBar),
-                    ))
-                    .item(
-                        SettingItem::new(
-                            "Screenshot an area",
-                            self.hotkey(HotkeyKind::Screenshot),
-                        )
-                        .description("Shuttercrab's window hides first."),
-                    )
-                    .item(
-                        SettingItem::new(
-                            "Screenshot an area with this window",
-                            self.hotkey(HotkeyKind::ScreenshotWithWindow),
-                        )
-                        .description("Shuttercrab's window stays in the picture."),
-                    )
-                    .item(
-                        SettingItem::new("Record an area", self.hotkey(HotkeyKind::Record))
-                            .description("Press it again to stop."),
-                    )
-                    .item(
+                if self.hooks.diagnostics.os.global_hotkeys {
+                    self.hotkeys()
+                } else {
+                    desktop_shortcuts()
+                }
+                .item(
                         SettingItem::new(
                             "Single-key shortcuts in this window",
                             self.switch(
@@ -566,6 +544,34 @@ impl SettingsWindow {
                             "N for New, P for the pen and the like. Off, only Ctrl shortcuts and Escape work, so a stray key press does nothing.",
                         ),
                     ),
+            )
+    }
+
+    /// The hotkeys, each set by pressing the new keys.
+    fn hotkeys(&self) -> SettingGroup {
+        SettingGroup::new()
+            .item(heading(
+                "Hotkeys",
+                Some("Select a shortcut and press Enter (or click it), then press the new keys."),
+            ))
+            .item(SettingItem::new(
+                "Open the Capture Bar",
+                self.hotkey(HotkeyKind::CaptureBar),
+            ))
+            .item(
+                SettingItem::new("Screenshot an area", self.hotkey(HotkeyKind::Screenshot))
+                    .description("Shuttercrab's window hides first."),
+            )
+            .item(
+                SettingItem::new(
+                    "Screenshot an area with this window",
+                    self.hotkey(HotkeyKind::ScreenshotWithWindow),
+                )
+                .description("Shuttercrab's window stays in the picture."),
+            )
+            .item(
+                SettingItem::new("Record an area", self.hotkey(HotkeyKind::Record))
+                    .description("Press it again to stop."),
             )
     }
 
@@ -985,6 +991,41 @@ fn notices() -> SettingPage {
 /// A section heading inside a page. Sections are untitled groups, so the
 /// sidebar lists only the pages (the owner found per-section entries
 /// that merely scroll the page confusing).
+/// Where the OS lets no app set hotkeys (Wayland): the commands to give
+/// desktop shortcuts instead, each with a button to copy it.
+fn desktop_shortcuts() -> SettingGroup {
+    let shortcut = |title: &'static str, id: &'static str, request: Request| {
+        let command = crate::app::shortcut_command(request);
+        let copied = command.clone();
+        SettingItem::new(
+            title,
+            SettingField::render(move |_, _, _| {
+                let copied = copied.clone();
+                Button::new(id).label("Copy").on_click(move |_, _, cx| {
+                    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(copied.clone()));
+                })
+            }),
+        )
+        .description(command)
+    };
+    SettingGroup::new()
+        .item(heading(
+            "Shortcuts",
+            Some("This desktop does not let apps set shortcuts. In its keyboard settings, add a custom shortcut that runs each command."),
+        ))
+        .item(shortcut(
+            "Open the Capture Bar",
+            "copy-capture-bar",
+            Request::CaptureBar,
+        ))
+        .item(shortcut(
+            "Screenshot an area",
+            "copy-screenshot",
+            Request::Screenshot,
+        ))
+        .item(shortcut("Record an area", "copy-record", Request::Record))
+}
+
 fn heading(title: &'static str, description: Option<&'static str>) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         div()

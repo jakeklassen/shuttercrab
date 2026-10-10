@@ -6,7 +6,7 @@ use super::{
     hotkey::{modifiers, virtual_key},
     icon, watch,
 };
-use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Tray};
+use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray};
 use anyhow::{Context, Result, anyhow};
 use futures::channel::{mpsc, oneshot};
 use shuttercrab_types::WindowId;
@@ -201,12 +201,13 @@ impl Platform {
     }
 }
 
-/// Tell the running Shuttercrab that another copy was started, so it can say
-/// it is already running. Returns whether one was found.
-pub fn signal_running_instance() -> bool {
+/// Tell the running Shuttercrab that another copy was started, and what it
+/// asks for. Returns whether one was found.
+pub fn signal_running_instance(request: Request) -> bool {
+    let code = Request::ALL.iter().position(|r| *r == request).unwrap_or(0);
     unsafe {
         FindWindowW(w!("ShuttercrabPlatform"), w!("Shuttercrab")).is_ok_and(|window| {
-            PostMessageW(Some(window), WM_ANOTHER_INSTANCE, WPARAM(0), LPARAM(0)).is_ok()
+            PostMessageW(Some(window), WM_ANOTHER_INSTANCE, WPARAM(code), LPARAM(0)).is_ok()
         })
     }
 }
@@ -476,7 +477,9 @@ fn run(
                 }
             }
             WM_ANOTHER_INSTANCE => {
-                let _ = events.unbounded_send(PlatformEvent::AnotherInstance);
+                let request = Request::ALL.get(msg.wParam.0).copied();
+                let request = request.unwrap_or(Request::Show);
+                let _ = events.unbounded_send(PlatformEvent::AnotherInstance(request));
             }
             WM_STOP => unsafe { PostQuitMessage(0) },
             _ => unsafe {
