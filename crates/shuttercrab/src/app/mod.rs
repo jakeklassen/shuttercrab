@@ -80,7 +80,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tray::{TRAY_DELAY, print_screen_hotkey};
+use tray::{FADE_OUT, TRAY_DELAY, print_screen_hotkey};
 use windows::{open_folder, open_main};
 
 /// Everything the running app shares between its tasks.
@@ -160,10 +160,11 @@ impl State {
 
     /// Hide the main window while a capture is chosen and taken, as
     /// Snipping Tool hides its own, if it is on screen. Left out of captures
-    /// at once, so the capture need not wait for it to fade away.
-    fn hide_main(&self, cx: &mut AsyncApp) {
+    /// at once, so the capture need not wait for it to fade away; returns
+    /// whether it must wait, where the OS cannot leave it out (X11).
+    fn hide_main(&self, cx: &mut AsyncApp) -> bool {
         if self.hidden_main.get().is_some() {
-            return;
+            return false;
         }
         let open = self.main_window.borrow().clone();
         let os_window = open.and_then(|(window, _)| {
@@ -175,12 +176,12 @@ impl State {
         if let Some(os_window) =
             os_window.filter(|os_window| platform_window::is_on_screen(*os_window))
         {
-            if let Err(e) = platform_window::exclude_from_capture(os_window) {
-                log::warn!("the main window may show in the capture: {e:#}");
-            }
+            let excluded = platform_window::exclude_from_capture(os_window).is_ok();
             platform_window::hide(os_window);
             self.hidden_main.set(Some(os_window));
+            return !excluded;
         }
+        false
     }
 
     /// Show the main window again if a capture hid it, once nothing is
@@ -552,9 +553,10 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
         }
     }
     state.busy.set(Busy::Choosing);
-    if !matches!(what, Start::ScreenshotWithWindow) {
-        state.hide_main(cx);
-    }
+    let fading = !matches!(what, Start::ScreenshotWithWindow) && state.hide_main(cx);
+    // A hidden window the OS could not leave out of captures needs a moment
+    // to leave the screen.
+    let delay = delay.max(fading.then_some(FADE_OUT));
     let state = state.clone();
     cx.spawn(async move |cx| {
         if let Some(delay) = delay {

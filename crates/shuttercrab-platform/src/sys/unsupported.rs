@@ -96,6 +96,7 @@ pub mod watch {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod window {
     use super::unsupported;
     use anyhow::Result;
