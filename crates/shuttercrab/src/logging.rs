@@ -29,13 +29,30 @@ pub fn stop_terminal() {
     TERMINAL.store(LevelFilter::Off as usize, Ordering::Relaxed);
 }
 
+/// Libraries whose information lines are noise: D-Bus handshakes and the
+/// like, on Linux.
+const CHATTY: &[&str] = &["zbus", "tracing", "zed_xim"];
+
+/// Whether a line from `target` at `level` goes in the log: Shuttercrab's
+/// own down to debug, other libraries' down to information, the chatty
+/// ones' only warnings and errors.
+fn kept(target: &str, level: Level) -> bool {
+    if target.starts_with("shuttercrab") {
+        return true;
+    }
+    let chatty = CHATTY
+        .iter()
+        .any(|c| target == *c || target.starts_with(&format!("{c}::")));
+    level <= if chatty { Level::Warn } else { Level::Info }
+}
+
 struct Logger {
     file: Option<Mutex<File>>,
 }
 
 impl Log for Logger {
     fn enabled(&self, metadata: &Metadata) -> bool {
-        metadata.level() <= Level::Info || metadata.target().starts_with("shuttercrab")
+        kept(metadata.target(), metadata.level())
     }
 
     fn log(&self, record: &Record) {
@@ -101,4 +118,21 @@ pub fn init(dir: Option<&Path>) -> Option<PathBuf> {
         log::set_max_level(LevelFilter::Debug);
     }
     written
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn chatty_libraries_log_only_warnings() {
+        assert!(kept("shuttercrab::app", Level::Debug));
+        assert!(kept("gpui_wgpu::wgpu_context", Level::Info));
+        assert!(!kept("gpui_wgpu::wgpu_context", Level::Debug));
+        assert!(!kept("zbus::connection::handshake::common", Level::Info));
+        assert!(kept("zbus::proxy", Level::Warn));
+        assert!(!kept("tracing::span", Level::Info));
+        // A library that only starts with a chatty one's name is not it.
+        assert!(kept("zbusy", Level::Info));
+    }
 }
