@@ -12,6 +12,7 @@ pub mod layered;
 pub mod memory;
 pub mod ocr;
 pub mod open;
+pub mod os;
 pub mod platform;
 pub mod process;
 pub mod startup;

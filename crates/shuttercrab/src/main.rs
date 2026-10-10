@@ -8,7 +8,7 @@ use shuttercrab::{
     settings::{self, Loaded, Settings},
     update::{UpdateBackend, Velopack},
 };
-use shuttercrab_capture::{Capture, display::windows_build};
+use shuttercrab_capture::Capture;
 use shuttercrab_platform::{Hotkey, Platform, PlatformEvent, Tray, startup};
 use std::{
     path::{Path, PathBuf},
@@ -142,10 +142,12 @@ fn start_logging(data_dir: Option<&Path>) -> Option<PathBuf> {
         None => logging::default_dir(),
     };
     let log_file = logging::init(log_dir.as_deref());
+    let os = shuttercrab_platform::os::os();
     log::info!(
-        "Shuttercrab {} on Windows build {}",
+        "Shuttercrab {} on {} {}",
         env!("CARGO_PKG_VERSION"),
-        windows_build()
+        os.version_label,
+        os.version
     );
     match &log_file {
         Some(path) => log::info!("logging to {}", path.display()),

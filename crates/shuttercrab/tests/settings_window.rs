@@ -32,7 +32,7 @@ struct Seen {
     /// What the recording field does with Print Screen.
     print_screen: RefCell<Option<OnPrintScreen>>,
     /// Whether Windows keeps Print Screen, as the window is told.
-    windows_takes_print_screen: Cell<bool>,
+    print_screen_taken: Cell<bool>,
 }
 
 struct Opened {
@@ -63,12 +63,12 @@ fn hooks() -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
             let taken = std::mem::take(&mut *s4.taken.borrow_mut());
             Box::pin(async move { taken })
         }),
-        windows_takes_print_screen: Rc::new(move || s5.windows_takes_print_screen.get()),
+        print_screen_taken: Rc::new(move || s5.print_screen_taken.get()),
         launch_at_startup: Rc::new(|| false),
         set_launch_at_startup: Rc::new(|_| {}),
         diagnostics: Diagnostics {
             version: "0.1.0".into(),
-            windows_build: 26200,
+            os: shuttercrab_platform::os::os(),
             monitors: vec![MonitorInfo {
                 id: MonitorId::from_raw(1),
                 device_name: r"\\.\DISPLAY1".into(),
@@ -214,7 +214,7 @@ fn a_field_says_when_windows_keeps_print_screen(cx: &mut TestAppContext) {
         assert!(window.try_find(note).is_none())
     });
     // Said while a new hotkey is pressed, if Windows keeps Print Screen.
-    opened.seen.windows_takes_print_screen.set(true);
+    opened.seen.print_screen_taken.set(true);
     update(cx, &opened, |window, cx| {
         window.click("hotkey-screenshot", cx)
     });
@@ -232,7 +232,7 @@ fn a_field_says_when_windows_keeps_print_screen(cx: &mut TestAppContext) {
         assert!(window.try_find(note).is_some())
     });
     // Not once Windows lets it go.
-    opened.seen.windows_takes_print_screen.set(false);
+    opened.seen.print_screen_taken.set(false);
     update(cx, &opened, |window, _| {
         assert!(window.try_find(note).is_none())
     });

@@ -22,7 +22,10 @@ use gpui_kit::{
     px,
 };
 use shuttercrab_capture::{MonitorInfo, record::Microphone};
-use shuttercrab_platform::Hotkey;
+use shuttercrab_platform::{
+    Hotkey,
+    os::{Os, os},
+};
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 /// What the settings window needs from the rest of Shuttercrab.
@@ -42,8 +45,8 @@ pub struct Hooks {
     /// while recording, then go back to the ones that apply now. Resolves
     /// to the ids another application already owns.
     pub probe_hotkeys: Rc<dyn Fn() -> LocalBoxFuture<'static, Vec<u32>>>,
-    /// Whether Windows keeps Print Screen for its Snipping Tool.
-    pub windows_takes_print_screen: Rc<dyn Fn() -> bool>,
+    /// Whether the OS keeps Print Screen for its own screenshots.
+    pub print_screen_taken: Rc<dyn Fn() -> bool>,
     /// Whether Shuttercrab starts at sign-in, and a way to change it.
     pub launch_at_startup: Rc<dyn Fn() -> bool>,
     pub set_launch_at_startup: Rc<dyn Fn(bool)>,
@@ -51,21 +54,19 @@ pub struct Hooks {
     pub diagnostics: Diagnostics,
 }
 
-/// Shown by a hotkey field while Windows keeps Print Screen.
+/// Shown by a hotkey field while Windows keeps Print Screen (only Windows
+/// does).
 const PRINT_SCREEN_HELD: &str =
     "Windows opens Snipping Tool with Print Screen. Turn that off to use it here.";
-
-/// Where Windows' "Use the Print screen key to open screen capture" is.
-const PRINT_SCREEN_SETTING: &str = "ms-settings:devices-keyboard";
 
 /// What a recording hotkey field does with a Print Screen hotkey.
 pub type OnPrintScreen = Rc<dyn Fn(Hotkey, &mut App)>;
 
 /// Facts about this machine and this copy of Shuttercrab.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct Diagnostics {
     pub version: String,
-    pub windows_build: u32,
+    pub os: &'static Os,
     pub monitors: Vec<MonitorInfo>,
     pub log_dir: Option<PathBuf>,
     pub settings_path: Option<PathBuf>,
@@ -247,7 +248,7 @@ impl HotkeyField {
             .kind
             .get(&self.hooks.settings.borrow())
             .ends_with("PrintScreen");
-        (self.recording || uses_print_screen) && (self.hooks.windows_takes_print_screen)()
+        (self.recording || uses_print_screen) && (self.hooks.print_screen_taken)()
     }
 
     fn start(&mut self, cx: &mut Context<Self>) {
@@ -420,7 +421,11 @@ impl Render for HotkeyField {
                         .child(
                             Button::new(SharedString::from(format!("{id}-print-screen-setting")))
                                 .label("Open setting")
-                                .on_click(|_, _, cx| cx.open_url(PRINT_SCREEN_SETTING)),
+                                .on_click(|_, _, cx| {
+                                    if let Some(page) = os().print_screen_setting {
+                                        cx.open_url(page);
+                                    }
+                                }),
                         ),
                 )
             })
@@ -647,7 +652,7 @@ impl SettingsWindow {
                                 |s, v| s.notify_after_capture = v,
                             ),
                         )
-                        .description("A Windows notification with the file name."),
+                        .description(format!("A {} notification with the file name.", os().name)),
                     ),
             )
     }
@@ -738,8 +743,13 @@ impl SettingsWindow {
                 self.switch(|s| s.record_microphone, |s, v| s.record_microphone = v),
             ))
             .item(
-                SettingItem::new("Which microphone", self.microphone_choice())
-                    .description("Windows' default follows the one set in Windows."),
+                SettingItem::new("Which microphone", self.microphone_choice()).description(
+                    format!(
+                        "{} follows the one set in {}.",
+                        os().default_microphone,
+                        os().name
+                    ),
+                ),
             )
     }
 
@@ -748,7 +758,7 @@ impl SettingsWindow {
     fn microphone_choice(&self) -> SettingField<SharedString> {
         let mut choices = vec![(
             SharedString::default(),
-            SharedString::from("Windows' default"),
+            SharedString::from(os().default_microphone),
         )];
         choices.extend(
             self.microphones
@@ -919,7 +929,7 @@ impl SettingsWindow {
                 SettingGroup::new()
                     .item(heading("Shuttercrab", None))
                     .item(info("Version", d.version.clone()))
-                    .item(info("Windows build", d.windows_build.to_string()))
+                    .item(info(d.os.version_label, d.os.version.clone()))
                     .item(open("Log folder", "open-logs", d.log_dir.clone()))
                     .item(open(
                         "Settings file",
