@@ -254,6 +254,7 @@ pub mod hotkey {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod memory {
     use crate::memory::Usage;
 
