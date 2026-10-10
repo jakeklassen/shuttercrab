@@ -3,7 +3,7 @@
 //! AAC sound track if the recording has sound.
 
 use super::sound;
-use crate::gpu::Gpu;
+use crate::sys::imp::gpu::Gpu;
 use anyhow::{Context, Result, ensure};
 use std::{
     path::Path,

@@ -19,7 +19,7 @@ use windows::{
     core::{Interface, PCSTR, s},
 };
 
-const SHADER_SOURCE: &str = include_str!("../shaders/hdr_to_sdr.hlsl");
+const SHADER_SOURCE: &str = include_str!("../../../shaders/hdr_to_sdr.hlsl");
 
 pub struct Gpu {
     pub device: ID3D11Device,

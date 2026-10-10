@@ -6,15 +6,15 @@ use crate::color::{Analysis, HdrRegion, SCREENSHOT_ANCHOR, anchor_regions};
 /// Keeps HDR exposure steady across frames: the 90th-percentile anchor of
 /// each frame, eased towards over half a second, so video neither pumps nor
 /// flickers.
-pub(super) struct Exposure {
-    pub(super) value: Option<f32>,
-    pub(super) last: i64,
+pub(crate) struct Exposure {
+    pub(crate) value: Option<f32>,
+    pub(crate) last: i64,
 }
 
 impl Exposure {
     const SETTLE_SECONDS: f32 = 0.5;
 
-    pub(super) fn apply(&mut self, analysis: &mut Analysis, time: i64) {
+    pub(crate) fn apply(&mut self, analysis: &mut Analysis, time: i64) {
         if analysis.regions.is_empty() {
             return;
         }

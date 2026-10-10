@@ -1,13 +1,12 @@
-//! Shuttercrab's capture and color pipeline: monitor enumeration with Advanced
-//! Color / HDR state and SDR white level, one-frame capture through
-//! Windows.Graphics.Capture in FP16, and the HDR/WCG to SDR transform on the
-//! GPU. See docs/COLOR_PIPELINE.md.
+//! Shuttercrab's capture and color pipeline: monitors with their HDR state
+//! and SDR white level, one-frame capture, the HDR/WCG to SDR transform,
+//! recording and playback. See docs/COLOR_PIPELINE.md.
+//!
+//! Each public module is the same on every OS. What only an OS can do lives
+//! in `sys`, one backend per OS; Windows is the only one so far.
 #![cfg(windows)]
 
-pub mod capture;
 pub mod color;
-pub mod display;
-pub mod gpu;
 pub mod play;
 pub mod png_io;
 pub mod raw;
@@ -15,6 +14,12 @@ pub mod record;
 pub mod screen;
 pub mod service;
 pub mod shape;
+mod sys;
+
+/// The Windows backend's own modules, for the diagnostic tools: capture,
+/// display state and the GPU.
+#[cfg(windows)]
+pub use sys::windows::{capture, display, gpu};
 
 pub use screen::{
     CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot,

@@ -1,56 +1,24 @@
-//! Screen recording (PRD §13; Milestone 3 spike): one monitor, cropped to a
-//! region on the GPU, converted to SDR frame by frame, turned into NV12 by
-//! the Direct3D video processor (BT.709), and encoded to H.264 in an MP4 by
-//! Media Foundation, hardware accelerated where available.
+//! Screen recording (PRD §13): one monitor or one window, cropped to a
+//! region, converted to SDR frame by frame, and encoded to H.264 in an
+//! MP4, with the speakers' and a microphone's sound as an AAC track.
 //!
-//! Frames never leave the GPU. Encoder input textures come from a small
-//! fixed pool; a frame that arrives while all of them are still with the
-//! encoder is dropped and counted, so no queue can grow without bound.
-//!
-//! The output timeline is Windows' capture time: paused time is removed,
-//! frames faster than the frame rate are skipped, and a still screen (which
-//! delivers no frames) keeps its duration because the last frame is
-//! repeated at the stop time.
-//!
-//! With sound, what the speakers play is captured too ([`sound`]) and
-//! written beside the picture as an AAC track, on the same clock.
-//!
-//! The pieces: [`session`] runs one recording (capture, conversion, the
-//! frame loop), [`encoder`] turns frames into NV12 and an MP4, [`exposure`]
-//! keeps HDR exposure steady, [`sound`] captures the sound, and [`timing`]
-//! measures each stage's cost.
+//! This module is what the app sees on every OS; the recorder itself is in
+//! the OS backend. [`exposure`] keeps HDR exposure steady and [`size`] says
+//! what of a monitor can be recorded, for every backend.
 
-mod encoder;
-mod exposure;
-mod fit;
-mod session;
+pub(crate) mod exposure;
 mod size;
-mod sound;
-mod timing;
 
-use size::HARDWARE_MIN_SIDE;
+pub(crate) use size::HARDWARE_MIN_SIDE;
 pub use size::{MIN_SIDE, recordable};
-pub use sound::{Microphone, Source, microphones};
-pub use timing::FrameTiming;
 
-use crate::{
-    screen::{MonitorId, PhysicalRect},
-    service::hmonitor,
-};
-use anyhow::{Context, Result, bail};
-use session::Session;
-use std::{
-    path::PathBuf,
-    sync::mpsc::{Receiver, Sender, channel},
-    thread::JoinHandle,
-    time::Duration,
-};
-use windows::Win32::{
-    Media::MediaFoundation::*,
-    System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
-    System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
-    UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
-};
+pub use crate::sys::imp::record::{Recorder, attached, microphones};
+
+use crate::screen::{MonitorId, PhysicalRect};
+use std::{path::PathBuf, time::Duration};
+
+/// 100-nanosecond units: the recorder's clock.
+pub(crate) const TICKS_PER_SECOND: i64 = 10_000_000;
 
 /// What to record.
 #[derive(Clone, Debug)]
@@ -131,29 +99,10 @@ pub enum Interruption {
     Failed(String),
 }
 
-/// ERROR_HANDLE_DISK_FULL and ERROR_DISK_FULL, as HRESULTs.
-const DISK_FULL: [u32; 2] = [0x8007_0027, 0x8007_0070];
-
 impl Interruption {
     /// What `e`, an error during recording, means for the user.
     pub fn from_error(e: &anyhow::Error) -> Self {
-        let codes: Vec<u32> = e
-            .chain()
-            .filter_map(|cause| cause.downcast_ref::<windows::core::Error>())
-            .map(|e| e.code().0 as u32)
-            .collect();
-        let text = format!("{e:#}").to_ascii_uppercase();
-        let any = |list: &[u32]| {
-            list.iter()
-                .any(|hr| codes.contains(hr) || text.contains(&format!("0X{hr:08X}")))
-        };
-        if any(&crate::service::DEVICE_LOST) {
-            Self::DeviceLost
-        } else if any(&DISK_FULL) {
-            Self::DiskFull
-        } else {
-            Self::Failed(format!("{e:#}"))
-        }
+        crate::sys::imp::record::interruption(e)
     }
 
     /// Why recording stopped, to finish "Recording stopped: …".
@@ -171,269 +120,59 @@ impl Interruption {
     }
 }
 
-enum Event {
-    Frame,
-    Pause,
-    Resume,
-    Stop,
-    /// The recorded display went away: Windows closed the capture, or the
-    /// app heard that the display is no longer attached.
-    DisplayGone,
-    /// Windows closed the recorded window's capture: the window is gone.
-    WindowClosed,
-    /// The displays changed (HDR switched on or off, say): read the
-    /// recorded display's white level again.
-    DisplayChanged,
-    /// Sound from a source.
-    Sound(sound::Packet),
-    /// Switch a source on or off.
-    SetSound(Source, bool),
-    /// Record the speakers' sound of this process only, or all of it.
-    SoundProcess(Option<u32>),
-    /// Record the pointer again (`true`), or leave it out for now.
-    ShowCursor(bool),
+/// Average time per kept frame in each stage of the recorder, for tuning
+/// its cost to a game (issue #15). GPU times come from timestamp queries;
+/// CPU times are wall time on the recording thread.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct FrameTiming {
+    /// Frames with GPU times (some are lost when the GPU is slow to answer).
+    pub gpu_frames: u64,
+    /// Copying the recorded region out of the captured frame.
+    pub copy_ms: f64,
+    /// HDR analysis, tone mapping, and the copy to the converter's input.
+    pub convert_ms: f64,
+    /// RGBA → NV12 in the video processor.
+    pub nv12_ms: f64,
+    /// Frames with CPU times.
+    pub cpu_frames: u64,
+    /// The conversion call, including its wait for the analysis read-back.
+    pub cpu_convert_ms: f64,
+    /// Handing the frame to the encoder.
+    pub cpu_write_ms: f64,
 }
 
-/// A recording in progress, on its own thread.
-pub struct Recorder {
-    events: Sender<Event>,
-    thread: Option<JoinHandle<Result<RecordingSummary>>>,
-    /// Resolves when the thread ends, however it ends.
-    ended: Option<futures::channel::oneshot::Receiver<()>>,
-}
-
-impl Recorder {
-    /// Start recording. Returns once the capture and the encoder are running.
-    pub fn start(options: RecordOptions) -> Result<Self> {
-        let (events, inbox) = channel();
-        let (ready, started) = channel::<Result<()>>();
-        // Dropped when the thread ends, which resolves `ended`.
-        let (ending, ended) = futures::channel::oneshot::channel::<()>();
-        let frames = events.clone();
-        let thread = std::thread::Builder::new()
-            .name("shuttercrab-record".into())
-            .spawn(move || {
-                let _ending = ending;
-                record(options, frames, inbox, ready)
-            })
-            .context("could not start the recording thread")?;
-        match started.recv() {
-            Ok(Ok(())) => Ok(Self {
-                events,
-                thread: Some(thread),
-                ended: Some(ended),
-            }),
-            Ok(Err(e)) => {
-                let _ = thread.join();
-                Err(e)
-            }
-            Err(_) => match thread.join() {
-                Ok(Err(e)) => Err(e),
-                _ => bail!("the recording thread stopped"),
-            },
-        }
-    }
-
-    pub fn pause(&self) {
-        let _ = self.events.send(Event::Pause);
-    }
-
-    pub fn resume(&self) {
-        let _ = self.events.send(Event::Resume);
-    }
-
-    /// Switch `source` on or off mid-recording. The file must have a
-    /// sound track ([`RecordOptions::has_sound`]).
-    pub fn set_sound(&self, source: Source, on: bool) {
-        let _ = self.events.send(Event::SetSound(source, on));
-    }
-
-    /// Record only what process `process` (and those it started) plays of
-    /// the speakers' sound, or all of it with `None`, from now on.
-    pub fn set_sound_process(&self, process: Option<u32>) {
-        let _ = self.events.send(Event::SoundProcess(process));
-    }
-
-    /// Leave the pointer out of the recording for now (`false`), or put it
-    /// back as the options say. Windows draws the pointer out of step with
-    /// a recorded window that is being dragged, so it hops about.
-    pub fn show_cursor(&self, show: bool) {
-        let _ = self.events.send(Event::ShowCursor(show));
-    }
-
-    /// The recorded window was closed: end the recording, keeping what was
-    /// recorded, as if Windows had closed the capture (it does not when an
-    /// app hides its window rather than destroying it).
-    pub fn window_closed(&self) {
-        let _ = self.events.send(Event::WindowClosed);
-    }
-
-    /// The recorded display is gone: end the recording, keeping what was
-    /// recorded, as if Windows had closed the capture.
-    pub fn display_gone(&self) {
-        let _ = self.events.send(Event::DisplayGone);
-    }
-
-    /// The displays changed and the recorded one is still attached: carry
-    /// on with its white level as it is now, so a recording stays exposed
-    /// right when HDR is switched on or off.
-    pub fn display_changed(&self) {
-        let _ = self.events.send(Event::DisplayChanged);
-    }
-
-    /// A future that resolves when the recording ends, by [`Recorder::stop`]
-    /// or by itself (the display went away, the device was lost, the disk
-    /// filled up). [`Recorder::stop`] then returns at once with what was
-    /// saved and why it ended. `None` after the first call.
-    pub fn ended(&mut self) -> Option<impl std::future::Future<Output = ()> + 'static> {
-        let ended = self.ended.take()?;
-        Some(async move {
-            let _ = ended.await;
-        })
-    }
-
-    /// Stop, finish the file, and report what was recorded.
-    pub fn stop(mut self) -> Result<RecordingSummary> {
-        let _ = self.events.send(Event::Stop);
-        match self.thread.take().map(JoinHandle::join) {
-            Some(Ok(result)) => result,
-            _ => bail!("the recording thread panicked"),
-        }
+impl std::fmt::Display for FrameTiming {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "GPU per frame ({} frames): copy {:.2} ms, analysis + tone map {:.2} ms, NV12 {:.2} ms, \
+             total {:.2} ms; CPU per frame ({} frames): convert call {:.2} ms, encoder hand-off {:.2} ms",
+            self.gpu_frames,
+            self.copy_ms,
+            self.convert_ms,
+            self.nv12_ms,
+            self.copy_ms + self.convert_ms + self.nv12_ms,
+            self.cpu_frames,
+            self.cpu_convert_ms,
+            self.cpu_write_ms
+        )
     }
 }
 
-impl Drop for Recorder {
-    fn drop(&mut self) {
-        if let Some(thread) = self.thread.take() {
-            let _ = self.events.send(Event::Stop);
-            let _ = thread.join();
-        }
-    }
+/// Where a recording's sound comes from.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Source {
+    /// What the speakers play.
+    System,
+    /// A microphone.
+    Microphone,
 }
 
-/// Whether `monitor` is still attached. Unplugging a display does not close
-/// its capture: Windows sends black frames, then none, and a display
-/// plugged back in is a new one. Its handle stops being valid the moment it
-/// goes, before the black frames, so the app checks it when Windows says
-/// the displays changed and tells the recorder with
-/// [`Recorder::display_gone`].
-pub fn attached(monitor: MonitorId) -> bool {
-    use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, MONITORINFO};
-    let mut info = MONITORINFO {
-        cbSize: size_of::<MONITORINFO>() as u32,
-        ..Default::default()
-    };
-    unsafe { GetMonitorInfoW(hmonitor(monitor), &mut info) }.as_bool()
-}
-
-/// 100-nanosecond units, Media Foundation's and Windows.Graphics.Capture's.
-const TICKS_PER_SECOND: i64 = 10_000_000;
-
-/// Run the HDR analysis on every this-many frames (15 times a second at 60
-/// fps); tone mapping uses the latest result. The exposure is smoothed over
-/// half a second anyway, and the analysis was most of the recorder's GPU
-/// work per frame (issue #15).
-const ANALYSE_EVERY: u32 = 4;
-
-/// How long a still screen goes without a repeated frame.
-const HEARTBEAT: i64 = TICKS_PER_SECOND;
-
-/// Now, in the clock Windows.Graphics.Capture stamps frames with:
-/// QueryPerformanceCounter in 100-nanosecond units.
-fn qpc_ticks() -> i64 {
-    let (mut counter, mut frequency) = (0i64, 0i64);
-    unsafe {
-        let _ = QueryPerformanceCounter(&mut counter);
-        let _ = QueryPerformanceFrequency(&mut frequency);
-    }
-    (counter as i128 * TICKS_PER_SECOND as i128 / frequency.max(1) as i128) as i64
-}
-
-fn record(
-    options: RecordOptions,
-    frames: Sender<Event>,
-    inbox: Receiver<Event>,
-    ready: Sender<Result<()>>,
-) -> Result<RecordingSummary> {
-    let setup = (|| {
-        unsafe {
-            let _ = RoInitialize(RO_INIT_MULTITHREADED);
-            SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-            MFStartup(MF_VERSION, MFSTARTUP_FULL).context("MFStartup failed")?;
-        }
-        Session::new(&options, frames)
-    })();
-    let mut session = match setup {
-        Ok(session) => {
-            let _ = ready.send(Ok(()));
-            session
-        }
-        Err(e) => {
-            let _ = ready.send(Err(anyhow::anyhow!("{e:#}")));
-            return Err(e);
-        }
-    };
-    let result = session.run(&inbox);
-    drop(session);
-    unsafe {
-        let _ = MFShutdown();
-    }
-    result
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-    use crate::display;
-
-    #[test]
-    fn attached_displays_are_present_and_a_stale_handle_is_not() {
-        let monitors = display::enumerate().unwrap();
-        assert!(!monitors.is_empty());
-        for m in &monitors {
-            let id = MonitorId(m.hmonitor.0 as u64);
-            assert!(attached(id), "{} is attached", m.device_name);
-        }
-        // A handle that names no display, as one unplugged does: a real
-        // one's slot with another generation in its high word. A made-up
-        // handle can land on a real display's slot (0x7FFF_0001 did after a
-        // driver update, when a display had 0x2_0001), and Windows matches
-        // some generations to any. GitHub's hosted runners have only a
-        // virtual display, and Windows there reports such handles as
-        // attached too; there is nothing to unplug.
-        if std::env::var_os("CI").is_none() {
-            let real = monitors[0].hmonitor.0 as u64;
-            let stale = (real & 0xFFFF) | ((((real >> 16) & 0xFFFF) ^ 0x5A5A) << 16);
-            assert!(!attached(MonitorId(stale)), "{stale:#x}");
-        }
-    }
-
-    #[test]
-    fn interruptions_are_told_apart_by_their_error_codes() {
-        use windows::core::{Error, HRESULT};
-        let windows_error = |code: u32| {
-            anyhow::Error::from(Error::from_hresult(HRESULT(code as i32)))
-                .context("WriteSample failed")
-        };
-        assert_eq!(
-            Interruption::from_error(&windows_error(0x887A_0005)),
-            Interruption::DeviceLost
-        );
-        assert_eq!(
-            Interruption::from_error(&windows_error(0x8007_0070)),
-            Interruption::DiskFull
-        );
-        // Codes only in the text count too.
-        let text = anyhow::anyhow!("copy failed: 0x887A0007");
-        assert_eq!(Interruption::from_error(&text), Interruption::DeviceLost);
-        let other = anyhow::anyhow!("the monitor changed size during the recording");
-        assert!(matches!(
-            Interruption::from_error(&other),
-            Interruption::Failed(m) if m.contains("changed size")
-        ));
-        assert_eq!(
-            Interruption::DisplayGone.describe(),
-            "the display was disconnected or turned off, or the graphics driver restarted"
-        );
-    }
+/// A microphone Windows knows of.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Microphone {
+    /// Windows' id for it, to record from it.
+    pub id: String,
+    /// Its name, as Windows' sound settings show it.
+    pub name: String,
 }

@@ -1,49 +1,10 @@
 //! Where each kept frame's time goes in the recorder, measured with GPU
 //! timestamp queries and CPU wall time, for tuning its cost to a game.
 
-use crate::gpu::Gpu;
+use crate::{record::FrameTiming, sys::imp::gpu::Gpu};
 use anyhow::{Context, Result};
 use std::time::Duration;
 use windows::Win32::Graphics::Direct3D11::*;
-
-/// Average time per kept frame in each stage of the recorder, for tuning
-/// its cost to a game (issue #15). GPU times come from timestamp queries;
-/// CPU times are wall time on the recording thread.
-#[derive(Clone, Debug, Default, PartialEq)]
-pub struct FrameTiming {
-    /// Frames with GPU times (some are lost when the GPU is slow to answer).
-    pub gpu_frames: u64,
-    /// Copying the recorded region out of the captured frame.
-    pub copy_ms: f64,
-    /// HDR analysis, tone mapping, and the copy to the converter's input.
-    pub convert_ms: f64,
-    /// RGBA → NV12 in the video processor.
-    pub nv12_ms: f64,
-    /// Frames with CPU times.
-    pub cpu_frames: u64,
-    /// The conversion call, including its wait for the analysis read-back.
-    pub cpu_convert_ms: f64,
-    /// Handing the frame to the encoder.
-    pub cpu_write_ms: f64,
-}
-
-impl std::fmt::Display for FrameTiming {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        write!(
-            f,
-            "GPU per frame ({} frames): copy {:.2} ms, analysis + tone map {:.2} ms, NV12 {:.2} ms, \
-             total {:.2} ms; CPU per frame ({} frames): convert call {:.2} ms, encoder hand-off {:.2} ms",
-            self.gpu_frames,
-            self.copy_ms,
-            self.convert_ms,
-            self.nv12_ms,
-            self.copy_ms + self.convert_ms + self.nv12_ms,
-            self.cpu_frames,
-            self.cpu_convert_ms,
-            self.cpu_write_ms
-        )
-    }
-}
 
 /// Timestamp queries for one frame: the disjoint query around four stamps
 /// (before the copy, after it, after the conversion, after NV12).

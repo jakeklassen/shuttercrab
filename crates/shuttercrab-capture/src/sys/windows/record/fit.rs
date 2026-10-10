@@ -3,14 +3,14 @@
 //! resized since is scaled to fit inside it, keeping its shape, with black
 //! bars where it does not fill it (`shaders/fit.hlsl`).
 
-use crate::gpu::{Gpu, compile_source, default_buffer, srv, uav};
+use crate::sys::imp::gpu::{Gpu, compile_source, default_buffer, srv, uav};
 use anyhow::{Context, Result};
 use windows::{
     Win32::Graphics::{Direct3D11::*, Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT},
     core::s,
 };
 
-const SHADER_SOURCE: &str = include_str!("../../shaders/fit.hlsl");
+const SHADER_SOURCE: &str = include_str!("../../../../shaders/fit.hlsl");
 
 /// The most samples per side a frame pixel averages: enough for a window
 /// scaled to a quarter of its size.

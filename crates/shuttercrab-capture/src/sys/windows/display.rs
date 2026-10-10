@@ -5,8 +5,8 @@
 //! color space. DisplayConfig supplies the Advanced Color mode and the SDR
 //! white level. The two are joined through the GDI source name.
 
+use super::gpu::wide_to_string;
 use crate::color::{self, ColorMode};
-use crate::gpu::wide_to_string;
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use windows::{
