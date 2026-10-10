@@ -2,7 +2,6 @@
 //! §7.7).
 //!
 //!   cargo test -p shuttercrab --test countdown
-#![cfg(windows)]
 
 use gpui_kit::{AppContext as _, TestAppContext, WindowHandle, px, size, test::TestWindowExt as _};
 use shuttercrab::countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent};

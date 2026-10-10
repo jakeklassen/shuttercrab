@@ -2,7 +2,6 @@
 //! window with native pointer and keyboard events.
 //!
 //!   cargo test -p shuttercrab --test choice_menu
-#![cfg(windows)]
 
 use gpui_kit::{
     AppContext as _, SharedString, TestAppContext, WindowHandle, px, size, test::TestWindowExt as _,

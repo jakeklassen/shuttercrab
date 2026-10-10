@@ -3,7 +3,6 @@
 //! §33, UI tests).
 //!
 //!   cargo test -p shuttercrab --test ui
-#![cfg(windows)]
 
 use gpui_kit::{
     App, AppContext as _, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,

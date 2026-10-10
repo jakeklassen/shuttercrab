@@ -2,7 +2,6 @@
 //! native pointer events (PRD §7.6, §33).
 //!
 //!   cargo test -p shuttercrab --test thumbnail
-#![cfg(windows)]
 
 use gpui_kit::{
     App, AppContext as _, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,
