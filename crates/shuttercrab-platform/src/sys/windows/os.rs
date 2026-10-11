@@ -13,6 +13,7 @@ pub fn describe() -> Os {
         default_microphone: "Windows' default",
         print_screen_setting: Some("ms-settings:devices-keyboard"),
         global_hotkeys: true,
+        tray: true,
     }
 }
 

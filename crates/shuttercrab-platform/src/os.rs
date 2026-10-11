@@ -22,6 +22,9 @@ pub struct Os {
     /// Where it cannot (Wayland), a desktop shortcut runs a [`crate::Request`]
     /// on the command line instead.
     pub global_hotkeys: bool,
+    /// Whether Shuttercrab has a tray icon to stay in when its window
+    /// closes. Without one, closing the window quits.
+    pub tray: bool,
 }
 
 /// This OS, described once.
