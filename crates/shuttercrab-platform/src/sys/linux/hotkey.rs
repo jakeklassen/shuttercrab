@@ -11,12 +11,16 @@ use anyhow::{Context, Result};
 use futures::channel::mpsc::UnboundedSender;
 use std::sync::{Arc, Mutex, PoisonError};
 use x11rb::{
+    COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT,
     connection::Connection,
     errors::ReplyError,
     protocol::{
         ErrorKind, Event,
         xkb::{self, ConnectionExt as _, PerClientFlag},
-        xproto::{ConnectionExt as _, GrabMode, Keycode, Mapping, ModMask, Window},
+        xproto::{
+            AtomEnum, ClientMessageEvent, ConnectionExt as _, CreateWindowAux, EventMask, GrabMode,
+            Keycode, Mapping, ModMask, Window, WindowClass,
+        },
     },
     rust_connection::RustConnection,
 };
@@ -40,6 +44,9 @@ pub(super) struct Hotkeys {
 struct Shared {
     conn: RustConnection,
     root: Window,
+    /// A hidden window of the connection's own: a message to it stops the
+    /// thread.
+    wake: Window,
     state: Mutex<State>,
 }
 
@@ -90,9 +97,26 @@ impl Hotkeys {
             log::warn!("held hotkeys will repeat: no detectable auto-repeat");
         }
         let keyboard = Keyboard::read(&conn)?;
+        let wake = conn.generate_id()?;
+        conn.create_window(
+            COPY_DEPTH_FROM_PARENT,
+            wake,
+            root,
+            0,
+            0,
+            1,
+            1,
+            0,
+            WindowClass::INPUT_ONLY,
+            COPY_FROM_PARENT,
+            &CreateWindowAux::new(),
+        )?
+        .check()
+        .context("making the hotkeys' window")?;
         let shared = Arc::new(Shared {
             conn,
             root,
+            wake,
             state: Mutex::new(State {
                 keyboard,
                 wanted: Vec::new(),
@@ -113,6 +137,22 @@ impl Hotkeys {
         let mut state = self.shared.lock();
         state.wanted = hotkeys;
         self.shared.grab(&mut state)
+    }
+}
+
+/// Let go of the hotkeys, and stop the thread; the connection closes with
+/// it.
+impl Drop for Hotkeys {
+    fn drop(&mut self) {
+        self.set(Vec::new());
+        let wake = self.shared.wake;
+        let stop = ClientMessageEvent::new(32, wake, AtomEnum::NONE, [0u32; 5]);
+        // With no event mask, it goes to the window's own connection.
+        let _ = self
+            .shared
+            .conn
+            .send_event(false, wake, EventMask::NO_EVENT, stop);
+        let _ = self.shared.conn.flush();
     }
 }
 
@@ -253,6 +293,7 @@ impl Shared {
                         Err(e) => log::warn!("could not read the new keyboard: {e:#}"),
                     }
                 }
+                Event::ClientMessage(message) if message.window == self.wake => return,
                 _ => {}
             }
         }
