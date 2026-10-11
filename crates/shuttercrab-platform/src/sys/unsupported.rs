@@ -217,6 +217,7 @@ pub mod drag {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod frame {
     use super::unsupported;
     use crate::frame::{FrameStyle, Rect};
