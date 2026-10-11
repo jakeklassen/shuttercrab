@@ -17,7 +17,7 @@ use gpui_kit::{
     WindowKind, WindowOptions, component::Root,
 };
 use shuttercrab_capture::MonitorInfo;
-use shuttercrab_platform::window as platform_window;
+use shuttercrab_platform::{icon, os::os, window as platform_window};
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
@@ -134,18 +134,26 @@ fn open_window(state: &Rc<State>, page: Page, mut content: Option<Content>, cx: 
                 kind: WindowKind::Normal,
                 // No narrower than the narrow toolbar, so nothing is cut off.
                 window_min_size: Some(main_window::MIN_SIZE),
+                // The taskbar's icon where the executable carries none
+                // (X11; Windows reads the embedded one).
+                icon: cfg!(target_os = "linux").then(window_icon),
                 ..Default::default()
             };
             cx.open_window(options, move |window, cx| {
                 main_window::apply_theme(window, cx);
                 // The title bar's close button: re-register the hotkeys
                 // (closing while a new one is being typed must not leave them
-                // paused), and close; Shuttercrab stays in the tray. GPUI's
-                // own close logs errors as the window goes.
+                // paused), and close; Shuttercrab stays in the tray. Without
+                // a tray nothing would be left to reach it by, so it quits.
+                // GPUI's own close logs errors as the window goes.
                 window.on_window_should_close(cx, move |window, cx| {
                     drop(resume());
                     closing.main_window.replace(None);
                     popup::close_window(window, cx);
+                    if !os().tray {
+                        let state = closing.clone();
+                        cx.spawn(async move |cx| quit(&state, cx).await).detach();
+                    }
                     false
                 });
                 let view = cx.new(|cx| {
@@ -174,6 +182,15 @@ fn open_window(state: &Rc<State>, page: Page, mut content: Option<Content>, cx: 
         }
     })
     .detach();
+}
+
+/// Shuttercrab's icon for a window's title bar and taskbar entry.
+fn window_icon() -> Arc<image::RgbaImage> {
+    const SIZE: u32 = 64;
+    Arc::new(
+        image::RgbaImage::from_raw(SIZE, SIZE, icon::rgba(SIZE))
+            .expect("icon::rgba fills the image"),
+    )
 }
 
 /// The main window's way to start a capture: hide the window, wait for it
