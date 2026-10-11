@@ -1,8 +1,13 @@
 //! The platform service on Linux. So far it listens for requests from a
-//! second start, shows notifications and copies; the tray and hotkeys come
-//! later.
+//! second start, grabs the hotkeys under X11, shows notifications and
+//! copies; the tray comes later.
 
-use super::{clipboard, instance::take_listener, launcher::icon_path};
+use super::{
+    clipboard,
+    hotkey::{self, Hotkeys},
+    instance::take_listener,
+    launcher::icon_path,
+};
 use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray, launcher::APP_ID};
 use anyhow::{Result, anyhow};
 use futures::channel::{mpsc, oneshot};
@@ -20,17 +25,18 @@ use zbus::{blocking::Connection, zvariant::Value};
 pub use super::instance::signal_running_instance;
 
 /// The platform service: a thread listening for requests from a second
-/// start.
+/// start, and under X11 the global hotkeys.
 pub struct Platform {
     /// Keeps the event stream open.
     _events: mpsc::UnboundedSender<PlatformEvent>,
+    hotkeys: Option<Hotkeys>,
 }
 
 impl Platform {
-    /// Start listening for requests. There are no global hotkeys on Linux
-    /// yet, so none are registered or reported as taken.
+    /// Start listening for requests and, under X11, grab `hotkeys`.
+    /// Returns those another app has.
     pub fn start(
-        _hotkeys: &[(u32, Hotkey)],
+        hotkeys: &[(u32, Hotkey)],
         _tray: Option<Tray>,
     ) -> Result<(
         Self,
@@ -44,7 +50,22 @@ impl Platform {
                 .name("shuttercrab-requests".into())
                 .spawn(move || listen(&listener, &events))?;
         }
-        Ok((Self { _events: events }, stream, Vec::new()))
+        let grabber = if hotkey::available() {
+            Hotkeys::start(events.clone())
+                .inspect_err(|e| log::warn!("no global hotkeys: {e:#}"))
+                .ok()
+        } else {
+            None
+        };
+        let conflicts = grabber
+            .as_ref()
+            .map(|grabber| grabber.set(hotkeys.to_vec()))
+            .unwrap_or_default();
+        let platform = Self {
+            _events: events,
+            hotkeys: grabber,
+        };
+        Ok((platform, stream, conflicts))
     }
 
     /// Copy a screenshot. arboard encodes its own PNG from `rgba`, so the
@@ -63,11 +84,18 @@ impl Platform {
         on_thread(move || clipboard::copy_files(&paths))
     }
 
+    /// Grab `hotkeys` in place of the ones grabbed now. A local X server
+    /// answers within a round trip, so this is done before returning.
     pub fn set_hotkeys(
         &self,
-        _hotkeys: Vec<(u32, Hotkey)>,
+        hotkeys: Vec<(u32, Hotkey)>,
     ) -> impl Future<Output = Vec<HotkeyConflict>> + use<> {
-        std::future::ready(Vec::new())
+        let conflicts = self
+            .hotkeys
+            .as_ref()
+            .map(|grabber| grabber.set(hotkeys))
+            .unwrap_or_default();
+        std::future::ready(conflicts)
     }
 
     pub fn set_tray_menu(&self, _menu: Vec<MenuItem>) {}

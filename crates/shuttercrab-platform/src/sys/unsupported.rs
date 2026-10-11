@@ -250,6 +250,7 @@ pub mod frame {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod hotkey {
     pub fn print_screen_taken() -> bool {
         false
