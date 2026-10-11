@@ -15,14 +15,20 @@ const ICON_SIZE: u32 = 256;
 /// Add or update the entry and its icon.
 pub fn register() -> Result<()> {
     let data = data_dir().context("no home folder")?;
-    let program = std::env::var_os("APPIMAGE")
-        .map(PathBuf::from)
-        .or_else(|| std::env::current_exe().ok())
-        .context("no path to the program")?;
+    let program = program()?;
     let icon = icon_path_in(&data);
     write_if_changed(&icon, &icon::png(ICON_SIZE))?;
     let entry = data.join("applications").join(format!("{APP_ID}.desktop"));
     write_if_changed(&entry, desktop_entry(&program, &icon).as_bytes())
+}
+
+/// The program to start: the AppImage when running from one, as its
+/// contents move at each start.
+pub(super) fn program() -> Result<PathBuf> {
+    std::env::var_os("APPIMAGE")
+        .map(PathBuf::from)
+        .or_else(|| std::env::current_exe().ok())
+        .context("no path to the program")
 }
 
 /// Where [`register`] puts the icon, for notifications to show it.
@@ -44,7 +50,7 @@ fn icon_path_in(data: &Path) -> PathBuf {
     ))
 }
 
-fn write_if_changed(path: &Path, contents: &[u8]) -> Result<()> {
+pub(super) fn write_if_changed(path: &Path, contents: &[u8]) -> Result<()> {
     if std::fs::read(path).is_ok_and(|now| now == contents) {
         return Ok(());
     }
@@ -88,7 +94,7 @@ fn desktop_entry(program: &Path, icon: &Path) -> String {
 /// `arg` quoted for an `Exec` key: in double quotes, with the characters
 /// the spec reserves inside them escaped, then escaped again as a string
 /// value; a literal `%` is doubled.
-fn exec_arg(arg: &str) -> String {
+pub(super) fn exec_arg(arg: &str) -> String {
     let mut quoted = String::from("\"");
     for c in arg.chars() {
         match c {
