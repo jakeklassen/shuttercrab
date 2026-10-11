@@ -3,7 +3,7 @@
 //! AppIndicator extension (on in Ubuntu); KDE and most other desktops
 //! show them as they are.
 
-use crate::{Hotkey, MenuItem, PlatformEvent, Tray, icon, launcher::APP_ID};
+use crate::{MenuItem, PlatformEvent, Tray, icon, launcher::APP_ID};
 use anyhow::Result;
 use futures::channel::mpsc::UnboundedSender;
 use ksni::blocking::{Handle, TrayMethods};
@@ -95,9 +95,8 @@ impl ksni::Tray for Item {
     }
 }
 
-/// One entry of the menu. A tab in a label sets off its hotkey, which goes
-/// to the menu as the item's shortcut. A checkmark item stays one when
-/// unticked: GNOME's AppIndicator keeps a tick an item stops sending.
+/// One entry of the menu. A checkmark item stays one when unticked:
+/// GNOME's AppIndicator keeps a tick an item stops sending.
 fn menu_item(item: &MenuItem) -> ksni::MenuItem<Item> {
     let MenuItem::Item {
         id,
@@ -108,10 +107,7 @@ fn menu_item(item: &MenuItem) -> ksni::MenuItem<Item> {
     else {
         return ksni::MenuItem::Separator;
     };
-    let (text, hotkey) = label.split_once('\t').unwrap_or((label, ""));
-    // Underscores mark access keys in dbusmenu; doubled, they are shown.
-    let label = text.replace('_', "__");
-    let shortcut = shortcut(hotkey);
+    let label = menu_label(label);
     let id = *id;
     let activate = Box::new(move |item: &mut Item| {
         let _ = item.events.unbounded_send(PlatformEvent::TrayCommand(id));
@@ -121,7 +117,6 @@ fn menu_item(item: &MenuItem) -> ksni::MenuItem<Item> {
             label,
             enabled: *enabled,
             checked,
-            shortcut,
             activate,
             ..Default::default()
         }
@@ -130,7 +125,6 @@ fn menu_item(item: &MenuItem) -> ksni::MenuItem<Item> {
         ksni::menu::StandardItem {
             label,
             enabled: *enabled,
-            shortcut,
             activate,
             ..Default::default()
         }
@@ -138,26 +132,16 @@ fn menu_item(item: &MenuItem) -> ksni::MenuItem<Item> {
     }
 }
 
-/// A hotkey as dbusmenu spells a shortcut: `[["Control", "Alt", "C"]]`.
-fn shortcut(hotkey: &str) -> Vec<Vec<String>> {
-    let Ok(hotkey) = Hotkey::parse(hotkey) else {
-        return Vec::new();
-    };
-    let text = hotkey.to_string();
-    let key = text.rsplit('+').next().unwrap_or_default();
-    let keys = [
-        (hotkey.ctrl, "Control"),
-        (hotkey.alt, "Alt"),
-        (hotkey.shift, "Shift"),
-        (hotkey.win, "Super"),
-    ]
-    .into_iter()
-    .filter(|&(on, _)| on)
-    .map(|(_, name)| name)
-    .chain([key])
-    .map(String::from)
-    .collect();
-    vec![keys]
+/// A label as dbusmenu shows it. The hotkey after a tab goes in brackets
+/// after the text: GNOME's AppIndicator shows no shortcuts, and in the
+/// label every desktop shows it once. Underscores mark access keys in
+/// dbusmenu; doubled, they are shown.
+fn menu_label(label: &str) -> String {
+    let label = label.replace('_', "__");
+    match label.split_once('\t') {
+        Some((text, hotkey)) => format!("{text}  ({hotkey})"),
+        None => label,
+    }
 }
 
 /// The icon at `size`, as ARGB in network byte order.
@@ -180,13 +164,13 @@ mod tests {
     use super::*;
 
     #[test]
-    fn hotkeys_become_shortcuts() {
+    fn hotkeys_go_in_brackets() {
         assert_eq!(
-            shortcut("Ctrl+Alt+Shift+S"),
-            [["Control", "Alt", "Shift", "S"]]
+            menu_label("Capture Bar\tCtrl+Alt+C"),
+            "Capture Bar  (Ctrl+Alt+C)"
         );
-        assert_eq!(shortcut("Win+F12"), [["Super", "F12"]]);
-        assert!(shortcut("").is_empty());
+        assert_eq!(menu_label("Settings…"), "Settings…");
+        assert_eq!(menu_label("snake_case"), "snake__case");
     }
 
     #[test]
