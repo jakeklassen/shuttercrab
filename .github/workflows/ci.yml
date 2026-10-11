@@ -48,8 +48,9 @@ jobs:
         with:
           persist-credentials: false
 
-      # What GPUI links against on Linux: X11 and Wayland, fonts, Vulkan.
-      # Xvfb and openbox are the private X server the X11 tests run on.
+      # What GPUI links against on Linux: X11 and Wayland, fonts, Vulkan;
+      # GStreamer and its plugins for recording. Xvfb and openbox are the
+      # private X server the X11 tests run on.
       - name: Linux packages
         if: runner.os == 'Linux'
         run: |
@@ -57,7 +58,10 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config clang libfontconfig-dev libfreetype-dev \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev \
-            libxcb1-dev libssl-dev libzstd-dev libvulkan1 xvfb openbox
+            libxcb1-dev libssl-dev libzstd-dev libvulkan1 xvfb openbox \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
+            gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
+            gstreamer1.0-plugins-ugly
 
       - uses: jdx/mise-action@v5
       - uses: Swatinem/rust-cache@v2
@@ -90,7 +94,8 @@ jobs:
           sudo apt-get install -y --no-install-recommends \
             build-essential pkg-config clang libfontconfig-dev libfreetype-dev \
             libwayland-dev libxkbcommon-dev libxkbcommon-x11-dev libx11-xcb-dev \
-            libxcb1-dev libssl-dev libzstd-dev libvulkan1
+            libxcb1-dev libssl-dev libzstd-dev libvulkan1 \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev
 
       - uses: jdx/mise-action@v5
       - uses: Swatinem/rust-cache@v2

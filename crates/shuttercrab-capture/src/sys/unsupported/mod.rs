@@ -3,6 +3,7 @@
 //! playback fails with an error saying it is not supported here.
 
 pub mod play;
+#[cfg(not(target_os = "linux"))]
 pub mod record;
 #[cfg(not(target_os = "linux"))]
 pub mod service;
