@@ -133,8 +133,9 @@ pub enum MenuItem {
         id: u32,
         label: String,
         enabled: bool,
-        /// Shows a checkmark.
-        checked: bool,
+        /// A checkmark item, ticked or not; `None` for a plain one. Some
+        /// menus (dbusmenu's) draw the two kinds apart.
+        checked: Option<bool>,
     },
     Separator,
 }
@@ -145,7 +146,7 @@ impl MenuItem {
             id,
             label: label.into(),
             enabled: true,
-            checked: false,
+            checked: None,
         }
     }
 }
