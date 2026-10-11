@@ -1,10 +1,10 @@
 #!/usr/bin/env bash
-# The Linux platform tests that need an X server: hotkeys, the clipboard and
-# the windows on screen. They run on a private, invisible server (Xvfb, with
-# openbox as its window manager), so the keys they press and the windows
-# they open never reach the desktop you are using.
+# The Linux tests that need an X server: hotkeys, the clipboard, the windows
+# on screen and recording. They run on a private, invisible server (Xvfb,
+# with openbox as its window manager), so the keys they press and the
+# windows they open never reach the desktop you are using.
 #
-#   sudo apt install xvfb openbox
+#   sudo apt install xvfb openbox gstreamer1.0-plugins-good gstreamer1.0-plugins-ugly
 #   scripts/linux-x11-tests.sh
 #
 # The report is also kept in tmp/linux-x11-tests.log.
@@ -49,5 +49,7 @@ openbox >"$work/openbox.log" 2>&1 &
 wm=$!
 
 echo "Private X server on $DISPLAY"
-cargo test -p shuttercrab-platform --locked --test x11 -- --ignored --test-threads=1 2>&1 |
-  tee tmp/linux-x11-tests.log
+{
+  cargo test -p shuttercrab-platform --locked --test x11 -- --ignored --test-threads=1
+  cargo test -p shuttercrab-capture --locked --test x11_record -- --ignored
+} 2>&1 | tee tmp/linux-x11-tests.log
