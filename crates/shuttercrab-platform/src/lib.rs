@@ -12,6 +12,7 @@ pub mod drag;
 pub mod frame;
 mod hotkey;
 pub mod icon;
+pub mod launcher;
 pub mod memory;
 pub mod ocr;
 pub mod open;

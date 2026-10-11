@@ -9,7 +9,7 @@ use shuttercrab::{
     update::{UpdateBackend, Velopack},
 };
 use shuttercrab_capture::Capture;
-use shuttercrab_platform::{Hotkey, Platform, PlatformEvent, Request, Tray, startup};
+use shuttercrab_platform::{Hotkey, Platform, PlatformEvent, Request, Tray, launcher, startup};
 use std::{
     path::{Path, PathBuf},
     sync::Arc,
@@ -84,6 +84,10 @@ fn main() {
         }
     };
     capture.warm_up();
+    // Before the first notification, which the desktop names by the entry.
+    if let Err(e) = launcher::register() {
+        log::warn!("could not add Shuttercrab to the app launcher: {e:#}");
+    }
     let (platform, events) = start_platform(&settings, first_run, &mut notices);
     // One at a time: Windows shows only the latest tray notification.
     if let Some((title, message)) = notices.into_iter().next() {
@@ -305,12 +309,14 @@ fn start_platform(
 /// file has the rest.
 #[cfg(not(debug_assertions))]
 fn release_terminal(log_file: Option<&Path>) {
+    let running = if shuttercrab_platform::os::os().tray {
+        "Shuttercrab is running in the tray."
+    } else {
+        "Shuttercrab is running."
+    };
     match log_file {
-        Some(path) => eprintln!(
-            "Shuttercrab is running in the tray. Log: {}",
-            path.display()
-        ),
-        None => eprintln!("Shuttercrab is running in the tray."),
+        Some(path) => eprintln!("{running} Log: {}", path.display()),
+        None => eprintln!("{running}"),
     }
     logging::stop_terminal();
     shuttercrab_platform::detach_from_terminal();

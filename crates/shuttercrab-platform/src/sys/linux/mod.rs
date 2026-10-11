@@ -4,6 +4,7 @@
 //! screen under X11. The rest is still the unsupported backend's.
 
 pub mod instance;
+pub mod launcher;
 pub mod memory;
 pub mod os;
 pub mod platform;

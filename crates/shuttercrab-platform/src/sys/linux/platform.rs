@@ -2,8 +2,8 @@
 //! second start and shows notifications; the tray, hotkeys and clipboard
 //! come later.
 
-use super::instance::take_listener;
-use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray};
+use super::{instance::take_listener, launcher::icon_path};
+use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray, launcher::APP_ID};
 use anyhow::{Result, anyhow};
 use futures::channel::mpsc;
 use shuttercrab_types::WindowId;
@@ -77,11 +77,18 @@ impl Platform {
         let sent = std::thread::Builder::new()
             .name("shuttercrab-notify".into())
             .spawn(move || {
-                let shown = notify_rust::Notification::new()
+                // Named by the launcher entry, as the desktop finds the
+                // app's name and icon there.
+                let mut notification = notify_rust::Notification::new();
+                notification
                     .appname("Shuttercrab")
+                    .hint(notify_rust::Hint::DesktopEntry(APP_ID.into()))
                     .summary(&title)
-                    .body(&message)
-                    .show();
+                    .body(&message);
+                if let Some(icon) = icon_path() {
+                    notification.icon(&icon.to_string_lossy());
+                }
+                let shown = notification.show();
                 if let Err(e) = shown {
                     log::warn!("could not show a notification: {e}");
                 }
