@@ -21,22 +21,30 @@ use x11rb::{
 };
 
 x11rb::atom_manager! {
-    Atoms: AtomsCookie {
+    pub(super) Atoms: AtomsCookie {
+        _GTK_FRAME_EXTENTS,
         _NET_ACTIVE_WINDOW,
+        _NET_CLIENT_LIST_STACKING,
+        _NET_CURRENT_DESKTOP,
         _NET_FRAME_EXTENTS,
+        _NET_WM_DESKTOP,
+        _NET_WM_STATE,
+        _NET_WM_STATE_HIDDEN,
+        _NET_WM_WINDOW_TYPE,
+        _NET_WM_WINDOW_TYPE_DESKTOP,
         _NET_WORKAREA,
     }
 }
 
 /// Shuttercrab's own X11 connection, its root window and atoms.
-struct X11 {
-    conn: RustConnection,
-    root: Window,
-    atoms: Atoms,
+pub(super) struct X11 {
+    pub(super) conn: RustConnection,
+    pub(super) root: Window,
+    pub(super) atoms: Atoms,
 }
 
 /// The connection, made once; `None` under Wayland or without an X server.
-fn x11() -> Option<&'static X11> {
+pub(super) fn x11() -> Option<&'static X11> {
     static X: OnceLock<Option<X11>> = OnceLock::new();
     X.get_or_init(|| {
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
@@ -83,22 +91,32 @@ pub fn client_bounds(window: WindowId) -> Result<(i32, i32, u32, u32)> {
     ))
 }
 
-/// The window manager's frame around the window: left, right, top, bottom.
-fn frame_extents(x: &X11, window: Window) -> [u32; 4] {
+/// The 32-bit values of `window`'s `property`, at most `len` of them; none
+/// if it has no such property.
+pub(super) fn property32(
+    x: &X11,
+    window: Window,
+    property: u32,
+    kind: AtomEnum,
+    len: u32,
+) -> Vec<u32> {
     x.conn
-        .get_property(
-            false,
-            window,
-            x.atoms._NET_FRAME_EXTENTS,
-            AtomEnum::CARDINAL,
-            0,
-            4,
-        )
+        .get_property(false, window, property, kind, 0, len)
         .ok()
         .and_then(|c| c.reply().ok())
-        .and_then(|p| p.value32().map(Iterator::collect::<Vec<u32>>))
-        .and_then(|v| <[u32; 4]>::try_from(v).ok())
+        .and_then(|p| p.value32().map(Iterator::collect))
         .unwrap_or_default()
+}
+
+/// The four sides `property` gives: left, right, top, bottom; zeros if the
+/// window has none.
+pub(super) fn sides(x: &X11, window: Window, property: u32) -> [u32; 4] {
+    <[u32; 4]>::try_from(property32(x, window, property, AtomEnum::CARDINAL, 4)).unwrap_or_default()
+}
+
+/// The window manager's frame around the window: left, right, top, bottom.
+pub(super) fn frame_extents(x: &X11, window: Window) -> [u32; 4] {
+    sides(x, window, x.atoms._NET_FRAME_EXTENTS)
 }
 
 /// The window's outer bounds, frame included, physical root-window pixels:
@@ -271,21 +289,8 @@ pub fn monitor_of(window: WindowId) -> MonitorId {
 pub fn work_area(monitor: MonitorId) -> Option<(i32, i32, u32, u32)> {
     let x = x11()?;
     let (mx, my, mw, mh) = monitors(x).into_iter().find(|(id, _)| *id == monitor)?.1;
-    let area = x
-        .conn
-        .get_property(
-            false,
-            x.root,
-            x.atoms._NET_WORKAREA,
-            AtomEnum::CARDINAL,
-            0,
-            4,
-        )
-        .ok()
-        .and_then(|c| c.reply().ok())
-        .and_then(|p| p.value32().map(Iterator::collect::<Vec<u32>>))
-        .and_then(|v| <[u32; 4]>::try_from(v).ok());
-    let Some([ax, ay, aw, ah]) = area else {
+    let area = property32(x, x.root, x.atoms._NET_WORKAREA, AtomEnum::CARDINAL, 4);
+    let Ok([ax, ay, aw, ah]) = <[u32; 4]>::try_from(area) else {
         return Some((mx, my, mw, mh));
     };
     let (ax, ay) = (ax as i32, ay as i32);

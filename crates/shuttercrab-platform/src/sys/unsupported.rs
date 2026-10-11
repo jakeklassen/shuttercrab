@@ -169,6 +169,7 @@ pub mod window {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
 pub mod targets {
     use crate::targets::WindowTarget;
 
@@ -313,6 +314,7 @@ pub mod os {
             default_microphone: "The default microphone",
             print_screen_setting: None,
             global_hotkeys: false,
+            tray: false,
         }
     }
 }
