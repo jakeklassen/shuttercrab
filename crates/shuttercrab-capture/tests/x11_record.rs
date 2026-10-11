@@ -52,7 +52,9 @@ fn records_a_region_to_an_mp4_that_plays() {
 
     assert_eq!((summary.width, summary.height), (640, 360));
     assert!(summary.interrupted.is_none(), "{summary:?}");
-    assert!(summary.paused >= Duration::from_millis(300), "{summary:?}");
+    // The pause starts and ends when the recording thread hears of it,
+    // a moment after each call.
+    assert!(summary.paused >= Duration::from_millis(250), "{summary:?}");
     let duration = summary.duration.as_secs_f64();
     assert!((0.8..1.5).contains(&duration), "{summary:?}");
     assert!(summary.frames >= 20, "{summary:?}");
