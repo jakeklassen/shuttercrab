@@ -20,7 +20,7 @@ pub fn describe() -> Os {
         print_screen_setting: None,
         // Wayland lets no app grab keys everywhere; desktop shortcuts run
         // requests instead.
-        global_hotkeys: false,
+        global_hotkeys: super::hotkey::available(),
         tray: false,
     }
 }
