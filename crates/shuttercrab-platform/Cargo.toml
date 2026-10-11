@@ -60,6 +60,8 @@ features = [
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = "3.6.1"
 zbus = "5.19.0"
+# The tray icon: a StatusNotifierItem, on the same zbus.
+ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
 x11rb = { version = "0.13", features = ["randr", "xkb"] }
 
 # The X11 tests press keys through XTEST.
