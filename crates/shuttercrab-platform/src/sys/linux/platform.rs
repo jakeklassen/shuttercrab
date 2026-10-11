@@ -1,14 +1,17 @@
-//! The platform service on Linux. So far it listens for requests from a
-//! second start, grabs the hotkeys under X11, shows notifications and
-//! copies; the tray comes later.
+//! The platform service on Linux: it listens for requests from a second
+//! start, shows the tray icon, grabs the hotkeys under X11, shows
+//! notifications and copies.
 
 use super::{
     clipboard,
     hotkey::{self, Hotkeys},
     instance::take_listener,
     launcher::icon_path,
+    tray::TrayIcon,
 };
-use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray, launcher::APP_ID};
+use crate::{
+    Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray, launcher::APP_ID, os::os,
+};
 use anyhow::{Result, anyhow};
 use futures::channel::{mpsc, oneshot};
 use shuttercrab_types::WindowId;
@@ -25,19 +28,21 @@ use zbus::{blocking::Connection, zvariant::Value};
 pub use super::instance::signal_running_instance;
 
 /// The platform service: a thread listening for requests from a second
-/// start, and under X11 the global hotkeys.
+/// start, the tray icon where the desktop shows one, and under X11 the
+/// global hotkeys.
 pub struct Platform {
     /// Keeps the event stream open.
     _events: mpsc::UnboundedSender<PlatformEvent>,
     hotkeys: Option<Hotkeys>,
+    tray: Option<TrayIcon>,
 }
 
 impl Platform {
-    /// Start listening for requests and, under X11, grab `hotkeys`.
-    /// Returns those another app has.
+    /// Start listening for requests, show `tray` and, under X11, grab
+    /// `hotkeys`. Returns those another app has.
     pub fn start(
         hotkeys: &[(u32, Hotkey)],
-        _tray: Option<Tray>,
+        tray: Option<Tray>,
     ) -> Result<(
         Self,
         mpsc::UnboundedReceiver<PlatformEvent>,
@@ -61,9 +66,15 @@ impl Platform {
             .as_ref()
             .map(|grabber| grabber.set(hotkeys.to_vec()))
             .unwrap_or_default();
+        let tray = tray.filter(|_| os().tray).and_then(|tray| {
+            TrayIcon::start(tray, events.clone())
+                .inspect_err(|e| log::warn!("no tray icon: {e:#}"))
+                .ok()
+        });
         let platform = Self {
             _events: events,
             hotkeys: grabber,
+            tray,
         };
         Ok((platform, stream, conflicts))
     }
@@ -98,7 +109,11 @@ impl Platform {
         std::future::ready(conflicts)
     }
 
-    pub fn set_tray_menu(&self, _menu: Vec<MenuItem>) {}
+    pub fn set_tray_menu(&self, menu: Vec<MenuItem>) {
+        if let Some(tray) = &self.tray {
+            tray.set_menu(menu);
+        }
+    }
 
     pub fn watch_window(&self, _window: Option<WindowId>) {}
 

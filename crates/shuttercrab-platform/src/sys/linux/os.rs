@@ -21,7 +21,7 @@ pub fn describe() -> Os {
         // Wayland lets no app grab keys everywhere; desktop shortcuts run
         // requests instead.
         global_hotkeys: super::hotkey::available(),
-        tray: false,
+        tray: super::tray::available(),
     }
 }
 
