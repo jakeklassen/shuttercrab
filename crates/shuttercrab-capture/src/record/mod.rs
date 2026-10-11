@@ -17,6 +17,9 @@ mod size;
 pub(crate) use size::HARDWARE_MIN_SIDE;
 pub use size::{MIN_SIDE, recordable};
 
+/// What recording needs that this system lacks, as the user should read it
+/// (what to install, and how), or `None`.
+pub use crate::sys::imp::record::missing_software;
 pub use crate::sys::imp::record::{Recorder, attached, microphones};
 
 use crate::screen::{MonitorId, PhysicalRect, WindowId};

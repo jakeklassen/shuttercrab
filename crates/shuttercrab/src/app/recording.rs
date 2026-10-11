@@ -706,6 +706,14 @@ fn start_take(
     started_at: NaiveDateTime,
     options: RecordOptions,
 ) -> Result<Take, Failure> {
+    // Said before anything starts: what to install (on Linux, a GStreamer
+    // plugin package), in the notification.
+    if let Some(message) = shuttercrab_capture::record::missing_software() {
+        return Err(Failure::new(
+            message.clone(),
+            format!("recorder: {message}"),
+        ));
+    }
     let path = files::new_recording(dir, started_at).map_err(|e| {
         Failure::new(
             format!(

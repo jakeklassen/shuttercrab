@@ -103,15 +103,15 @@ fn unavailable(message: &str, detail: impl std::fmt::Display) -> CaptureError {
 }
 
 /// A connection to the X server and its root window.
-struct X11 {
-    conn: RustConnection,
-    root: Window,
+pub(super) struct X11 {
+    pub(super) conn: RustConnection,
+    pub(super) root: Window,
 }
 
 impl X11 {
     /// Connect, unless this is a Wayland session: there the X server is
     /// XWayland, which sees only X11 apps' windows.
-    fn connect() -> Result<Self> {
+    pub(super) fn connect() -> Result<Self> {
         if std::env::var_os("WAYLAND_DISPLAY").is_some() {
             return Err(CaptureError::unsupported("Screen capture under Wayland"));
         }
@@ -123,7 +123,7 @@ impl X11 {
 
     /// The monitors, from RandR, with the scale the desktop sets
     /// (`Xft.dpi`, as GPUI reads it).
-    fn monitors(&self) -> Result<Vec<MonitorInfo>> {
+    pub(super) fn monitors(&self) -> Result<Vec<MonitorInfo>> {
         let failed = |e: &dyn std::fmt::Display| unavailable("Could not list the monitors", e);
         let reply = self
             .conn
@@ -226,17 +226,30 @@ fn to_bgra(
     mut data: Vec<u8>,
     depth: u8,
     setup: &x11rb::protocol::xproto::Setup,
-    (width, height): (u32, u32),
+    size: (u32, u32),
 ) -> Result<Vec<u8>> {
-    let format = setup.pixmap_formats.iter().find(|f| f.depth == depth);
-    let fits = format.is_some_and(|f| f.bits_per_pixel == 32)
-        && setup.image_byte_order == ImageOrder::LSB_FIRST
-        && data.len() == width as usize * height as usize * 4;
-    if !fits {
-        return Err(CaptureError::unsupported(&format!("A {depth}-bit screen")));
-    }
+    check_format(&data, depth, setup, size)?;
     for pixel in data.as_chunks_mut::<4>().0 {
         pixel[3] = 255;
     }
     Ok(data)
+}
+
+/// Fail unless `data`, from `GetImage`, is `width` × `height` at 32 bits a
+/// pixel, blue first: BGRx, with a fourth byte that is not alpha.
+pub(super) fn check_format(
+    data: &[u8],
+    depth: u8,
+    setup: &x11rb::protocol::xproto::Setup,
+    (width, height): (u32, u32),
+) -> Result<()> {
+    let format = setup.pixmap_formats.iter().find(|f| f.depth == depth);
+    let fits = format.is_some_and(|f| f.bits_per_pixel == 32)
+        && setup.image_byte_order == ImageOrder::LSB_FIRST
+        && data.len() == width as usize * height as usize * 4;
+    if fits {
+        Ok(())
+    } else {
+        Err(CaptureError::unsupported(&format!("A {depth}-bit screen")))
+    }
 }

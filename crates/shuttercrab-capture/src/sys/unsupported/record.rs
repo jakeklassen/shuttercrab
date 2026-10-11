@@ -48,6 +48,11 @@ pub fn microphones() -> Result<Vec<Microphone>> {
     Ok(Vec::new())
 }
 
+/// Nothing to install: recording is not there to begin with.
+pub fn missing_software() -> Option<String> {
+    None
+}
+
 pub(crate) fn interruption(e: &anyhow::Error) -> Interruption {
     Interruption::Failed(format!("{e:#}"))
 }

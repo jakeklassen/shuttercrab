@@ -225,6 +225,11 @@ pub fn attached(monitor: MonitorId) -> bool {
     unsafe { GetMonitorInfoW(hmonitor(monitor), &mut info) }.as_bool()
 }
 
+/// Nothing to install: Media Foundation comes with Windows.
+pub fn missing_software() -> Option<String> {
+    None
+}
+
 /// Run the HDR analysis on every this-many frames (15 times a second at 60
 /// fps); tone mapping uses the latest result. The exposure is smoothed over
 /// half a second anyway, and the analysis was most of the recorder's GPU
