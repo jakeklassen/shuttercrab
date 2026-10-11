@@ -96,8 +96,8 @@ impl ksni::Tray for Item {
 }
 
 /// One entry of the menu. A tab in a label sets off its hotkey, which goes
-/// to the menu as the item's shortcut. A checked item shows its checkmark;
-/// unchecked, it looks like any other, as on Windows.
+/// to the menu as the item's shortcut. A checkmark item stays one when
+/// unticked: GNOME's AppIndicator keeps a tick an item stops sending.
 fn menu_item(item: &MenuItem) -> ksni::MenuItem<Item> {
     let MenuItem::Item {
         id,
@@ -116,11 +116,11 @@ fn menu_item(item: &MenuItem) -> ksni::MenuItem<Item> {
     let activate = Box::new(move |item: &mut Item| {
         let _ = item.events.unbounded_send(PlatformEvent::TrayCommand(id));
     });
-    if *checked {
+    if let Some(checked) = *checked {
         ksni::menu::CheckmarkItem {
             label,
             enabled: *enabled,
-            checked: true,
+            checked,
             shortcut,
             activate,
             ..Default::default()

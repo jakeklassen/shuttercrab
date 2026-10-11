@@ -290,7 +290,7 @@ fn show_menu(hwnd: HWND) {
                     if !*enabled {
                         flags |= MF_GRAYED;
                     }
-                    if *checked {
+                    if *checked == Some(true) {
                         flags |= MF_CHECKED;
                     }
                     AppendMenuW(menu, flags, *id as usize, &HSTRING::from(label.as_str()))

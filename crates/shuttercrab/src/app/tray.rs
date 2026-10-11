@@ -162,7 +162,7 @@ fn rest_of_tray_menu(settings: &Settings, update: Option<&str>) -> Vec<MenuItem>
             id: MENU_AUTO_SAVE,
             label: "Save screenshots to the folder".into(),
             enabled: true,
-            checked: settings.auto_save,
+            checked: Some(settings.auto_save),
         },
         MenuItem::Separator,
         MenuItem::item(MENU_SETTINGS, "Settings…"),
@@ -184,7 +184,7 @@ mod tests {
                     id: MENU_AUTO_SAVE,
                     checked,
                     ..
-                } => Some(*checked),
+                } => *checked,
                 _ => None,
             })
             .expect("the menu has the auto-save item")
