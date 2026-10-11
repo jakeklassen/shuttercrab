@@ -8,12 +8,14 @@ use anyhow::{Result, anyhow};
 use futures::channel::mpsc;
 use shuttercrab_types::WindowId;
 use std::{
+    collections::HashMap,
     future::Future,
     io::{BufRead, BufReader},
     os::unix::net::UnixListener,
     path::PathBuf,
-    sync::Arc,
+    sync::{Arc, Mutex, PoisonError},
 };
+use zbus::{blocking::Connection, zvariant::Value};
 
 pub use super::instance::signal_running_instance;
 
@@ -77,19 +79,7 @@ impl Platform {
         let sent = std::thread::Builder::new()
             .name("shuttercrab-notify".into())
             .spawn(move || {
-                // Named by the launcher entry, as the desktop finds the
-                // app's name and icon there.
-                let mut notification = notify_rust::Notification::new();
-                notification
-                    .appname("Shuttercrab")
-                    .hint(notify_rust::Hint::DesktopEntry(APP_ID.into()))
-                    .summary(&title)
-                    .body(&message);
-                if let Some(icon) = icon_path() {
-                    notification.icon(&icon.to_string_lossy());
-                }
-                let shown = notification.show();
-                if let Err(e) = shown {
+                if let Err(e) = send_notification(&title, &message) {
                     log::warn!("could not show a notification: {e}");
                 }
             });
@@ -97,6 +87,43 @@ impl Platform {
             log::warn!("could not start a notification: {e}");
         }
     }
+}
+
+/// Send a notification on Shuttercrab's session bus connection, made at
+/// the first and kept open: GNOME takes back an app's notifications as
+/// soon as the connection they came on closes. It is named by the launcher
+/// entry, as the desktop finds the app's name and icon there.
+fn send_notification(title: &str, message: &str) -> zbus::Result<()> {
+    static SESSION: Mutex<Option<Connection>> = Mutex::new(None);
+    let connection = {
+        let mut session = SESSION.lock().unwrap_or_else(PoisonError::into_inner);
+        match &*session {
+            Some(connection) => connection.clone(),
+            None => session.insert(Connection::session()?).clone(),
+        }
+    };
+    let icon = icon_path().map_or_else(String::new, |p| p.to_string_lossy().into_owned());
+    let hints = HashMap::from([("desktop-entry", Value::from(APP_ID))]);
+    let actions: &[&str] = &[];
+    // Notify(app name, replaces id, icon, summary, body, actions, hints,
+    // timeout: the server's own).
+    connection.call_method(
+        Some("org.freedesktop.Notifications"),
+        "/org/freedesktop/Notifications",
+        Some("org.freedesktop.Notifications"),
+        "Notify",
+        &(
+            "Shuttercrab",
+            0u32,
+            icon.as_str(),
+            title,
+            message,
+            actions,
+            hints,
+            -1i32,
+        ),
+    )?;
+    Ok(())
 }
 
 /// Turn each connection's first line into a request, until the socket
