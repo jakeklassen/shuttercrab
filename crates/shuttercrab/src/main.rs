@@ -276,6 +276,11 @@ fn start_platform(
             std::process::exit(1);
         }
     };
+    let instead = if shuttercrab_platform::os::os().tray {
+        "Another app owns this hotkey. Click the Shuttercrab tray icon and capture from its window instead."
+    } else {
+        "Another app owns this hotkey. Capture from Shuttercrab's window instead, or pick another hotkey in Settings."
+    };
     for conflict in &conflicts {
         log::warn!(
             "{} is taken by another application ({})",
@@ -285,8 +290,7 @@ fn start_platform(
         if conflict.id != QUIT_HOTKEY {
             notices.push((
                 format!("{} is in use", conflict.hotkey),
-                "Another app owns this hotkey. Click the Shuttercrab tray icon and capture from its window instead."
-                    .to_string(),
+                instead.to_string(),
             ));
         }
     }
