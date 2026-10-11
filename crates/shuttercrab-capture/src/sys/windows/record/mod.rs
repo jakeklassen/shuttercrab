@@ -226,7 +226,7 @@ pub fn attached(monitor: MonitorId) -> bool {
 }
 
 /// Nothing to install: Media Foundation comes with Windows.
-pub fn missing_software() -> Option<String> {
+pub fn missing_software(_sound: bool) -> Option<String> {
     None
 }
 

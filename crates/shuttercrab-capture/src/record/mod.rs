@@ -3,14 +3,20 @@
 //! MP4, with the speakers' and a microphone's sound as an AAC track.
 //!
 //! This module is what the app sees on every OS; the recorder itself is in
-//! the OS backend. `exposure` keeps HDR exposure steady and `size` says
-//! what of a monitor can be recorded, for every backend.
+//! the OS backend. `exposure` keeps HDR exposure steady, `mix` mixes the
+//! sound track, and `size` says what of a monitor can be recorded, for
+//! every backend.
 
 #[cfg_attr(
     not(windows),
-    allow(dead_code, reason = "only the Windows backend records yet")
+    allow(dead_code, reason = "only the Windows backend records HDR")
 )]
 pub(crate) mod exposure;
+#[cfg_attr(
+    not(any(windows, target_os = "linux")),
+    allow(dead_code, reason = "this OS does not record")
+)]
+pub(crate) mod mix;
 mod size;
 
 #[cfg(windows)]
@@ -18,7 +24,8 @@ pub(crate) use size::HARDWARE_MIN_SIDE;
 pub use size::{MIN_SIDE, recordable};
 
 /// What recording needs that this system lacks, as the user should read it
-/// (what to install, and how), or `None`.
+/// (what to install, and how), or `None`. `sound`: whether a sound source
+/// is switched on.
 pub use crate::sys::imp::record::missing_software;
 pub use crate::sys::imp::record::{Recorder, attached, microphones};
 
@@ -27,8 +34,8 @@ use std::{path::PathBuf, time::Duration};
 
 /// 100-nanosecond units: the recorder's clock.
 #[cfg_attr(
-    not(windows),
-    allow(dead_code, reason = "only the Windows backend records yet")
+    not(any(windows, target_os = "linux")),
+    allow(dead_code, reason = "this OS does not record")
 )]
 pub(crate) const TICKS_PER_SECOND: i64 = 10_000_000;
 
