@@ -62,5 +62,9 @@ arboard = "3.6.1"
 zbus = "5.19.0"
 x11rb = { version = "0.13", features = ["randr", "xkb"] }
 
+# The X11 tests press keys through XTEST.
+[target.'cfg(target_os = "linux")'.dev-dependencies]
+x11rb = { version = "0.13", features = ["xtest"] }
+
 [lints]
 workspace = true
