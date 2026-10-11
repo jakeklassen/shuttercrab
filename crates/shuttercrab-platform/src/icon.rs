@@ -88,7 +88,8 @@ pub fn ico(sizes: &[u32]) -> Vec<u8> {
     out
 }
 
-fn png(size: u32) -> Vec<u8> {
+/// The icon as a PNG file, `size` × `size`.
+pub(crate) fn png(size: u32) -> Vec<u8> {
     let mut bytes = Vec::new();
     let mut encoder = ::png::Encoder::new(&mut bytes, size, size);
     encoder.set_color(::png::ColorType::Rgba);

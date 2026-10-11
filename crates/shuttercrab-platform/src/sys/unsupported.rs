@@ -340,6 +340,16 @@ pub mod process {
     }
 }
 
+#[cfg(not(target_os = "linux"))]
+pub mod launcher {
+    use anyhow::Result;
+
+    /// Nothing to add yet.
+    pub fn register() -> Result<()> {
+        Ok(())
+    }
+}
+
 pub mod startup {
     use super::unsupported;
     use anyhow::Result;

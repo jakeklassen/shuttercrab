@@ -17,7 +17,7 @@ use gpui_kit::{
     WindowKind, WindowOptions, component::Root,
 };
 use shuttercrab_capture::MonitorInfo;
-use shuttercrab_platform::{icon, os::os, window as platform_window};
+use shuttercrab_platform::{icon, launcher, os::os, window as platform_window};
 use std::{
     cell::RefCell,
     path::{Path, PathBuf},
@@ -135,8 +135,10 @@ fn open_window(state: &Rc<State>, page: Page, mut content: Option<Content>, cx: 
                 // No narrower than the narrow toolbar, so nothing is cut off.
                 window_min_size: Some(main_window::MIN_SIZE),
                 // The taskbar's icon where the executable carries none
-                // (X11; Windows reads the embedded one).
+                // (X11; Windows reads the embedded one), and the class that
+                // ties the window to Shuttercrab's launcher entry.
                 icon: cfg!(target_os = "linux").then(window_icon),
+                app_id: cfg!(target_os = "linux").then(|| launcher::APP_ID.to_string()),
                 ..Default::default()
             };
             cx.open_window(options, move |window, cx| {

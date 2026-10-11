@@ -8,6 +8,7 @@ pub mod frame;
 pub mod hotkey;
 pub mod icon;
 pub mod instance;
+pub mod launcher;
 pub mod layered;
 pub mod memory;
 pub mod ocr;
