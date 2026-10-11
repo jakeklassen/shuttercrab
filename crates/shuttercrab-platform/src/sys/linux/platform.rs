@@ -1,11 +1,11 @@
 //! The platform service on Linux. So far it listens for requests from a
-//! second start and shows notifications; the tray, hotkeys and clipboard
-//! come later.
+//! second start, shows notifications and copies; the tray and hotkeys come
+//! later.
 
-use super::{instance::take_listener, launcher::icon_path};
+use super::{clipboard, instance::take_listener, launcher::icon_path};
 use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray, launcher::APP_ID};
 use anyhow::{Result, anyhow};
-use futures::channel::mpsc;
+use futures::channel::{mpsc, oneshot};
 use shuttercrab_types::WindowId;
 use std::{
     collections::HashMap,
@@ -47,18 +47,20 @@ impl Platform {
         Ok((Self { _events: events }, stream, Vec::new()))
     }
 
+    /// Copy a screenshot. arboard encodes its own PNG from `rgba`, so the
+    /// one already made goes unused.
     pub fn copy_image(
         &self,
         _png: Arc<Vec<u8>>,
-        _rgba: Arc<Vec<u8>>,
-        _width: u32,
-        _height: u32,
+        rgba: Arc<Vec<u8>>,
+        width: u32,
+        height: u32,
     ) -> impl Future<Output = Result<()>> + use<> {
-        std::future::ready(Err(anyhow!("copying images is not supported on Linux yet")))
+        on_thread(move || clipboard::copy_image(&rgba, width, height))
     }
 
-    pub fn copy_files(&self, _paths: Vec<PathBuf>) -> impl Future<Output = Result<()>> + use<> {
-        std::future::ready(Err(anyhow!("copying files is not supported on Linux yet")))
+    pub fn copy_files(&self, paths: Vec<PathBuf>) -> impl Future<Output = Result<()>> + use<> {
+        on_thread(move || clipboard::copy_files(&paths))
     }
 
     pub fn set_hotkeys(
@@ -86,6 +88,25 @@ impl Platform {
         if let Err(e) = sent {
             log::warn!("could not start a notification: {e}");
         }
+    }
+}
+
+/// Run `work` on a thread of its own and hand back its result: X11 round
+/// trips and PNG encoding stay off the UI thread.
+fn on_thread(
+    work: impl FnOnce() -> Result<()> + Send + 'static,
+) -> impl Future<Output = Result<()>> {
+    let (reply, answer) = oneshot::channel();
+    let started = std::thread::Builder::new()
+        .name("shuttercrab-clipboard".into())
+        .spawn(move || {
+            let _ = reply.send(work());
+        });
+    async move {
+        started?;
+        answer
+            .await
+            .unwrap_or_else(|_| Err(anyhow!("the clipboard thread stopped")))
     }
 }
 

@@ -58,6 +58,7 @@ features = [
 ]
 
 [target.'cfg(target_os = "linux")'.dependencies]
+arboard = "3.6.1"
 zbus = "5.19.0"
 x11rb = { version = "0.13", features = ["randr"] }
 
