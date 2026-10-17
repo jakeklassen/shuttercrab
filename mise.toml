@@ -1,2 +1,20 @@
 [tools]
 rust = { version = "1.98.1", components = "clippy,rustfmt" }
+
+# Formatting, Clippy and the tests, as CI runs them, after trimming
+# target/. Skips the one test that would signal the Shuttercrab you are
+# running; CI runs it.
+[tasks.check]
+description = "Formatting, Clippy and the tests"
+depends = ["trim"]
+run = [
+  "cargo fmt --all --check",
+  "cargo clippy --all-targets --locked -- -D warnings",
+  "cargo test --locked -- --skip a_second_instance_signals_the_first",
+]
+
+[tasks.trim]
+description = "Empty target/ once it is past 30 GiB"
+env = { TARGET_BUDGET_GIB = "30" }
+run = "scripts/trim-target.sh"
+run_windows = "pwsh -NoProfile -File scripts/trim-target.ps1"
