@@ -1,7 +1,7 @@
 //! Drives the real post-capture thumbnail in a headless GPUI window with
 //! native pointer events (PRD §7.6, §33).
 //!
-//!   cargo test -p shuttercrab --test thumbnail
+//!   cargo test -p shuttercrab --test ui thumbnail::
 
 use gpui_kit::{
     App, AppContext as _, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,

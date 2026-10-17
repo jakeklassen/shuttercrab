@@ -1,7 +1,7 @@
 //! Drives the real Capture Bar in a headless GPUI window with native
 //! pointer and keyboard events (PRD §7.5, §33).
 //!
-//!   cargo test -p shuttercrab --test capture_bar
+//!   cargo test -p shuttercrab --test ui capture_bar::
 
 use gpui_kit::{
     App, AppContext as _, TestAppContext, VisualTestContext, Window, WindowHandle, px, size,

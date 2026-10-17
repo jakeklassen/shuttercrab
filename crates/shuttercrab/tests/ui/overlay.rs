@@ -2,7 +2,7 @@
 //! synthetic frozen frame, using native pointer and keyboard events (PRD
 //! §33, UI tests).
 //!
-//!   cargo test -p shuttercrab --test ui
+//!   cargo test -p shuttercrab --test ui overlay::
 
 use gpui_kit::{
     App, AppContext as _, InputEvent as _, MouseButton, MouseDownEvent, MouseMoveEvent,

@@ -1,7 +1,7 @@
 //! Drives the countdown before recording in a headless GPUI window (PRD
 //! §7.7).
 //!
-//!   cargo test -p shuttercrab --test countdown
+//!   cargo test -p shuttercrab --test ui countdown::
 
 use gpui_kit::{AppContext as _, TestAppContext, WindowHandle, px, size, test::TestWindowExt as _};
 use shuttercrab::countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent};

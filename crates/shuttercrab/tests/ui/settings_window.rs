@@ -1,7 +1,7 @@
 //! Drives the real settings window in a headless GPUI window, with fake
 //! hooks standing in for the rest of Shuttercrab (PRD §26, §33).
 //!
-//!   cargo test -p shuttercrab --test settings_window
+//!   cargo test -p shuttercrab --test ui settings_window::
 
 use gpui_kit::{
     AnyWindowHandle, App, AppContext as _, TestAppContext, Window, component::Root, px, size,

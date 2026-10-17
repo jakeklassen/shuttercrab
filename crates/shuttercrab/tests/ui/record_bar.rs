@@ -1,7 +1,7 @@
 //! Drives the recording controls in a headless GPUI window with native
 //! pointer and keyboard events (PRD §16).
 //!
-//!   cargo test -p shuttercrab --test record_bar
+//!   cargo test -p shuttercrab --test ui record_bar::
 
 use gpui_kit::{
     App, AppContext as _, TestAppContext, VisualTestContext, Window, WindowHandle, px, size,

@@ -1101,7 +1101,7 @@ browser/chat, with visually correct SDR output.*
 | Suite | Covers |
 |---|---|
 | `shuttercrab` unit tests | Logical → physical conversion: 100–200% scale, any drag direction, snapping to physical pixels, clamping to the monitor, empty clicks |
-| `shuttercrab` `tests/ui.rs` | The real overlay in headless GPUI windows with native pointer and keyboard events: live physical dimensions at 100/125/175/200%, drags in any direction, Escape and right-click cancel, a click selects nothing, the overlay takes focus |
+| `shuttercrab` `tests/ui/overlay.rs` | The real overlay in headless GPUI windows with native pointer and keyboard events: live physical dimensions at 100/125/175/200%, drags in any direction, Escape and right-click cancel, a click selects nothing, the overlay takes focus |
 | `shuttercrab-capture` unit tests | Crop bounds, empty and out-of-bounds regions, PNG round trip |
 | `shuttercrab-platform` unit and live tests | Hotkey parsing; registering a hotkey and reporting a conflict; the `CF_DIBV5` layout |
 
