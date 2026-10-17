@@ -37,6 +37,12 @@ rustybuzz = { opt-level = 3 }
 taffy = { opt-level = 3 }
 ttf-parser = { opt-level = 3 }
 
+# Dependencies keep line tables, for backtraces with file and line, but not
+# their full debug info: on Windows that is most of every PDB, and each test
+# binary links all of GPUI.
+[profile.dev.package."*"]
+debug = "line-tables-only"
+
 # GPUI's Windows layer with Shuttercrab's fix for graphics memory kept after
 # windows close (vendor/gpui-pre-windows/SHUTTERCRAB.md). Remove once upstream
 # has it.
