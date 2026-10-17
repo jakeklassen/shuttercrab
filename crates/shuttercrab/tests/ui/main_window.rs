@@ -1,7 +1,7 @@
 //! Drives the real main window in a headless GPUI window, with fake hooks
 //! standing in for the rest of Shuttercrab.
 //!
-//!   cargo test -p shuttercrab --test main_window
+//!   cargo test -p shuttercrab --test ui main_window::
 
 use gpui_kit::{
     App, AppContext as _, Entity, InputEvent as _, TestAppContext, Window, component::Root,

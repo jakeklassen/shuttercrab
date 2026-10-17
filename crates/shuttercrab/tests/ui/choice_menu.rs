@@ -1,7 +1,7 @@
 //! Drives the choice list (the ready bar's microphones) in a headless GPUI
 //! window with native pointer and keyboard events.
 //!
-//!   cargo test -p shuttercrab --test choice_menu
+//!   cargo test -p shuttercrab --test ui choice_menu::
 
 use gpui_kit::{
     AppContext as _, SharedString, TestAppContext, WindowHandle, px, size, test::TestWindowExt as _,
