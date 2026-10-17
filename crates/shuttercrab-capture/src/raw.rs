@@ -116,10 +116,7 @@ mod tests {
             color_mode: ColorMode::Hdr,
             data,
         };
-        // Under the workspace's gitignored `tmp`.
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        let path = dir.join(format!("raw-{}.fp16", std::process::id()));
+        let path = crate::test_folder().join(format!("raw-{}.fp16", std::process::id()));
         frame.write(&path).unwrap();
         let back = RawFrame::read(&path).unwrap();
         std::fs::remove_file(&path).unwrap();

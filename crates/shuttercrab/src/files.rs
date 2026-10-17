@@ -87,11 +87,9 @@ pub fn remove_old(dir: &Path, age: std::time::Duration) -> usize {
 mod tests {
     use super::*;
 
-    /// A folder for the test under the workspace's gitignored `tmp`.
+    /// A folder for the test in the target folder's `tmp`.
     fn scratch(name: &str) -> PathBuf {
-        Path::new(env!("CARGO_MANIFEST_DIR"))
-            .join("../../tmp/tests")
-            .join(format!("{name}-{}", std::process::id()))
+        crate::test_folder().join(format!("{name}-{}", std::process::id()))
     }
     use chrono::NaiveDate;
 

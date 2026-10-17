@@ -73,11 +73,9 @@ mod tests {
     use super::*;
     use std::path::PathBuf;
 
-    /// A file for the test under the workspace's gitignored `tmp`.
+    /// A file for the test in the target folder's `tmp`.
     fn scratch(name: &str) -> PathBuf {
-        let dir = Path::new(env!("CARGO_MANIFEST_DIR")).join("../../tmp/tests");
-        std::fs::create_dir_all(&dir).unwrap();
-        dir.join(format!("{name}-{}.png", std::process::id()))
+        crate::test_folder().join(format!("{name}-{}.png", std::process::id()))
     }
 
     #[test]
