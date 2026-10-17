@@ -435,15 +435,13 @@ mod tests {
         settings.highlighter_size = 200.;
         assert_eq!(settings.brush(Tool::Highlighter), Brush::HIGHLIGHTER);
     }
-    /// A folder of the test's own under the workspace's gitignored `tmp`,
+    /// A folder of the test's own in the target folder's `tmp`,
     /// removed when the test ends, passed or not.
     struct Scratch(PathBuf);
 
     impl Scratch {
         fn new(name: &str) -> Self {
-            let dir = Path::new(env!("CARGO_MANIFEST_DIR"))
-                .join("../../tmp/tests")
-                .join(format!("settings-{}-{name}", std::process::id()));
+            let dir = crate::test_folder().join(format!("settings-{}-{name}", std::process::id()));
             let _ = std::fs::remove_dir_all(&dir);
             Self(dir)
         }
