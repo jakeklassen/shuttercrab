@@ -49,7 +49,7 @@ pub fn microphones() -> Result<Vec<Microphone>> {
 }
 
 /// Nothing to install: recording is not there to begin with.
-pub fn missing_software() -> Option<String> {
+pub fn missing_software(_sound: bool) -> Option<String> {
     None
 }
 
