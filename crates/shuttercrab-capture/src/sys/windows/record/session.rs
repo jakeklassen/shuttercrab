@@ -915,8 +915,10 @@ struct Counts {
 const SOUND_LAG: i64 = TICKS_PER_SECOND / 5;
 
 /// The same for a live recording, where all of it is delay the viewer
-/// sees and hears (the picture waits for the sound).
-const LIVE_SOUND_LAG: i64 = TICKS_PER_SECOND / 50;
+/// sees and hears (the picture waits for the sound). A process's sound
+/// arrived up to 33 ms after capture and a microphone's up to 19 ms,
+/// but at 20 ms a fifth of the microphone's came too late to mix.
+const LIVE_SOUND_LAG: i64 = TICKS_PER_SECOND / 20;
 
 /// A `Duration` as 100 ns ticks.
 fn duration_ticks(duration: Duration) -> i64 {
