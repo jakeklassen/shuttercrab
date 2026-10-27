@@ -816,6 +816,14 @@ mod tests {
             .map(|(_, d, _)| *d)
             .collect();
         let shown = settled.len() as u32;
+        // A picture skipped shows as a stutter.
+        let skipped: Vec<usize> = seen
+            .pictures
+            .windows(2)
+            .filter(|pair| pair[1].0 > pair[0].0 + 1)
+            .map(|pair| pair[1].0)
+            .collect();
+        println!("pictures after a skipped one: {skipped:?}");
         println!(
             "picture in to picture shown, from 2 s on: {}",
             percentiles(settled)
