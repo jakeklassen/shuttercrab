@@ -12,8 +12,8 @@ use super::{
 use crate::{
     color::Highlights,
     record::{
-        HARDWARE_MIN_SIDE, Interruption, MIN_SIDE, RecordOptions, RecordingSummary, Source,
-        TICKS_PER_SECOND, exposure::Exposure, recordable,
+        HARDWARE_MIN_SIDE, Interruption, LiveSink, MIN_SIDE, RecordOptions, RecordingSummary,
+        Source, TICKS_PER_SECOND, exposure::Exposure, recordable,
     },
     screen::PhysicalRect,
     sys::imp::{
@@ -163,7 +163,11 @@ struct Arrivals {
 }
 
 impl Session {
-    pub(super) fn new(options: &RecordOptions, frames: Sender<Event>) -> Result<Self> {
+    pub(super) fn new(
+        options: &RecordOptions,
+        frames: Sender<Event>,
+        live: Option<LiveSink>,
+    ) -> Result<Self> {
         ensure!(
             matches!(options.fps, 1..=120),
             "a frame rate of {} is not supported",
@@ -192,6 +196,7 @@ impl Session {
             (w, h, options.fps),
             hardware,
             options.has_sound(),
+            live,
         )?;
 
         let window = match target.window {

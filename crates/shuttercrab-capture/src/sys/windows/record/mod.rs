@@ -22,6 +22,7 @@
 
 mod encoder;
 mod fit;
+mod live_sink;
 mod session;
 mod sound;
 mod timing;
@@ -30,7 +31,7 @@ pub use sound::microphones;
 
 use super::service::{DEVICE_LOST, hmonitor};
 use crate::{
-    record::{Interruption, RecordOptions, RecordingSummary, Source, TICKS_PER_SECOND},
+    record::{Interruption, LiveSink, RecordOptions, RecordingSummary, Source, TICKS_PER_SECOND},
     screen::MonitorId,
 };
 use anyhow::{Context, Result, bail};
@@ -104,6 +105,17 @@ pub struct Recorder {
 impl Recorder {
     /// Start recording. Returns once the capture and the encoder are running.
     pub fn start(options: RecordOptions) -> Result<Self> {
+        Self::start_with(options, None)
+    }
+
+    /// Start recording live (issue #66, spike S0): nothing is written to
+    /// `options.path`; each frame goes to `sink` as it is encoded, on one
+    /// of Media Foundation's threads.
+    pub fn start_live(options: RecordOptions, sink: LiveSink) -> Result<Self> {
+        Self::start_with(options, Some(sink))
+    }
+
+    fn start_with(options: RecordOptions, live: Option<LiveSink>) -> Result<Self> {
         let (events, inbox) = channel();
         let (ready, started) = channel::<Result<()>>();
         // Dropped when the thread ends, which resolves `ended`.
@@ -113,7 +125,7 @@ impl Recorder {
             .name("shuttercrab-record".into())
             .spawn(move || {
                 let _ending = ending;
-                record(options, frames, inbox, ready)
+                record(options, frames, inbox, ready, live)
             })
             .context("could not start the recording thread")?;
         match started.recv() {
@@ -255,6 +267,7 @@ fn record(
     frames: Sender<Event>,
     inbox: Receiver<Event>,
     ready: Sender<Result<()>>,
+    live: Option<LiveSink>,
 ) -> Result<RecordingSummary> {
     let setup = (|| {
         unsafe {
@@ -262,7 +275,7 @@ fn record(
             SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
             MFStartup(MF_VERSION, MFSTARTUP_FULL).context("MFStartup failed")?;
         }
-        Session::new(&options, frames)
+        Session::new(&options, frames, live)
     })();
     let mut session = match setup {
         Ok(session) => {

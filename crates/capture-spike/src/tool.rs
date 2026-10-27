@@ -1,5 +1,7 @@
 //! The capture-spike tool on Windows: every command.
 
+mod stream;
+
 use anyhow::{Context, Result, bail, ensure};
 use capture_spike::{
     analysis::{self, Roi},
@@ -114,6 +116,17 @@ USAGE
       Freeze the monitor and take a full screenshot through the app's capture
       service N times (default 5), printing memory around each. Saves nothing.
 
+  capture-spike stream-send [--monitor M] [--region X,Y,W,H] [--fps 30|60] [--sound on]
+                            [--sound-of PID] [--mic on] [--port N]
+      Live streaming, spike S0 (issue #66): wait for a viewer on 127.0.0.1
+      (port 47100 by default), then record live and send each frame as it is
+      encoded, until the viewer leaves. The region defaults to 0,0,2560,1440.
+
+  capture-spike stream-watch [--from HOST:PORT] [--monitor M] [--sound off]
+      Open a window on monitor M and play a stream-send as it arrives; its title
+      shows the frame rate, the bit rate and how far behind the newest picture
+      it is. Escape closes it, M mutes.
+
 Run `capture-spike help` for this text.";
 
 pub fn main() {
@@ -154,6 +167,8 @@ fn run() -> Result<()> {
         Some("shots") => shots(args),
         Some("play") => play(args),
         Some("ocr") => ocr(args),
+        Some("stream-send") => stream::send(args),
+        Some("stream-watch") => stream::watch(args),
         Some("help") | None => {
             println!("{USAGE}");
             Ok(())

@@ -23,7 +23,10 @@ pub use crate::sys::imp::record::missing_software;
 pub use crate::sys::imp::record::{Recorder, attached, microphones};
 
 use crate::screen::{MonitorId, PhysicalRect, WindowId};
-use std::{path::PathBuf, time::Duration};
+use std::{path::PathBuf, sync::Arc, time::Duration};
+
+/// Where a live recording's frames go, as each is encoded (issue #66).
+pub type LiveSink = Arc<dyn Fn(crate::live::LiveFrame) + Send + Sync>;
 
 /// 100-nanosecond units: the recorder's clock.
 #[cfg_attr(

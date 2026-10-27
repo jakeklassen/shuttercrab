@@ -1,9 +1,13 @@
 //! From converted frames to an MP4: RGBA to NV12 in the Direct3D video
 //! processor, then H.264 through Media Foundation's sink writer, beside an
 //! AAC sound track if the recording has sound.
+//!
+//! A live recording (issue #66) goes to a media sink of ours instead of a
+//! file: the sink writer encodes just the same, and the sink hands each
+//! coded frame on as it comes.
 
-use super::sound;
-use crate::sys::imp::gpu::Gpu;
+use super::{live_sink, sound};
+use crate::{record::LiveSink, sys::imp::gpu::Gpu};
 use anyhow::{Context, Result, ensure};
 use std::{
     path::Path,
@@ -196,13 +200,16 @@ const SOUND_BYTES_PER_SECOND: u32 = 24_000;
 
 impl Mp4Writer {
     /// With `hardware`, Media Foundation may choose a hardware encoder; with
-    /// `sound`, the file gets a sound track (48 kHz stereo AAC).
+    /// `sound`, the file gets a sound track (48 kHz stereo AAC). With
+    /// `live`, nothing is written to `path`: the frames go to `live` as
+    /// they are encoded.
     pub(super) fn new(
         gpu: &Gpu,
         path: &Path,
         (w, h, fps): (u32, u32, u32),
         hardware: bool,
         sound: bool,
+        live: Option<LiveSink>,
     ) -> Result<Self> {
         unsafe {
             let mut token = 0;
@@ -216,29 +223,62 @@ impl Mp4Writer {
             let attributes = attributes.context("no attributes")?;
             attributes.SetUINT32(&MF_READWRITE_ENABLE_HARDWARE_TRANSFORMS, hardware as u32)?;
             attributes.SetUnknown(&MF_SINK_WRITER_D3D_MANAGER, &manager)?;
-            // MP4 whatever the file is called: the app writes to a
-            // `.partial` name and renames the file once it is finished.
-            attributes.SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4)?;
-
-            let _ = std::fs::remove_file(path);
-            let writer = MFCreateSinkWriterFromURL(&HSTRING::from(path), None, &attributes)
-                .with_context(|| format!("cannot write {}", path.display()))?;
+            let streaming = live.is_some();
 
             // PRD §13.1: H.264, Rec.709. About 0.1 bit per pixel per frame,
             // within 2–80 Mbit/s.
             let bitrate = ((w as u64 * h as u64 * fps as u64) / 10).clamp(2_000_000, 80_000_000);
-            let output = video_type(&MFVideoFormat_H264, w, h, fps)?;
-            output.SetUINT32(&MF_MT_AVG_BITRATE, bitrate as u32)?;
-            output.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
-            let stream = writer.AddStream(&output)?;
+            let video = video_type(&MFVideoFormat_H264, w, h, fps)?;
+            video.SetUINT32(&MF_MT_AVG_BITRATE, bitrate as u32)?;
+            video.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
+            if streaming {
+                // A key frame a second: where someone who starts watching
+                // late can start.
+                video.SetUINT32(&MF_MT_MAX_KEYFRAME_SPACING, fps)?;
+            }
+            let aac = if sound {
+                let aac = sound_type(&MFAudioFormat_AAC)?;
+                aac.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, SOUND_BYTES_PER_SECOND)?;
+                Some(aac)
+            } else {
+                None
+            };
+
+            let writer = match live {
+                None => {
+                    // MP4 whatever the file is called: the app writes to a
+                    // `.partial` name and renames the file once it is
+                    // finished.
+                    attributes
+                        .SetGUID(&MF_TRANSCODE_CONTAINERTYPE, &MFTranscodeContainerType_MPEG4)?;
+                    let _ = std::fs::remove_file(path);
+                    MFCreateSinkWriterFromURL(&HSTRING::from(path), None, &attributes)
+                        .with_context(|| format!("cannot write {}", path.display()))?
+                }
+                Some(sink) => {
+                    // No frames held back to look ahead (no B-frames).
+                    attributes.SetUINT32(&MF_LOW_LATENCY, 1)?;
+                    let media_sink = live_sink::create(&video, aac.as_ref(), sink)?;
+                    MFCreateSinkWriterFromMediaSink(&media_sink, &attributes)
+                        .context("cannot stream the recording")?
+                }
+            };
+            // A live sink has its streams already, in this order.
+            let stream = if streaming {
+                0
+            } else {
+                writer.AddStream(&video)?
+            };
             let input = video_type(&MFVideoFormat_NV12, w, h, fps)?;
             writer
                 .SetInputMediaType(stream, &input, None)
                 .context("the encoder does not take NV12 at this size")?;
-            let sound = if sound {
-                let output = sound_type(&MFAudioFormat_AAC)?;
-                output.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, SOUND_BYTES_PER_SECOND)?;
-                let stream = writer.AddStream(&output).context("no AAC encoder")?;
+            let sound = if let Some(aac) = aac {
+                let stream = if streaming {
+                    1
+                } else {
+                    writer.AddStream(&aac).context("no AAC encoder")?
+                };
                 let input = sound_type(&MFAudioFormat_PCM)?;
                 input.SetUINT32(&MF_MT_AUDIO_BLOCK_ALIGNMENT, u32::from(sound::CHANNELS) * 2)?;
                 input.SetUINT32(
@@ -391,5 +431,116 @@ impl Drop for Mp4Writer {
         if !self.finished {
             let _ = unsafe { self.writer.Finalize() };
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        live::{LiveFrame, Track},
+        record::TICKS_PER_SECOND,
+    };
+    use std::{
+        sync::Mutex,
+        time::{Duration, Instant},
+    };
+
+    /// A moving picture at 60 fps through the video processor and the
+    /// encoder, live, in real time: how long after each picture goes in its
+    /// frame comes out of the live stream.
+    #[test]
+    #[ignore = "measures the live path in real time: run by hand"]
+    fn live_frames_come_out_soon_after_they_go_in() {
+        unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.unwrap();
+        let (w, h, fps) = (1280u32, 720u32, 60u32);
+        let gpu = Gpu::video(None).unwrap();
+        let rgba = gpu
+            .texture(
+                w,
+                h,
+                DXGI_FORMAT_R8G8B8A8_UNORM,
+                D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+                None,
+            )
+            .unwrap();
+        let nv12 = Nv12::new(&gpu, &rgba, w, h, fps).unwrap();
+        let out = Arc::new(Mutex::new(Vec::<(Instant, LiveFrame)>::new()));
+        let sink = out.clone();
+        let mut writer = Mp4Writer::new(
+            &gpu,
+            Path::new("unused"),
+            (w, h, fps),
+            true,
+            false,
+            Some(Arc::new(move |frame| {
+                sink.lock().unwrap().push((Instant::now(), frame));
+            })),
+        )
+        .unwrap();
+        let frame = TICKS_PER_SECOND / i64::from(fps);
+        let mut pixels = vec![0u8; (w * h * 4) as usize];
+        let count = fps * 4;
+        let mut written = Vec::with_capacity(count as usize);
+        let start = Instant::now();
+        for n in 0..count {
+            let due = Duration::from_nanos(n as u64 * frame as u64 * 100);
+            while start.elapsed() < due {
+                std::thread::sleep(Duration::from_micros(500));
+            }
+            let bar = (n * 12) % (w - 80);
+            for (i, px) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                let x = i as u32 % w;
+                let v = if (bar..bar + 80).contains(&x) {
+                    255
+                } else {
+                    30
+                };
+                px.copy_from_slice(&[v, v / 2, 255 - v, 255]);
+            }
+            unsafe {
+                gpu.context
+                    .UpdateSubresource(&rgba, 0, None, pixels.as_ptr().cast(), w * 4, 0);
+            }
+            let slot = loop {
+                if let Some(slot) = nv12.free_slot() {
+                    break slot;
+                }
+                std::thread::sleep(Duration::from_micros(200));
+            };
+            nv12.convert(&gpu, slot).unwrap();
+            written.push(Instant::now());
+            writer.write(&nv12, slot, n as i64 * frame, frame).unwrap();
+        }
+        let hardware = writer.finish().unwrap();
+        let out = out.lock().unwrap();
+        let mut delays: Vec<Duration> = out
+            .iter()
+            .filter(|(_, f)| f.track == Track::Video)
+            .map(|(at, f)| at.saturating_duration_since(written[(f.time / frame) as usize]))
+            .collect();
+        let pictures = delays.len();
+        let keys = out
+            .iter()
+            .filter(|(_, f)| f.track == Track::Video && f.key)
+            .count();
+        let bytes: usize = out.iter().map(|(_, f)| f.data.len()).sum();
+        delays.sort();
+        let ms = |d: Duration| d.as_millis();
+        println!(
+            "hardware encoder {hardware}; {pictures} pictures of {count}, {keys} key, {:.1} Mbit/s; fed in {:?}",
+            bytes as f64 * 8.0 / 4.0 / 1e6,
+            written.last().unwrap().duration_since(start)
+        );
+        println!(
+            "picture in to frame out: min {} ms, median {} ms, 90% {} ms, max {} ms",
+            ms(delays[0]),
+            ms(delays[pictures / 2]),
+            ms(delays[pictures * 9 / 10]),
+            ms(delays[pictures - 1])
+        );
+        assert!(pictures as u32 >= count - 2, "{pictures} of {count}");
+        assert!(keys >= 3, "a key frame a second");
+        unsafe { MFShutdown() }.unwrap();
     }
 }

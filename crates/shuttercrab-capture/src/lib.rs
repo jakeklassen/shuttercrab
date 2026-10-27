@@ -7,6 +7,7 @@
 //! OSes get one that says they are not supported yet.
 
 pub mod color;
+pub mod live;
 pub mod play;
 pub mod png_io;
 pub mod raw;

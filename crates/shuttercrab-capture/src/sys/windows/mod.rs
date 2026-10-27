@@ -8,3 +8,4 @@ pub mod gpu;
 pub mod play;
 pub mod record;
 pub mod service;
+pub mod watch;
