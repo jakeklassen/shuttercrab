@@ -847,6 +847,7 @@ dependencies = [
  "anyhow",
  "futures",
  "half",
+ "log",
  "png 0.18.1",
  "serde_json",
  "shuttercrab-capture",

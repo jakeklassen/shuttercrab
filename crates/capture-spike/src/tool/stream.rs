@@ -52,6 +52,24 @@ const WM_FRAME: u32 = WM_APP;
 /// The stream ended.
 const WM_ENDED: u32 = WM_APP + 1;
 
+/// The recorder's log, on stderr: it says how late each source's sound
+/// arrived, and how much came too late to mix.
+struct Log;
+
+impl log::Log for Log {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{}: {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
+}
+
 /// What has gone over the socket, for the status lines.
 #[derive(Default)]
 struct Sent {
@@ -96,11 +114,12 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         .transpose()?
         .unwrap_or(DEFAULT_PORT);
     args.finish()?;
+    let _ = log::set_logger(&Log);
+    log::set_max_level(log::LevelFilter::Info);
 
     let monitors = display::enumerate()?;
     let target = display::select(&monitors, monitor.as_deref())?;
     let (width, height) = (region.width & !1, region.height & !1);
-    let sound = system_sound || sound_process.is_some() || microphone;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!(
         "{width}x{height} of {} at {fps} fps, {}. Waiting for a viewer on 127.0.0.1:{port} \
@@ -119,7 +138,8 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         width,
         height,
         fps,
-        sound,
+        // A live recording always has a sound track, if only silence.
+        sound: true,
     }
     .write_to(&mut *out.lock().unwrap())?;
     out.lock().unwrap().flush()?;
@@ -142,7 +162,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
             sound_process,
             microphone,
             microphone_device: None,
-            sound_track: sound,
+            sound_track: true,
             path: "unused.mp4".into(),
         },
         sink(out, gone.clone(), sent.clone(), started),
