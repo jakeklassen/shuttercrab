@@ -5,11 +5,11 @@
 
 use super::Args;
 use anyhow::{Context, Result, ensure};
-use capture_spike::{analysis::Roi, display, gpu::Gpu};
+use capture_spike::{analysis::Roi, display};
 use shuttercrab_capture::{
     MonitorId, PhysicalRect,
-    live::{LiveFormat, LiveFrame, LivePlayer, Track},
-    record::{LiveSink, RecordOptions, Recorder},
+    live::{LiveFormat, LiveFrame, LivePlayer, SoundCodec, Track},
+    record::{Live, LiveSink, RecordOptions, Recorder},
 };
 use std::{
     cell::RefCell,
@@ -22,24 +22,22 @@ use std::{
     time::{Duration, Instant},
 };
 use windows::{
-    Graphics::DirectX::Direct3D11::IDirect3DSurface,
     Win32::{
         Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
         Graphics::{
+            Direct3D11::{ID3D11Device, ID3D11Texture2D},
             Dxgi::{
                 Common::{DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_SAMPLE_DESC},
                 DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
                 DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice,
-                IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
+                IDXGIFactory2, IDXGISwapChain1,
             },
             Gdi::{GetMonitorInfoW, MONITORINFO},
         },
-        System::{
-            LibraryLoader::GetModuleHandleW,
-            WinRT::Direct3D11::CreateDirect3D11SurfaceFromDXGISurface,
-        },
+        System::LibraryLoader::GetModuleHandleW,
         UI::{
-            HiDpi::AdjustWindowRectExForDpi, Input::KeyboardAndMouse::VK_ESCAPE,
+            HiDpi::AdjustWindowRectExForDpi,
+            Input::KeyboardAndMouse::{VK_ESCAPE, VK_OEM_4, VK_OEM_6},
             WindowsAndMessaging::*,
         },
     },
@@ -47,10 +45,8 @@ use windows::{
 };
 
 const DEFAULT_PORT: u16 = 47_100;
-/// A new picture is ready to show.
-const WM_FRAME: u32 = WM_APP;
 /// The stream ended.
-const WM_ENDED: u32 = WM_APP + 1;
+const WM_ENDED: u32 = WM_APP;
 
 /// The recorder's log, on stderr: it says how late each source's sound
 /// arrived, and how much came too late to mix.
@@ -108,6 +104,11 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         .transpose()
         .context("--sound-of takes a process id")?;
     let microphone = args.option("--mic")?.as_deref() == Some("on");
+    let codec = match args.option("--codec")?.as_deref() {
+        None | Some("pcm") => SoundCodec::Pcm,
+        Some("aac") => SoundCodec::Aac,
+        Some(other) => anyhow::bail!("--codec takes pcm or aac, not {other}"),
+    };
     let port: u16 = args
         .option("--port")?
         .map(|p| p.parse())
@@ -120,10 +121,11 @@ pub(super) fn send(mut args: Args) -> Result<()> {
     let monitors = display::enumerate()?;
     let target = display::select(&monitors, monitor.as_deref())?;
     let (width, height) = (region.width & !1, region.height & !1);
+    let sound = system_sound || sound_process.is_some() || microphone;
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!(
-        "{width}x{height} of {} at {fps} fps, {}. Waiting for a viewer on 127.0.0.1:{port} \
-         (capture-spike stream-watch)...",
+        "{width}x{height} of {} at {fps} fps, {} ({codec:?}). Waiting for a viewer on \
+         127.0.0.1:{port} (capture-spike stream-watch)...",
         target.device_name,
         describe_sound(sound_process, system_sound, microphone)
     );
@@ -138,8 +140,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         width,
         height,
         fps,
-        // A live recording always has a sound track, if only silence.
-        sound: true,
+        sound: sound.then_some(codec),
     }
     .write_to(&mut *out.lock().unwrap())?;
     out.lock().unwrap().flush()?;
@@ -162,10 +163,13 @@ pub(super) fn send(mut args: Args) -> Result<()> {
             sound_process,
             microphone,
             microphone_device: None,
-            sound_track: true,
+            sound_track: sound,
             path: "unused.mp4".into(),
         },
-        sink(out, gone.clone(), sent.clone(), started),
+        Live {
+            sink: sink(out, gone.clone(), sent.clone(), started),
+            sound: codec,
+        },
     )?;
 
     report(&gone, &sent, started);
@@ -252,23 +256,26 @@ fn report(gone: &AtomicBool, sent: &Mutex<Sent>, started: Instant) {
     }
 }
 
-/// The viewer window's state, on its thread.
+/// The viewer window's state, on its thread. The pictures are drawn on a
+/// thread of their own, so the window keeps up while they are.
 struct Viewer {
     player: Arc<LivePlayer>,
-    swap_chain: IDXGISwapChain1,
-    /// A picture is waiting to be shown: no more messages until it is.
-    pending: Arc<AtomicBool>,
     bytes: Arc<AtomicU64>,
-    shown: u64,
+    /// Pictures drawn, counted by the drawing thread.
+    drawn: Arc<AtomicU64>,
+    /// Tells the drawing thread to stop.
+    stop: Arc<AtomicBool>,
     last: (Instant, u64, u64),
     muted: bool,
     ended: bool,
-    _gpu: Gpu,
 }
 
 thread_local! {
     static VIEWER: RefCell<Option<Viewer>> = const { RefCell::new(None) };
 }
+
+/// How much [ and ] change how far ahead of the sound pictures are shown.
+const LEAD_STEP: Duration = Duration::from_millis(20);
 
 pub(super) fn watch(mut args: Args) -> Result<()> {
     let from = args
@@ -283,39 +290,27 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let mut reader = BufReader::new(socket);
     let format = LiveFormat::read_from(&mut reader)?;
     println!(
-        "{}x{} at {} fps, {}. Escape closes the window; M mutes.",
+        "{}x{} at {} fps, {}. Escape closes the window; M mutes; [ and ] move the \
+         pictures earlier or later against the sound.",
         format.width,
         format.height,
         format.fps,
-        if format.sound {
-            "with sound"
-        } else {
-            "no sound"
+        match format.sound {
+            Some(SoundCodec::Aac) => "AAC sound",
+            Some(SoundCodec::Pcm) => "PCM sound",
+            None => "no sound",
         }
     );
 
     let monitors = display::enumerate()?;
     let target = display::select(&monitors, monitor.as_deref())?;
     let hwnd = open_window(&format, target)?;
-    let gpu = Gpu::video(None)?;
-    let swap_chain = swap_chain(&gpu, hwnd, &format)?;
+    let player = Arc::new(LivePlayer::new(format, |why| {
+        eprintln!("the sound stopped: {why}");
+    })?);
+    player.set_muted(muted);
 
-    let pending = Arc::new(AtomicBool::new(false));
-    let frame_pending = pending.clone();
     let window = hwnd.0 as usize;
-    let player = Arc::new(LivePlayer::new(
-        format,
-        |why| eprintln!("the player stopped: {why}"),
-        move || {
-            if !frame_pending.swap(true, Ordering::AcqRel) {
-                let _ = unsafe {
-                    PostMessageW(Some(HWND(window as *mut _)), WM_FRAME, WPARAM(0), LPARAM(0))
-                };
-            }
-        },
-    )?);
-    player.set_muted(muted)?;
-
     let bytes = Arc::new(AtomicU64::new(0));
     let (reader_player, reader_bytes) = (player.clone(), bytes.clone());
     std::thread::spawn(move || {
@@ -338,17 +333,31 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
             unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_ENDED, WPARAM(0), LPARAM(0)) };
     });
 
+    let (drawn, stop) = (
+        Arc::new(AtomicU64::new(0)),
+        Arc::new(AtomicBool::new(false)),
+    );
+    let drawing = {
+        let (player, drawn, stop) = (player.clone(), drawn.clone(), stop.clone());
+        std::thread::spawn(move || {
+            let hwnd = HWND(window as *mut _);
+            if let Err(e) = draw(&player, hwnd, (format.width, format.height), &drawn, &stop)
+                && !stop.load(Ordering::Relaxed)
+            {
+                eprintln!("drawing stopped: {e:#}");
+            }
+        })
+    };
+
     VIEWER.with_borrow_mut(|viewer| {
         *viewer = Some(Viewer {
             player,
-            swap_chain,
-            pending,
             bytes,
-            shown: 0,
+            drawn,
+            stop: stop.clone(),
             last: (Instant::now(), 0, 0),
             muted,
             ended: false,
-            _gpu: gpu,
         })
     });
     unsafe {
@@ -360,7 +369,42 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
             DispatchMessageW(&message);
         }
     }
+    stop.store(true, Ordering::Relaxed);
+    let _ = drawing.join();
     VIEWER.with_borrow_mut(|viewer| viewer.take());
+    Ok(())
+}
+
+/// Draw each picture as it falls due, once a refresh of the display the
+/// window is on, until `stop`.
+fn draw(
+    player: &LivePlayer,
+    hwnd: HWND,
+    (width, height): (u32, u32),
+    drawn: &AtomicU64,
+    stop: &AtomicBool,
+) -> Result<()> {
+    let swap_chain = swap_chain(&player.device(), hwnd, width, height)?;
+    let mut output = None;
+    let mut refreshes = 0u32;
+    while !stop.load(Ordering::Relaxed) {
+        // The window may have moved to another display: look again now
+        // and then.
+        if refreshes.is_multiple_of(120) {
+            output = unsafe { swap_chain.GetContainingOutput() }.ok();
+        }
+        refreshes = refreshes.wrapping_add(1);
+        match &output {
+            Some(output) => unsafe { output.WaitForVBlank() }?,
+            None => std::thread::sleep(Duration::from_millis(8)),
+        }
+        let back: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
+        if player.draw(&back)? {
+            // Just after a refresh: shown at the next.
+            unsafe { swap_chain.Present(0, DXGI_PRESENT(0)) }.ok()?;
+            drawn.fetch_add(1, Ordering::Relaxed);
+        }
+    }
     Ok(())
 }
 
@@ -437,16 +481,17 @@ fn open_window(format: &LiveFormat, monitor: &display::Monitor) -> Result<HWND> 
 }
 
 /// A swap chain at the pictures' own size; the window stretches it.
-fn swap_chain(gpu: &Gpu, hwnd: HWND, format: &LiveFormat) -> Result<IDXGISwapChain1> {
+fn swap_chain(
+    device: &ID3D11Device,
+    hwnd: HWND,
+    width: u32,
+    height: u32,
+) -> Result<IDXGISwapChain1> {
     unsafe {
-        let factory: IDXGIFactory2 = gpu
-            .device
-            .cast::<IDXGIDevice>()?
-            .GetAdapter()?
-            .GetParent()?;
+        let factory: IDXGIFactory2 = device.cast::<IDXGIDevice>()?.GetAdapter()?.GetParent()?;
         let desc = DXGI_SWAP_CHAIN_DESC1 {
-            Width: format.width,
-            Height: format.height,
+            Width: width,
+            Height: height,
             Format: DXGI_FORMAT_B8G8R8A8_UNORM,
             SampleDesc: DXGI_SAMPLE_DESC {
                 Count: 1,
@@ -460,48 +505,54 @@ fn swap_chain(gpu: &Gpu, hwnd: HWND, format: &LiveFormat) -> Result<IDXGISwapCha
             ..Default::default()
         };
         factory
-            .CreateSwapChainForHwnd(&gpu.device, hwnd, &desc, None, None)
+            .CreateSwapChainForHwnd(device, hwnd, &desc, None, None)
             .context("could not make a swap chain")
     }
 }
 
 impl Viewer {
-    /// Copy the newest picture into the swap chain and show it.
-    fn show(&mut self) -> Result<()> {
-        self.pending.store(false, Ordering::Release);
-        unsafe {
-            let back: IDXGISurface = self.swap_chain.GetBuffer(0)?;
-            let surface: IDirect3DSurface =
-                CreateDirect3D11SurfaceFromDXGISurface(&back)?.cast()?;
-            self.player.copy_frame(&surface)?;
-            self.swap_chain.Present(1, DXGI_PRESENT(0)).ok()?;
-        }
-        self.shown += 1;
-        Ok(())
-    }
-
     /// The window title with the latest numbers.
     fn status(&mut self) -> String {
-        let (at, shown, bytes) = self.last;
+        let (at, drawn, bytes) = self.last;
         let seconds = at.elapsed().as_secs_f64().max(0.001);
-        let total = self.bytes.load(Ordering::Relaxed);
+        let (now, total) = (
+            self.drawn.load(Ordering::Relaxed),
+            self.bytes.load(Ordering::Relaxed),
+        );
+        let sound = match self.player.sound_behind() {
+            Some(behind) => format!("sound {} ms", behind.as_millis()),
+            None => "no sound".into(),
+        };
         let title = format!(
-            "Shuttercrab live (spike) — {}{:.0} fps shown, {:.1} Mbit/s, {} ms behind the newest picture{}",
+            "Shuttercrab live (spike) — {}{:.0} fps, {:.1} Mbit/s; behind the newest picture: \
+             picture {} ms, {sound}; pictures lead by up to {} ms ([ ]){}",
             if self.ended { "ENDED — " } else { "" },
-            (self.shown - shown) as f64 / seconds,
+            (now - drawn) as f64 / seconds,
             (total - bytes) as f64 * 8.0 / seconds / 1e6,
             self.player.behind().as_millis(),
+            self.player.lead().as_millis(),
             if self.muted { ", muted (M)" } else { "" }
         );
-        self.last = (Instant::now(), self.shown, total);
+        self.last = (Instant::now(), now, total);
         title
+    }
+
+    /// Show pictures `step` earlier (or later, if negative) against the
+    /// sound.
+    fn move_lead(&mut self, earlier: bool) -> String {
+        let lead = self.player.lead();
+        self.player.set_lead(if earlier {
+            lead + LEAD_STEP
+        } else {
+            lead.saturating_sub(LEAD_STEP)
+        });
+        self.status()
     }
 }
 
 /// What the window does once the viewer is no longer borrowed: these send
 /// messages straight back to `window_proc`.
 enum After {
-    Nothing,
     Title(String),
     Close,
 }
@@ -515,12 +566,6 @@ extern "system" fn window_proc(
     let handled = VIEWER.with_borrow_mut(|viewer| {
         let viewer = viewer.as_mut()?;
         Some(match message {
-            WM_FRAME => {
-                if let Err(e) = viewer.show() {
-                    eprintln!("{e:#}");
-                }
-                After::Nothing
-            }
             WM_TIMER => After::Title(viewer.status()),
             WM_ENDED => {
                 viewer.ended = true;
@@ -529,15 +574,25 @@ extern "system" fn window_proc(
             WM_KEYDOWN if wparam.0 == usize::from(VK_ESCAPE.0) => After::Close,
             WM_KEYDOWN if wparam.0 == usize::from(b'M') => {
                 viewer.muted = !viewer.muted;
-                let _ = viewer.player.set_muted(viewer.muted);
+                viewer.player.set_muted(viewer.muted);
                 After::Title(viewer.status())
+            }
+            WM_KEYDOWN if wparam.0 == usize::from(VK_OEM_6.0) => {
+                After::Title(viewer.move_lead(true))
+            }
+            WM_KEYDOWN if wparam.0 == usize::from(VK_OEM_4.0) => {
+                After::Title(viewer.move_lead(false))
+            }
+            WM_DESTROY => {
+                // Before the window goes: drawing into it fails after.
+                viewer.stop.store(true, Ordering::Relaxed);
+                return None;
             }
             _ => return None,
         })
     });
     if let Some(after) = handled {
         match after {
-            After::Nothing => {}
             After::Title(title) => {
                 let _ = unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) };
             }

@@ -117,15 +117,17 @@ USAGE
       service N times (default 5), printing memory around each. Saves nothing.
 
   capture-spike stream-send [--monitor M] [--region X,Y,W,H] [--fps 30|60] [--sound on]
-                            [--sound-of PID] [--mic on] [--port N]
+                            [--sound-of PID] [--mic on] [--codec pcm|aac] [--port N]
       Live streaming, spike S0 (issue #66): wait for a viewer on 127.0.0.1
       (port 47100 by default), then record live and send each frame as it is
       encoded, until the viewer leaves. The region defaults to 0,0,2560,1440.
+      The sound goes as PCM (1.5 Mbit/s, no delay) unless --codec aac.
 
   capture-spike stream-watch [--from HOST:PORT] [--monitor M] [--sound off]
       Open a window on monitor M and play a stream-send as it arrives; its title
-      shows the frame rate, the bit rate and how far behind the newest picture
-      it is. Escape closes it, M mutes.
+      shows the frame rate, the bit rate and how far the picture and the sound
+      are behind the newest picture. Escape closes it, M mutes, [ and ] show
+      the pictures 20 ms earlier or later against the sound.
 
 Run `capture-spike help` for this text.";
 
