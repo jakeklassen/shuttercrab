@@ -1,0 +1,7 @@
+node_modules/
+.void/
+.env
+dist/
+.wrangler/
+.void-wrangler.jsonc
+.void-wrangler.jsonc
