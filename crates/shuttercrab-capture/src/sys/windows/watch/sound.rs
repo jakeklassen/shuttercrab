@@ -42,16 +42,19 @@ const TICKS: i64 = 10_000_000;
 const QUEUED: usize = 1_100;
 
 /// The least the queue should hold whenever the speakers ask for more,
-/// frames (10 ms): once a second, what it held beyond this all that second
-/// is skipped.
+/// frames (10 ms).
 const SPARE: usize = 480;
 
-/// How much may build up at once (after a stall) before the oldest is
-/// skipped straight away, frames (50 ms).
+/// How much may build up at once (after a stall) before it is cut, frames
+/// (50 ms).
 const MOST: usize = 2_400;
 
-/// The least extra sound worth skipping, frames (15 ms).
-const WORTH_SKIPPING: usize = 720;
+/// How much faster or slower the queue plays to keep near [`SPARE`]: 0.5%,
+/// a pitch change of 9 cents, too little to hear in speech.
+const PACE: f64 = 0.005;
+
+/// How long sound fades in after a start or a cut, frames (5 ms).
+const FADE: usize = 240;
 
 /// How much the speakers' device holds, 100 ns ticks.
 const DEVICE_BUFFER: i64 = 200_000;
@@ -232,100 +235,129 @@ impl Clock {
 /// once, 100 ns ticks (50 ms).
 const JUMP: i64 = 500_000;
 
-/// Decoded sound waiting to play.
+/// Decoded sound waiting to play, one stereo frame after another (the
+/// sender's sound has no gaps).
 #[derive(Default)]
 struct Queue {
-    /// Each piece's time and samples, oldest first.
-    pieces: VecDeque<(i64, Vec<i16>)>,
-    /// Samples of the first piece already played.
-    offset: usize,
-    /// Frames queued in all.
-    frames: usize,
+    frames: VecDeque<[i16; 2]>,
+    /// The time of the first frame queued.
+    front: i64,
+    /// Where between the first frame and the next playing has got.
+    position: f64,
+    /// How fast the queue plays: 1, or a little over to drain extra sound,
+    /// or a little under to build some up.
+    pace: f64,
     /// Waiting for [`QUEUED`] frames before playing: at the start, and
     /// once the queue has run dry.
     filling: bool,
+    /// Frames into fading in, after a start or a cut.
+    fade: usize,
     clock: Option<Clock>,
     /// The fewest frames queued when the speakers asked for more, since
     /// `since`.
     low: usize,
     since: Option<Instant>,
+    /// When the first sound arrived, for the log.
+    started: Option<Instant>,
 }
 
 impl Queue {
+    fn push(&mut self, time: i64, samples: &[i16]) {
+        if self.frames.is_empty() {
+            self.front = time;
+            self.position = 0.0;
+        }
+        self.started.get_or_insert_with(Instant::now);
+        self.frames.extend(samples.as_chunks::<2>().0);
+    }
+
     /// Fill `out` with the next sound, or silence while filling: the time
-    /// just after the last of it, if it was all sound.
+    /// of the frame after it, if it was all sound.
     fn fill(&mut self, out: &mut [i16]) -> Option<i64> {
         if self.filling || self.clock.is_none() {
-            if self.frames < QUEUED {
+            if self.frames.len() < QUEUED {
                 out.fill(0);
                 return None;
             }
             self.filling = false;
+            self.fade = 0;
+            self.pace = 1.0;
             self.low = usize::MAX;
             self.since = Some(Instant::now());
         }
-        self.keep_short();
-        let mut written = 0;
-        let mut end = None;
-        while written < out.len() {
-            let Some((time, piece)) = self.pieces.front() else {
-                break;
-            };
-            let (time, len) = (*time, piece.len());
-            let n = (len - self.offset).min(out.len() - written);
-            out[written..written + n].copy_from_slice(&piece[self.offset..self.offset + n]);
-            written += n;
-            self.offset += n;
-            self.frames -= n / usize::from(CHANNELS);
-            end = Some(time + frames_to_ticks(self.offset / usize::from(CHANNELS)));
-            if self.offset == len {
-                self.pieces.pop_front();
-                self.offset = 0;
+        self.keep_pace();
+        for (i, frame) in out.as_chunks_mut::<2>().0.iter_mut().enumerate() {
+            let index = self.position as usize;
+            if index + 1 >= self.frames.len() {
+                let silent = out.len() / 2 - i;
+                out[i * 2..].fill(0);
+                self.filling = true;
+                log::info!(
+                    "live sound ran dry {:?} in: {} ms of silence played",
+                    self.started.map(|s| s.elapsed()),
+                    frames_to_ticks(silent) / 10_000
+                );
+                self.consume();
+                return None;
             }
+            // Between two frames when the pace is not 1.
+            let (a, b, t) = (
+                self.frames[index],
+                self.frames[index + 1],
+                self.position.fract(),
+            );
+            let gain = (self.fade as f64 / FADE as f64).min(1.0);
+            for c in 0..2 {
+                let value = f64::from(a[c]) + (f64::from(b[c]) - f64::from(a[c])) * t;
+                frame[c] = (value * gain) as i16;
+            }
+            self.fade += 1;
+            self.position += self.pace;
         }
-        if written < out.len() {
-            out[written..].fill(0);
-            self.filling = true;
-            return None;
-        }
-        end
+        self.consume();
+        Some(self.front + (self.position * TICKS as f64 / f64::from(RATE)) as i64)
     }
 
-    /// Skip what the queue has held beyond [`SPARE`] for the last second,
-    /// once that is [`WORTH_SKIPPING`], or beyond [`QUEUED`] if [`MOST`]
-    /// has built up: sound that would only make it later. Each skip moves
-    /// the pictures on with it, so not for a few ms.
-    fn keep_short(&mut self) {
-        if self.frames > MOST {
-            self.skip(self.frames - QUEUED);
+    /// Drop the frames played.
+    fn consume(&mut self) {
+        let played = (self.position as usize).min(self.frames.len());
+        self.frames.drain(..played);
+        self.front += frames_to_ticks(played);
+        self.position -= played as f64;
+    }
+
+    /// Play a little faster when the queue has held more than [`SPARE`]
+    /// all of the last half second, and a little slower when it has run
+    /// close to dry: the sound stays a few ms behind what arrives, without
+    /// cutting any out. A backlog of [`MOST`] (after a stall) is cut at
+    /// once, back to [`QUEUED`], and faded in.
+    fn keep_pace(&mut self) {
+        let queued = self.frames.len();
+        if queued > MOST {
+            let cut = queued - QUEUED;
+            log::info!(
+                "live sound skipped {:?} in: {} ms",
+                self.started.map(|s| s.elapsed()),
+                frames_to_ticks(cut) / 10_000
+            );
+            self.frames.drain(..cut);
+            self.front += frames_to_ticks(cut);
+            self.fade = 0;
         }
-        self.low = self.low.min(self.frames);
+        self.low = self.low.min(self.frames.len());
         if self
             .since
-            .is_some_and(|since| since.elapsed().as_secs() >= 1)
+            .is_some_and(|since| since.elapsed().as_millis() >= 500)
         {
-            if self.low > SPARE + WORTH_SKIPPING {
-                self.skip(self.low - SPARE);
-            }
+            self.pace = if self.low > SPARE + SPARE / 2 {
+                1.0 + PACE
+            } else if self.low < SPARE / 4 {
+                1.0 - PACE
+            } else {
+                1.0
+            };
             self.low = usize::MAX;
             self.since = Some(Instant::now());
-        }
-    }
-
-    /// Drop the oldest `frames`.
-    fn skip(&mut self, mut frames: usize) {
-        while frames > 0
-            && let Some((_, piece)) = self.pieces.front()
-        {
-            let left = (piece.len() - self.offset) / usize::from(CHANNELS);
-            let n = left.min(frames);
-            self.offset += n * usize::from(CHANNELS);
-            self.frames -= n;
-            frames -= n;
-            if n == left {
-                self.pieces.pop_front();
-                self.offset = 0;
-            }
         }
     }
 }
@@ -372,9 +404,7 @@ impl Output {
     }
 
     pub(super) fn queue(&self, time: i64, samples: Vec<i16>) -> Result<()> {
-        let mut queue = lock(&self.shared.queue);
-        queue.frames += samples.len() / usize::from(CHANNELS);
-        queue.pieces.push_back((time, samples));
+        lock(&self.shared.queue).push(time, &samples);
         Ok(())
     }
 

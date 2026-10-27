@@ -61,7 +61,8 @@ fn median(mut values: Vec<Duration>) -> Duration {
 }
 
 /// `width` × `height` of the first monitor's top left at `fps`, with what
-/// the speakers play.
+/// the speakers play: only process `LIVE_SOUND_OF`'s share, if set; and
+/// the microphone if `LIVE_MIC` is set.
 fn options(width: u32, height: u32, fps: u32) -> RecordOptions {
     let monitors = block_on(Capture::start().unwrap().list_monitors()).unwrap();
     let monitor = monitors.first().expect("a monitor");
@@ -72,8 +73,10 @@ fn options(width: u32, height: u32, fps: u32) -> RecordOptions {
         fps,
         include_cursor: true,
         system_sound: true,
-        sound_process: None,
-        microphone: false,
+        sound_process: std::env::var("LIVE_SOUND_OF")
+            .ok()
+            .map(|pid| pid.parse().unwrap()),
+        microphone: std::env::var_os("LIVE_MIC").is_some(),
         microphone_device: None,
         sound_track: true,
         path: std::path::PathBuf::from(env!("CARGO_TARGET_TMPDIR")).join("unused.mp4"),
