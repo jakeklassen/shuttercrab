@@ -1,0 +1,40 @@
+{
+  "version": 1,
+  "source": {
+    "durable_objects": {
+      "bindings": [
+        {
+          "name": "RoomsWs",
+          "class_name": "RoomsWs"
+        }
+      ]
+    },
+    "migrations": [
+      {
+        "tag": "void-ws-v1",
+        "new_sqlite_classes": [
+          "RoomsWs"
+        ]
+      }
+    ]
+  },
+  "resolved": {
+    "durable_objects": {
+      "bindings": [
+        {
+          "name": "RoomsWs",
+          "class_name": "RoomsWs"
+        }
+      ]
+    },
+    "migrations": [
+      {
+        "tag": "void-ws-v1",
+        "new_sqlite_classes": [
+          "RoomsWs"
+        ]
+      }
+    ]
+  },
+  "text": "{\n  \"durable_objects\": {\n    \"bindings\": [\n      {\n        \"name\": \"RoomsWs\",\n        \"class_name\": \"RoomsWs\"\n      }\n    ]\n  },\n  \"migrations\": [\n    {\n      \"tag\": \"void-ws-v1\",\n      \"new_sqlite_classes\": [\n        \"RoomsWs\"\n      ]\n    }\n  ]\n}"
+}
