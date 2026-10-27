@@ -79,6 +79,8 @@ pub(super) struct Session {
     /// What following a recorded window needs; `None` for a display.
     window: Option<WindowTarget>,
     mixer: Mixer,
+    /// How far behind now the mix is written, 100 ns ticks.
+    sound_lag: i64,
     /// How each source's sound arrived, for the log.
     arrivals: [Arrivals; 2],
     /// Where captures send their sound, to start one later.
@@ -190,6 +192,11 @@ impl Session {
         let converter = VideoConverter::new(&gpu, &crop, &sdr, ANALYSE_EVERY)?;
         let nv12 = Nv12::new(&gpu, &rgba, w, h, options.fps)?;
         let hardware = w.min(h) >= HARDWARE_MIN_SIDE;
+        let sound_lag = if live.is_some() {
+            LIVE_SOUND_LAG
+        } else {
+            SOUND_LAG
+        };
         let writer = Mp4Writer::new(
             &gpu,
             &options.path,
@@ -265,6 +272,7 @@ impl Session {
             captures,
             window,
             mixer: Mixer::default(),
+            sound_lag,
             arrivals: [Arrivals::default(); 2],
             sounds,
         })
@@ -424,7 +432,7 @@ impl Session {
         if !self.writer.has_sound() || timeline.is_paused() {
             return Ok(());
         }
-        self.write_mix_until(timeline.now() - SOUND_LAG)
+        self.write_mix_until(timeline.now() - self.sound_lag)
     }
 
     /// A still screen delivers no frames: repeat the last one every second,
@@ -905,6 +913,10 @@ struct Counts {
 /// How far behind now the sound track is kept, 100 ns ticks: sound arrives
 /// in packets a few hundredths of a second after it plays.
 const SOUND_LAG: i64 = TICKS_PER_SECOND / 5;
+
+/// The same for a live recording, where all of it is delay the viewer
+/// sees and hears (the picture waits for the sound).
+const LIVE_SOUND_LAG: i64 = TICKS_PER_SECOND / 50;
 
 /// A `Duration` as 100 ns ticks.
 fn duration_ticks(duration: Duration) -> i64 {
