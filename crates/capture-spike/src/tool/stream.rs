@@ -48,8 +48,9 @@ const DEFAULT_PORT: u16 = 47_100;
 /// The stream ended.
 const WM_ENDED: u32 = WM_APP;
 
-/// The recorder's log, on stderr: it says how late each source's sound
-/// arrived, and how much came too late to mix.
+/// The recorder's and the player's log, on stderr: how late each source's
+/// sound arrived and how much came too late to mix; when the played sound
+/// ran dry or was cut.
 struct Log;
 
 impl log::Log for Log {
@@ -284,6 +285,8 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let monitor = args.option("--monitor")?;
     let muted = args.option("--sound")?.as_deref() == Some("off");
     args.finish()?;
+    let _ = log::set_logger(&Log);
+    log::set_max_level(log::LevelFilter::Info);
 
     let socket = TcpStream::connect(&from).with_context(|| format!("no stream at {from}"))?;
     socket.set_nodelay(true)?;
