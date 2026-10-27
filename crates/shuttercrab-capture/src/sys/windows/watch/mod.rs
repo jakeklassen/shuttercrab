@@ -2,12 +2,11 @@
 //! decoded as they arrive, with no media player's buffering in the way.
 //!
 //! Pictures go through Windows' H.264 decoder on the graphics card and are
-//! converted to BGRA as they come out. Sound goes through its AAC decoder
-//! to the speakers, with a few hundredths of a second queued. Where the
-//! sound has got to playing is the clock: a picture is shown once the
-//! clock is within the lead of its time. The picture may run a little
-//! ahead of the sound rather than wait for all of it to arrive; sound a
-//! little after the picture goes unnoticed, sound before it does not.
+//! converted to BGRA as they come out. Sound goes as it came (PCM), or
+//! through Windows' AAC decoder, to the speakers with a few hundredths of a
+//! second queued. Where the sound has got to playing is the clock: a
+//! picture is shown when the clock reaches its time, so they stay together
+//! however late both arrive.
 
 mod sound;
 mod video;
@@ -27,10 +26,11 @@ use windows::Win32::{
     Media::MediaFoundation::*,
 };
 
-/// How far ahead of the sound a picture is shown at first, 100 ns ticks.
-/// People notice sound coming after the picture from about 125 ms
-/// (ITU-R BT.1359).
-const LEAD: i64 = 600_000;
+/// How far ahead of the sound a picture is shown at first, 100 ns ticks:
+/// none. Sound a little after the picture goes unnoticed (up to about
+/// 125 ms, ITU-R BT.1359), and showing it ahead would save about 45 ms; but
+/// a voice over the screen should match it.
+const LEAD: i64 = 0;
 
 /// A live recording playing as its frames arrive.
 pub struct LivePlayer {
