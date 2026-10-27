@@ -12,8 +12,8 @@ use super::{
 use crate::{
     color::Highlights,
     record::{
-        HARDWARE_MIN_SIDE, Interruption, LiveSink, MIN_SIDE, RecordOptions, RecordingSummary,
-        Source, TICKS_PER_SECOND, exposure::Exposure, recordable,
+        HARDWARE_MIN_SIDE, Interruption, Live, MIN_SIDE, RecordOptions, RecordingSummary, Source,
+        TICKS_PER_SECOND, exposure::Exposure, recordable,
     },
     screen::PhysicalRect,
     sys::imp::{
@@ -168,7 +168,7 @@ impl Session {
     pub(super) fn new(
         options: &RecordOptions,
         frames: Sender<Event>,
-        live: Option<LiveSink>,
+        live: Option<Live>,
     ) -> Result<Self> {
         ensure!(
             matches!(options.fps, 1..=120),

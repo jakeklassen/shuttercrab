@@ -3,7 +3,7 @@
 //!
 //! No container: each frame goes as soon as it is encoded, in the forms a
 //! decoder takes on their own. H.264 is Annex B, with the parameter sets
-//! before each key frame; AAC has an ADTS header.
+//! before each key frame; AAC has an ADTS header; PCM is the samples.
 
 /// Playing a live recording as it arrives.
 #[cfg(windows)]
@@ -18,8 +18,18 @@ pub struct LiveFormat {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
-    /// Whether there is a sound track (48 kHz stereo AAC).
-    pub sound: bool,
+    /// How the sound track (48 kHz stereo) is sent, if there is one.
+    pub sound: Option<SoundCodec>,
+}
+
+/// How a live recording's sound is sent.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SoundCodec {
+    /// AAC, 0.2 Mbit/s; the encoder holds each frame about 50 ms.
+    Aac,
+    /// The 16-bit samples as recorded, little-endian: 1.5 Mbit/s, sent as
+    /// soon as they are mixed.
+    Pcm,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -71,7 +81,12 @@ impl LiveFormat {
         for n in [self.width, self.height, self.fps] {
             out.write_all(&n.to_le_bytes())?;
         }
-        out.write_all(&[u8::from(self.sound)])?;
+        let sound = match self.sound {
+            None => 0,
+            Some(SoundCodec::Aac) => 1,
+            Some(SoundCodec::Pcm) => 2,
+        };
+        out.write_all(&[sound])?;
         Ok(())
     }
 
@@ -87,11 +102,17 @@ impl LiveFormat {
         let (width, height, fps) = (n()?, n()?, n()?);
         let mut sound = [0];
         input.read_exact(&mut sound)?;
+        let sound = match sound[0] {
+            0 => None,
+            1 => Some(SoundCodec::Aac),
+            2 => Some(SoundCodec::Pcm),
+            other => bail!("an unknown sound codec {other}"),
+        };
         Ok(Self {
             width,
             height,
             fps,
-            sound: sound[0] != 0,
+            sound,
         })
     }
 }
@@ -152,7 +173,7 @@ mod tests {
             width: 2560,
             height: 1440,
             fps: 60,
-            sound: true,
+            sound: Some(SoundCodec::Pcm),
         };
         let frames = [
             LiveFrame {

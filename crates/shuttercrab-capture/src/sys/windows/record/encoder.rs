@@ -7,7 +7,11 @@
 //! coded frame on as it comes.
 
 use super::{live_sink, sound};
-use crate::{record::LiveSink, sys::imp::gpu::Gpu};
+use crate::{
+    live::{LiveFrame, SoundCodec, Track},
+    record::{Live, LiveSink},
+    sys::imp::gpu::Gpu,
+};
 use anyhow::{Context, Result, ensure};
 use std::{
     path::Path,
@@ -188,10 +192,17 @@ impl IMFAsyncCallback_Impl for Released_Impl {
 pub(super) struct Mp4Writer {
     writer: IMFSinkWriter,
     stream: u32,
-    /// The sound track's stream, if the file has one.
-    sound: Option<u32>,
+    /// Where the sound track goes, if there is one.
+    sound: Option<SoundTrack>,
     _manager: IMFDXGIDeviceManager,
     finished: bool,
+}
+
+enum SoundTrack {
+    /// The sink writer's stream, encoded to AAC.
+    Aac(u32),
+    /// Straight to a live recording's sink, as the samples are.
+    Pcm(LiveSink),
 }
 
 /// The sound track's bit rate, bytes a second: 192 kbit/s, plenty for stereo
@@ -201,16 +212,21 @@ const SOUND_BYTES_PER_SECOND: u32 = 24_000;
 impl Mp4Writer {
     /// With `hardware`, Media Foundation may choose a hardware encoder; with
     /// `sound`, the file gets a sound track (48 kHz stereo AAC). With
-    /// `live`, nothing is written to `path`: the frames go to `live` as
-    /// they are encoded.
+    /// `live`, nothing is written to `path`: the frames go to `live.sink`
+    /// as they are encoded, the sound as `live.sound` says.
     pub(super) fn new(
         gpu: &Gpu,
         path: &Path,
         (w, h, fps): (u32, u32, u32),
         hardware: bool,
         sound: bool,
-        live: Option<LiveSink>,
+        live: Option<Live>,
     ) -> Result<Self> {
+        let pcm = match &live {
+            Some(live) if sound && live.sound == SoundCodec::Pcm => Some(live.sink.clone()),
+            _ => None,
+        };
+        let aac = sound && pcm.is_none();
         unsafe {
             let mut token = 0;
             let mut manager = None;
@@ -236,7 +252,7 @@ impl Mp4Writer {
                 // late can start.
                 video.SetUINT32(&MF_MT_MAX_KEYFRAME_SPACING, fps)?;
             }
-            let aac = if sound {
+            let aac = if aac {
                 let aac = sound_type(&MFAudioFormat_AAC)?;
                 aac.SetUINT32(&MF_MT_AUDIO_AVG_BYTES_PER_SECOND, SOUND_BYTES_PER_SECOND)?;
                 Some(aac)
@@ -255,10 +271,10 @@ impl Mp4Writer {
                     MFCreateSinkWriterFromURL(&HSTRING::from(path), None, &attributes)
                         .with_context(|| format!("cannot write {}", path.display()))?
                 }
-                Some(sink) => {
+                Some(live) => {
                     // No frames held back to look ahead (no B-frames).
                     attributes.SetUINT32(&MF_LOW_LATENCY, 1)?;
-                    let media_sink = live_sink::create(&video, aac.as_ref(), sink)?;
+                    let media_sink = live_sink::create(&video, aac.as_ref(), live.sink)?;
                     MFCreateSinkWriterFromMediaSink(&media_sink, &attributes)
                         .context("cannot stream the recording")?
                 }
@@ -288,9 +304,9 @@ impl Mp4Writer {
                 writer
                     .SetInputMediaType(stream, &input, None)
                     .context("the AAC encoder does not take 16-bit stereo")?;
-                Some(stream)
+                Some(SoundTrack::Aac(stream))
             } else {
-                None
+                pcm.map(SoundTrack::Pcm)
             };
             writer.BeginWriting().context("BeginWriting failed")?;
             Ok(Self {
@@ -311,13 +327,24 @@ impl Mp4Writer {
     /// Hand `samples` (16-bit, the channels interleaved) to the sound track
     /// at `time`. Nothing if the file has none.
     pub(super) fn write_sound(&self, samples: &[i16], time: i64) -> Result<()> {
-        let Some(stream) = self.sound else {
-            return Ok(());
-        };
         if samples.is_empty() {
             return Ok(());
         }
         let frames = samples.len() as u64 / u64::from(sound::CHANNELS);
+        let stream = match &self.sound {
+            None => return Ok(()),
+            Some(SoundTrack::Aac(stream)) => *stream,
+            Some(SoundTrack::Pcm(sink)) => {
+                sink(LiveFrame {
+                    track: Track::Sound,
+                    time,
+                    duration: sound::frames_to_ticks(frames),
+                    key: true,
+                    data: samples.iter().flat_map(|s| s.to_le_bytes()).collect(),
+                });
+                return Ok(());
+            }
+        };
         let bytes = std::mem::size_of_val(samples);
         unsafe {
             let buffer = MFCreateMemoryBuffer(bytes as u32)?;
@@ -437,24 +464,13 @@ impl Drop for Mp4Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::live::{LiveFormat, LivePlayer};
     use crate::{
-        live::{LiveFrame, Track},
+        live::{LiveFormat, LivePlayer},
         record::TICKS_PER_SECOND,
     };
     use std::{
-        sync::{Mutex, atomic::AtomicBool, mpsc},
+        sync::{Mutex, atomic::AtomicBool},
         time::{Duration, Instant},
-    };
-    use windows::{
-        Graphics::DirectX::Direct3D11::IDirect3DSurface,
-        Win32::{
-            Graphics::Dxgi::IDXGISurface,
-            System::WinRT::{
-                Direct3D11::CreateDirect3D11SurfaceFromDXGISurface, RO_INIT_MULTITHREADED,
-                RoInitialize,
-            },
-        },
     };
 
     /// What pictures go through: an RGBA texture the test paints, and the
@@ -488,16 +504,16 @@ mod tests {
             }
         }
 
-        /// A live writer, with a sound track if `sound` (`feed` fills it
-        /// with silence).
-        fn writer(&self, sink: LiveSink, sound: bool) -> Mp4Writer {
+        /// A live writer, with a sound track sent as `sound` says (`feed`
+        /// fills it with silence).
+        fn writer(&self, sink: LiveSink, sound: SoundCodec) -> Mp4Writer {
             Mp4Writer::new(
                 &self.gpu,
                 Path::new("unused"),
                 self.size,
                 true,
-                sound,
-                Some(sink),
+                true,
+                Some(Live { sink, sound }),
             )
             .unwrap()
         }
@@ -570,9 +586,10 @@ mod tests {
         )
     }
 
-    /// A moving picture at 60 fps through the video processor and the
-    /// encoder, live, in real time: how long after each picture goes in its
-    /// frame comes out of the live stream.
+    /// A moving picture at 60 fps, with silence, through the video
+    /// processor and the encoders, live, in real time: how long after each
+    /// picture goes in its frame comes out of the live stream, and how long
+    /// after the last of each sound frame goes in.
     #[test]
     #[ignore = "measures the live path in real time: run by hand"]
     fn live_frames_come_out_soon_after_they_go_in() {
@@ -584,7 +601,7 @@ mod tests {
             Arc::new(move |frame| {
                 sink.lock().unwrap().push((Instant::now(), frame));
             }),
-            false,
+            SoundCodec::Aac,
         );
         let frame = TICKS_PER_SECOND / i64::from(fps);
         let count = fps * 4;
@@ -619,6 +636,18 @@ mod tests {
             written.last().unwrap().duration_since(start)
         );
         println!("picture in to frame out: {}", percentiles(delays));
+        let sound: Vec<Duration> = out
+            .iter()
+            .filter(|(_, f)| f.track == Track::Sound)
+            .filter_map(|(at, f)| {
+                let last = ((f.time + f.duration) / frame) as usize;
+                Some(at.saturating_duration_since(*written.get(last)?))
+            })
+            .collect();
+        println!(
+            "last of a sound frame in to frame out: {}",
+            percentiles(sound)
+        );
         assert!(frames as u32 >= count - 2, "{frames} of {count}");
         assert!(keys >= 3, "a key frame a second");
     }
@@ -644,17 +673,26 @@ mod tests {
             .fold(0, |n, bit| n | 1 << bit)
     }
 
-    /// Each picture `player` shows (`frames` says when), copied out and its
-    /// number read, until `done`: which picture of `written` it was, how
-    /// long after it went in it was shown, and when.
+    /// What [`watch_numbers`] saw: for each picture drawn, which of the
+    /// pictures written it was, how long after it went in it was drawn,
+    /// and when; and how far the sound was behind the newest picture.
+    #[derive(Default)]
+    struct Seen {
+        pictures: Vec<(usize, Duration, Instant)>,
+        sound_behind: Vec<Duration>,
+    }
+
+    /// Each picture `player` draws, read back and its number read, until
+    /// `done`. A test polls; a viewer draws once a refresh.
     fn watch_numbers(
         player: &LivePlayer,
-        frames: &mpsc::Receiver<()>,
         written: &Mutex<Vec<Instant>>,
         done: &AtomicBool,
         (w, h): (u32, u32),
-    ) -> Vec<(usize, Duration, Instant)> {
-        let gpu = Gpu::hardware(None).unwrap();
+    ) -> Seen {
+        let device = player.device();
+        let context = unsafe { device.GetImmediateContext() }.unwrap();
+        let gpu = Gpu::from_device(device, context).unwrap();
         let texture = gpu
             .texture(
                 w,
@@ -664,23 +702,16 @@ mod tests {
                 None,
             )
             .unwrap();
-        let surface: IDirect3DSurface = unsafe {
-            CreateDirect3D11SurfaceFromDXGISurface(&texture.cast::<IDXGISurface>().unwrap())
-        }
-        .unwrap()
-        .cast()
-        .unwrap();
-        let mut seen = Vec::new();
-        loop {
-            if frames.recv_timeout(Duration::from_millis(100)).is_err() {
-                if done.load(Ordering::Relaxed) {
-                    return seen;
-                }
+        let mut seen = Seen::default();
+        while !done.load(Ordering::Relaxed) {
+            if !player.draw(&texture).unwrap() {
+                std::thread::sleep(Duration::from_millis(1));
                 continue;
             }
-            while frames.try_recv().is_ok() {}
-            player.copy_frame(&surface).unwrap();
             let at = Instant::now();
+            if let Some(behind) = player.sound_behind() {
+                seen.sound_behind.push(behind);
+            }
             let pixels = gpu.read_back(&texture).unwrap();
             let row = (h / 2 * w * 4) as usize;
             let code = number(&pixels[row..row + w as usize * 4], w);
@@ -690,45 +721,54 @@ mod tests {
                 .rev()
                 .find(|&n| n as u32 % (1 << NUMBER_BITS) == code)
             {
-                seen.push((n, at.saturating_duration_since(written[n]), at));
+                seen.pictures
+                    .push((n, at.saturating_duration_since(written[n]), at));
             }
         }
+        seen
     }
 
-    /// Numbered pictures at 60 fps, with a silent sound track, through the
+    /// Numbered pictures at 60 fps, with silence sent as AAC, through the
     /// encoder into the live player, in real time: how long after each
     /// goes in the player shows it. The whole delay of watching but for
     /// capture, the sound's lag and the network.
     #[test]
     #[ignore = "measures the live path in real time: run by hand"]
-    fn the_live_player_shows_pictures_soon_after_they_go_in() {
-        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+    fn the_live_player_shows_pictures_soon_after_they_go_in_with_aac() {
+        show_numbered(SoundCodec::Aac);
+    }
+
+    /// The same with the sound sent as PCM.
+    #[test]
+    #[ignore = "measures the live path in real time: run by hand"]
+    fn the_live_player_shows_pictures_soon_after_they_go_in_with_pcm() {
+        show_numbered(SoundCodec::Pcm);
+    }
+
+    fn show_numbered(sound: SoundCodec) {
         let (w, h, fps) = (1280u32, 720u32, 60u32);
         let pictures = Pictures::new(w, h, fps);
-        let (ready, frames) = mpsc::channel();
         let player = Arc::new(
             LivePlayer::new(
                 LiveFormat {
                     width: w,
                     height: h,
                     fps,
-                    sound: true,
+                    sound: Some(sound),
                 },
-                |why| eprintln!("the player failed: {why}"),
-                move || {
-                    let _ = ready.send(());
-                },
+                |why| eprintln!("the sound failed: {why}"),
             )
-            .unwrap(),
+            .unwrap_or_else(|e| panic!("{e:#}")),
         );
+        player.set_muted(true);
         let fed = player.clone();
-        let mut writer = pictures.writer(Arc::new(move |frame| fed.push(frame).unwrap()), true);
+        let mut writer = pictures.writer(Arc::new(move |frame| fed.push(frame).unwrap()), sound);
         let written = Arc::new(Mutex::new(Vec::new()));
 
         let done = Arc::new(AtomicBool::new(false));
         let watcher = {
             let (player, written, done) = (player.clone(), written.clone(), done.clone());
-            std::thread::spawn(move || watch_numbers(&player, &frames, &written, &done, (w, h)))
+            std::thread::spawn(move || watch_numbers(&player, &written, &done, (w, h)))
         };
 
         let count = fps * 5;
@@ -739,15 +779,23 @@ mod tests {
         let seen = watcher.join().unwrap();
         writer.finish().unwrap();
 
-        let (n, _, at) = seen.first().expect("the player showed nothing");
+        let (n, _, at) = seen.pictures.first().expect("the player showed nothing");
         println!(
-            "first picture shown {} ms after the first went in (picture {n})",
+            "first picture shown {} ms after the first went in (picture {n}); lead {} ms",
             at.duration_since(start).as_millis(),
+            player.lead().as_millis()
         );
+        if !seen.sound_behind.is_empty() {
+            println!(
+                "sound behind the newest picture: {}",
+                percentiles(seen.sound_behind)
+            );
+        }
         // Half a second at a time, to see whether the delay settles.
         for half in 0..count / (fps / 2) {
             let range = half * fps / 2..(half + 1) * fps / 2;
             let delays: Vec<Duration> = seen
+                .pictures
                 .iter()
                 .filter(|(n, _, _)| range.contains(&(*n as u32)))
                 .map(|(_, d, _)| *d)
@@ -762,6 +810,7 @@ mod tests {
             }
         }
         let settled: Vec<Duration> = seen
+            .pictures
             .iter()
             .filter(|(n, _, _)| *n as u32 >= fps * 2)
             .map(|(_, d, _)| *d)

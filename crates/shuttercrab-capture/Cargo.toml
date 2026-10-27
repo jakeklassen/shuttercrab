@@ -26,16 +26,10 @@ windows-core = "0.62"
 version = "0.62"
 features = [
   "Foundation",
-  "Foundation_Collections",
   "Graphics",
   "Graphics_Capture",
   "Graphics_DirectX",
   "Graphics_DirectX_Direct3D11",
-  "Media",
-  "Media_Core",
-  "Media_MediaProperties",
-  "Media_Playback",
-  "Storage_Streams",
   "Wdk_System_SystemServices",
   "Win32_Devices_Display",
   "Win32_Devices_FunctionDiscovery",

@@ -28,6 +28,13 @@ use std::{path::PathBuf, sync::Arc, time::Duration};
 /// Where a live recording's frames go, as each is encoded (issue #66).
 pub type LiveSink = Arc<dyn Fn(crate::live::LiveFrame) + Send + Sync>;
 
+/// A live recording's frames: where they go, and how its sound is sent.
+#[derive(Clone)]
+pub struct Live {
+    pub sink: LiveSink,
+    pub sound: crate::live::SoundCodec,
+}
+
 /// 100-nanosecond units: the recorder's clock.
 #[cfg_attr(
     not(windows),

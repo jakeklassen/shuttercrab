@@ -31,7 +31,7 @@ pub use sound::microphones;
 
 use super::service::{DEVICE_LOST, hmonitor};
 use crate::{
-    record::{Interruption, LiveSink, RecordOptions, RecordingSummary, Source, TICKS_PER_SECOND},
+    record::{Interruption, Live, RecordOptions, RecordingSummary, Source, TICKS_PER_SECOND},
     screen::MonitorId,
 };
 use anyhow::{Context, Result, bail};
@@ -109,20 +109,13 @@ impl Recorder {
     }
 
     /// Start recording live (issue #66, spike S0): nothing is written to
-    /// `options.path`; each frame goes to `sink` as it is encoded, on one
-    /// of Media Foundation's threads.
-    ///
-    /// It always has a sound track, silent if nothing is recorded: without
-    /// one, the live player shows only key frames after the first second.
-    pub fn start_live(options: RecordOptions, sink: LiveSink) -> Result<Self> {
-        let options = RecordOptions {
-            sound_track: true,
-            ..options
-        };
-        Self::start_with(options, Some(sink))
+    /// `options.path`; each frame goes to `live.sink` as it is encoded, on
+    /// one of Media Foundation's threads (PCM sound on the recording's).
+    pub fn start_live(options: RecordOptions, live: Live) -> Result<Self> {
+        Self::start_with(options, Some(live))
     }
 
-    fn start_with(options: RecordOptions, live: Option<LiveSink>) -> Result<Self> {
+    fn start_with(options: RecordOptions, live: Option<Live>) -> Result<Self> {
         let (events, inbox) = channel();
         let (ready, started) = channel::<Result<()>>();
         // Dropped when the thread ends, which resolves `ended`.
@@ -274,7 +267,7 @@ fn record(
     frames: Sender<Event>,
     inbox: Receiver<Event>,
     ready: Sender<Result<()>>,
-    live: Option<LiveSink>,
+    live: Option<Live>,
 ) -> Result<RecordingSummary> {
     let setup = (|| {
         unsafe {
