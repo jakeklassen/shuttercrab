@@ -111,7 +111,14 @@ impl Recorder {
     /// Start recording live (issue #66, spike S0): nothing is written to
     /// `options.path`; each frame goes to `sink` as it is encoded, on one
     /// of Media Foundation's threads.
+    ///
+    /// It always has a sound track, silent if nothing is recorded: without
+    /// one, the live player shows only key frames after the first second.
     pub fn start_live(options: RecordOptions, sink: LiveSink) -> Result<Self> {
+        let options = RecordOptions {
+            sound_track: true,
+            ..options
+        };
         Self::start_with(options, Some(sink))
     }
 

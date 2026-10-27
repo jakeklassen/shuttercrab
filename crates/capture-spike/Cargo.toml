@@ -13,6 +13,7 @@ shuttercrab-capture = { path = "../shuttercrab-capture" }
 shuttercrab-platform = { path = "../shuttercrab-platform" }
 futures = "0.3"
 half = "2.7"
+log = "0.4"
 png = "0.18"
 serde_json = "1"
 

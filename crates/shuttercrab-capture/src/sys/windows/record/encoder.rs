@@ -437,14 +437,138 @@ impl Drop for Mp4Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::live::{LiveFormat, LivePlayer};
     use crate::{
         live::{LiveFrame, Track},
         record::TICKS_PER_SECOND,
     };
     use std::{
-        sync::Mutex,
+        sync::{Mutex, atomic::AtomicBool, mpsc},
         time::{Duration, Instant},
     };
+    use windows::{
+        Graphics::DirectX::Direct3D11::IDirect3DSurface,
+        Win32::{
+            Graphics::Dxgi::IDXGISurface,
+            System::WinRT::{
+                Direct3D11::CreateDirect3D11SurfaceFromDXGISurface, RO_INIT_MULTITHREADED,
+                RoInitialize,
+            },
+        },
+    };
+
+    /// What pictures go through: an RGBA texture the test paints, and the
+    /// NV12 textures the encoder reads.
+    struct Pictures {
+        gpu: Gpu,
+        rgba: ID3D11Texture2D,
+        nv12: Nv12,
+        size: (u32, u32, u32),
+    }
+
+    impl Pictures {
+        fn new(w: u32, h: u32, fps: u32) -> Self {
+            unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.unwrap();
+            let gpu = Gpu::video(None).unwrap();
+            let rgba = gpu
+                .texture(
+                    w,
+                    h,
+                    DXGI_FORMAT_R8G8B8A8_UNORM,
+                    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+                    None,
+                )
+                .unwrap();
+            let nv12 = Nv12::new(&gpu, &rgba, w, h, fps).unwrap();
+            Self {
+                gpu,
+                rgba,
+                nv12,
+                size: (w, h, fps),
+            }
+        }
+
+        /// A live writer, with a sound track if `sound` (`feed` fills it
+        /// with silence).
+        fn writer(&self, sink: LiveSink, sound: bool) -> Mp4Writer {
+            Mp4Writer::new(
+                &self.gpu,
+                Path::new("unused"),
+                self.size,
+                true,
+                sound,
+                Some(sink),
+            )
+            .unwrap()
+        }
+
+        /// `count` pictures, each painted by `paint` from its number and
+        /// a pixel's x, into `writer` in real time, noting in `written` when
+        /// each went in.
+        fn feed(
+            &self,
+            writer: &mut Mp4Writer,
+            count: u32,
+            written: &Mutex<Vec<Instant>>,
+            paint: impl Fn(u32, u32) -> [u8; 4],
+        ) {
+            let (w, h, fps) = self.size;
+            let frame = TICKS_PER_SECOND / i64::from(fps);
+            let mut pixels = vec![0u8; (w * h * 4) as usize];
+            let silence = vec![0i16; (sound::RATE / fps * 2) as usize];
+            let start = Instant::now();
+            for n in 0..count {
+                let due = Duration::from_nanos(n as u64 * frame as u64 * 100);
+                while start.elapsed() < due {
+                    std::thread::sleep(Duration::from_micros(500));
+                }
+                for (i, px) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
+                    *px = paint(n, i as u32 % w);
+                }
+                unsafe {
+                    self.gpu.context.UpdateSubresource(
+                        &self.rgba,
+                        0,
+                        None,
+                        pixels.as_ptr().cast(),
+                        w * 4,
+                        0,
+                    );
+                }
+                let slot = loop {
+                    if let Some(slot) = self.nv12.free_slot() {
+                        break slot;
+                    }
+                    std::thread::sleep(Duration::from_micros(200));
+                };
+                self.nv12.convert(&self.gpu, slot).unwrap();
+                written.lock().unwrap().push(Instant::now());
+                writer
+                    .write(&self.nv12, slot, n as i64 * frame, frame)
+                    .unwrap();
+                writer.write_sound(&silence, n as i64 * frame).unwrap();
+            }
+        }
+    }
+
+    impl Drop for Pictures {
+        fn drop(&mut self) {
+            let _ = unsafe { MFShutdown() };
+        }
+    }
+
+    fn percentiles(mut delays: Vec<Duration>) -> String {
+        delays.sort();
+        let n = delays.len();
+        let ms = |i: usize| delays[i.min(n - 1)].as_millis();
+        format!(
+            "min {} ms, median {} ms, 90% {} ms, max {} ms",
+            ms(0),
+            ms(n / 2),
+            ms(n * 9 / 10),
+            ms(n - 1)
+        )
+    }
 
     /// A moving picture at 60 fps through the video processor and the
     /// encoder, live, in real time: how long after each picture goes in its
@@ -452,95 +576,206 @@ mod tests {
     #[test]
     #[ignore = "measures the live path in real time: run by hand"]
     fn live_frames_come_out_soon_after_they_go_in() {
-        unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.unwrap();
-        let (w, h, fps) = (1280u32, 720u32, 60u32);
-        let gpu = Gpu::video(None).unwrap();
-        let rgba = gpu
-            .texture(
-                w,
-                h,
-                DXGI_FORMAT_R8G8B8A8_UNORM,
-                D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
-                None,
-            )
-            .unwrap();
-        let nv12 = Nv12::new(&gpu, &rgba, w, h, fps).unwrap();
+        let (w, fps) = (1280u32, 60u32);
+        let pictures = Pictures::new(w, 720, fps);
         let out = Arc::new(Mutex::new(Vec::<(Instant, LiveFrame)>::new()));
         let sink = out.clone();
-        let mut writer = Mp4Writer::new(
-            &gpu,
-            Path::new("unused"),
-            (w, h, fps),
-            true,
-            false,
-            Some(Arc::new(move |frame| {
+        let mut writer = pictures.writer(
+            Arc::new(move |frame| {
                 sink.lock().unwrap().push((Instant::now(), frame));
-            })),
-        )
-        .unwrap();
+            }),
+            false,
+        );
         let frame = TICKS_PER_SECOND / i64::from(fps);
-        let mut pixels = vec![0u8; (w * h * 4) as usize];
         let count = fps * 4;
-        let mut written = Vec::with_capacity(count as usize);
+        let written = Mutex::new(Vec::new());
         let start = Instant::now();
-        for n in 0..count {
-            let due = Duration::from_nanos(n as u64 * frame as u64 * 100);
-            while start.elapsed() < due {
-                std::thread::sleep(Duration::from_micros(500));
-            }
+        pictures.feed(&mut writer, count, &written, |n, x| {
             let bar = (n * 12) % (w - 80);
-            for (i, px) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
-                let x = i as u32 % w;
-                let v = if (bar..bar + 80).contains(&x) {
-                    255
-                } else {
-                    30
-                };
-                px.copy_from_slice(&[v, v / 2, 255 - v, 255]);
-            }
-            unsafe {
-                gpu.context
-                    .UpdateSubresource(&rgba, 0, None, pixels.as_ptr().cast(), w * 4, 0);
-            }
-            let slot = loop {
-                if let Some(slot) = nv12.free_slot() {
-                    break slot;
-                }
-                std::thread::sleep(Duration::from_micros(200));
+            let v = if (bar..bar + 80).contains(&x) {
+                255
+            } else {
+                30
             };
-            nv12.convert(&gpu, slot).unwrap();
-            written.push(Instant::now());
-            writer.write(&nv12, slot, n as i64 * frame, frame).unwrap();
-        }
+            [v, v / 2, 255 - v, 255]
+        });
+        let written = written.into_inner().unwrap();
         let hardware = writer.finish().unwrap();
         let out = out.lock().unwrap();
-        let mut delays: Vec<Duration> = out
+        let delays: Vec<Duration> = out
             .iter()
             .filter(|(_, f)| f.track == Track::Video)
             .map(|(at, f)| at.saturating_duration_since(written[(f.time / frame) as usize]))
             .collect();
-        let pictures = delays.len();
+        let frames = delays.len();
         let keys = out
             .iter()
             .filter(|(_, f)| f.track == Track::Video && f.key)
             .count();
         let bytes: usize = out.iter().map(|(_, f)| f.data.len()).sum();
-        delays.sort();
-        let ms = |d: Duration| d.as_millis();
         println!(
-            "hardware encoder {hardware}; {pictures} pictures of {count}, {keys} key, {:.1} Mbit/s; fed in {:?}",
+            "hardware encoder {hardware}; {frames} pictures of {count}, {keys} key, {:.1} Mbit/s; fed in {:?}",
             bytes as f64 * 8.0 / 4.0 / 1e6,
             written.last().unwrap().duration_since(start)
         );
-        println!(
-            "picture in to frame out: min {} ms, median {} ms, 90% {} ms, max {} ms",
-            ms(delays[0]),
-            ms(delays[pictures / 2]),
-            ms(delays[pictures * 9 / 10]),
-            ms(delays[pictures - 1])
-        );
-        assert!(pictures as u32 >= count - 2, "{pictures} of {count}");
+        println!("picture in to frame out: {}", percentiles(delays));
+        assert!(frames as u32 >= count - 2, "{frames} of {count}");
         assert!(keys >= 3, "a key frame a second");
-        unsafe { MFShutdown() }.unwrap();
+    }
+
+    /// Bits of a picture's number, as black and white columns.
+    const NUMBER_BITS: u32 = 8;
+
+    /// Picture `n`'s colour at `x` of a `w` wide picture: column `b` is
+    /// white where bit `b` of `n` is set.
+    fn numbered(n: u32, x: u32, w: u32) -> [u8; 4] {
+        let bit = x * NUMBER_BITS / w;
+        let v = if n >> bit & 1 == 1 { 235 } else { 20 };
+        [v, v, v, 255]
+    }
+
+    /// The number a numbered picture carries, from one of its rows (BGRA).
+    fn number(row: &[u8], w: u32) -> u32 {
+        (0..NUMBER_BITS)
+            .filter(|bit| {
+                let x = (bit * 2 + 1) * w / (NUMBER_BITS * 2);
+                row[x as usize * 4 + 1] > 128
+            })
+            .fold(0, |n, bit| n | 1 << bit)
+    }
+
+    /// Each picture `player` shows (`frames` says when), copied out and its
+    /// number read, until `done`: which picture of `written` it was, how
+    /// long after it went in it was shown, and when.
+    fn watch_numbers(
+        player: &LivePlayer,
+        frames: &mpsc::Receiver<()>,
+        written: &Mutex<Vec<Instant>>,
+        done: &AtomicBool,
+        (w, h): (u32, u32),
+    ) -> Vec<(usize, Duration, Instant)> {
+        let gpu = Gpu::hardware(None).unwrap();
+        let texture = gpu
+            .texture(
+                w,
+                h,
+                DXGI_FORMAT_B8G8R8A8_UNORM,
+                D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+                None,
+            )
+            .unwrap();
+        let surface: IDirect3DSurface = unsafe {
+            CreateDirect3D11SurfaceFromDXGISurface(&texture.cast::<IDXGISurface>().unwrap())
+        }
+        .unwrap()
+        .cast()
+        .unwrap();
+        let mut seen = Vec::new();
+        loop {
+            if frames.recv_timeout(Duration::from_millis(100)).is_err() {
+                if done.load(Ordering::Relaxed) {
+                    return seen;
+                }
+                continue;
+            }
+            while frames.try_recv().is_ok() {}
+            player.copy_frame(&surface).unwrap();
+            let at = Instant::now();
+            let pixels = gpu.read_back(&texture).unwrap();
+            let row = (h / 2 * w * 4) as usize;
+            let code = number(&pixels[row..row + w as usize * 4], w);
+            // The newest picture in with that number.
+            let written = written.lock().unwrap();
+            if let Some(n) = (0..written.len())
+                .rev()
+                .find(|&n| n as u32 % (1 << NUMBER_BITS) == code)
+            {
+                seen.push((n, at.saturating_duration_since(written[n]), at));
+            }
+        }
+    }
+
+    /// Numbered pictures at 60 fps, with a silent sound track, through the
+    /// encoder into the live player, in real time: how long after each
+    /// goes in the player shows it. The whole delay of watching but for
+    /// capture, the sound's lag and the network.
+    #[test]
+    #[ignore = "measures the live path in real time: run by hand"]
+    fn the_live_player_shows_pictures_soon_after_they_go_in() {
+        let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        let (w, h, fps) = (1280u32, 720u32, 60u32);
+        let pictures = Pictures::new(w, h, fps);
+        let (ready, frames) = mpsc::channel();
+        let player = Arc::new(
+            LivePlayer::new(
+                LiveFormat {
+                    width: w,
+                    height: h,
+                    fps,
+                    sound: true,
+                },
+                |why| eprintln!("the player failed: {why}"),
+                move || {
+                    let _ = ready.send(());
+                },
+            )
+            .unwrap(),
+        );
+        let fed = player.clone();
+        let mut writer = pictures.writer(Arc::new(move |frame| fed.push(frame).unwrap()), true);
+        let written = Arc::new(Mutex::new(Vec::new()));
+
+        let done = Arc::new(AtomicBool::new(false));
+        let watcher = {
+            let (player, written, done) = (player.clone(), written.clone(), done.clone());
+            std::thread::spawn(move || watch_numbers(&player, &frames, &written, &done, (w, h)))
+        };
+
+        let count = fps * 5;
+        let start = Instant::now();
+        pictures.feed(&mut writer, count, &written, |n, x| numbered(n, x, w));
+        std::thread::sleep(Duration::from_millis(500));
+        done.store(true, Ordering::Relaxed);
+        let seen = watcher.join().unwrap();
+        writer.finish().unwrap();
+
+        let (n, _, at) = seen.first().expect("the player showed nothing");
+        println!(
+            "first picture shown {} ms after the first went in (picture {n})",
+            at.duration_since(start).as_millis(),
+        );
+        // Half a second at a time, to see whether the delay settles.
+        for half in 0..count / (fps / 2) {
+            let range = half * fps / 2..(half + 1) * fps / 2;
+            let delays: Vec<Duration> = seen
+                .iter()
+                .filter(|(n, _, _)| range.contains(&(*n as u32)))
+                .map(|(_, d, _)| *d)
+                .collect();
+            if !delays.is_empty() {
+                println!(
+                    "{:>4.1} s: {} shown, {}",
+                    f64::from(half) / 2.0,
+                    delays.len(),
+                    percentiles(delays)
+                );
+            }
+        }
+        let settled: Vec<Duration> = seen
+            .iter()
+            .filter(|(n, _, _)| *n as u32 >= fps * 2)
+            .map(|(_, d, _)| *d)
+            .collect();
+        let shown = settled.len() as u32;
+        println!(
+            "picture in to picture shown, from 2 s on: {}",
+            percentiles(settled)
+        );
+        // Three seconds of pictures from 2 s on: nearly all of them shown.
+        assert!(
+            shown >= fps * 5 / 2,
+            "the player showed {shown} of {}",
+            fps * 3
+        );
     }
 }
