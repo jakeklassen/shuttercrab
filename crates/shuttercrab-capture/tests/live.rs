@@ -30,6 +30,25 @@ struct Arrived {
     /// How long after its capture each picture reached the sink, roughly
     /// (the timeline starts at the first picture, a moment after start).
     delays: Vec<Duration>,
+    /// The same for each sound frame, on the same timeline.
+    sound_delays: Vec<Duration>,
+}
+
+/// The recorder's log, on stderr: it says how late sound arrived.
+struct Log;
+
+impl log::Log for Log {
+    fn enabled(&self, metadata: &log::Metadata) -> bool {
+        metadata.level() <= log::Level::Info
+    }
+
+    fn log(&self, record: &log::Record) {
+        if self.enabled(record.metadata()) {
+            eprintln!("{}: {}", record.level(), record.args());
+        }
+    }
+
+    fn flush(&self) {}
 }
 
 fn median(mut values: Vec<Duration>) -> Duration {
@@ -60,6 +79,8 @@ fn options(width: u32, height: u32, fps: u32) -> RecordOptions {
 #[test]
 #[ignore = "records the screen and plays it: run by hand"]
 fn a_live_recording_plays_as_it_is_recorded() {
+    log::set_logger(&Log).unwrap();
+    log::set_max_level(log::LevelFilter::Info);
     unsafe {
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
     }
@@ -96,16 +117,18 @@ fn a_live_recording_plays_as_it_is_recorded() {
             {
                 let mut arrived = sink_arrived.lock().unwrap();
                 arrived.bytes += frame.data.len();
+                let captured = Duration::from_nanos(frame.time.max(0) as u64 * 100);
+                let delay = started.elapsed().saturating_sub(captured);
                 match frame.track {
                     Track::Video => {
                         arrived.video += 1;
                         arrived.keys += u32::from(frame.key);
-                        let captured = Duration::from_nanos(frame.time.max(0) as u64 * 100);
-                        arrived
-                            .delays
-                            .push(started.elapsed().saturating_sub(captured));
+                        arrived.delays.push(delay);
                     }
-                    Track::Sound => arrived.sound += 1,
+                    Track::Sound => {
+                        arrived.sound += 1;
+                        arrived.sound_delays.push(delay);
+                    }
                 }
             }
             if let Err(e) = sink_player.push(frame) {
@@ -133,6 +156,12 @@ fn a_live_recording_plays_as_it_is_recorded() {
         shown.load(Ordering::Relaxed)
     );
     let sender = median(arrived.delays.clone());
+    println!(
+        "sound frames reach the sink {} ms later than pictures of the same time (median)",
+        median(arrived.sound_delays.clone())
+            .saturating_sub(sender)
+            .as_millis()
+    );
     let player_behind = median(behind[8..].to_vec());
     println!(
         "capture to sink, median {} ms; player behind the newest, median {} ms: about {} ms in all, before the network",
