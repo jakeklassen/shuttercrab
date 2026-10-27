@@ -15,6 +15,7 @@ use super::{gpu::Gpu, play::Started};
 use crate::live::{LiveFormat, LiveFrame, Track};
 use anyhow::{Context, Result};
 use std::{
+    collections::VecDeque,
     sync::{
         Mutex, MutexGuard,
         atomic::{AtomicI64, Ordering},
@@ -34,6 +35,9 @@ const LEAD: i64 = 0;
 
 /// A live recording playing as its frames arrive.
 pub struct LivePlayer {
+    /// Coded pictures waiting until they are due: decoding one takes a
+    /// millisecond or two, and they are small, where decoded ones are not.
+    coded: Mutex<VecDeque<LiveFrame>>,
     video: Mutex<video::Decoder>,
     pictures: Mutex<video::Pictures>,
     sound: Option<(Mutex<sound::Decoder>, sound::Output)>,
@@ -65,6 +69,7 @@ impl LivePlayer {
             None => None,
         };
         Ok(Self {
+            coded: Mutex::default(),
             video: Mutex::new(video),
             pictures: Mutex::new(pictures),
             sound,
@@ -82,14 +87,14 @@ impl LivePlayer {
         self.gpu.device.clone()
     }
 
-    /// Decode the next frame as it arrives.
+    /// Take the next frame as it arrives: sound is decoded and queued to
+    /// play, a picture kept until it is due.
     pub fn push(&self, frame: LiveFrame) -> Result<()> {
         match frame.track {
             Track::Video => {
                 self.newest.fetch_max(frame.time, Ordering::Relaxed);
-                lock(&self.video).decode(&frame, |time, texture, index| {
-                    lock(&self.pictures).add(&self.gpu, time, texture, index)
-                })
+                lock(&self.coded).push_back(frame);
+                Ok(())
             }
             Track::Sound => match &self.sound {
                 Some((decoder, output)) => {
@@ -100,17 +105,36 @@ impl LivePlayer {
         }
     }
 
-    /// Draw the newest picture that is due into `target` (BGRA, the
-    /// video's size), unless it is the one drawn last: whether it drew.
+    /// Decode the pictures that are due and draw the newest into `target`
+    /// (BGRA, the video's size), unless none has fallen due since the last
+    /// draw: whether it drew.
     pub fn draw(&self, target: &ID3D11Texture2D) -> Result<bool> {
         let due = self
             .clock()
             .map(|now| now + self.lead.load(Ordering::Relaxed));
-        let drawn = lock(&self.pictures).draw(&self.gpu, target, due)?;
-        if let Some(time) = drawn {
-            self.drawn.store(time, Ordering::Relaxed);
+        let frames: Vec<LiveFrame> = {
+            let mut coded = lock(&self.coded);
+            let count = match due {
+                Some(due) => coded.iter().take_while(|f| f.time <= due).count(),
+                None => coded.len(),
+            };
+            coded.drain(..count).collect()
+        };
+        let (mut decoder, mut pictures) = (lock(&self.video), lock(&self.pictures));
+        let mut newest = None;
+        for frame in &frames {
+            decoder.decode(frame, |time, texture, index| {
+                pictures.convert(&self.gpu, texture, index)?;
+                newest = Some(time);
+                Ok(())
+            })?;
         }
-        Ok(drawn.is_some())
+        let Some(time) = newest else {
+            return Ok(false);
+        };
+        pictures.copy_to(&self.gpu, target);
+        self.drawn.store(time, Ordering::Relaxed);
+        Ok(true)
     }
 
     /// Where the sound has got to playing; `None` before it starts, or if

@@ -1,11 +1,9 @@
 //! A live recording's pictures: Windows' H.264 decoder on the graphics
-//! card, then the video processor to BGRA, a few pictures kept until they
-//! are due.
+//! card, then the video processor to BGRA.
 
 use super::{Gpu, choose_output, drain, feed};
 use crate::live::LiveFrame;
 use anyhow::{Context, Result, ensure};
-use std::collections::VecDeque;
 use windows::{
     Win32::{
         Graphics::{Direct3D11::*, Dxgi::Common::*},
@@ -99,11 +97,8 @@ fn choose_nv12(transform: &IMFTransform) -> Result<()> {
     })
 }
 
-/// How many decoded pictures are kept until they are due.
-const SLOTS: usize = 4;
-
 /// A BGRA texture the video processor can write a picture into.
-fn bgra_slot(
+fn bgra(
     gpu: &Gpu,
     device: &ID3D11VideoDevice,
     enumerator: &ID3D11VideoProcessorEnumerator,
@@ -137,16 +132,16 @@ fn bgra_slot(
     Ok((texture, view.context("no output view")?))
 }
 
-/// Decoded pictures, in BGRA, until they are due.
+/// Decoded pictures converted to BGRA.
 pub(super) struct Pictures {
     video: ID3D11VideoContext1,
     processor: ID3D11VideoProcessor,
     /// The decoder's picture, copied out of its texture array.
     nv12: ID3D11Texture2D,
     input: ID3D11VideoProcessorInputView,
-    slots: Vec<(ID3D11Texture2D, ID3D11VideoProcessorOutputView)>,
-    /// Pictures not drawn yet, oldest first: their times and slots.
-    waiting: VecDeque<(i64, usize)>,
+    /// The picture converted last.
+    bgra: ID3D11Texture2D,
+    output: ID3D11VideoProcessorOutputView,
     size: (u32, u32),
 }
 
@@ -205,9 +200,7 @@ impl Pictures {
                     Some(&mut input),
                 )
                 .context("no input view")?;
-            let slots = (0..SLOTS)
-                .map(|_| bgra_slot(gpu, &device, &enumerator, w, h))
-                .collect::<Result<_>>()?;
+            let (bgra, output) = bgra(gpu, &device, &enumerator, w, h)?;
             // What the recorder writes: Rec.709, studio range.
             video.VideoProcessorSetStreamColorSpace1(
                 &processor,
@@ -229,28 +222,20 @@ impl Pictures {
                 processor,
                 nv12,
                 input: input.context("no input view")?,
-                slots,
-                waiting: VecDeque::with_capacity(SLOTS),
+                bgra,
+                output,
                 size: (w, h),
             })
         }
     }
 
-    /// Convert a decoded picture, at `index` of `texture`, to keep until
-    /// it is due. With every slot waiting, the oldest is dropped.
-    pub(super) fn add(
+    /// Convert a decoded picture, at `index` of `texture`.
+    pub(super) fn convert(
         &mut self,
         gpu: &Gpu,
-        time: i64,
         texture: &ID3D11Texture2D,
         index: u32,
     ) -> Result<()> {
-        if self.waiting.len() == SLOTS {
-            self.waiting.pop_front();
-        }
-        let slot = (0..SLOTS)
-            .find(|s| self.waiting.iter().all(|(_, w)| w != s))
-            .unwrap_or_default();
         let (w, h) = self.size;
         // The decoder's pictures are taller than the video (rounded up to
         // whole macroblocks).
@@ -273,34 +258,16 @@ impl Pictures {
         }];
         let result = unsafe {
             self.video
-                .VideoProcessorBlt(&self.processor, &self.slots[slot].1, 0, &streams)
+                .VideoProcessorBlt(&self.processor, &self.output, 0, &streams)
         };
         // Release the reference the stream took.
         let [mut stream] = streams;
         unsafe { std::mem::ManuallyDrop::drop(&mut stream.pInputSurface) };
-        result.context("VideoProcessorBlt failed")?;
-        self.waiting.push_back((time, slot));
-        Ok(())
+        result.context("VideoProcessorBlt failed")
     }
 
-    /// Copy the newest picture due by `due` (all are, if `None`) into
-    /// `target`, dropping the ones before it: its time, if there was one.
-    pub(super) fn draw(
-        &mut self,
-        gpu: &Gpu,
-        target: &ID3D11Texture2D,
-        due: Option<i64>,
-    ) -> Result<Option<i64>> {
-        let newest = match due {
-            Some(due) => self.waiting.iter().rposition(|&(time, _)| time <= due),
-            None => self.waiting.len().checked_sub(1),
-        };
-        let Some(newest) = newest else {
-            return Ok(None);
-        };
-        let (time, slot) = self.waiting[newest];
-        self.waiting.drain(..=newest);
-        unsafe { gpu.context.CopyResource(target, &self.slots[slot].0) };
-        Ok(Some(time))
+    /// Copy the picture converted last into `target`.
+    pub(super) fn copy_to(&self, gpu: &Gpu, target: &ID3D11Texture2D) {
+        unsafe { gpu.context.CopyResource(target, &self.bgra) };
     }
 }

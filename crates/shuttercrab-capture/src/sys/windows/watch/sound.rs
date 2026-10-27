@@ -14,7 +14,7 @@ use std::{
         atomic::{AtomicBool, Ordering},
     },
     thread::JoinHandle,
-    time::Instant,
+    time::{Duration, Instant},
 };
 use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
@@ -24,6 +24,7 @@ use windows::Win32::{
             CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance,
             CoInitializeEx, CoUninitialize,
         },
+        Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
         Threading::{CreateEventW, WaitForSingleObject},
     },
 };
@@ -48,6 +49,9 @@ const SPARE: usize = 480;
 /// How much may build up at once (after a stall) before the oldest is
 /// skipped straight away, frames (50 ms).
 const MOST: usize = 2_400;
+
+/// The least extra sound worth skipping, frames (15 ms).
+const WORTH_SKIPPING: usize = 720;
 
 /// How much the speakers' device holds, 100 ns ticks.
 const DEVICE_BUFFER: i64 = 200_000;
@@ -193,13 +197,40 @@ struct Clock {
 
 impl Clock {
     fn now(&self) -> i64 {
+        self.at_instant(Instant::now())
+    }
+
+    fn at_instant(&self, now: Instant) -> i64 {
         if self.running {
-            self.time + (self.at.elapsed().as_nanos() / 100) as i64
+            self.time + (now.saturating_duration_since(self.at).as_nanos() / 100) as i64
         } else {
             self.time
         }
     }
+
+    /// Move towards `time` at `at`, where the speakers say they were: a
+    /// small difference a tenth at a time, so the pictures it paces stay
+    /// even (each reading wobbles by a few ms); a large one at once.
+    fn steer(&mut self, time: i64, at: Instant) {
+        let now = Instant::now();
+        let said = time + (now.saturating_duration_since(at).as_nanos() / 100) as i64;
+        let current = self.at_instant(now);
+        let error = said - current;
+        *self = Clock {
+            at: now,
+            time: if error.abs() > JUMP {
+                said
+            } else {
+                current + error / 10
+            },
+            running: true,
+        };
+    }
 }
+
+/// A difference between the clock and the speakers that is put right at
+/// once, 100 ns ticks (50 ms).
+const JUMP: i64 = 500_000;
 
 /// Decoded sound waiting to play.
 #[derive(Default)]
@@ -261,8 +292,9 @@ impl Queue {
     }
 
     /// Skip what the queue has held beyond [`SPARE`] for the last second,
-    /// or beyond [`QUEUED`] if [`MOST`] has built up: sound that would
-    /// only make it later.
+    /// once that is [`WORTH_SKIPPING`], or beyond [`QUEUED`] if [`MOST`]
+    /// has built up: sound that would only make it later. Each skip moves
+    /// the pictures on with it, so not for a few ms.
     fn keep_short(&mut self) {
         if self.frames > MOST {
             self.skip(self.frames - QUEUED);
@@ -272,7 +304,7 @@ impl Queue {
             .since
             .is_some_and(|since| since.elapsed().as_secs() >= 1)
         {
-            if self.low > SPARE {
+            if self.low > SPARE + WORTH_SKIPPING {
                 self.skip(self.low - SPARE);
             }
             self.low = usize::MAX;
@@ -368,6 +400,19 @@ impl Drop for Output {
     }
 }
 
+/// The moment a performance counter reading (100 ns ticks, as the
+/// speakers' clock gives it) stands for.
+fn instant_at(qpc: u64) -> Instant {
+    let (mut count, mut frequency) = (0, 1);
+    unsafe {
+        let _ = QueryPerformanceCounter(&mut count);
+        let _ = QueryPerformanceFrequency(&mut frequency);
+    }
+    let now = (count as u128 * 10_000_000 / frequency.max(1) as u128) as u64;
+    let ago = Duration::from_nanos(now.saturating_sub(qpc) * 100);
+    Instant::now().checked_sub(ago).unwrap_or_else(Instant::now)
+}
+
 /// An event handle, closed when dropped.
 struct Event(HANDLE);
 
@@ -413,10 +458,13 @@ fn play(shared: &Shared) -> Result<()> {
         let event = Event(CreateEventW(None, false, false, None).context("no event")?);
         client.SetEventHandle(event.0)?;
         let render: IAudioRenderClient = client.GetService()?;
+        let speakers: IAudioClock = client.GetService()?;
+        let frequency = speakers.GetFrequency()?;
         let size = client.GetBufferSize()?;
-        // Once a fill is written, the device holds a full buffer, and its
-        // own latency, before the last of it is heard.
-        let held = frames_to_ticks(size as usize) + client.GetStreamLatency()?;
+        // Each fill: the frames written to the device by its end, and the
+        // time just after its last, if it was sound.
+        let mut fills = VecDeque::<(u64, Option<i64>)>::new();
+        let mut written = 0u64;
         client.Start()?;
         while !shared.stop.load(Ordering::Acquire) {
             if WaitForSingleObject(event.0, WAKE_MS) != WAIT_OBJECT_0 {
@@ -433,29 +481,45 @@ fn play(shared: &Shared) -> Result<()> {
                 data.cast::<i16>(),
                 free as usize * usize::from(CHANNELS),
             );
-            {
-                let mut queue = lock(&shared.queue);
-                let end = queue.fill(out);
-                let at = Instant::now();
-                queue.clock = match (end, queue.clock) {
-                    (Some(end), _) => Some(Clock {
-                        at,
-                        time: end - held,
-                        running: true,
-                    }),
-                    // Run dry: the clock waits for the sound.
-                    (None, Some(clock)) => Some(Clock {
-                        at,
-                        time: clock.now(),
-                        running: false,
-                    }),
-                    (None, None) => None,
-                };
-            }
+            let end = lock(&shared.queue).fill(out);
             if shared.muted.load(Ordering::Relaxed) {
                 out.fill(0);
             }
             render.ReleaseBuffer(free, 0)?;
+            written += u64::from(free);
+            fills.push_back((written, end));
+            if fills.len() > 64 {
+                fills.pop_front();
+            }
+
+            // Which frame the speakers are playing, and when that was.
+            let (mut position, mut qpc) = (0, 0);
+            speakers.GetPosition(&mut position, Some(&mut qpc))?;
+            let played = position * u64::from(RATE) / frequency;
+            let playing = fills
+                .iter()
+                .find(|(end, _)| *end > played)
+                .and_then(|&(end, time)| Some(time? - frames_to_ticks((end - played) as usize)));
+            let at = instant_at(qpc);
+            let mut queue = lock(&shared.queue);
+            queue.clock = match (playing, queue.clock) {
+                (Some(time), Some(mut clock)) if clock.running => {
+                    clock.steer(time, at);
+                    Some(clock)
+                }
+                (Some(time), _) => Some(Clock {
+                    at,
+                    time,
+                    running: true,
+                }),
+                // Playing silence (run dry): the clock waits for the sound.
+                (None, Some(clock)) => Some(Clock {
+                    at: Instant::now(),
+                    time: clock.now(),
+                    running: false,
+                }),
+                (None, None) => None,
+            };
         }
         client.Stop()?;
         Ok(())
