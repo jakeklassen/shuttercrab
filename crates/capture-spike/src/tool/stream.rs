@@ -460,7 +460,8 @@ impl Viewer {
         Ok(())
     }
 
-    fn status(&mut self, hwnd: HWND) {
+    /// The window title with the latest numbers.
+    fn status(&mut self) -> String {
         let (at, shown, bytes) = self.last;
         let seconds = at.elapsed().as_secs_f64().max(0.001);
         let total = self.bytes.load(Ordering::Relaxed);
@@ -473,8 +474,16 @@ impl Viewer {
             if self.muted { ", muted (M)" } else { "" }
         );
         self.last = (Instant::now(), self.shown, total);
-        let _ = unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) };
+        title
     }
+}
+
+/// What the window does once the viewer is no longer borrowed: these send
+/// messages straight back to `window_proc`.
+enum After {
+    Nothing,
+    Title(String),
+    Close,
 }
 
 extern "system" fn window_proc(
@@ -485,31 +494,38 @@ extern "system" fn window_proc(
 ) -> LRESULT {
     let handled = VIEWER.with_borrow_mut(|viewer| {
         let viewer = viewer.as_mut()?;
-        match message {
+        Some(match message {
             WM_FRAME => {
                 if let Err(e) = viewer.show() {
                     eprintln!("{e:#}");
                 }
+                After::Nothing
             }
-            WM_TIMER => viewer.status(hwnd),
+            WM_TIMER => After::Title(viewer.status()),
             WM_ENDED => {
                 viewer.ended = true;
-                viewer.status(hwnd);
+                After::Title(viewer.status())
             }
-            WM_KEYDOWN if wparam.0 == usize::from(VK_ESCAPE.0) => {
-                let _ = unsafe { DestroyWindow(hwnd) };
-            }
+            WM_KEYDOWN if wparam.0 == usize::from(VK_ESCAPE.0) => After::Close,
             WM_KEYDOWN if wparam.0 == usize::from(b'M') => {
                 viewer.muted = !viewer.muted;
                 let _ = viewer.player.set_muted(viewer.muted);
-                viewer.status(hwnd);
+                After::Title(viewer.status())
             }
             _ => return None,
-        }
-        Some(LRESULT(0))
+        })
     });
-    if let Some(result) = handled {
-        return result;
+    if let Some(after) = handled {
+        match after {
+            After::Nothing => {}
+            After::Title(title) => {
+                let _ = unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) };
+            }
+            After::Close => {
+                let _ = unsafe { DestroyWindow(hwnd) };
+            }
+        }
+        return LRESULT(0);
     }
     if message == WM_DESTROY {
         unsafe { PostQuitMessage(0) };
