@@ -42,12 +42,12 @@ pub struct Player {
 
 /// COM and Media Foundation, started for the player's thread; ended when
 /// dropped.
-struct Started {
+pub(super) struct Started {
     com: bool,
 }
 
 impl Started {
-    fn new() -> Result<Self> {
+    pub(super) fn new() -> Result<Self> {
         let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
         let started = Self { com };
         unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) }.context("MFStartup failed")?;

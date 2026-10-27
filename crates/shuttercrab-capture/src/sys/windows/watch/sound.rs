@@ -1,0 +1,463 @@
+//! A live recording's sound: Windows' AAC decoder, then the speakers
+//! through WASAPI, on a thread of its own. A few hundredths of a second
+//! are queued, for frames that arrive unevenly; when more builds up, the
+//! oldest is skipped, so the sound never falls further behind. Where it
+//! has got to playing is the player's clock.
+
+use super::{choose_output, drain, feed, lock};
+use crate::live::{LiveFrame, SoundCodec};
+use anyhow::{Context, Result};
+use std::{
+    collections::VecDeque,
+    sync::{
+        Arc, Mutex,
+        atomic::{AtomicBool, Ordering},
+    },
+    thread::JoinHandle,
+    time::Instant,
+};
+use windows::Win32::{
+    Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
+    Media::{Audio::*, MediaFoundation::*},
+    System::{
+        Com::{
+            CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance,
+            CoInitializeEx, CoUninitialize,
+        },
+        Threading::{CreateEventW, WaitForSingleObject},
+    },
+};
+
+/// The sound's rate, frames a second, and channels: as the recorder
+/// encodes it.
+const RATE: u32 = 48_000;
+const CHANNELS: u16 = 2;
+
+/// 100 ns ticks a second.
+const TICKS: i64 = 10_000_000;
+
+/// How much sound is queued before it plays, frames: a little over one
+/// AAC frame (1024), as they arrive one at a time.
+const QUEUED: usize = 1_100;
+
+/// The least the queue should hold whenever the speakers ask for more,
+/// frames (10 ms): once a second, what it held beyond this all that second
+/// is skipped.
+const SPARE: usize = 480;
+
+/// How much may build up at once (after a stall) before the oldest is
+/// skipped straight away, frames (50 ms).
+const MOST: usize = 2_400;
+
+/// How much the speakers' device holds, 100 ns ticks.
+const DEVICE_BUFFER: i64 = 200_000;
+
+/// How long the thread waits for the device before checking whether to
+/// stop.
+const WAKE_MS: u32 = 100;
+
+fn frames_to_ticks(frames: usize) -> i64 {
+    frames as i64 * TICKS / i64::from(RATE)
+}
+
+/// The sound as it arrives, to samples: AAC through Windows' decoder, PCM
+/// as it is.
+pub(super) enum Decoder {
+    Aac(Aac),
+    Pcm,
+}
+
+impl Decoder {
+    pub(super) fn new(codec: SoundCodec) -> Result<Self> {
+        Ok(match codec {
+            SoundCodec::Aac => Self::Aac(Aac::new()?),
+            SoundCodec::Pcm => Self::Pcm,
+        })
+    }
+
+    /// Decode `frame`: the sound that comes out, its time and 16-bit
+    /// stereo samples, to `out`.
+    pub(super) fn decode(
+        &mut self,
+        frame: &LiveFrame,
+        mut out: impl FnMut(i64, Vec<i16>) -> Result<()>,
+    ) -> Result<()> {
+        match self {
+            Self::Aac(aac) => aac.decode(frame, out),
+            Self::Pcm => out(
+                frame.time,
+                frame
+                    .data
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&bytes| i16::from_le_bytes(bytes))
+                    .collect(),
+            ),
+        }
+    }
+}
+
+pub(super) struct Aac {
+    transform: IMFTransform,
+    /// The size of the samples to give it for its output, if it does not
+    /// bring its own.
+    output_size: Option<u32>,
+}
+
+// SAFETY: Media Foundation's AAC decoder is free-threaded (created in the
+// multithreaded apartment); the player uses it from one thread at a time,
+// behind a mutex.
+unsafe impl Send for Aac {}
+
+impl Aac {
+    fn new() -> Result<Self> {
+        unsafe {
+            let transform: IMFTransform =
+                CoCreateInstance(&CLSID_MSAACDecMFT, None, CLSCTX_INPROC_SERVER)
+                    .context("no AAC decoder")?;
+            let input = MFCreateMediaType()?;
+            input.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
+            input.SetGUID(&MF_MT_SUBTYPE, &MFAudioFormat_AAC)?;
+            input.SetUINT32(&MF_MT_AUDIO_SAMPLES_PER_SECOND, RATE)?;
+            input.SetUINT32(&MF_MT_AUDIO_NUM_CHANNELS, u32::from(CHANNELS))?;
+            input.SetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE, 16)?;
+            // ADTS: each frame carries its own header.
+            input.SetUINT32(&MF_MT_AAC_PAYLOAD_TYPE, 1)?;
+            input.SetUINT32(&MF_MT_AAC_AUDIO_PROFILE_LEVEL_INDICATION, 0x29)?;
+            // The rest of HEAACWAVEINFO after WAVEFORMATEX: the payload type
+            // and profile again, then zeros.
+            input.SetBlob(&MF_MT_USER_DATA, &[1, 0, 0x29, 0, 0, 0, 0, 0, 0, 0, 0, 0])?;
+            transform
+                .SetInputType(0, &input, 0)
+                .context("the AAC decoder does not take this sound")?;
+            choose_output(&transform, |offered| {
+                offered.GetGUID(&MF_MT_SUBTYPE).ok() == Some(MFAudioFormat_PCM)
+                    && offered.GetUINT32(&MF_MT_AUDIO_BITS_PER_SAMPLE).ok() == Some(16)
+            })?;
+            transform.ProcessMessage(MFT_MESSAGE_NOTIFY_BEGIN_STREAMING, 0)?;
+            transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
+            let info = transform.GetOutputStreamInfo(0)?;
+            let brings = (MFT_OUTPUT_STREAM_PROVIDES_SAMPLES.0
+                | MFT_OUTPUT_STREAM_CAN_PROVIDE_SAMPLES.0) as u32;
+            Ok(Self {
+                transform,
+                output_size: (info.dwFlags & brings == 0).then_some(info.cbSize.max(16_384)),
+            })
+        }
+    }
+
+    fn decode(
+        &mut self,
+        frame: &LiveFrame,
+        mut out: impl FnMut(i64, Vec<i16>) -> Result<()>,
+    ) -> Result<()> {
+        let (transform, size) = (&self.transform, self.output_size);
+        let make = || -> Result<Option<IMFSample>> {
+            let Some(size) = size else {
+                return Ok(None);
+            };
+            unsafe {
+                let sample = MFCreateSample()?;
+                sample.AddBuffer(&MFCreateMemoryBuffer(size)?)?;
+                Ok(Some(sample))
+            }
+        };
+        let mut take = |sample: IMFSample| -> Result<()> {
+            unsafe {
+                let buffer = sample.ConvertToContiguousBuffer()?;
+                let (mut data, mut length) = (std::ptr::null_mut(), 0);
+                buffer.Lock(&mut data, None, Some(&mut length))?;
+                // SAFETY: Lock gives `length` readable bytes at `data`
+                // until Unlock; 16-bit samples, aligned as allocated.
+                let samples =
+                    std::slice::from_raw_parts(data.cast::<i16>(), length as usize / 2).to_vec();
+                buffer.Unlock()?;
+                out(sample.GetSampleTime().unwrap_or(frame.time), samples)
+            }
+        };
+        let mut empty = || drain(transform, make, || Ok(()), &mut take);
+        feed(transform, frame, &mut empty)?;
+        empty()
+    }
+}
+
+/// Where the sound had got to playing, and when.
+#[derive(Clone, Copy)]
+struct Clock {
+    at: Instant,
+    time: i64,
+    /// Whether it is playing on; not while the queue has run dry.
+    running: bool,
+}
+
+impl Clock {
+    fn now(&self) -> i64 {
+        if self.running {
+            self.time + (self.at.elapsed().as_nanos() / 100) as i64
+        } else {
+            self.time
+        }
+    }
+}
+
+/// Decoded sound waiting to play.
+#[derive(Default)]
+struct Queue {
+    /// Each piece's time and samples, oldest first.
+    pieces: VecDeque<(i64, Vec<i16>)>,
+    /// Samples of the first piece already played.
+    offset: usize,
+    /// Frames queued in all.
+    frames: usize,
+    /// Waiting for [`QUEUED`] frames before playing: at the start, and
+    /// once the queue has run dry.
+    filling: bool,
+    clock: Option<Clock>,
+    /// The fewest frames queued when the speakers asked for more, since
+    /// `since`.
+    low: usize,
+    since: Option<Instant>,
+}
+
+impl Queue {
+    /// Fill `out` with the next sound, or silence while filling: the time
+    /// just after the last of it, if it was all sound.
+    fn fill(&mut self, out: &mut [i16]) -> Option<i64> {
+        if self.filling || self.clock.is_none() {
+            if self.frames < QUEUED {
+                out.fill(0);
+                return None;
+            }
+            self.filling = false;
+            self.low = usize::MAX;
+            self.since = Some(Instant::now());
+        }
+        self.keep_short();
+        let mut written = 0;
+        let mut end = None;
+        while written < out.len() {
+            let Some((time, piece)) = self.pieces.front() else {
+                break;
+            };
+            let (time, len) = (*time, piece.len());
+            let n = (len - self.offset).min(out.len() - written);
+            out[written..written + n].copy_from_slice(&piece[self.offset..self.offset + n]);
+            written += n;
+            self.offset += n;
+            self.frames -= n / usize::from(CHANNELS);
+            end = Some(time + frames_to_ticks(self.offset / usize::from(CHANNELS)));
+            if self.offset == len {
+                self.pieces.pop_front();
+                self.offset = 0;
+            }
+        }
+        if written < out.len() {
+            out[written..].fill(0);
+            self.filling = true;
+            return None;
+        }
+        end
+    }
+
+    /// Skip what the queue has held beyond [`SPARE`] for the last second,
+    /// or beyond [`QUEUED`] if [`MOST`] has built up: sound that would
+    /// only make it later.
+    fn keep_short(&mut self) {
+        if self.frames > MOST {
+            self.skip(self.frames - QUEUED);
+        }
+        self.low = self.low.min(self.frames);
+        if self
+            .since
+            .is_some_and(|since| since.elapsed().as_secs() >= 1)
+        {
+            if self.low > SPARE {
+                self.skip(self.low - SPARE);
+            }
+            self.low = usize::MAX;
+            self.since = Some(Instant::now());
+        }
+    }
+
+    /// Drop the oldest `frames`.
+    fn skip(&mut self, mut frames: usize) {
+        while frames > 0
+            && let Some((_, piece)) = self.pieces.front()
+        {
+            let left = (piece.len() - self.offset) / usize::from(CHANNELS);
+            let n = left.min(frames);
+            self.offset += n * usize::from(CHANNELS);
+            self.frames -= n;
+            frames -= n;
+            if n == left {
+                self.pieces.pop_front();
+                self.offset = 0;
+            }
+        }
+    }
+}
+
+struct Shared {
+    queue: Mutex<Queue>,
+    muted: AtomicBool,
+    stop: AtomicBool,
+    /// Whether the speakers are playing; once they fail, there is no clock.
+    alive: AtomicBool,
+}
+
+/// The speakers, playing the queue on a thread of their own.
+pub(super) struct Output {
+    shared: Arc<Shared>,
+    thread: Option<JoinHandle<()>>,
+}
+
+impl Output {
+    pub(super) fn start(failed: impl Fn(String) + Send + 'static) -> Result<Self> {
+        let shared = Arc::new(Shared {
+            queue: Mutex::default(),
+            muted: AtomicBool::new(false),
+            stop: AtomicBool::new(false),
+            alive: AtomicBool::new(true),
+        });
+        let playing = shared.clone();
+        let thread = std::thread::Builder::new()
+            .name("live sound".into())
+            .spawn(move || {
+                let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+                if let Err(e) = play(&playing) {
+                    playing.alive.store(false, Ordering::Relaxed);
+                    failed(format!("{e:#}"));
+                }
+                if com {
+                    unsafe { CoUninitialize() };
+                }
+            })?;
+        Ok(Self {
+            shared,
+            thread: Some(thread),
+        })
+    }
+
+    pub(super) fn queue(&self, time: i64, samples: Vec<i16>) -> Result<()> {
+        let mut queue = lock(&self.shared.queue);
+        queue.frames += samples.len() / usize::from(CHANNELS);
+        queue.pieces.push_back((time, samples));
+        Ok(())
+    }
+
+    /// Where the sound has got to playing, on the recording's timeline.
+    pub(super) fn clock(&self) -> Option<i64> {
+        if !self.shared.alive.load(Ordering::Relaxed) {
+            return None;
+        }
+        lock(&self.shared.queue).clock.map(|clock| clock.now())
+    }
+
+    pub(super) fn set_muted(&self, muted: bool) {
+        self.shared.muted.store(muted, Ordering::Relaxed);
+    }
+}
+
+impl Drop for Output {
+    fn drop(&mut self) {
+        self.shared.stop.store(true, Ordering::Release);
+        if let Some(thread) = self.thread.take() {
+            let _ = thread.join();
+        }
+    }
+}
+
+/// An event handle, closed when dropped.
+struct Event(HANDLE);
+
+impl Drop for Event {
+    fn drop(&mut self) {
+        let _ = unsafe { CloseHandle(self.0) };
+    }
+}
+
+/// Play the queue on the default speakers until told to stop.
+fn play(shared: &Shared) -> Result<()> {
+    unsafe {
+        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
+            .context("no audio device enumerator")?;
+        let device = devices
+            .GetDefaultAudioEndpoint(eRender, eConsole)
+            .context("no speakers")?;
+        let client: IAudioClient = device
+            .Activate(CLSCTX_ALL, None)
+            .context("could not open the speakers")?;
+        let format = WAVEFORMATEX {
+            wFormatTag: WAVE_FORMAT_PCM as u16,
+            nChannels: CHANNELS,
+            nSamplesPerSec: RATE,
+            nAvgBytesPerSec: RATE * u32::from(CHANNELS) * 2,
+            nBlockAlign: CHANNELS * 2,
+            wBitsPerSample: 16,
+            cbSize: 0,
+        };
+        // Windows converts to the device's own format.
+        client
+            .Initialize(
+                AUDCLNT_SHAREMODE_SHARED,
+                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
+                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
+                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
+                DEVICE_BUFFER,
+                0,
+                &format,
+                None,
+            )
+            .context("could not start playing sound")?;
+        let event = Event(CreateEventW(None, false, false, None).context("no event")?);
+        client.SetEventHandle(event.0)?;
+        let render: IAudioRenderClient = client.GetService()?;
+        let size = client.GetBufferSize()?;
+        // Once a fill is written, the device holds a full buffer, and its
+        // own latency, before the last of it is heard.
+        let held = frames_to_ticks(size as usize) + client.GetStreamLatency()?;
+        client.Start()?;
+        while !shared.stop.load(Ordering::Acquire) {
+            if WaitForSingleObject(event.0, WAKE_MS) != WAIT_OBJECT_0 {
+                continue;
+            }
+            let free = size - client.GetCurrentPadding()?;
+            if free == 0 {
+                continue;
+            }
+            let data = render.GetBuffer(free)?;
+            // SAFETY: GetBuffer gives room for `free` frames of 16-bit
+            // stereo until ReleaseBuffer.
+            let out = std::slice::from_raw_parts_mut(
+                data.cast::<i16>(),
+                free as usize * usize::from(CHANNELS),
+            );
+            {
+                let mut queue = lock(&shared.queue);
+                let end = queue.fill(out);
+                let at = Instant::now();
+                queue.clock = match (end, queue.clock) {
+                    (Some(end), _) => Some(Clock {
+                        at,
+                        time: end - held,
+                        running: true,
+                    }),
+                    // Run dry: the clock waits for the sound.
+                    (None, Some(clock)) => Some(Clock {
+                        at,
+                        time: clock.now(),
+                        running: false,
+                    }),
+                    (None, None) => None,
+                };
+            }
+            if shared.muted.load(Ordering::Relaxed) {
+                out.fill(0);
+            }
+            render.ReleaseBuffer(free, 0)?;
+        }
+        client.Stop()?;
+        Ok(())
+    }
+}
