@@ -243,9 +243,10 @@ impl Quality {
 /// How the sound and the pictures are to go: `--codec` and `--video`.
 fn codecs(args: &mut Args) -> Result<(SoundCodec, VideoCodec)> {
     let sound = match args.option("--codec")?.as_deref() {
-        None | Some("pcm") => SoundCodec::Pcm,
+        None | Some("opus") => SoundCodec::Opus,
+        Some("pcm") => SoundCodec::Pcm,
         Some("aac") => SoundCodec::Aac,
-        Some(other) => anyhow::bail!("--codec takes pcm or aac, not {other}"),
+        Some(other) => anyhow::bail!("--codec takes opus, pcm or aac, not {other}"),
     };
     let video = match args.option("--video")?.as_deref() {
         None | Some("av1") => VideoCodec::Av1,
@@ -641,6 +642,7 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
         match format.sound {
             Some(SoundCodec::Aac) => "AAC sound",
             Some(SoundCodec::Pcm) => "PCM sound",
+            Some(SoundCodec::Opus) => "Opus sound",
             None => "no sound",
         }
     );
