@@ -77,10 +77,11 @@ fn frames_to_ticks(frames: usize) -> i64 {
     frames as i64 * TICKS / i64::from(RATE)
 }
 
-/// The sound as it arrives, to samples: AAC through Windows' decoder, PCM
-/// as it is.
+/// The sound as it arrives, to samples: AAC through Windows' decoder,
+/// Opus through libopus, PCM as it is.
 pub(super) enum Decoder {
     Aac(Aac),
+    Opus(super::super::opus::Decoder),
     Pcm,
 }
 
@@ -88,6 +89,7 @@ impl Decoder {
     pub(super) fn new(codec: SoundCodec) -> Result<Self> {
         Ok(match codec {
             SoundCodec::Aac => Self::Aac(Aac::new()?),
+            SoundCodec::Opus => Self::Opus(super::super::opus::Decoder::new()?),
             SoundCodec::Pcm => Self::Pcm,
         })
     }
@@ -101,6 +103,7 @@ impl Decoder {
     ) -> Result<()> {
         match self {
             Self::Aac(aac) => aac.decode(frame, out),
+            Self::Opus(opus) => out(frame.time, opus.decode(&frame.data)?),
             Self::Pcm => out(
                 frame.time,
                 frame
