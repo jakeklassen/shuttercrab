@@ -1,6 +1,7 @@
 {
   "version": 1,
   "source": {
+    "name": "shuttercrab-meet",
     "durable_objects": {
       "bindings": [
         {
@@ -34,7 +35,10 @@
           "RoomsWs"
         ]
       }
-    ]
+    ],
+    "account_id": "d2a198d9fc84f37bcf023c961e39406b",
+    "compatibility_date": "2026-02-24",
+    "name": "shuttercrab-meet"
   },
-  "text": "{\n  \"durable_objects\": {\n    \"bindings\": [\n      {\n        \"name\": \"RoomsWs\",\n        \"class_name\": \"RoomsWs\"\n      }\n    ]\n  },\n  \"migrations\": [\n    {\n      \"tag\": \"void-ws-v1\",\n      \"new_sqlite_classes\": [\n        \"RoomsWs\"\n      ]\n    }\n  ]\n}"
+  "text": "{\n  \"durable_objects\": {\n    \"bindings\": [\n      {\n        \"name\": \"RoomsWs\",\n        \"class_name\": \"RoomsWs\"\n      }\n    ]\n  },\n  \"migrations\": [\n    {\n      \"tag\": \"void-ws-v1\",\n      \"new_sqlite_classes\": [\n        \"RoomsWs\"\n      ]\n    }\n  ],\n  \"account_id\": \"d2a198d9fc84f37bcf023c961e39406b\",\n  \"compatibility_date\": \"2026-02-24\",\n  \"name\": \"shuttercrab-meet\"\n}\n"
 }
