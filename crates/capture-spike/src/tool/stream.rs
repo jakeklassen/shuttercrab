@@ -13,7 +13,7 @@ use shuttercrab_capture::{
 };
 use std::{
     cell::RefCell,
-    io::{BufReader, BufWriter, Write},
+    io::{BufReader, BufWriter, Read, Write},
     net::{TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
@@ -115,6 +115,10 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         .map(|p| p.parse())
         .transpose()?
         .unwrap_or(DEFAULT_PORT);
+    let online = args.option("--online")?.as_deref() == Some("on");
+    let meet = args
+        .option("--meet")?
+        .unwrap_or_else(|| shuttercrab_connect::MEET.into());
     args.finish()?;
     let _ = log::set_logger(&Log);
     log::set_max_level(log::LevelFilter::Info);
@@ -123,20 +127,15 @@ pub(super) fn send(mut args: Args) -> Result<()> {
     let target = display::select(&monitors, monitor.as_deref())?;
     let (width, height) = (region.width & !1, region.height & !1);
     let sound = system_sound || sound_process.is_some() || microphone;
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!(
-        "{width}x{height} of {} at {fps} fps, {} ({codec:?}). Waiting for a viewer on \
-         127.0.0.1:{port} (capture-spike stream-watch)...",
+        "{width}x{height} of {} at {fps} fps, {} ({codec:?}).",
         target.device_name,
         describe_sound(sound_process, system_sound, microphone)
     );
+    let (out, connection) = open_output(online, &meet, port)?;
+    println!("Streaming. Close the viewer, or Ctrl+C here, to stop.");
 
-    let (socket, viewer) = listener.accept()?;
-    drop(listener);
-    socket.set_nodelay(true)?;
-    println!("Viewer {viewer} connected: streaming. Close the viewer, or Ctrl+C here, to stop.");
-
-    let out = Arc::new(Mutex::new(BufWriter::new(socket)));
+    let out = Arc::new(Mutex::new(BufWriter::new(out)));
     LiveFormat {
         width,
         height,
@@ -173,7 +172,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         },
     )?;
 
-    report(&gone, &sent, started);
+    report(&gone, &sent, started, connection.as_ref());
     let summary = recorder.stop()?;
     println!(
         "The viewer left. Streamed {:.0} s, {} pictures, {} encoder.",
@@ -186,6 +185,67 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         }
     );
     Ok(())
+}
+
+/// Where the frames go.
+type Out = Box<dyn Write + Send>;
+
+/// A viewer anywhere if `online`, through `meet`, else on this PC.
+fn open_output(
+    online: bool,
+    meet: &str,
+    port: u16,
+) -> Result<(Out, Option<shuttercrab_connect::Connection>)> {
+    if online {
+        let (out, connection) = host_online(meet)?;
+        Ok((out, Some(connection)))
+    } else {
+        Ok((wait_locally(port)?, None))
+    }
+}
+
+/// A viewer on this PC, from stream-watch without a link.
+fn wait_locally(port: u16) -> Result<Out> {
+    let listener = TcpListener::bind(("127.0.0.1", port))?;
+    println!("Waiting for a viewer on 127.0.0.1:{port} (capture-spike stream-watch)...");
+    let (socket, viewer) = listener.accept()?;
+    socket.set_nodelay(true)?;
+    println!("Viewer {viewer} connected.");
+    Ok(Box::new(socket))
+}
+
+/// A viewer anywhere: a room at `meet`, a link to share, and a direct
+/// connection to whoever comes with it.
+fn host_online(meet: &str) -> Result<(Out, shuttercrab_connect::Connection)> {
+    let hosting = shuttercrab_connect::host(meet, &host_key()?)?;
+    println!(
+        "Share this link; whoever has it can watch:\n\n  {}\n\n\
+         Waiting for a viewer (capture-spike stream-watch --link LINK)...",
+        hosting.link()
+    );
+    let connection = hosting.accept()?;
+    println!(
+        "Viewer at {} connected directly, {} ms there and back.",
+        connection.remote(),
+        connection.round_trip().as_millis()
+    );
+    Ok((Box::new(connection.send()?), connection))
+}
+
+/// The key that opens a room on the meeting point: `SHUTTERCRAB_HOST_KEY`,
+/// or `meet/.env` when run from the repository. Never printed.
+fn host_key() -> Result<String> {
+    if let Ok(key) = std::env::var("SHUTTERCRAB_HOST_KEY") {
+        return Ok(key);
+    }
+    std::fs::read_to_string("meet/.env")
+        .ok()
+        .and_then(|text| {
+            text.lines()
+                .find_map(|line| line.strip_prefix("HOST_KEY="))
+                .map(|key| key.trim().to_string())
+        })
+        .context("no host key: set SHUTTERCRAB_HOST_KEY, or run from the repository, whose meet/.env holds it")
 }
 
 /// What the stream's sound is, for the first line.
@@ -202,7 +262,7 @@ fn describe_sound(process: Option<u32>, speakers: bool, microphone: bool) -> Str
 
 /// Each frame onto the socket as it comes, until the viewer is `gone`.
 fn sink(
-    out: Arc<Mutex<BufWriter<TcpStream>>>,
+    out: Arc<Mutex<BufWriter<Out>>>,
     gone: Arc<AtomicBool>,
     sent: Arc<Mutex<Sent>>,
     started: Instant,
@@ -237,24 +297,41 @@ fn sink(
     })
 }
 
-/// A status line a second until the viewer is `gone`.
-fn report(gone: &AtomicBool, sent: &Mutex<Sent>, started: Instant) {
+/// A status line a second until the viewer is `gone`, with how the
+/// `connection` is doing if it is online.
+fn report(
+    gone: &AtomicBool,
+    sent: &Mutex<Sent>,
+    started: Instant,
+    connection: Option<&shuttercrab_connect::Connection>,
+) {
     let mut last = (0, 0);
     while !gone.load(Ordering::Relaxed) {
         std::thread::sleep(Duration::from_secs(1));
         let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
         println!(
-            "{:>4} s: {} pictures/s, {} sound frames/s, {:.1} Mbit/s; latest picture {} ms behind the first",
+            "{:>4} s: {} pictures/s, {} sound frames/s, {:.1} Mbit/s; latest picture {} ms behind the first{}",
             started.elapsed().as_secs(),
             sent.pictures - last.0,
             sent.sound,
             (sent.bytes - last.1) as f64 * 8.0 / 1e6,
             sent.worst.as_millis(),
+            connection.map(network).unwrap_or_default(),
         );
         last = (sent.pictures, sent.bytes);
         sent.sound = 0;
         sent.worst = Duration::ZERO;
     }
+}
+
+/// How an online connection is doing, for the status lines.
+fn network(connection: &shuttercrab_connect::Connection) -> String {
+    let (lost, sent) = connection.lost();
+    format!(
+        "; {} ms there and back, {:.2}% of packets lost",
+        connection.round_trip().as_millis(),
+        lost as f64 * 100.0 / sent.max(1) as f64
+    )
 }
 
 /// The viewer window's state, on its thread. The pictures are drawn on a
@@ -269,6 +346,8 @@ struct Viewer {
     last: (Instant, u64, u64),
     muted: bool,
     ended: bool,
+    /// The connection to the stream, if it is online.
+    connection: Option<shuttercrab_connect::Connection>,
 }
 
 thread_local! {
@@ -282,15 +361,18 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let from = args
         .option("--from")?
         .unwrap_or_else(|| format!("127.0.0.1:{DEFAULT_PORT}"));
+    let link = args.option("--link")?;
+    let meet = args
+        .option("--meet")?
+        .unwrap_or_else(|| shuttercrab_connect::MEET.into());
     let monitor = args.option("--monitor")?;
     let muted = args.option("--sound")?.as_deref() == Some("off");
     args.finish()?;
     let _ = log::set_logger(&Log);
     log::set_max_level(log::LevelFilter::Info);
 
-    let socket = TcpStream::connect(&from).with_context(|| format!("no stream at {from}"))?;
-    socket.set_nodelay(true)?;
-    let mut reader = BufReader::new(socket);
+    let (input, connection) = open_input(link.as_deref(), &meet, &from)?;
+    let mut reader = BufReader::new(input);
     let format = LiveFormat::read_from(&mut reader)?;
     println!(
         "{}x{} at {} fps, {}. Escape closes the window; M mutes; [ and ] move the \
@@ -361,6 +443,7 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
             last: (Instant::now(), 0, 0),
             muted,
             ended: false,
+            connection,
         })
     });
     unsafe {
@@ -376,6 +459,32 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let _ = drawing.join();
     VIEWER.with_borrow_mut(|viewer| viewer.take());
     Ok(())
+}
+
+/// The stream `link` is for, through `meet`, or else the one on this PC
+/// at `from`.
+fn open_input(
+    link: Option<&str>,
+    meet: &str,
+    from: &str,
+) -> Result<(
+    Box<dyn Read + Send>,
+    Option<shuttercrab_connect::Connection>,
+)> {
+    let Some(link) = link else {
+        let socket = TcpStream::connect(from).with_context(|| format!("no stream at {from}"))?;
+        socket.set_nodelay(true)?;
+        return Ok((Box::new(socket), None));
+    };
+    let link = shuttercrab_connect::Link::parse(link)?;
+    println!("Joining the stream...");
+    let connection = shuttercrab_connect::join(meet, &link)?;
+    println!(
+        "Connected directly to {}, {} ms there and back.",
+        connection.remote(),
+        connection.round_trip().as_millis()
+    );
+    Ok((Box::new(connection.receive()?), Some(connection)))
 }
 
 /// Draw each picture as it falls due, once a refresh of the display the
@@ -528,12 +637,13 @@ impl Viewer {
         };
         let title = format!(
             "Shuttercrab live (spike) — {}{:.0} fps, {:.1} Mbit/s; behind the newest picture: \
-             picture {} ms, {sound}; pictures lead by up to {} ms ([ ]){}",
+             picture {} ms, {sound}; pictures lead by up to {} ms ([ ]){}{}",
             if self.ended { "ENDED — " } else { "" },
             (now - drawn) as f64 / seconds,
             (total - bytes) as f64 * 8.0 / seconds / 1e6,
             self.player.behind().as_millis(),
             self.player.lead().as_millis(),
+            self.connection.as_ref().map(network).unwrap_or_default(),
             if self.muted { ", muted (M)" } else { "" }
         );
         self.last = (Instant::now(), now, total);
