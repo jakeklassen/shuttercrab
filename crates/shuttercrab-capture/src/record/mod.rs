@@ -32,6 +32,7 @@ pub type LiveSink = Arc<dyn Fn(crate::live::LiveFrame) + Send + Sync>;
 #[derive(Clone)]
 pub struct Live {
     pub sink: LiveSink,
+    pub video: crate::live::VideoCodec,
     pub sound: crate::live::SoundCodec,
     /// The size its pictures are scaled to, if not the region's own.
     pub size: Option<(u32, u32)>,

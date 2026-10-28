@@ -12,7 +12,7 @@ mod sound;
 mod video;
 
 use super::{gpu::Gpu, play::Started};
-use crate::live::{LiveFormat, LiveFrame, Track};
+use crate::live::{LiveFormat, LiveFrame, Track, VideoCodec};
 use anyhow::{Context, Result};
 use std::{
     collections::VecDeque,
@@ -61,9 +61,10 @@ impl LivePlayer {
         let started = Started::new()?;
         let gpu = Gpu::video(None)?;
         let (w, h, fps) = (format.width, format.height, format.fps);
-        let video = video::Decoder::new(&gpu, w, h, fps).context("cannot decode the pictures")?;
+        let video = video::Decoder::new(&gpu, w, h, fps, format.video)
+            .context("cannot decode the pictures")?;
         let pictures =
-            video::Pictures::new(&gpu, w, h, fps).context("cannot convert the pictures")?;
+            video::Pictures::new(&gpu, video.kind(), fps).context("cannot convert the pictures")?;
         let sound = match format.sound {
             Some(codec) => Some((
                 Mutex::new(sound::Decoder::new(codec).context("cannot decode the sound")?),
@@ -84,6 +85,12 @@ impl LivePlayer {
             gpu,
             _started: started,
         })
+    }
+
+    /// Whether this PC can play pictures coded as `codec`: H.264 always;
+    /// HEVC with Windows' HEVC Video Extensions installed.
+    pub fn decodes(codec: VideoCodec) -> bool {
+        video::decodes(codec)
     }
 
     /// The graphics card's device the pictures are on: [`LivePlayer::draw`]
@@ -113,7 +120,7 @@ impl LivePlayer {
     /// The pictures' size now: it changes where the stream does, and the
     /// target [`LivePlayer::draw`] draws into should follow.
     pub fn size(&self) -> (u32, u32) {
-        lock(&self.pictures).size()
+        lock(&self.pictures).kind().size
     }
 
     /// Decode the pictures that are due and draw the newest into `target`
@@ -135,10 +142,10 @@ impl LivePlayer {
         let (mut decoder, mut pictures) = (lock(&self.video), lock(&self.pictures));
         let mut newest = None;
         for frame in &frames {
-            decoder.decode(frame, |time, texture, index, size| {
-                if pictures.size() != size {
-                    *pictures = video::Pictures::new(&self.gpu, size.0, size.1, self.fps)
-                        .context("cannot convert the pictures at their new size")?;
+            decoder.decode(frame, |time, texture, index, kind| {
+                if pictures.kind() != kind {
+                    *pictures = video::Pictures::new(&self.gpu, kind, self.fps)
+                        .context("cannot convert the pictures as they now are")?;
                 }
                 pictures.convert(&self.gpu, texture, index)?;
                 newest = Some(time);
