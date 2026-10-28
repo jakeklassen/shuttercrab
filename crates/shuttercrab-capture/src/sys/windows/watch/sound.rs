@@ -266,6 +266,12 @@ struct Queue {
     spare: usize,
     /// When the spare last changed.
     spare_since: Option<Instant>,
+    /// What the spare was before it last grew, until it settles: running
+    /// dry because the sender paused (to start again at another quality)
+    /// says nothing about the network, and is undone.
+    grew_from: Option<usize>,
+    /// Where the sound pushed last ends: the next should start there.
+    next: Option<i64>,
     /// Frames into fading in, after a start or a cut.
     fade: usize,
     clock: Option<Clock>,
@@ -279,10 +285,28 @@ struct Queue {
 
 impl Queue {
     fn push(&mut self, time: i64, samples: &[i16]) {
+        // Sound that does not follow on from what is queued (the sender
+        // started its recorder again, after a pause) starts the queue
+        // afresh at its own time, so the clock goes with it.
+        if let Some(next) = self.next
+            && (time - next).abs() > JUMP
+        {
+            log::info!(
+                "live sound jumped {} ms {:?} in",
+                (time - next) / 10_000,
+                self.started.map(|s| s.elapsed())
+            );
+            self.frames.clear();
+            self.filling = true;
+            if let Some(spare) = self.grew_from.take() {
+                self.spare = spare;
+            }
+        }
         if self.frames.is_empty() {
             self.front = time;
             self.position = 0.0;
         }
+        self.next = Some(time + frames_to_ticks(samples.len() / 2));
         self.started.get_or_insert_with(Instant::now);
         self.spare = self.spare.max(SPARE);
         self.frames.extend(samples.as_chunks::<2>().0);
@@ -295,8 +319,10 @@ impl Queue {
             .spare_since
             .is_none_or(|since| since.elapsed() >= SETTLED);
         let spare = if ran_dry {
+            self.grew_from = Some(self.spare);
             (self.spare * 2).min(MOST_SPARE)
         } else if settled {
+            self.grew_from = None;
             (self.spare - self.spare / 8).max(SPARE)
         } else {
             return;
@@ -631,6 +657,23 @@ mod tests {
         assert!(queue.fill(&mut out).is_none());
         queue.push(0, &vec![0; SPARE * 2]);
         assert!(queue.fill(&mut out).is_some());
+    }
+
+    #[test]
+    fn sound_resuming_later_starts_the_queue_afresh_at_its_time() {
+        let mut queue = playing();
+        let mut out = vec![0; 480 * 2];
+        // The sender pauses: the queue runs dry, and keeps more in hand.
+        while queue.fill(&mut out).is_some() {}
+        assert_eq!(queue.spare, SPARE * 2);
+        // Its sound comes back half a second on, after what was queued is
+        // gone.
+        queue.frames.clear();
+        let later = queue.next.unwrap() + TICKS / 2;
+        queue.push(later, &[0; 4 * 2]);
+        assert_eq!(queue.front, later);
+        assert_eq!(queue.frames.len(), 4);
+        assert_eq!(queue.spare, SPARE, "a pause says nothing about the network");
     }
 
     #[test]
