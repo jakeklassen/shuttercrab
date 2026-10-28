@@ -9,7 +9,7 @@
 //! Annex B; AAC arrives raw, and gets an ADTS header here.
 
 use crate::{
-    live::{LiveFrame, Track, adts},
+    live::{LiveFrame, Track, VideoCodec, adts},
     record::LiveSink,
 };
 use std::sync::Mutex;
@@ -208,12 +208,18 @@ impl StreamSink_Impl {
         }
     }
 
-    /// Whether the pictures are HEVC rather than H.264.
-    fn hevc(&self) -> bool {
-        unsafe { self.media_type().GetGUID(&MF_MT_SUBTYPE) }.ok() == Some(MFVideoFormat_HEVC)
+    /// How the pictures are coded.
+    fn codec(&self) -> VideoCodec {
+        match unsafe { self.media_type().GetGUID(&MF_MT_SUBTYPE) } {
+            Ok(subtype) if subtype == MFVideoFormat_HEVC => VideoCodec::Hevc,
+            Ok(subtype) if subtype == MFVideoFormat_AV1 => VideoCodec::Av1,
+            _ => VideoCodec::H264,
+        }
     }
 
-    /// The parameter sets in Annex B, as the encoder's output type has them.
+    /// The parameter sets as the encoder's output type has them: Annex B,
+    /// or AV1's sequence header OBU, out of the configuration record that
+    /// wraps it.
     fn parameter_sets(&self) -> Vec<u8> {
         let media_type = self.media_type();
         unsafe {
@@ -222,6 +228,11 @@ impl StreamSink_Impl {
             };
             let mut blob = vec![0; size as usize];
             match media_type.GetBlob(&MF_MT_MPEG_SEQUENCE_HEADER, &mut blob, None) {
+                // An AV1CodecConfigurationRecord: four bytes, the first
+                // with its marker bit, then the OBUs.
+                Ok(()) if self.codec() == VideoCodec::Av1 && blob.first() == Some(&0x81) => {
+                    blob.split_off(4.min(blob.len()))
+                }
                 Ok(()) => blob,
                 Err(_) => Vec::new(),
             }
@@ -240,7 +251,8 @@ impl StreamSink_Impl {
             buffer.Unlock()?;
             let key = sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
             let data = match self.track {
-                Track::Video if key && !has_sps(&bytes, self.hevc()) => {
+                Track::Video if key && !has_parameter_sets(&bytes, self.codec()) => {
+                    log::debug!("a key frame without its parameter sets: adding them");
                     let mut with = self.parameter_sets();
                     with.extend_from_slice(&bytes);
                     with
@@ -259,16 +271,48 @@ impl StreamSink_Impl {
     }
 }
 
-/// Whether Annex B `bytes` carry the parameter sets: H.264's sequence
-/// parameter set, or with `hevc` the video parameter set that leads HEVC's.
-fn has_sps(bytes: &[u8], hevc: bool) -> bool {
-    bytes.windows(4).any(|w| {
-        w[..3] == [0, 0, 1]
-            && if hevc {
-                (w[3] >> 1) & 0x3F == 32
-            } else {
-                w[3] & 0x1F == 7
+/// Whether a key frame's `bytes` carry the parameter sets: in Annex B,
+/// H.264's sequence parameter set or the video parameter set that leads
+/// HEVC's; for AV1, a sequence header OBU.
+fn has_parameter_sets(bytes: &[u8], codec: VideoCodec) -> bool {
+    let annex_b = |wanted: fn(u8) -> bool| {
+        bytes
+            .windows(4)
+            .any(|w| w[..3] == [0, 0, 1] && wanted(w[3]))
+    };
+    match codec {
+        VideoCodec::H264 => annex_b(|nal| nal & 0x1F == 7),
+        VideoCodec::Hevc => annex_b(|nal| (nal >> 1) & 0x3F == 32),
+        VideoCodec::Av1 => obus(bytes).any(|kind| kind == OBU_SEQUENCE_HEADER),
+    }
+}
+
+/// AV1's sequence header OBU type.
+const OBU_SEQUENCE_HEADER: u8 = 1;
+
+/// The types of the AV1 OBUs in `bytes`, each with its size, as a live
+/// stream has them (AV1 spec 5.3).
+fn obus(mut bytes: &[u8]) -> impl Iterator<Item = u8> {
+    std::iter::from_fn(move || {
+        let header = *bytes.first()?;
+        let mut at = 1 + usize::from(header & 4 != 0);
+        let size = if header & 2 != 0 {
+            // LEB128, at most eight bytes.
+            let mut size = 0usize;
+            for shift in 0..8 {
+                let byte = *bytes.get(at)?;
+                at += 1;
+                size |= usize::from(byte & 0x7F) << (shift * 7);
+                if byte & 0x80 == 0 {
+                    break;
+                }
             }
+            size
+        } else {
+            bytes.len() - at.min(bytes.len())
+        };
+        bytes = bytes.get(at + size..).unwrap_or_default();
+        Some((header >> 3) & 0xF)
     })
 }
 
@@ -405,5 +449,31 @@ impl IMFMediaTypeHandler_Impl for StreamSink_Impl {
 
     fn GetMajorType(&self) -> Result<GUID> {
         unsafe { self.media_type().GetMajorType() }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn a_key_frame_says_whether_it_carries_its_parameter_sets() {
+        // H.264: a sequence parameter set (7), then a picture (5).
+        let h264 = [0, 0, 0, 1, 0x67, 9, 0, 0, 1, 0x65, 9];
+        assert!(has_parameter_sets(&h264, VideoCodec::H264));
+        assert!(!has_parameter_sets(&h264[5..], VideoCodec::H264));
+        // HEVC: a video parameter set (32) leads.
+        let hevc = [0, 0, 0, 1, 32 << 1, 1, 0, 0, 1, 19 << 1, 1];
+        assert!(has_parameter_sets(&hevc, VideoCodec::Hevc));
+        assert!(!has_parameter_sets(&hevc[6..], VideoCodec::Hevc));
+        // AV1: a temporal delimiter (2), a sequence header (1) of three
+        // bytes, a frame (6) of 200 bytes, its size in two LEB128 bytes.
+        let mut av1 = vec![2 << 3 | 2, 0, 1 << 3 | 2, 3, 7, 7, 7, 6 << 3 | 2, 0xC8, 1];
+        av1.extend([0; 200]);
+        assert_eq!(obus(&av1).collect::<Vec<_>>(), [2, 1, 6]);
+        assert!(has_parameter_sets(&av1, VideoCodec::Av1));
+        let without: Vec<u8> = [&av1[..2], &av1[7..]].concat();
+        assert_eq!(obus(&without).collect::<Vec<_>>(), [2, 6]);
+        assert!(!has_parameter_sets(&without, VideoCodec::Av1));
     }
 }
