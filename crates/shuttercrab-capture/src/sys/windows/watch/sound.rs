@@ -1,8 +1,10 @@
 //! A live recording's sound: Windows' AAC decoder, then the speakers
-//! through WASAPI, on a thread of its own. A few hundredths of a second
-//! are queued, for frames that arrive unevenly; when more builds up, the
-//! oldest is skipped, so the sound never falls further behind. Where it
-//! has got to playing is the player's clock.
+//! through WASAPI, on a thread of its own. Enough is kept in hand for
+//! frames that arrive unevenly: a hundredth of a second on one PC, more
+//! over a network that delivers in bursts, learnt as it plays. When more
+//! than that builds up, the queue plays a little faster until it is back,
+//! so the sound never falls further behind. Where it has got to playing is
+//! the player's clock.
 
 use super::{choose_output, drain, feed, lock};
 use crate::live::{LiveFrame, SoundCodec};
@@ -37,17 +39,25 @@ const CHANNELS: u16 = 2;
 /// 100 ns ticks a second.
 const TICKS: i64 = 10_000_000;
 
-/// How much sound is queued before it plays, frames: a little over one
-/// AAC frame (1024), as they arrive one at a time.
-const QUEUED: usize = 1_100;
+/// How much more than the spare is queued before it plays, frames: so the
+/// first is a little over one AAC frame (1024), as they arrive one at a
+/// time.
+const FILL: usize = 620;
 
-/// The least the queue should hold whenever the speakers ask for more,
-/// frames (10 ms).
+/// The least the queue should hold whenever the speakers ask for more, to
+/// begin with and at best, frames (10 ms): enough on one PC.
 const SPARE: usize = 480;
 
-/// How much may build up at once (after a stall) before it is cut, frames
-/// (50 ms).
-const MOST: usize = 2_400;
+/// The most it is let grow to as sound arrives more unevenly, frames
+/// (150 ms).
+const MOST_SPARE: usize = 7_200;
+
+/// How long the queue must not run dry before its spare shrinks.
+const SETTLED: Duration = Duration::from_secs(10);
+
+/// How much more than twice the spare may build up at once (after a
+/// stall) before it is cut, frames (30 ms; 50 ms in all at the least).
+const BACKLOG: usize = 1_440;
 
 /// How much faster or slower the queue plays to keep near [`SPARE`]: 0.5%,
 /// a pitch change of 9 cents, too little to hear in speech.
@@ -247,9 +257,15 @@ struct Queue {
     /// How fast the queue plays: 1, or a little over to drain extra sound,
     /// or a little under to build some up.
     pace: f64,
-    /// Waiting for [`QUEUED`] frames before playing: at the start, and
-    /// once the queue has run dry.
+    /// Waiting for the spare and [`FILL`] frames before playing: at the
+    /// start, and once the queue has run dry.
     filling: bool,
+    /// The least the queue should hold, frames: [`SPARE`] to begin with,
+    /// twice as much each time it runs dry, and an eighth less after each
+    /// [`SETTLED`] that it does not. Zero until the first sound.
+    spare: usize,
+    /// When the spare last changed.
+    spare_since: Option<Instant>,
     /// Frames into fading in, after a start or a cut.
     fade: usize,
     clock: Option<Clock>,
@@ -268,14 +284,39 @@ impl Queue {
             self.position = 0.0;
         }
         self.started.get_or_insert_with(Instant::now);
+        self.spare = self.spare.max(SPARE);
         self.frames.extend(samples.as_chunks::<2>().0);
+    }
+
+    /// Keep more in hand after running dry, and a little less after a
+    /// while without.
+    fn adapt(&mut self, ran_dry: bool) {
+        let settled = self
+            .spare_since
+            .is_none_or(|since| since.elapsed() >= SETTLED);
+        let spare = if ran_dry {
+            (self.spare * 2).min(MOST_SPARE)
+        } else if settled {
+            (self.spare - self.spare / 8).max(SPARE)
+        } else {
+            return;
+        };
+        if spare != self.spare {
+            log::info!(
+                "live sound keeps {} ms in hand {:?} in",
+                frames_to_ticks(spare) / 10_000,
+                self.started.map(|s| s.elapsed())
+            );
+        }
+        self.spare = spare;
+        self.spare_since = Some(Instant::now());
     }
 
     /// Fill `out` with the next sound, or silence while filling: the time
     /// of the frame after it, if it was all sound.
     fn fill(&mut self, out: &mut [i16]) -> Option<i64> {
         if self.filling || self.clock.is_none() {
-            if self.frames.len() < QUEUED {
+            if self.frames.len() < self.spare.max(SPARE) + FILL {
                 out.fill(0);
                 return None;
             }
@@ -298,6 +339,7 @@ impl Queue {
                     frames_to_ticks(silent) / 10_000
                 );
                 self.consume();
+                self.adapt(true);
                 return None;
             }
             // Between two frames when the pace is not 1.
@@ -326,15 +368,16 @@ impl Queue {
         self.position -= played as f64;
     }
 
-    /// Play a little faster when the queue has held more than [`SPARE`]
+    /// Play a little faster when the queue has held more than its spare
     /// all of the last half second, and a little slower when it has run
-    /// close to dry: the sound stays a few ms behind what arrives, without
-    /// cutting any out. A backlog of [`MOST`] (after a stall) is cut at
-    /// once, back to [`QUEUED`], and faded in.
+    /// close to dry: the sound stays just behind what arrives, without
+    /// cutting any out. A backlog of twice the spare and [`BACKLOG`] (after
+    /// a stall) is cut at once, back to the spare and [`FILL`], and faded in.
     fn keep_pace(&mut self) {
-        let queued = self.frames.len();
-        if queued > MOST {
-            let cut = queued - QUEUED;
+        self.adapt(false);
+        let (queued, spare) = (self.frames.len(), self.spare);
+        if queued > spare * 2 + BACKLOG {
+            let cut = queued - (spare + FILL);
             log::info!(
                 "live sound skipped {:?} in: {} ms",
                 self.started.map(|s| s.elapsed()),
@@ -349,9 +392,9 @@ impl Queue {
             .since
             .is_some_and(|since| since.elapsed().as_millis() >= 500)
         {
-            self.pace = if self.low > SPARE + SPARE / 2 {
+            self.pace = if self.low > spare + spare / 2 {
                 1.0 + PACE
-            } else if self.low < SPARE / 4 {
+            } else if self.low < spare / 4 {
                 1.0 - PACE
             } else {
                 1.0
@@ -553,5 +596,49 @@ fn play(shared: &Shared) -> Result<()> {
         }
         client.Stop()?;
         Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn playing() -> Queue {
+        let mut queue = Queue {
+            clock: Some(Clock {
+                at: Instant::now(),
+                time: 0,
+                running: true,
+            }),
+            // As a new player's queue: it starts by filling.
+            filling: true,
+            ..Queue::default()
+        };
+        queue.push(0, &vec![0; (SPARE + FILL) * 2]);
+        queue
+    }
+
+    #[test]
+    fn running_dry_keeps_more_in_hand_from_then_on() {
+        let mut queue = playing();
+        let mut out = vec![0; 480 * 2];
+        assert!(queue.fill(&mut out).is_some());
+        // Nothing more arrives: it runs dry.
+        while queue.fill(&mut out).is_some() {}
+        assert_eq!(queue.spare, SPARE * 2);
+        // It waits for the larger spare before playing again.
+        queue.push(0, &vec![0; (SPARE + FILL) * 2]);
+        assert!(queue.fill(&mut out).is_none());
+        queue.push(0, &vec![0; SPARE * 2]);
+        assert!(queue.fill(&mut out).is_some());
+    }
+
+    #[test]
+    fn the_spare_grows_no_further_than_its_most() {
+        let mut queue = playing();
+        for _ in 0..10 {
+            queue.adapt(true);
+        }
+        assert_eq!(queue.spare, MOST_SPARE);
     }
 }
