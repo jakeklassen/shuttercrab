@@ -3,6 +3,7 @@ members = [
   "crates/capture-spike",
   "crates/shuttercrab",
   "crates/shuttercrab-capture",
+  "crates/shuttercrab-connect",
   "crates/shuttercrab-platform",
   "crates/shuttercrab-types",
 ]
