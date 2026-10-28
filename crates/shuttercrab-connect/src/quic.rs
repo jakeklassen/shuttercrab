@@ -5,8 +5,8 @@
 
 use anyhow::{Context, Result, bail};
 use quinn::{
-    ClientConfig, Endpoint, EndpointConfig, IdleTimeout, ServerConfig, TokioRuntime,
-    TransportConfig,
+    AsyncUdpSocket, ClientConfig, Endpoint, EndpointConfig, IdleTimeout, ServerConfig,
+    TokioRuntime, TransportConfig,
     crypto::rustls::{QuicClientConfig, QuicServerConfig},
 };
 use rustls::{
@@ -16,7 +16,7 @@ use rustls::{
     pki_types::{CertificateDer, PrivateKeyDer, PrivatePkcs8KeyDer, ServerName, UnixTime},
 };
 use sha2::{Digest, Sha256};
-use std::{net::UdpSocket, sync::Arc, time::Duration};
+use std::{sync::Arc, time::Duration};
 
 /// What the connection speaks, so nothing else is mistaken for it.
 const ALPN: &[u8] = b"shuttercrab-live/0";
@@ -61,8 +61,9 @@ fn transport() -> Arc<TransportConfig> {
     Arc::new(transport)
 }
 
-/// An endpoint on `socket` that accepts connections as `identity`.
-pub fn server(socket: UdpSocket, identity: &Identity) -> Result<Endpoint> {
+/// An endpoint on `socket` (a plain one, or the relay) that accepts
+/// connections as `identity`.
+pub fn server(socket: Arc<dyn AsyncUdpSocket>, identity: &Identity) -> Result<Endpoint> {
     let mut tls = rustls::ServerConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .with_no_client_auth()
@@ -73,7 +74,7 @@ pub fn server(socket: UdpSocket, identity: &Identity) -> Result<Endpoint> {
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let mut config = ServerConfig::with_crypto(Arc::new(QuicServerConfig::try_from(tls)?));
     config.transport_config(transport());
-    Ok(Endpoint::new(
+    Ok(Endpoint::new_with_abstract_socket(
         EndpointConfig::default(),
         Some(config),
         socket,
@@ -81,9 +82,9 @@ pub fn server(socket: UdpSocket, identity: &Identity) -> Result<Endpoint> {
     )?)
 }
 
-/// An endpoint on `socket` that connects only to the app whose
-/// certificate has `fingerprint`.
-pub fn client(socket: UdpSocket, fingerprint: [u8; 32]) -> Result<Endpoint> {
+/// An endpoint on `socket` (a plain one, or the relay) that connects only
+/// to the app whose certificate has `fingerprint`.
+pub fn client(socket: Arc<dyn AsyncUdpSocket>, fingerprint: [u8; 32]) -> Result<Endpoint> {
     let mut tls = rustls::ClientConfig::builder_with_provider(provider())
         .with_protocol_versions(&[&rustls::version::TLS13])?
         .dangerous()
@@ -95,7 +96,7 @@ pub fn client(socket: UdpSocket, fingerprint: [u8; 32]) -> Result<Endpoint> {
     tls.alpn_protocols = vec![ALPN.to_vec()];
     let mut config = ClientConfig::new(Arc::new(QuicClientConfig::try_from(tls)?));
     config.transport_config(transport());
-    let mut endpoint = Endpoint::new(
+    let mut endpoint = Endpoint::new_with_abstract_socket(
         EndpointConfig::default(),
         None,
         socket,
@@ -201,4 +202,10 @@ pub async fn check_token(connection: &quinn::Connection, token: &[u8; 16]) -> Re
         bail!("a viewer without the link's token was turned away");
     }
     Ok(())
+}
+
+/// A plain UDP socket for QUIC, within the runtime.
+pub fn plain(socket: std::net::UdpSocket) -> Result<Arc<dyn AsyncUdpSocket>> {
+    use quinn::Runtime;
+    Ok(TokioRuntime.wrap_udp_socket(socket)?)
 }
