@@ -78,6 +78,10 @@ pub(super) struct Session {
     captures: [Option<Capture>; 2],
     /// What following a recorded window needs; `None` for a display.
     window: Option<WindowTarget>,
+    /// Shrinks a display's region as it is copied out, for a live recording
+    /// sent smaller: each pixel averages all it covers, so text keeps its
+    /// colour (ClearType's coloured edges cancel out) and does not shimmer.
+    scaler: Option<Fitter>,
     mixer: Mixer,
     /// How far behind now the mix is written, 100 ns ticks.
     sound_lag: i64,
@@ -187,9 +191,15 @@ impl Session {
         ensure!(!region.is_empty(), "the region is empty");
 
         let gpu = Gpu::video(Some(&monitor.adapter))?;
-        let (w, h) = (region.width, region.height);
+        let (w, h) = match (target.window, live.as_ref().and_then(|l| l.size)) {
+            (None, Some(size)) => size,
+            _ => (region.width, region.height),
+        };
         let [crop, sdr, rgba] = work_textures(&gpu, w, h)?;
         let converter = VideoConverter::new(&gpu, &crop, &sdr, ANALYSE_EVERY)?;
+        let scaler = ((w, h) != (region.width, region.height))
+            .then(|| Fitter::new(&gpu, &crop))
+            .transpose()?;
         let sound_lag = if live.is_some() {
             LIVE_SOUND_LAG
         } else {
@@ -262,6 +272,7 @@ impl Session {
             },
             captures,
             window,
+            scaler,
             mixer: Mixer::default(),
             sound_lag,
             arrivals: [Arrivals::default(); 2],
@@ -666,7 +677,7 @@ impl Session {
             // pixel more is still the same size.
             let same = |side: u32, frame: u32| side == frame || side == frame + 1;
             if !(same(size.0, r.width) && same(size.1, r.height)) {
-                return window.fitter.fit(&self.gpu, &source, size);
+                return window.fitter.fit(&self.gpu, &source, (0, 0), size);
             }
         }
         ensure!(
@@ -674,6 +685,14 @@ impl Session {
                 && (r.y as u32 + r.height) as i32 <= content.Height,
             "the monitor changed size during the recording"
         );
+        if let Some(scaler) = self.scaler.as_mut() {
+            return scaler.fit(
+                &self.gpu,
+                &source,
+                (r.x as u32, r.y as u32),
+                (r.width, r.height),
+            );
+        }
         let area = D3D11_BOX {
             left: r.x as u32,
             top: r.y as u32,
@@ -742,8 +761,7 @@ impl Drop for Session {
     }
 }
 
-/// The NV12 conversion of `rgba`, `(w, h)`, and the writer that encodes
-/// it: at its size, or the smaller one a live recording asks for.
+/// The NV12 conversion of `rgba`, `(w, h)`, and the writer that encodes it.
 fn encoder(
     gpu: &Gpu,
     rgba: &ID3D11Texture2D,
@@ -751,13 +769,12 @@ fn encoder(
     options: &RecordOptions,
     live: Option<Live>,
 ) -> Result<(Nv12, Mp4Writer)> {
-    let (out_w, out_h) = live.as_ref().and_then(|l| l.size).unwrap_or((w, h));
-    let nv12 = Nv12::new(gpu, rgba, (w, h), (out_w, out_h), options.fps)?;
+    let nv12 = Nv12::new(gpu, rgba, w, h, options.fps)?;
     let writer = Mp4Writer::new(
         gpu,
         &options.path,
-        (out_w, out_h, options.fps),
-        out_w.min(out_h) >= HARDWARE_MIN_SIDE,
+        (w, h, options.fps),
+        w.min(h) >= HARDWARE_MIN_SIDE,
         options.has_sound(),
         live,
     )?;
