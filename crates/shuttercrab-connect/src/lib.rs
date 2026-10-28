@@ -327,11 +327,14 @@ pub struct Receiving {
 }
 
 impl Read for Receiving {
+    /// The end of the stream, too, when the other app closes the connection.
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
-        Ok(self
-            .runtime
-            .block_on(self.stream.read(buffer))
-            .map_err(io::Error::other)?
-            .unwrap_or(0))
+        match self.runtime.block_on(self.stream.read(buffer)) {
+            Ok(read) => Ok(read.unwrap_or(0)),
+            Err(quinn::ReadError::ConnectionLost(quinn::ConnectionError::ApplicationClosed(_))) => {
+                Ok(0)
+            }
+            Err(e) => Err(io::Error::other(e)),
+        }
     }
 }
