@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 use capture_spike::{analysis::Roi, display};
 use shuttercrab_capture::{
     MonitorId, PhysicalRect,
-    live::{LiveFormat, LiveFrame, LivePlayer, SoundCodec, Track},
+    live::{LiveFormat, LiveFrame, LivePlayer, SoundCodec, Track, VideoCodec},
     record::{Live, LiveSink, RecordOptions, Recorder},
 };
 use std::{
@@ -101,11 +101,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         .transpose()
         .context("--sound-of takes a process id")?;
     let microphone = args.option("--mic")?.as_deref() == Some("on");
-    let codec = match args.option("--codec")?.as_deref() {
-        None | Some("pcm") => SoundCodec::Pcm,
-        Some("aac") => SoundCodec::Aac,
-        Some(other) => anyhow::bail!("--codec takes pcm or aac, not {other}"),
-    };
+    let (codec, video) = codecs(&mut args)?;
     let port: u16 = args
         .option("--port")?
         .map(|p| p.parse())
@@ -133,12 +129,14 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         target.device_name,
         describe_sound(sound_process, system_sound, microphone)
     );
-    let (out, sound_out, connection) = open_output(online, &meet, port)?;
+    let (out, sound_out, connection, hevc) = open_output(online, &meet, port)?;
+    let video = playable(video, hevc);
     let (w, h) = quality.size(width, height);
     LiveFormat {
         width: w,
         height: h,
         fps,
+        video,
         sound: sound.then_some(codec),
     }
     .write_to(&mut *out.lock().unwrap())?;
@@ -163,6 +161,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
             sound_track: sound,
             path: "unused.mp4".into(),
         },
+        video,
         codec,
         out,
         sound_out,
@@ -241,9 +240,38 @@ impl Quality {
     }
 }
 
+/// How the sound and the pictures are to go: `--codec` and `--video`.
+fn codecs(args: &mut Args) -> Result<(SoundCodec, VideoCodec)> {
+    let sound = match args.option("--codec")?.as_deref() {
+        None | Some("pcm") => SoundCodec::Pcm,
+        Some("aac") => SoundCodec::Aac,
+        Some(other) => anyhow::bail!("--codec takes pcm or aac, not {other}"),
+    };
+    let video = match args.option("--video")?.as_deref() {
+        None | Some("hevc") => VideoCodec::Hevc,
+        Some("h264") => VideoCodec::H264,
+        Some(other) => anyhow::bail!("--video takes hevc or h264, not {other}"),
+    };
+    Ok((sound, video))
+}
+
+/// `video`, unless it is HEVC and the viewer cannot play it (`hevc`):
+/// then H.264.
+fn playable(video: VideoCodec, hevc: bool) -> VideoCodec {
+    let video = if video == VideoCodec::Hevc && !hevc {
+        println!("The viewer cannot play HEVC (no HEVC Video Extensions): sending H.264.");
+        VideoCodec::H264
+    } else {
+        video
+    };
+    println!("Pictures as {}.", describe_video(video));
+    video
+}
+
 /// A stream under way: what to record, and where its frames go.
 struct Streaming {
     options: RecordOptions,
+    video: VideoCodec,
     codec: SoundCodec,
     out: SharedOut,
     sound_out: Option<SharedOut>,
@@ -264,6 +292,7 @@ impl Streaming {
             self.options.clone(),
             Live {
                 sink: sink(self, offset),
+                video: self.video,
                 sound: self.codec,
                 size: Some(size),
                 bitrate: Some(quality.bitrate()),
@@ -372,6 +401,26 @@ fn how(connection: &shuttercrab_connect::Connection) -> &'static str {
 const PICTURES: u8 = b'P';
 const SOUND: u8 = b'S';
 
+/// What the viewer says first: whether it can play HEVC.
+const PLAYS_HEVC: u8 = b'H';
+const PLAYS_H264: u8 = b'h';
+
+/// What this PC can play, for the sender.
+fn plays() -> u8 {
+    if LivePlayer::decodes(VideoCodec::Hevc) {
+        PLAYS_HEVC
+    } else {
+        PLAYS_H264
+    }
+}
+
+fn describe_video(video: VideoCodec) -> &'static str {
+    match video {
+        VideoCodec::H264 => "H.264, 8 bits",
+        VideoCodec::Hevc => "HEVC, 10 bits",
+    }
+}
+
 /// Where the frames go, for the threads that send them.
 type SharedOut = Arc<Mutex<BufWriter<Out>>>;
 
@@ -380,7 +429,8 @@ fn shared(out: Out) -> SharedOut {
 }
 
 /// A viewer anywhere if `online`, through `meet`, else on this PC: where
-/// the pictures go, and the sound if it goes apart from them.
+/// the pictures go, the sound if it goes apart from them, and whether the
+/// viewer can play HEVC.
 fn open_output(
     online: bool,
     meet: &Meet,
@@ -389,29 +439,40 @@ fn open_output(
     SharedOut,
     Option<SharedOut>,
     Option<shuttercrab_connect::Connection>,
+    bool,
 )> {
     if online {
-        let (pictures, sound, connection) = host_online(meet)?;
-        Ok((shared(pictures), Some(shared(sound)), Some(connection)))
+        let (pictures, sound, connection, hevc) = host_online(meet)?;
+        Ok((
+            shared(pictures),
+            Some(shared(sound)),
+            Some(connection),
+            hevc,
+        ))
     } else {
-        Ok((shared(wait_locally(port)?), None, None))
+        let (out, hevc) = wait_locally(port)?;
+        Ok((shared(out), None, None, hevc))
     }
 }
 
-/// A viewer on this PC, from stream-watch without a link.
-fn wait_locally(port: u16) -> Result<Out> {
+/// A viewer on this PC, from stream-watch without a link, and whether it
+/// can play HEVC.
+fn wait_locally(port: u16) -> Result<(Out, bool)> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!("Waiting for a viewer on 127.0.0.1:{port} (capture-spike stream-watch)...");
     let (socket, viewer) = listener.accept()?;
     socket.set_nodelay(true)?;
     println!("Viewer {viewer} connected.");
-    Ok(Box::new(socket))
+    let mut plays = [0];
+    (&socket).read_exact(&mut plays)?;
+    Ok((Box::new(socket), plays[0] == PLAYS_HEVC))
 }
 
 /// A viewer anywhere: a room at `meet`, a link to share, and a direct
 /// connection to whoever comes with it. The sound has a stream of its own,
-/// sent first, so a large picture cannot hold it up.
-fn host_online(meet: &Meet) -> Result<(Out, Out, shuttercrab_connect::Connection)> {
+/// sent first, so a large picture cannot hold it up. Whether the viewer can
+/// play HEVC comes on a stream from it.
+fn host_online(meet: &Meet) -> Result<(Out, Out, shuttercrab_connect::Connection, bool)> {
     let hosting = shuttercrab_connect::host(&meet.url, &host_key()?, meet.path)?;
     println!(
         "Share this link; whoever has it can watch:\n\n  {}\n\n\
@@ -425,11 +486,18 @@ fn host_online(meet: &Meet) -> Result<(Out, Out, shuttercrab_connect::Connection
         how(&connection),
         connection.round_trip().as_millis()
     );
+    let mut plays = [0];
+    connection.receive()?.read_exact(&mut plays)?;
     let mut pictures = connection.send(0)?;
     pictures.write_all(&[PICTURES])?;
     let mut sound = connection.send(1)?;
     sound.write_all(&[SOUND])?;
-    Ok((Box::new(pictures), Box::new(sound), connection))
+    Ok((
+        Box::new(pictures),
+        Box::new(sound),
+        connection,
+        plays[0] == PLAYS_HEVC,
+    ))
 }
 
 /// The key that opens a room on the meeting point: `SHUTTERCRAB_HOST_KEY`,
@@ -573,11 +641,12 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let mut reader = BufReader::new(input);
     let format = LiveFormat::read_from(&mut reader)?;
     println!(
-        "{}x{} at {} fps, {}. Escape closes the window; M mutes; [ and ] move the \
+        "{}x{} at {} fps, {}, {}. Escape closes the window; M mutes; [ and ] move the \
          pictures earlier or later against the sound.",
         format.width,
         format.height,
         format.fps,
+        describe_video(format.video),
         match format.sound {
             Some(SoundCodec::Aac) => "AAC sound",
             Some(SoundCodec::Pcm) => "PCM sound",
@@ -682,6 +751,7 @@ fn open_input(
     let Some(link) = link else {
         let socket = TcpStream::connect(from).with_context(|| format!("no stream at {from}"))?;
         socket.set_nodelay(true)?;
+        (&socket).write_all(&[plays()])?;
         return Ok((Box::new(socket), None, None));
     };
     let link = shuttercrab_connect::Link::parse(link)?;
@@ -693,6 +763,7 @@ fn open_input(
         connection.remote(),
         connection.round_trip().as_millis()
     );
+    connection.send(0)?.write_all(&[plays()])?;
     // Two streams, each tagged; they may arrive in either order.
     let (mut pictures, mut sound): (In, In) = (
         Box::new(connection.receive()?),
