@@ -117,7 +117,8 @@ USAGE
       service N times (default 5), printing memory around each. Saves nothing.
 
   capture-spike stream-send [--monitor M] [--region X,Y,W,H] [--fps 30|60] [--quality Q] [--sound on]
-                            [--sound-of PID] [--mic on] [--codec pcm|aac] [--port N]
+                            [--sound-of PID] [--mic on] [--codec pcm|aac] [--video hevc|h264]
+                            [--port N]
                             [--online on] [--meet URL] [--direct]
       Live streaming, spikes S0 and S1 (issue #66): wait for a viewer on
       127.0.0.1 (port 47100 by default), or with --online on, open a room on
@@ -129,8 +130,10 @@ USAGE
       the host key: SHUTTERCRAB_HOST_KEY, or meet/.env in the repository. The
       region defaults to the whole monitor, scaled to Q: 1080p (10 Mbit/s),
       1440p (18 Mbit/s, the default) or 4k (35 Mbit/s); while streaming, the
-      keys 1, 2 and 3 switch between them. The sound goes as PCM (1.5 Mbit/s,
-      no delay) unless --codec aac.
+      keys 1, 2 and 3 switch between them. The pictures go as HEVC in 10 bits
+      (no banding in dark gradients) where the viewer's PC can play it (with
+      Windows' HEVC Video Extensions), else as H.264, or always with --video
+      h264. The sound goes as PCM (1.5 Mbit/s, no delay) unless --codec aac.
 
   capture-spike stream-watch [--from HOST:PORT | --link LINK] [--meet URL] [--direct] [--monitor M]
                              [--sound off]
