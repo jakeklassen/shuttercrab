@@ -117,7 +117,7 @@ USAGE
       service N times (default 5), printing memory around each. Saves nothing.
 
   capture-spike stream-send [--monitor M] [--region X,Y,W,H] [--fps 30|60] [--quality Q] [--sound on]
-                            [--sound-of PID] [--mic on] [--codec pcm|aac] [--video av1|hevc|h264]
+                            [--sound-of PID] [--mic on] [--codec opus|pcm|aac] [--video av1|hevc|h264]
                             [--port N]
                             [--online on] [--meet URL] [--direct]
       Live streaming, spikes S0 and S1 (issue #66): wait for a viewer on
@@ -132,7 +132,9 @@ USAGE
       1440p (18 Mbit/s, the default) or 4k (35 Mbit/s); while streaming, the
       keys 1, 2 and 3 switch between them. The pictures go in the best codec
       both PCs can: AV1, then HEVC (both 10 bits, so dark gradients do not
-      band), then H.264; --video starts the list lower. The sound goes as PCM (1.5 Mbit/s, no delay) unless --codec aac.
+      band), then H.264; --video starts the list lower. The sound goes as
+      Opus (0.13 Mbit/s, about 10 ms later than PCM), or with --codec as PCM
+      (1.5 Mbit/s) or AAC.
 
   capture-spike stream-watch [--from HOST:PORT | --link LINK] [--meet URL] [--direct] [--monitor M]
                              [--sound off]
