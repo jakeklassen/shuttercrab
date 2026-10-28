@@ -297,19 +297,64 @@ fn the_player_follows_the_stream_to_a_new_picture_size() {
     assert!(drawn.iter().all(|(_, n)| *n >= 1), "{drawn:?}");
 }
 
-/// What a live picture sent smaller looks like, for a person to judge: the
-/// first monitor at 1080p, through the encoder and the player, saved as a
-/// PNG where `LIVE_SNAPSHOT` says.
+/// What live pictures look like at each of the spike's qualities, for a
+/// person to judge: the rightmost monitor as captured, then sent at 1080p,
+/// 1440p and 4K through the encoder and the player, each saved as a PNG in
+/// the folder `LIVE_COMPARE` names.
 #[test]
-#[ignore = "records the screen and saves a picture of it: run by hand"]
-fn a_live_picture_sent_smaller_can_be_looked_at() {
-    let Some(path) = std::env::var_os("LIVE_SNAPSHOT") else {
+#[ignore = "records the screen and saves pictures of it: run by hand"]
+fn live_pictures_at_each_quality_can_be_compared() {
+    let Some(folder) = std::env::var_os("LIVE_COMPARE") else {
         return;
     };
-    let (fps, size) = (30, (1920, 1080));
-    let monitors = block_on(Capture::start().unwrap().list_monitors()).unwrap();
-    let bounds = monitors.first().expect("a monitor").bounds;
-    let mut options = options(bounds.width, bounds.height, fps);
+    let _ = log::set_logger(&Log);
+    log::set_max_level(log::LevelFilter::Info);
+    let folder = std::path::PathBuf::from(folder);
+    let capture = Capture::start().unwrap();
+    let monitors = block_on(capture.list_monitors()).unwrap();
+    let monitor = monitors
+        .iter()
+        .max_by_key(|m| m.bounds.x)
+        .expect("a monitor");
+    let (width, height) = (monitor.bounds.width, monitor.bounds.height);
+    let frozen = block_on(capture.freeze_monitor(monitor.id, false)).unwrap();
+    let rgba = shuttercrab_capture::premultiplied_bgra_to_rgba(frozen.bgra());
+    let png = shuttercrab_capture::encode_png(width, height, &rgba).unwrap();
+    std::fs::write(folder.join("original.png"), png).unwrap();
+
+    for (name, size, bitrate) in [
+        ("1080p", (1920, 1080), 10_000_000),
+        ("1440p", (2560, 1440), 18_000_000),
+        ("4k", (3840, 2160), 35_000_000),
+    ] {
+        let (pictures, bytes) = live_picture(monitor.id, (width, height), size, bitrate)
+            .save(&folder.join(format!("{name}.png")));
+        println!(
+            "{name}: {pictures} pictures in 3 s, {:.1} Mbit/s",
+            bytes as f64 * 8.0 / 3.0 / 1e6
+        );
+    }
+}
+
+/// A picture the live player drew, and what came to make it.
+struct Drawn {
+    player: Arc<LivePlayer>,
+    size: (u32, u32),
+    pictures: u32,
+    bytes: usize,
+}
+
+/// `monitor`, `region` in size, sent live at `size` and `bitrate` for three
+/// seconds: the last picture the player has.
+fn live_picture(
+    monitor: shuttercrab_capture::MonitorId,
+    region: (u32, u32),
+    size: (u32, u32),
+    bitrate: u32,
+) -> Drawn {
+    let fps = 60;
+    let mut options = options(region.0, region.1, fps);
+    options.monitor = monitor;
     options.system_sound = false;
     options.sound_track = false;
     let format = LiveFormat {
@@ -319,32 +364,55 @@ fn a_live_picture_sent_smaller_can_be_looked_at() {
         sound: None,
     };
     let player = Arc::new(LivePlayer::new(format, |_| {}).unwrap());
-    let to = player.clone();
+    let arrived = Arc::new(Mutex::new((0u32, 0usize)));
+    let (to, counted) = (player.clone(), arrived.clone());
     let live = Live {
-        sink: Arc::new(move |frame: LiveFrame| to.push(frame).unwrap()),
+        sink: Arc::new(move |frame: LiveFrame| {
+            {
+                let mut counted = counted.lock().unwrap();
+                counted.0 += 1;
+                counted.1 += frame.data.len();
+            }
+            to.push(frame).unwrap();
+        }),
         sound: SoundCodec::Pcm,
         size: Some(size),
-        bitrate: Some(10_000_000),
+        bitrate: Some(bitrate),
     };
     let recorder = Recorder::start_live(options, live).unwrap();
-    std::thread::sleep(Duration::from_millis(1500));
+    std::thread::sleep(Duration::from_secs(3));
     recorder.stop().unwrap();
+    let (pictures, bytes) = *arrived.lock().unwrap();
+    Drawn {
+        player,
+        size,
+        pictures,
+        bytes,
+    }
+}
 
-    let device = player.device();
-    let context = unsafe { device.GetImmediateContext() }.unwrap();
-    let gpu = Gpu::from_device(device, context).unwrap();
-    let texture = gpu
-        .texture(
-            size.0,
-            size.1,
-            DXGI_FORMAT_B8G8R8A8_UNORM,
-            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
-            None,
-        )
-        .unwrap();
-    assert!(player.draw(&texture).unwrap(), "nothing to draw");
-    let rgba = shuttercrab_capture::premultiplied_bgra_to_rgba(&gpu.read_back(&texture).unwrap());
-    let png = shuttercrab_capture::encode_png(size.0, size.1, &rgba).unwrap();
-    std::fs::write(&path, png).unwrap();
-    println!("saved {}", std::path::Path::new(&path).display());
+impl Drawn {
+    /// Save the picture as a PNG at `path`: how many pictures came, and
+    /// their bytes.
+    fn save(self, path: &std::path::Path) -> (u32, usize) {
+        let (player, size) = (self.player, self.size);
+        let device = player.device();
+        let context = unsafe { device.GetImmediateContext() }.unwrap();
+        let gpu = Gpu::from_device(device, context).unwrap();
+        let texture = gpu
+            .texture(
+                size.0,
+                size.1,
+                DXGI_FORMAT_B8G8R8A8_UNORM,
+                D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+                None,
+            )
+            .unwrap();
+        assert!(player.draw(&texture).unwrap(), "nothing to draw");
+        let rgba =
+            shuttercrab_capture::premultiplied_bgra_to_rgba(&gpu.read_back(&texture).unwrap());
+        let png = shuttercrab_capture::encode_png(size.0, size.1, &rgba).unwrap();
+        std::fs::write(path, png).unwrap();
+        (self.pictures, self.bytes)
+    }
 }
