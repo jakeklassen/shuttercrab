@@ -8,7 +8,7 @@ use anyhow::{Context, Result, ensure};
 use capture_spike::{analysis::Roi, display};
 use shuttercrab_capture::{
     MonitorId, PhysicalRect,
-    live::{LiveFormat, LiveFrame, LivePlayer, SoundCodec, Track, VideoCodec},
+    live::{self, LiveFormat, LiveFrame, LivePlayer, SoundCodec, Track, VideoCodec},
     record::{Live, LiveSink, RecordOptions, Recorder},
 };
 use std::{
@@ -129,8 +129,8 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         target.device_name,
         describe_sound(sound_process, system_sound, microphone)
     );
-    let (out, sound_out, connection, hevc) = open_output(online, &meet, port)?;
-    let video = playable(video, hevc);
+    let (out, sound_out, connection, plays) = open_output(online, &meet, port)?;
+    let video = playable(video, plays);
     let (w, h) = quality.size(width, height);
     LiveFormat {
         width: w,
@@ -248,22 +248,22 @@ fn codecs(args: &mut Args) -> Result<(SoundCodec, VideoCodec)> {
         Some(other) => anyhow::bail!("--codec takes pcm or aac, not {other}"),
     };
     let video = match args.option("--video")?.as_deref() {
-        None | Some("hevc") => VideoCodec::Hevc,
+        None | Some("av1") => VideoCodec::Av1,
+        Some("hevc") => VideoCodec::Hevc,
         Some("h264") => VideoCodec::H264,
-        Some(other) => anyhow::bail!("--video takes hevc or h264, not {other}"),
+        Some(other) => anyhow::bail!("--video takes av1, hevc or h264, not {other}"),
     };
     Ok((sound, video))
 }
 
-/// `video`, unless it is HEVC and the viewer cannot play it (`hevc`):
-/// then H.264.
-fn playable(video: VideoCodec, hevc: bool) -> VideoCodec {
-    let video = if video == VideoCodec::Hevc && !hevc {
-        println!("The viewer cannot play HEVC (no HEVC Video Extensions): sending H.264.");
-        VideoCodec::H264
-    } else {
-        video
-    };
+/// The best codec from `best` down that this PC encodes and the viewer
+/// `plays`; H.264 if none.
+fn playable(best: VideoCodec, plays: u8) -> VideoCodec {
+    let video = VideoCodec::BEST_FIRST
+        .into_iter()
+        .skip_while(|&codec| codec != best)
+        .find(|&codec| plays & codec.bit() != 0 && live::encodes(codec))
+        .unwrap_or(VideoCodec::H264);
     println!("Pictures as {}.", describe_video(video));
     video
 }
@@ -401,23 +401,19 @@ fn how(connection: &shuttercrab_connect::Connection) -> &'static str {
 const PICTURES: u8 = b'P';
 const SOUND: u8 = b'S';
 
-/// What the viewer says first: whether it can play HEVC.
-const PLAYS_HEVC: u8 = b'H';
-const PLAYS_H264: u8 = b'h';
-
-/// What this PC can play, for the sender.
+/// What the viewer says first: the codecs it can play, a bit each.
 fn plays() -> u8 {
-    if LivePlayer::decodes(VideoCodec::Hevc) {
-        PLAYS_HEVC
-    } else {
-        PLAYS_H264
-    }
+    VideoCodec::BEST_FIRST
+        .into_iter()
+        .filter(|&codec| LivePlayer::decodes(codec))
+        .fold(0, |set, codec| set | codec.bit())
 }
 
 fn describe_video(video: VideoCodec) -> &'static str {
     match video {
         VideoCodec::H264 => "H.264, 8 bits",
         VideoCodec::Hevc => "HEVC, 10 bits",
+        VideoCodec::Av1 => "AV1, 10 bits",
     }
 }
 
@@ -429,8 +425,8 @@ fn shared(out: Out) -> SharedOut {
 }
 
 /// A viewer anywhere if `online`, through `meet`, else on this PC: where
-/// the pictures go, the sound if it goes apart from them, and whether the
-/// viewer can play HEVC.
+/// the pictures go, the sound if it goes apart from them, and the codecs
+/// the viewer can play.
 fn open_output(
     online: bool,
     meet: &Meet,
@@ -439,25 +435,25 @@ fn open_output(
     SharedOut,
     Option<SharedOut>,
     Option<shuttercrab_connect::Connection>,
-    bool,
+    u8,
 )> {
     if online {
-        let (pictures, sound, connection, hevc) = host_online(meet)?;
+        let (pictures, sound, connection, plays) = host_online(meet)?;
         Ok((
             shared(pictures),
             Some(shared(sound)),
             Some(connection),
-            hevc,
+            plays,
         ))
     } else {
-        let (out, hevc) = wait_locally(port)?;
-        Ok((shared(out), None, None, hevc))
+        let (out, plays) = wait_locally(port)?;
+        Ok((shared(out), None, None, plays))
     }
 }
 
 /// A viewer on this PC, from stream-watch without a link, and whether it
-/// can play HEVC.
-fn wait_locally(port: u16) -> Result<(Out, bool)> {
+/// codecs it can play.
+fn wait_locally(port: u16) -> Result<(Out, u8)> {
     let listener = TcpListener::bind(("127.0.0.1", port))?;
     println!("Waiting for a viewer on 127.0.0.1:{port} (capture-spike stream-watch)...");
     let (socket, viewer) = listener.accept()?;
@@ -465,14 +461,14 @@ fn wait_locally(port: u16) -> Result<(Out, bool)> {
     println!("Viewer {viewer} connected.");
     let mut plays = [0];
     (&socket).read_exact(&mut plays)?;
-    Ok((Box::new(socket), plays[0] == PLAYS_HEVC))
+    Ok((Box::new(socket), plays[0]))
 }
 
 /// A viewer anywhere: a room at `meet`, a link to share, and a direct
 /// connection to whoever comes with it. The sound has a stream of its own,
-/// sent first, so a large picture cannot hold it up. Whether the viewer can
-/// play HEVC comes on a stream from it.
-fn host_online(meet: &Meet) -> Result<(Out, Out, shuttercrab_connect::Connection, bool)> {
+/// sent first, so a large picture cannot hold it up. The codecs the viewer
+/// can play come on a stream from it.
+fn host_online(meet: &Meet) -> Result<(Out, Out, shuttercrab_connect::Connection, u8)> {
     let hosting = shuttercrab_connect::host(&meet.url, &host_key()?, meet.path)?;
     println!(
         "Share this link; whoever has it can watch:\n\n  {}\n\n\
@@ -492,12 +488,7 @@ fn host_online(meet: &Meet) -> Result<(Out, Out, shuttercrab_connect::Connection
     pictures.write_all(&[PICTURES])?;
     let mut sound = connection.send(1)?;
     sound.write_all(&[SOUND])?;
-    Ok((
-        Box::new(pictures),
-        Box::new(sound),
-        connection,
-        plays[0] == PLAYS_HEVC,
-    ))
+    Ok((Box::new(pictures), Box::new(sound), connection, plays[0]))
 }
 
 /// The key that opens a room on the meeting point: `SHUTTERCRAB_HOST_KEY`,
