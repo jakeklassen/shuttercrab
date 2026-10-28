@@ -1,4 +1,4 @@
-//! A live recording's pictures: Windows' H.264 or HEVC decoder on the
+//! A live recording's pictures: Windows' H.264, HEVC or AV1 decoder on the
 //! graphics card, then the video processor to BGRA.
 
 use super::{Gpu, choose_output, drain, feed};
@@ -176,11 +176,12 @@ fn subtypes(codec: VideoCodec) -> (GUID, GUID) {
     match codec {
         VideoCodec::H264 => (MFVideoFormat_H264, MFVideoFormat_NV12),
         VideoCodec::Hevc => (MFVideoFormat_HEVC, MFVideoFormat_P010),
+        VideoCodec::Av1 => (MFVideoFormat_AV1, MFVideoFormat_P010),
     }
 }
 
 /// Whether this PC can decode `codec`: H.264 always; HEVC with the HEVC
-/// Video Extensions installed.
+/// Video Extensions installed, AV1 with the AV1 Video Extension.
 pub(super) fn decodes(codec: VideoCodec) -> bool {
     codec == VideoCodec::H264 || installed(codec).is_ok_and(|found| found.is_some())
 }
@@ -193,10 +194,10 @@ fn decoder(codec: VideoCodec) -> Result<IMFTransform> {
                 CoCreateInstance(&CLSID_MSH264DecoderMFT, None, CLSCTX_INPROC_SERVER)
                     .context("no H.264 decoder")
             }
-            VideoCodec::Hevc => installed(codec)?
-                .context("this PC cannot decode HEVC: the HEVC Video Extensions are not installed")?
+            VideoCodec::Hevc | VideoCodec::Av1 => installed(codec)?
+                .with_context(|| format!("this PC has no {codec:?} decoder"))?
                 .ActivateObject()
-                .context("the HEVC decoder did not start"),
+                .with_context(|| format!("the {codec:?} decoder did not start")),
         }
     }
 }

@@ -27,6 +27,7 @@ mod session;
 mod sound;
 mod timing;
 
+pub use encoder::encodes;
 pub use sound::microphones;
 
 use super::service::{DEVICE_LOST, hmonitor};

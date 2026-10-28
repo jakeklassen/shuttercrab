@@ -303,8 +303,8 @@ fn the_player_follows_the_stream_to_a_new_picture_size() {
 
 /// What live pictures look like at each of the spike's qualities, for a
 /// person to judge: the rightmost monitor as captured, then sent at 1080p,
-/// 1440p and 4K through the encoder and the player, in H.264 and in HEVC if
-/// this PC decodes it, each saved as a PNG in the folder `LIVE_COMPARE`
+/// 1440p and 4K through the encoder and the player, in each codec this PC
+/// encodes and decodes, each saved as a PNG in the folder `LIVE_COMPARE`
 /// names.
 #[test]
 #[ignore = "records the screen and saves pictures of it: run by hand"]
@@ -332,9 +332,9 @@ fn live_pictures_at_each_quality_can_be_compared() {
         ("1440p", (2560, 1440), 18_000_000),
         ("4k", (3840, 2160), 35_000_000),
     ] {
-        for codec in [VideoCodec::H264, VideoCodec::Hevc] {
-            if !LivePlayer::decodes(codec) {
-                println!("this PC cannot decode {codec:?}");
+        for codec in VideoCodec::BEST_FIRST {
+            if !(shuttercrab_capture::live::encodes(codec) && LivePlayer::decodes(codec)) {
+                println!("this PC cannot encode and decode {codec:?}");
                 continue;
             }
             let name = format!("{name}-{codec:?}").to_lowercase();

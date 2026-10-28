@@ -31,7 +31,7 @@ use windows::{
 
 /// RGBA → NV12 (BT.709, studio range) with the Direct3D video processor,
 /// into a small pool of textures the encoder reads; P010, the same in 10
-/// bits, for HEVC.
+/// bits, for HEVC and AV1.
 pub(super) struct Nv12 {
     video: ID3D11VideoContext1,
     processor: ID3D11VideoProcessor,
@@ -101,7 +101,7 @@ impl Nv12 {
     ) -> Result<Self> {
         let format = match codec {
             VideoCodec::H264 => DXGI_FORMAT_NV12,
-            VideoCodec::Hevc => DXGI_FORMAT_P010,
+            VideoCodec::Hevc | VideoCodec::Av1 => DXGI_FORMAT_P010,
         };
         let device: ID3D11VideoDevice = gpu.device.cast().context("no video device")?;
         let video: ID3D11VideoContext1 = gpu.context.cast().context("no video context")?;
@@ -527,12 +527,53 @@ fn codec_types(codec: Option<VideoCodec>) -> (windows::core::GUID, i32, windows:
             eAVEncH265VProfile_Main_420_10.0,
             MFVideoFormat_P010,
         ),
+        Some(VideoCodec::Av1) => (
+            MFVideoFormat_AV1,
+            eAVEncAV1VProfile_Main_420_10.0,
+            MFVideoFormat_P010,
+        ),
         _ => (
             MFVideoFormat_H264,
             eAVEncH264VProfile_High.0,
             MFVideoFormat_NV12,
         ),
     }
+}
+
+/// Whether this PC has an encoder for `codec`: H.264's comes with
+/// Windows; HEVC's and AV1's with a graphics card that encodes them.
+pub fn encodes(codec: VideoCodec) -> bool {
+    let output = MFT_REGISTER_TYPE_INFO {
+        guidMajorType: MFMediaType_Video,
+        guidSubtype: codec_types(Some(codec)).0,
+    };
+    let (mut found, mut count) = (std::ptr::null_mut(), 0);
+    unsafe {
+        if MFTEnumEx(
+            MFT_CATEGORY_VIDEO_ENCODER,
+            MFT_ENUM_FLAG_HARDWARE
+                | MFT_ENUM_FLAG_SYNCMFT
+                | MFT_ENUM_FLAG_ASYNCMFT
+                | MFT_ENUM_FLAG_LOCALMFT
+                | MFT_ENUM_FLAG_SORTANDFILTER,
+            None,
+            Some(&output),
+            &mut found,
+            &mut count,
+        )
+        .is_err()
+            || found.is_null()
+        {
+            return false;
+        }
+        // SAFETY: MFTEnumEx hands over an array of `count` activation
+        // objects, each to release, in memory to free with CoTaskMemFree.
+        for activate in std::slice::from_raw_parts_mut(found, count as usize) {
+            drop(activate.take());
+        }
+        windows::Win32::System::Com::CoTaskMemFree(Some(found as *const _));
+    }
+    count > 0
 }
 
 fn video_type(subtype: &windows::core::GUID, w: u32, h: u32, fps: u32) -> Result<IMFMediaType> {
@@ -859,6 +900,13 @@ mod tests {
     #[ignore = "measures the live path in real time: run by hand"]
     fn the_live_player_shows_pictures_soon_after_they_go_in_with_hevc() {
         show_numbered(SoundCodec::Pcm, VideoCodec::Hevc);
+    }
+
+    /// The same with the pictures sent as AV1, in 10 bits.
+    #[test]
+    #[ignore = "measures the live path in real time: run by hand"]
+    fn the_live_player_shows_pictures_soon_after_they_go_in_with_av1() {
+        show_numbered(SoundCodec::Pcm, VideoCodec::Av1);
     }
 
     fn show_numbered(sound: SoundCodec, codec: VideoCodec) {
