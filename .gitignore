@@ -2,3 +2,4 @@
 /captures
 /tmp
 /.claude/worktrees
+.env
