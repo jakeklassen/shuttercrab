@@ -116,7 +116,7 @@ USAGE
       Freeze the monitor and take a full screenshot through the app's capture
       service N times (default 5), printing memory around each. Saves nothing.
 
-  capture-spike stream-send [--monitor M] [--region X,Y,W,H] [--fps 30|60] [--sound on]
+  capture-spike stream-send [--monitor M] [--region X,Y,W,H] [--fps 30|60] [--quality Q] [--sound on]
                             [--sound-of PID] [--mic on] [--codec pcm|aac] [--port N]
                             [--online on] [--meet URL] [--direct]
       Live streaming, spikes S0 and S1 (issue #66): wait for a viewer on
@@ -127,8 +127,10 @@ USAGE
       both networks allow it); then record live and send each frame as it is
       encoded, until the viewer leaves. --online needs
       the host key: SHUTTERCRAB_HOST_KEY, or meet/.env in the repository. The
-      region defaults to 0,0,2560,1440. The sound goes as PCM (1.5 Mbit/s, no
-      delay) unless --codec aac.
+      region defaults to the whole monitor, scaled to Q: 1080p (10 Mbit/s),
+      1440p (18 Mbit/s, the default) or 4k (35 Mbit/s); while streaming, the
+      keys 1, 2 and 3 switch between them. The sound goes as PCM (1.5 Mbit/s,
+      no delay) unless --codec aac.
 
   capture-spike stream-watch [--from HOST:PORT | --link LINK] [--meet URL] [--direct] [--monitor M]
                              [--sound off]
