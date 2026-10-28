@@ -80,16 +80,17 @@ impl Fitter {
         })
     }
 
-    /// Fit the `content`-sized picture at the top left of `source` (FP16)
-    /// into the output.
+    /// Fit the `content`-sized picture at `origin` in `source` (FP16) into
+    /// the output.
     pub(super) fn fit(
         &mut self,
         gpu: &Gpu,
         source: &ID3D11Texture2D,
+        origin: (u32, u32),
         content: (u32, u32),
     ) -> Result<()> {
         let ctx = &gpu.context;
-        let view = self.copy_of(gpu, source, content)?;
+        let view = self.copy_of(gpu, source, origin, content)?;
         let ((x, y), (w, h)) = placement(content, self.size);
         let shrink = (content.0 as f32 / w as f32).max(content.1 as f32 / h as f32);
         let source_size = self.copy.as_ref().map_or(content, |(_, _, size)| *size);
@@ -123,6 +124,7 @@ impl Fitter {
         &mut self,
         gpu: &Gpu,
         source: &ID3D11Texture2D,
+        (x, y): (u32, u32),
         content: (u32, u32),
     ) -> Result<ID3D11ShaderResourceView> {
         let fits = self
@@ -142,11 +144,11 @@ impl Fitter {
         }
         let (texture, view, _) = self.copy.as_ref().expect("made above");
         let area = D3D11_BOX {
-            left: 0,
-            top: 0,
+            left: x,
+            top: y,
             front: 0,
-            right: content.0,
-            bottom: content.1,
+            right: x + content.0,
+            bottom: y + content.1,
             back: 1,
         };
         unsafe {
@@ -210,7 +212,7 @@ mod tests {
         let output = picture(gpu, frame.0, frame.1, |_, _| [0.5; 4]);
         Fitter::new(gpu, &output)
             .unwrap()
-            .fit(gpu, source, content)
+            .fit(gpu, source, (0, 0), content)
             .unwrap();
         let bytes = gpu.read_back(&output).unwrap();
         bytes
@@ -264,6 +266,32 @@ mod tests {
         for (i, p) in out.iter().enumerate() {
             let want = if i % 2 == 0 { RED } else { BLUE };
             assert!(close(*p, want), "pixel {i}: {p:?}");
+        }
+    }
+
+    #[test]
+    fn the_gpu_shrinks_a_region_from_where_it_starts() {
+        let gpu = Gpu::warp().unwrap();
+        // Red at 32..64 × 16..32, blue around it; that region, at half its
+        // size, is all red: nothing from around it is taken.
+        let source = picture(&gpu, 96, 48, |x, y| {
+            if (32..64).contains(&x) && (16..32).contains(&y) {
+                RED
+            } else {
+                BLUE
+            }
+        });
+        let output = picture(&gpu, 16, 8, |_, _| [0.5; 4]);
+        let mut fitter = Fitter::new(&gpu, &output).unwrap();
+        fitter.fit(&gpu, &source, (32, 16), (32, 16)).unwrap();
+        let bytes = gpu.read_back(&output).unwrap();
+        for p in bytes.as_chunks::<8>().0 {
+            let c = |i: usize| half::f16::from_le_bytes([p[i], p[i + 1]]).to_f32();
+            assert!(
+                close([c(0), c(2), c(4), c(6)], RED),
+                "{:?}",
+                [c(0), c(2), c(4)]
+            );
         }
     }
 

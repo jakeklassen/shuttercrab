@@ -52,15 +52,7 @@ struct Slot {
 const SLOTS: usize = 4;
 
 impl Nv12 {
-    /// From `rgba`, `(w, h)`, to NV12 of `(out_w, out_h)`: the video
-    /// processor scales it on the way, for a live recording sent smaller.
-    pub(super) fn new(
-        gpu: &Gpu,
-        rgba: &ID3D11Texture2D,
-        (w, h): (u32, u32),
-        (out_w, out_h): (u32, u32),
-        fps: u32,
-    ) -> Result<Self> {
+    pub(super) fn new(gpu: &Gpu, rgba: &ID3D11Texture2D, w: u32, h: u32, fps: u32) -> Result<Self> {
         let device: ID3D11VideoDevice = gpu.device.cast().context("no video device")?;
         let video: ID3D11VideoContext1 = gpu.context.cast().context("no video context")?;
         let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
@@ -75,8 +67,8 @@ impl Nv12 {
                 Numerator: fps,
                 Denominator: 1,
             },
-            OutputWidth: out_w,
-            OutputHeight: out_h,
+            OutputWidth: w,
+            OutputHeight: h,
             Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
         };
         unsafe {
@@ -106,8 +98,8 @@ impl Nv12 {
             let mut slots = Vec::with_capacity(SLOTS);
             for _ in 0..SLOTS {
                 let texture = gpu.texture(
-                    out_w,
-                    out_h,
+                    w,
+                    h,
                     DXGI_FORMAT_NV12,
                     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
                     None,
@@ -556,7 +548,7 @@ mod tests {
                     None,
                 )
                 .unwrap();
-            let nv12 = Nv12::new(&gpu, &rgba, (w, h), (w, h), fps).unwrap();
+            let nv12 = Nv12::new(&gpu, &rgba, w, h, fps).unwrap();
             Self {
                 gpu,
                 rgba,
