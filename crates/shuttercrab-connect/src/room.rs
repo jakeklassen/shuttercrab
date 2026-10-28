@@ -27,6 +27,8 @@ pub struct Peer {
 #[derive(Debug)]
 pub enum Event {
     Peer(Peer),
+    /// A login to the relay, for this app while it stays in the room.
+    Relay(crate::turn::Login),
     /// The room closed this app's connection, and why.
     Closed(String),
 }
@@ -34,6 +36,8 @@ pub enum Event {
 /// A connection to a room, read on a thread of its own until dropped.
 pub struct Room {
     pub events: Receiver<Event>,
+    /// Messages for the reading thread to send.
+    outgoing: Sender<String>,
     stop: Arc<AtomicBool>,
 }
 
@@ -65,23 +69,32 @@ impl Room {
         }
         let (mut socket, _) =
             tungstenite::connect(request).with_context(|| format!("could not reach {meet}"))?;
-        let hello = serde_json::json!({
-            "type": "hello",
-            "addresses": addresses.iter().map(ToString::to_string).collect::<Vec<_>>(),
-        });
-        socket.send(Message::text(hello.to_string()))?;
-        // Reads wake now and then to ping, and to see whether to stop.
+        socket.send(Message::text(hello(addresses)))?;
+        // Reads wake now and then to send, to ping, and to see whether to
+        // stop.
         if let Some(tcp) = tcp(&socket) {
-            tcp.set_read_timeout(Some(Duration::from_millis(500)))?;
+            tcp.set_read_timeout(Some(Duration::from_millis(50)))?;
         }
 
         let (sender, events) = channel();
+        let (outgoing, to_send) = channel();
         let stop = Arc::new(AtomicBool::new(false));
         let stopped = stop.clone();
         std::thread::Builder::new()
             .name("room".into())
-            .spawn(move || read(socket, &sender, &stopped))?;
-        Ok(Self { events, stop })
+            .spawn(move || read(socket, &sender, &to_send, &stopped))?;
+        Ok(Self {
+            events,
+            outgoing,
+            stop,
+        })
+    }
+
+    /// Say this app is now at `addresses`.
+    pub fn hello(&self, addresses: &[SocketAddr]) -> Result<()> {
+        self.outgoing
+            .send(hello(addresses))
+            .context("the room's connection has closed")
     }
 
     /// The next event, waiting up to `timeout`.
@@ -98,7 +111,9 @@ impl Room {
         loop {
             let left = deadline.saturating_duration_since(Instant::now());
             match self.next(left)? {
-                Event::Peer(peer) if peer.host == host => return Ok(peer),
+                Event::Peer(peer) if peer.host == host && !peer.addresses.is_empty() => {
+                    return Ok(peer);
+                }
                 Event::Closed(why) => bail!("{why}"),
                 _ => {}
             }
@@ -112,6 +127,14 @@ impl Drop for Room {
     }
 }
 
+fn hello(addresses: &[SocketAddr]) -> String {
+    serde_json::json!({
+        "type": "hello",
+        "addresses": addresses.iter().map(ToString::to_string).collect::<Vec<_>>(),
+    })
+    .to_string()
+}
+
 fn tcp(socket: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<&TcpStream> {
     match socket.get_ref() {
         MaybeTlsStream::Plain(tcp) => Some(tcp),
@@ -120,14 +143,21 @@ fn tcp(socket: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<&TcpStream> {
     }
 }
 
-/// Pass on what the room says until it closes or `stop`, pinging it.
+/// Pass on what the room says until it closes or `stop`, sending what
+/// comes to send and pinging it.
 fn read(
     mut socket: WebSocket<MaybeTlsStream<TcpStream>>,
     events: &Sender<Event>,
+    to_send: &Receiver<String>,
     stop: &AtomicBool,
 ) {
     let mut pinged = Instant::now();
     while !stop.load(Ordering::Relaxed) {
+        while let Ok(text) = to_send.try_recv() {
+            if socket.send(Message::text(text)).is_err() {
+                break;
+            }
+        }
         if pinged.elapsed() >= PING {
             pinged = Instant::now();
             if socket.send(Message::Ping(Default::default())).is_err() {
@@ -172,6 +202,15 @@ fn parse(text: &str) -> Option<Event> {
                 .iter()
                 .filter_map(|a| a.as_str()?.parse().ok())
                 .collect(),
+        })),
+        "relay" => Some(Event::Relay(crate::turn::Login {
+            urls: value["urls"]
+                .as_array()?
+                .iter()
+                .filter_map(|u| Some(u.as_str()?.to_string()))
+                .collect(),
+            username: value["username"].as_str()?.to_string(),
+            credential: value["credential"].as_str()?.to_string(),
         })),
         _ => None,
     }
