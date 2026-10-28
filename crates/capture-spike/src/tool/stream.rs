@@ -116,9 +116,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         .transpose()?
         .unwrap_or(DEFAULT_PORT);
     let online = args.option("--online")?.as_deref() == Some("on");
-    let meet = args
-        .option("--meet")?
-        .unwrap_or_else(|| shuttercrab_connect::MEET.into());
+    let meet = Meet::from_args(&mut args)?;
     args.finish()?;
     let _ = log::set_logger(&Log);
     log::set_max_level(log::LevelFilter::Info);
@@ -188,6 +186,38 @@ pub(super) fn send(mut args: Args) -> Result<()> {
 /// Where the frames go.
 type Out = Box<dyn Write + Send>;
 
+/// The meeting point to stream or watch through, and how to connect:
+/// `--meet URL` (Shuttercrab's unless given), and `--direct` to connect
+/// without the relay.
+struct Meet {
+    url: String,
+    path: shuttercrab_connect::Path,
+}
+
+impl Meet {
+    fn from_args(args: &mut Args) -> Result<Self> {
+        Ok(Self {
+            url: args
+                .option("--meet")?
+                .unwrap_or_else(|| shuttercrab_connect::MEET.into()),
+            path: if args.flag("--direct") {
+                shuttercrab_connect::Path::Direct
+            } else {
+                shuttercrab_connect::Path::Relay
+            },
+        })
+    }
+}
+
+/// How a connection goes, for the status lines.
+fn how(connection: &shuttercrab_connect::Connection) -> &'static str {
+    if connection.relayed() {
+        "through the relay"
+    } else {
+        "directly"
+    }
+}
+
 /// The first byte of each stream online, so the viewer can tell them
 /// apart: the format and the pictures, and the sound.
 const PICTURES: u8 = b'P';
@@ -204,7 +234,7 @@ fn shared(out: Out) -> SharedOut {
 /// the pictures go, and the sound if it goes apart from them.
 fn open_output(
     online: bool,
-    meet: &str,
+    meet: &Meet,
     port: u16,
 ) -> Result<(
     SharedOut,
@@ -232,8 +262,8 @@ fn wait_locally(port: u16) -> Result<Out> {
 /// A viewer anywhere: a room at `meet`, a link to share, and a direct
 /// connection to whoever comes with it. The sound has a stream of its own,
 /// sent first, so a large picture cannot hold it up.
-fn host_online(meet: &str) -> Result<(Out, Out, shuttercrab_connect::Connection)> {
-    let hosting = shuttercrab_connect::host(meet, &host_key()?)?;
+fn host_online(meet: &Meet) -> Result<(Out, Out, shuttercrab_connect::Connection)> {
+    let hosting = shuttercrab_connect::host(&meet.url, &host_key()?, meet.path)?;
     println!(
         "Share this link; whoever has it can watch:\n\n  {}\n\n\
          Waiting for a viewer (capture-spike stream-watch --link LINK)...",
@@ -241,8 +271,9 @@ fn host_online(meet: &str) -> Result<(Out, Out, shuttercrab_connect::Connection)
     );
     let connection = hosting.accept()?;
     println!(
-        "Viewer at {} connected directly, {} ms there and back.",
+        "Viewer at {} connected {}, {} ms there and back.",
         connection.remote(),
+        how(&connection),
         connection.round_trip().as_millis()
     );
     let mut pictures = connection.send(0)?;
@@ -388,9 +419,7 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
         .option("--from")?
         .unwrap_or_else(|| format!("127.0.0.1:{DEFAULT_PORT}"));
     let link = args.option("--link")?;
-    let meet = args
-        .option("--meet")?
-        .unwrap_or_else(|| shuttercrab_connect::MEET.into());
+    let meet = Meet::from_args(&mut args)?;
     let monitor = args.option("--monitor")?;
     let muted = args.option("--sound")?.as_deref() == Some("off");
     args.finish()?;
@@ -504,7 +533,7 @@ type In = Box<dyn Read + Send>;
 /// from them.
 fn open_input(
     link: Option<&str>,
-    meet: &str,
+    meet: &Meet,
     from: &str,
 ) -> Result<(In, Option<In>, Option<shuttercrab_connect::Connection>)> {
     let Some(link) = link else {
@@ -514,9 +543,10 @@ fn open_input(
     };
     let link = shuttercrab_connect::Link::parse(link)?;
     println!("Joining the stream...");
-    let connection = shuttercrab_connect::join(meet, &link)?;
+    let connection = shuttercrab_connect::join(&meet.url, &link, meet.path)?;
     println!(
-        "Connected directly to {}, {} ms there and back.",
+        "Connected {} to {}, {} ms there and back.",
+        how(&connection),
         connection.remote(),
         connection.round_trip().as_millis()
     );
