@@ -15,6 +15,8 @@ use windows::{
 
 pub(super) struct Decoder {
     transform: IMFTransform,
+    /// The pictures' size, as the stream last set it.
+    size: (u32, u32),
     _manager: IMFDXGIDeviceManager,
 }
 
@@ -57,19 +59,24 @@ impl Decoder {
             transform.ProcessMessage(MFT_MESSAGE_NOTIFY_START_OF_STREAM, 0)?;
             Ok(Self {
                 transform,
+                size: (w, h),
                 _manager: manager,
             })
         }
     }
 
-    /// Decode `frame`: each picture that comes out, its time and where it
-    /// is (a texture, and its index in the texture array), to `picture`.
+    /// Decode `frame`: each picture that comes out, its time, where it is
+    /// (a texture, and its index in the texture array) and its size, to
+    /// `picture`. The size changes where the stream does, the sender
+    /// having changed its quality.
     pub(super) fn decode(
         &mut self,
         frame: &LiveFrame,
-        mut picture: impl FnMut(i64, &ID3D11Texture2D, u32) -> Result<()>,
+        mut picture: impl FnMut(i64, &ID3D11Texture2D, u32, (u32, u32)) -> Result<()>,
     ) -> Result<()> {
         let transform = &self.transform;
+        // Read by each picture, set by a change of stream between them.
+        let size = std::cell::Cell::new(self.size);
         let mut out = |sample: IMFSample| -> Result<()> {
             unsafe {
                 let buffer: IMFDXGIBuffer = sample.GetBufferByIndex(0)?.cast()?;
@@ -81,13 +88,42 @@ impl Decoder {
                     sample.GetSampleTime()?,
                     &texture,
                     buffer.GetSubresourceIndex()?,
+                    size.get(),
                 )
             }
         };
-        // The decoder brings its own samples, on the graphics card.
-        let mut empty = || drain(transform, || Ok(None), || choose_nv12(transform), &mut out);
-        feed(transform, frame, &mut empty)?;
-        empty()
+        // The decoder brings its own samples, on the graphics card. When the
+        // stream changes it says so before the first picture of the new kind.
+        let mut changed = || -> Result<()> {
+            choose_nv12(transform)?;
+            let (w, h) = picture_size(transform)?;
+            log::info!("the live pictures are now {w}x{h}");
+            size.set((w, h));
+            Ok(())
+        };
+        let mut empty = || drain(transform, || Ok(None), &mut changed, &mut out);
+        let decoded = feed(transform, frame, &mut empty).and_then(|()| empty());
+        self.size = size.get();
+        decoded
+    }
+}
+
+/// The size of the decoder's pictures: the part shown, without the rows
+/// that round the coded picture up to whole macroblocks.
+fn picture_size(transform: &IMFTransform) -> Result<(u32, u32)> {
+    unsafe {
+        let output = transform.GetOutputCurrentType(0)?;
+        let mut area = MFVideoArea::default();
+        let shown = output.GetBlob(
+            &MF_MT_MINIMUM_DISPLAY_APERTURE,
+            std::slice::from_raw_parts_mut((&raw mut area).cast::<u8>(), size_of::<MFVideoArea>()),
+            None,
+        );
+        if shown.is_ok() && area.Area.cx > 0 && area.Area.cy > 0 {
+            return Ok((area.Area.cx as u32, area.Area.cy as u32));
+        }
+        let packed = output.GetUINT64(&MF_MT_FRAME_SIZE)?;
+        Ok(((packed >> 32) as u32, packed as u32))
     }
 }
 
@@ -266,8 +302,19 @@ impl Pictures {
         result.context("VideoProcessorBlt failed")
     }
 
-    /// Copy the picture converted last into `target`.
-    pub(super) fn copy_to(&self, gpu: &Gpu, target: &ID3D11Texture2D) {
+    pub(super) fn size(&self) -> (u32, u32) {
+        self.size
+    }
+
+    /// Copy the picture converted last into `target`, if it is the
+    /// picture's size: whether it did.
+    pub(super) fn copy_to(&self, gpu: &Gpu, target: &ID3D11Texture2D) -> bool {
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { target.GetDesc(&mut desc) };
+        if (desc.Width, desc.Height) != self.size {
+            return false;
+        }
         unsafe { gpu.context.CopyResource(target, &self.bgra) };
+        true
     }
 }

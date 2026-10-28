@@ -33,6 +33,11 @@ pub type LiveSink = Arc<dyn Fn(crate::live::LiveFrame) + Send + Sync>;
 pub struct Live {
     pub sink: LiveSink,
     pub sound: crate::live::SoundCodec,
+    /// The size its pictures are scaled to, if not the region's own.
+    pub size: Option<(u32, u32)>,
+    /// The bit rate its pictures are encoded at, bits a second, if not the
+    /// recorder's choice for their size.
+    pub bitrate: Option<u32>,
 }
 
 /// 100-nanosecond units: the recorder's clock.
