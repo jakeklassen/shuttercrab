@@ -1,5 +1,7 @@
 [tools]
 rust = { version = "1.98.1", components = "clippy,rustfmt" }
+# Builds libopus, for a live stream's sound, on Windows.
+cmake = "4.4.0"
 
 # Formatting, Clippy and the tests, as CI runs them, after trimming
 # target/. Skips the one test that would signal the Shuttercrab you are

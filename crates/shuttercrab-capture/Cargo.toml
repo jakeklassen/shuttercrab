@@ -19,6 +19,8 @@ shuttercrab-types = { path = "../shuttercrab-types" }
 [target.'cfg(windows)'.dependencies]
 # The COM `implement` macro refers to windows-core by name.
 windows-core = "0.62"
+# A live stream's sound: the reference libopus, built from source.
+opus-head-sys = { version = "0.3.3", default-features = false }
 
 # 0.62 is the version GPUI's Windows backend uses, so Direct3D objects can be
 # shared with it in later milestones.
