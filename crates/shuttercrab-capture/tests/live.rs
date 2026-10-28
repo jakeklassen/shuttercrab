@@ -296,3 +296,55 @@ fn the_player_follows_the_stream_to_a_new_picture_size() {
     // A still screen sends a picture a second; a moving one more.
     assert!(drawn.iter().all(|(_, n)| *n >= 1), "{drawn:?}");
 }
+
+/// What a live picture sent smaller looks like, for a person to judge: the
+/// first monitor at 1080p, through the encoder and the player, saved as a
+/// PNG where `LIVE_SNAPSHOT` says.
+#[test]
+#[ignore = "records the screen and saves a picture of it: run by hand"]
+fn a_live_picture_sent_smaller_can_be_looked_at() {
+    let Some(path) = std::env::var_os("LIVE_SNAPSHOT") else {
+        return;
+    };
+    let (fps, size) = (30, (1920, 1080));
+    let monitors = block_on(Capture::start().unwrap().list_monitors()).unwrap();
+    let bounds = monitors.first().expect("a monitor").bounds;
+    let mut options = options(bounds.width, bounds.height, fps);
+    options.system_sound = false;
+    options.sound_track = false;
+    let format = LiveFormat {
+        width: size.0,
+        height: size.1,
+        fps,
+        sound: None,
+    };
+    let player = Arc::new(LivePlayer::new(format, |_| {}).unwrap());
+    let to = player.clone();
+    let live = Live {
+        sink: Arc::new(move |frame: LiveFrame| to.push(frame).unwrap()),
+        sound: SoundCodec::Pcm,
+        size: Some(size),
+        bitrate: Some(10_000_000),
+    };
+    let recorder = Recorder::start_live(options, live).unwrap();
+    std::thread::sleep(Duration::from_millis(1500));
+    recorder.stop().unwrap();
+
+    let device = player.device();
+    let context = unsafe { device.GetImmediateContext() }.unwrap();
+    let gpu = Gpu::from_device(device, context).unwrap();
+    let texture = gpu
+        .texture(
+            size.0,
+            size.1,
+            DXGI_FORMAT_B8G8R8A8_UNORM,
+            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+            None,
+        )
+        .unwrap();
+    assert!(player.draw(&texture).unwrap(), "nothing to draw");
+    let rgba = shuttercrab_capture::premultiplied_bgra_to_rgba(&gpu.read_back(&texture).unwrap());
+    let png = shuttercrab_capture::encode_png(size.0, size.1, &rgba).unwrap();
+    std::fs::write(&path, png).unwrap();
+    println!("saved {}", std::path::Path::new(&path).display());
+}
