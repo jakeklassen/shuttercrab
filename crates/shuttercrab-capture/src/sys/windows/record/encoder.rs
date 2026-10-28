@@ -6,10 +6,10 @@
 //! file: the sink writer encodes just the same, and the sink hands each
 //! coded frame on as it comes.
 
-use super::{live_sink, sound};
+use super::{super::opus, live_sink, sound};
 use crate::{
     live::{LiveFrame, SoundCodec, Track, VideoCodec},
-    record::{Live, LiveSink},
+    record::{Live, LiveSink, TICKS_PER_SECOND},
     sys::imp::gpu::Gpu,
 };
 use anyhow::{Context, Result, ensure};
@@ -279,6 +279,74 @@ enum SoundTrack {
     Aac(u32),
     /// Straight to a live recording's sink, as the samples are.
     Pcm(LiveSink),
+    /// To a live recording's sink as Opus.
+    Opus(std::sync::Mutex<OpusTrack>),
+}
+
+/// A live recording's sound to its sink as Opus, 10 ms a packet: samples
+/// wait here until there are enough for one.
+struct OpusTrack {
+    encoder: opus::Encoder,
+    sink: LiveSink,
+    /// The samples waiting, and the time of the first.
+    waiting: Vec<i16>,
+    start: i64,
+    /// How far behind its input the decoded sound comes out, ticks.
+    lookahead: i64,
+}
+
+impl OpusTrack {
+    fn new(sink: LiveSink) -> Result<Self> {
+        let encoder = opus::Encoder::new()?;
+        let lookahead = sound::frames_to_ticks(encoder.lookahead()? as u64);
+        Ok(Self {
+            encoder,
+            sink,
+            waiting: Vec::new(),
+            start: 0,
+            lookahead,
+        })
+    }
+
+    /// Take `samples` at `time`, and send each packet's worth. Sound that
+    /// does not follow on from what waits (after a pause) starts afresh,
+    /// the rest sent first with silence after it.
+    fn write(&mut self, samples: &[i16], time: i64) -> Result<()> {
+        let packet = opus::FRAME * usize::from(sound::CHANNELS);
+        let follows = self.start
+            + sound::frames_to_ticks((self.waiting.len() / usize::from(sound::CHANNELS)) as u64);
+        if (time - follows).abs() > TICKS_PER_SECOND / 1000 || self.waiting.is_empty() {
+            if !self.waiting.is_empty() {
+                self.waiting.resize(packet, 0);
+                self.send()?;
+            }
+            self.start = time;
+        }
+        self.waiting.extend_from_slice(samples);
+        while self.waiting.len() >= packet {
+            self.send()?;
+        }
+        Ok(())
+    }
+
+    /// Encode and send the first packet's worth of what waits. Its time is
+    /// that of the sound that comes out of it: the encoder's lookahead
+    /// earlier than what went in.
+    fn send(&mut self) -> Result<()> {
+        let packet = opus::FRAME * usize::from(sound::CHANNELS);
+        let data = self.encoder.encode(&self.waiting[..packet])?;
+        self.waiting.drain(..packet);
+        let duration = sound::frames_to_ticks(opus::FRAME as u64);
+        (self.sink)(LiveFrame {
+            track: Track::Sound,
+            time: self.start - self.lookahead,
+            duration,
+            key: true,
+            data,
+        });
+        self.start += duration;
+        Ok(())
+    }
 }
 
 /// The sound track's bit rate, bytes a second: 192 kbit/s, plenty for stereo
@@ -298,11 +366,18 @@ impl Mp4Writer {
         sound: bool,
         live: Option<Live>,
     ) -> Result<Self> {
-        let pcm = match &live {
-            Some(live) if sound && live.sound == SoundCodec::Pcm => Some(live.sink.clone()),
+        // PCM and Opus go to the live sink from here; AAC, through the sink
+        // writer's encoder.
+        let direct = match &live {
+            Some(live) if sound && live.sound == SoundCodec::Pcm => {
+                Some(SoundTrack::Pcm(live.sink.clone()))
+            }
+            Some(live) if sound && live.sound == SoundCodec::Opus => Some(SoundTrack::Opus(
+                std::sync::Mutex::new(OpusTrack::new(live.sink.clone())?),
+            )),
             _ => None,
         };
-        let aac = sound && pcm.is_none();
+        let aac = sound && direct.is_none();
         unsafe {
             let mut token = 0;
             let mut manager = None;
@@ -390,7 +465,7 @@ impl Mp4Writer {
                     .context("the AAC encoder does not take 16-bit stereo")?;
                 Some(SoundTrack::Aac(stream))
             } else {
-                pcm.map(SoundTrack::Pcm)
+                direct
             };
             writer.BeginWriting().context("BeginWriting failed")?;
             Ok(Self {
@@ -427,6 +502,12 @@ impl Mp4Writer {
                     data: samples.iter().flat_map(|s| s.to_le_bytes()).collect(),
                 });
                 return Ok(());
+            }
+            Some(SoundTrack::Opus(track)) => {
+                return track
+                    .lock()
+                    .unwrap_or_else(|e| e.into_inner())
+                    .write(samples, time);
             }
         };
         let bytes = std::mem::size_of_val(samples);
@@ -606,10 +687,7 @@ impl Drop for Mp4Writer {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::{
-        live::{LiveFormat, LivePlayer},
-        record::TICKS_PER_SECOND,
-    };
+    use crate::live::{LiveFormat, LivePlayer};
     use std::{
         sync::{Mutex, atomic::AtomicBool},
         time::{Duration, Instant},
@@ -907,6 +985,13 @@ mod tests {
     #[ignore = "measures the live path in real time: run by hand"]
     fn the_live_player_shows_pictures_soon_after_they_go_in_with_av1() {
         show_numbered(SoundCodec::Pcm, VideoCodec::Av1);
+    }
+
+    /// AV1 with the sound sent as Opus: what a stream sends by default.
+    #[test]
+    #[ignore = "measures the live path in real time: run by hand"]
+    fn the_live_player_shows_pictures_soon_after_they_go_in_with_av1_and_opus() {
+        show_numbered(SoundCodec::Opus, VideoCodec::Av1);
     }
 
     fn show_numbered(sound: SoundCodec, codec: VideoCodec) {

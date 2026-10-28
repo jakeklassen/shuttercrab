@@ -3,7 +3,8 @@
 //!
 //! No container: each frame goes as soon as it is encoded, in the forms a
 //! decoder takes on their own. H.264 and HEVC are Annex B, and AV1 a
-//! sequence of OBUs, with the parameter sets before each key frame; AAC has an ADTS header; PCM is the samples.
+//! sequence of OBUs, with the parameter sets before each key frame. AAC has
+//! an ADTS header; Opus is its packets; PCM is the samples.
 
 /// Playing a live recording as it arrives.
 #[cfg(windows)]
@@ -67,6 +68,9 @@ pub enum SoundCodec {
     /// The 16-bit samples as recorded, little-endian: 1.5 Mbit/s, sent as
     /// soon as they are mixed.
     Pcm,
+    /// Opus, 0.13 Mbit/s, 10 ms a packet: about 13 ms later than PCM,
+    /// sounding the same.
+    Opus,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -127,6 +131,7 @@ impl LiveFormat {
             None => 0,
             Some(SoundCodec::Aac) => 1,
             Some(SoundCodec::Pcm) => 2,
+            Some(SoundCodec::Opus) => 3,
         };
         out.write_all(&[sound])?;
         Ok(())
@@ -156,6 +161,7 @@ impl LiveFormat {
             0 => None,
             1 => Some(SoundCodec::Aac),
             2 => Some(SoundCodec::Pcm),
+            3 => Some(SoundCodec::Opus),
             other => bail!("an unknown sound codec {other}"),
         };
         Ok(Self {

@@ -5,6 +5,7 @@
 pub mod capture;
 pub mod display;
 pub mod gpu;
+mod opus;
 pub mod play;
 pub mod record;
 pub mod service;
