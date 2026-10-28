@@ -2,12 +2,16 @@
 //! encoder makes them, and their wire format.
 //!
 //! No container: each frame goes as soon as it is encoded, in the forms a
-//! decoder takes on their own. H.264 and HEVC are Annex B, with the
-//! parameter sets before each key frame; AAC has an ADTS header; PCM is the samples.
+//! decoder takes on their own. H.264 and HEVC are Annex B, and AV1 a
+//! sequence of OBUs, with the parameter sets before each key frame; AAC has an ADTS header; PCM is the samples.
 
 /// Playing a live recording as it arrives.
 #[cfg(windows)]
 pub use crate::sys::imp::watch::LivePlayer;
+
+/// Whether this PC can encode pictures as a codec, live.
+#[cfg(windows)]
+pub use crate::sys::imp::record::encodes;
 
 use anyhow::{Result, bail, ensure};
 use std::io::{Read, Write};
@@ -33,6 +37,26 @@ pub enum VideoCodec {
     /// band, in fewer bits than H.264. Windows decodes it only with the
     /// HEVC Video Extensions installed.
     Hevc,
+    /// AV1 Main, 10 bits: as HEVC, in fewer bits again. Encoded only by
+    /// recent graphics cards (NVIDIA's RTX 40, AMD's RX 7000, Intel's Arc),
+    /// decoded by fairly recent ones, with Windows' AV1 Video Extension.
+    Av1,
+}
+
+impl VideoCodec {
+    /// The codecs best first: each takes fewer bits than the next for the
+    /// same picture, and fewer PCs can play it. A stream takes the first
+    /// both ends can.
+    pub const BEST_FIRST: [Self; 3] = [Self::Av1, Self::Hevc, Self::H264];
+
+    /// Its bit in a set of codecs.
+    pub fn bit(self) -> u8 {
+        match self {
+            Self::H264 => 1,
+            Self::Hevc => 2,
+            Self::Av1 => 4,
+        }
+    }
 }
 
 /// How a live recording's sound is sent.
@@ -97,6 +121,7 @@ impl LiveFormat {
         out.write_all(&[match self.video {
             VideoCodec::H264 => 1,
             VideoCodec::Hevc => 2,
+            VideoCodec::Av1 => 3,
         }])?;
         let sound = match self.sound {
             None => 0,
@@ -122,6 +147,7 @@ impl LiveFormat {
         let video = match video[0] {
             1 => VideoCodec::H264,
             2 => VideoCodec::Hevc,
+            3 => VideoCodec::Av1,
             other => bail!("an unknown picture codec {other}"),
         };
         let mut sound = [0];
@@ -198,7 +224,7 @@ mod tests {
             width: 2560,
             height: 1440,
             fps: 60,
-            video: VideoCodec::Hevc,
+            video: VideoCodec::Av1,
             sound: Some(SoundCodec::Pcm),
         };
         let frames = [

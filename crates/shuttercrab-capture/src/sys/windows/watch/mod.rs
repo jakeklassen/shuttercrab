@@ -88,7 +88,7 @@ impl LivePlayer {
     }
 
     /// Whether this PC can play pictures coded as `codec`: H.264 always;
-    /// HEVC with Windows' HEVC Video Extensions installed.
+    /// HEVC and AV1 with Windows' extensions for them installed.
     pub fn decodes(codec: VideoCodec) -> bool {
         video::decodes(codec)
     }
