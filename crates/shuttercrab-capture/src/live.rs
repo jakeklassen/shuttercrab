@@ -2,8 +2,8 @@
 //! encoder makes them, and their wire format.
 //!
 //! No container: each frame goes as soon as it is encoded, in the forms a
-//! decoder takes on their own. H.264 is Annex B, with the parameter sets
-//! before each key frame; AAC has an ADTS header; PCM is the samples.
+//! decoder takes on their own. H.264 and HEVC are Annex B, with the
+//! parameter sets before each key frame; AAC has an ADTS header; PCM is the samples.
 
 /// Playing a live recording as it arrives.
 #[cfg(windows)]
@@ -18,8 +18,21 @@ pub struct LiveFormat {
     pub width: u32,
     pub height: u32,
     pub fps: u32,
+    pub video: VideoCodec,
     /// How the sound track (48 kHz stereo) is sent, if there is one.
     pub sound: Option<SoundCodec>,
+}
+
+/// How a live recording's pictures are coded.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VideoCodec {
+    /// H.264, 8 bits: every graphics card decodes it, and Windows always
+    /// can.
+    H264,
+    /// HEVC Main 10, 10 bits: dark gradients keep their steps rather than
+    /// band, in fewer bits than H.264. Windows decodes it only with the
+    /// HEVC Video Extensions installed.
+    Hevc,
 }
 
 /// How a live recording's sound is sent.
@@ -72,8 +85,8 @@ pub(crate) fn adts(frame: &[u8]) -> Vec<u8> {
     out
 }
 
-/// "Shuttercrab live", version 1.
-const MAGIC: [u8; 4] = *b"SCL1";
+/// "Shuttercrab live", version 2: the pictures' codec follows the frame rate.
+const MAGIC: [u8; 4] = *b"SCL2";
 
 impl LiveFormat {
     pub fn write_to(&self, out: &mut impl Write) -> Result<()> {
@@ -81,6 +94,10 @@ impl LiveFormat {
         for n in [self.width, self.height, self.fps] {
             out.write_all(&n.to_le_bytes())?;
         }
+        out.write_all(&[match self.video {
+            VideoCodec::H264 => 1,
+            VideoCodec::Hevc => 2,
+        }])?;
         let sound = match self.sound {
             None => 0,
             Some(SoundCodec::Aac) => 1,
@@ -100,6 +117,13 @@ impl LiveFormat {
             Ok(u32::from_le_bytes(bytes))
         };
         let (width, height, fps) = (n()?, n()?, n()?);
+        let mut video = [0];
+        input.read_exact(&mut video)?;
+        let video = match video[0] {
+            1 => VideoCodec::H264,
+            2 => VideoCodec::Hevc,
+            other => bail!("an unknown picture codec {other}"),
+        };
         let mut sound = [0];
         input.read_exact(&mut sound)?;
         let sound = match sound[0] {
@@ -112,6 +136,7 @@ impl LiveFormat {
             width,
             height,
             fps,
+            video,
             sound,
         })
     }
@@ -173,6 +198,7 @@ mod tests {
             width: 2560,
             height: 1440,
             fps: 60,
+            video: VideoCodec::Hevc,
             sound: Some(SoundCodec::Pcm),
         };
         let frames = [

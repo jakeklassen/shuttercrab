@@ -11,6 +11,7 @@ use super::{
 };
 use crate::{
     color::Highlights,
+    live::VideoCodec,
     record::{
         HARDWARE_MIN_SIDE, Interruption, Live, MIN_SIDE, RecordOptions, RecordingSummary, Source,
         TICKS_PER_SECOND, exposure::Exposure, recordable,
@@ -769,7 +770,8 @@ fn encoder(
     options: &RecordOptions,
     live: Option<Live>,
 ) -> Result<(Nv12, Mp4Writer)> {
-    let nv12 = Nv12::new(gpu, rgba, w, h, options.fps)?;
+    let codec = live.as_ref().map_or(VideoCodec::H264, |l| l.video);
+    let nv12 = Nv12::new(gpu, rgba, (w, h, options.fps), codec)?;
     let writer = Mp4Writer::new(
         gpu,
         &options.path,
