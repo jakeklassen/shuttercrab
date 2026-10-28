@@ -48,7 +48,7 @@ fn two_apps_meet_and_connect_directly() {
 
     // Three seconds at about 20 Mbit/s, in pieces the size of pictures.
     let sender = std::thread::spawn(move || {
-        let mut out = streaming.send().unwrap();
+        let mut out = streaming.send(0).unwrap();
         let piece = vec![7u8; 40_000];
         let until = Instant::now() + Duration::from_secs(3);
         let mut sent = 0;
