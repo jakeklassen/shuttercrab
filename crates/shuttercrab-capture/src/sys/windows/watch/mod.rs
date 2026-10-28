@@ -18,7 +18,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Mutex, MutexGuard,
-        atomic::{AtomicI64, Ordering},
+        atomic::{AtomicBool, AtomicI64, Ordering},
     },
     time::Duration,
 };
@@ -46,6 +46,9 @@ pub struct LivePlayer {
     /// The newest picture's time, and the one drawn last.
     newest: AtomicI64,
     drawn: AtomicI64,
+    /// A picture converted but not yet drawn: the target was another size.
+    undrawn: AtomicBool,
+    fps: u32,
     gpu: Gpu,
     /// Last, so it ends after everything above is released.
     _started: Started,
@@ -76,6 +79,8 @@ impl LivePlayer {
             lead: AtomicI64::new(LEAD),
             newest: AtomicI64::new(i64::MIN),
             drawn: AtomicI64::new(i64::MIN),
+            undrawn: AtomicBool::new(false),
+            fps,
             gpu,
             _started: started,
         })
@@ -105,9 +110,16 @@ impl LivePlayer {
         }
     }
 
+    /// The pictures' size now: it changes where the stream does, and the
+    /// target [`LivePlayer::draw`] draws into should follow.
+    pub fn size(&self) -> (u32, u32) {
+        lock(&self.pictures).size()
+    }
+
     /// Decode the pictures that are due and draw the newest into `target`
-    /// (BGRA, the video's size), unless none has fallen due since the last
-    /// draw: whether it drew.
+    /// (BGRA, of [`LivePlayer::size`]), unless none has fallen due since
+    /// the last draw: whether it drew. A picture of another size than
+    /// `target` waits for a target of its size.
     pub fn draw(&self, target: &ID3D11Texture2D) -> Result<bool> {
         let due = self
             .clock()
@@ -123,18 +135,25 @@ impl LivePlayer {
         let (mut decoder, mut pictures) = (lock(&self.video), lock(&self.pictures));
         let mut newest = None;
         for frame in &frames {
-            decoder.decode(frame, |time, texture, index| {
+            decoder.decode(frame, |time, texture, index, size| {
+                if pictures.size() != size {
+                    *pictures = video::Pictures::new(&self.gpu, size.0, size.1, self.fps)
+                        .context("cannot convert the pictures at their new size")?;
+                }
                 pictures.convert(&self.gpu, texture, index)?;
                 newest = Some(time);
                 Ok(())
             })?;
         }
-        let Some(time) = newest else {
-            return Ok(false);
+        let time = match newest {
+            Some(time) => time,
+            None if self.undrawn.load(Ordering::Relaxed) => self.drawn.load(Ordering::Relaxed),
+            None => return Ok(false),
         };
-        pictures.copy_to(&self.gpu, target);
         self.drawn.store(time, Ordering::Relaxed);
-        Ok(true)
+        let copied = pictures.copy_to(&self.gpu, target);
+        self.undrawn.store(!copied, Ordering::Relaxed);
+        Ok(copied)
     }
 
     /// Where the sound has got to playing; `None` before it starts, or if

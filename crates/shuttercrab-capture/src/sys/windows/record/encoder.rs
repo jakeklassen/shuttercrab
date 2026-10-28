@@ -52,7 +52,15 @@ struct Slot {
 const SLOTS: usize = 4;
 
 impl Nv12 {
-    pub(super) fn new(gpu: &Gpu, rgba: &ID3D11Texture2D, w: u32, h: u32, fps: u32) -> Result<Self> {
+    /// From `rgba`, `(w, h)`, to NV12 of `(out_w, out_h)`: the video
+    /// processor scales it on the way, for a live recording sent smaller.
+    pub(super) fn new(
+        gpu: &Gpu,
+        rgba: &ID3D11Texture2D,
+        (w, h): (u32, u32),
+        (out_w, out_h): (u32, u32),
+        fps: u32,
+    ) -> Result<Self> {
         let device: ID3D11VideoDevice = gpu.device.cast().context("no video device")?;
         let video: ID3D11VideoContext1 = gpu.context.cast().context("no video context")?;
         let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
@@ -67,8 +75,8 @@ impl Nv12 {
                 Numerator: fps,
                 Denominator: 1,
             },
-            OutputWidth: w,
-            OutputHeight: h,
+            OutputWidth: out_w,
+            OutputHeight: out_h,
             Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
         };
         unsafe {
@@ -98,8 +106,8 @@ impl Nv12 {
             let mut slots = Vec::with_capacity(SLOTS);
             for _ in 0..SLOTS {
                 let texture = gpu.texture(
-                    w,
-                    h,
+                    out_w,
+                    out_h,
                     DXGI_FORMAT_NV12,
                     D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
                     None,
@@ -242,8 +250,11 @@ impl Mp4Writer {
             let streaming = live.is_some();
 
             // PRD §13.1: H.264, Rec.709. About 0.1 bit per pixel per frame,
-            // within 2–80 Mbit/s.
-            let bitrate = ((w as u64 * h as u64 * fps as u64) / 10).clamp(2_000_000, 80_000_000);
+            // within 2–80 Mbit/s, unless a live recording asks for its own.
+            let bitrate = match live.as_ref().and_then(|l| l.bitrate) {
+                Some(bitrate) => u64::from(bitrate),
+                None => ((w as u64 * h as u64 * fps as u64) / 10).clamp(2_000_000, 80_000_000),
+            };
             let video = video_type(&MFVideoFormat_H264, w, h, fps)?;
             video.SetUINT32(&MF_MT_AVG_BITRATE, bitrate as u32)?;
             video.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
@@ -495,7 +506,7 @@ mod tests {
                     None,
                 )
                 .unwrap();
-            let nv12 = Nv12::new(&gpu, &rgba, w, h, fps).unwrap();
+            let nv12 = Nv12::new(&gpu, &rgba, (w, h), (w, h), fps).unwrap();
             Self {
                 gpu,
                 rgba,
@@ -513,7 +524,12 @@ mod tests {
                 self.size,
                 true,
                 true,
-                Some(Live { sink, sound }),
+                Some(Live {
+                    sink,
+                    sound,
+                    size: None,
+                    bitrate: None,
+                }),
             )
             .unwrap()
         }
