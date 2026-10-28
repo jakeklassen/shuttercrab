@@ -132,10 +132,8 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         target.device_name,
         describe_sound(sound_process, system_sound, microphone)
     );
-    let (out, connection) = open_output(online, &meet, port)?;
+    let (out, sound_out, connection) = open_output(online, &meet, port)?;
     println!("Streaming. Close the viewer, or Ctrl+C here, to stop.");
-
-    let out = Arc::new(Mutex::new(BufWriter::new(out)));
     LiveFormat {
         width,
         height,
@@ -167,7 +165,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
             path: "unused.mp4".into(),
         },
         Live {
-            sink: sink(out, gone.clone(), sent.clone(), started),
+            sink: sink(out, sound_out, gone.clone(), sent.clone(), started),
             sound: codec,
         },
     )?;
@@ -190,17 +188,34 @@ pub(super) fn send(mut args: Args) -> Result<()> {
 /// Where the frames go.
 type Out = Box<dyn Write + Send>;
 
-/// A viewer anywhere if `online`, through `meet`, else on this PC.
+/// The first byte of each stream online, so the viewer can tell them
+/// apart: the format and the pictures, and the sound.
+const PICTURES: u8 = b'P';
+const SOUND: u8 = b'S';
+
+/// Where the frames go, for the threads that send them.
+type SharedOut = Arc<Mutex<BufWriter<Out>>>;
+
+fn shared(out: Out) -> SharedOut {
+    Arc::new(Mutex::new(BufWriter::new(out)))
+}
+
+/// A viewer anywhere if `online`, through `meet`, else on this PC: where
+/// the pictures go, and the sound if it goes apart from them.
 fn open_output(
     online: bool,
     meet: &str,
     port: u16,
-) -> Result<(Out, Option<shuttercrab_connect::Connection>)> {
+) -> Result<(
+    SharedOut,
+    Option<SharedOut>,
+    Option<shuttercrab_connect::Connection>,
+)> {
     if online {
-        let (out, connection) = host_online(meet)?;
-        Ok((out, Some(connection)))
+        let (pictures, sound, connection) = host_online(meet)?;
+        Ok((shared(pictures), Some(shared(sound)), Some(connection)))
     } else {
-        Ok((wait_locally(port)?, None))
+        Ok((shared(wait_locally(port)?), None, None))
     }
 }
 
@@ -215,8 +230,9 @@ fn wait_locally(port: u16) -> Result<Out> {
 }
 
 /// A viewer anywhere: a room at `meet`, a link to share, and a direct
-/// connection to whoever comes with it.
-fn host_online(meet: &str) -> Result<(Out, shuttercrab_connect::Connection)> {
+/// connection to whoever comes with it. The sound has a stream of its own,
+/// sent first, so a large picture cannot hold it up.
+fn host_online(meet: &str) -> Result<(Out, Out, shuttercrab_connect::Connection)> {
     let hosting = shuttercrab_connect::host(meet, &host_key()?)?;
     println!(
         "Share this link; whoever has it can watch:\n\n  {}\n\n\
@@ -229,7 +245,11 @@ fn host_online(meet: &str) -> Result<(Out, shuttercrab_connect::Connection)> {
         connection.remote(),
         connection.round_trip().as_millis()
     );
-    Ok((Box::new(connection.send()?), connection))
+    let mut pictures = connection.send(0)?;
+    pictures.write_all(&[PICTURES])?;
+    let mut sound = connection.send(1)?;
+    sound.write_all(&[SOUND])?;
+    Ok((Box::new(pictures), Box::new(sound), connection))
 }
 
 /// The key that opens a room on the meeting point: `SHUTTERCRAB_HOST_KEY`,
@@ -260,9 +280,11 @@ fn describe_sound(process: Option<u32>, speakers: bool, microphone: bool) -> Str
     }
 }
 
-/// Each frame onto the socket as it comes, until the viewer is `gone`.
+/// Each frame onto the socket as it comes, the sound onto `sound_out` if
+/// it has its own, until the viewer is `gone`.
 fn sink(
-    out: Arc<Mutex<BufWriter<Out>>>,
+    out: SharedOut,
+    sound_out: Option<SharedOut>,
     gone: Arc<AtomicBool>,
     sent: Arc<Mutex<Sent>>,
     started: Instant,
@@ -272,6 +294,10 @@ fn sink(
             return;
         }
         let written = {
+            let out = match (frame.track, &sound_out) {
+                (Track::Sound, Some(sound_out)) => sound_out,
+                _ => &out,
+            };
             let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
             frame.write_to(&mut *out).and_then(|()| Ok(out.flush()?))
         };
@@ -371,7 +397,7 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let _ = log::set_logger(&Log);
     log::set_max_level(log::LevelFilter::Info);
 
-    let (input, connection) = open_input(link.as_deref(), &meet, &from)?;
+    let (input, sound_input, connection) = open_input(link.as_deref(), &meet, &from)?;
     let mut reader = BufReader::new(input);
     let format = LiveFormat::read_from(&mut reader)?;
     println!(
@@ -397,23 +423,13 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
 
     let window = hwnd.0 as usize;
     let bytes = Arc::new(AtomicU64::new(0));
+    if let Some(sound_input) = sound_input {
+        let (player, bytes) = (player.clone(), bytes.clone());
+        std::thread::spawn(move || read_frames(BufReader::new(sound_input), &player, &bytes));
+    }
     let (reader_player, reader_bytes) = (player.clone(), bytes.clone());
     std::thread::spawn(move || {
-        loop {
-            match LiveFrame::read_from(&mut reader) {
-                Ok(Some(frame)) => {
-                    reader_bytes.fetch_add(frame.data.len() as u64 + 22, Ordering::Relaxed);
-                    if let Err(e) = reader_player.push(frame) {
-                        eprintln!("{e:#}");
-                    }
-                }
-                Ok(None) => break,
-                Err(e) => {
-                    eprintln!("the stream broke: {e:#}");
-                    break;
-                }
-            }
-        }
+        read_frames(reader, &reader_player, &reader_bytes);
         let _ =
             unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_ENDED, WPARAM(0), LPARAM(0)) };
     });
@@ -461,20 +477,40 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     Ok(())
 }
 
+/// Hand each frame from `reader` to `player` until the stream ends.
+fn read_frames(mut reader: impl Read, player: &LivePlayer, bytes: &AtomicU64) {
+    loop {
+        match LiveFrame::read_from(&mut reader) {
+            Ok(Some(frame)) => {
+                bytes.fetch_add(frame.data.len() as u64 + 22, Ordering::Relaxed);
+                if let Err(e) = player.push(frame) {
+                    eprintln!("{e:#}");
+                }
+            }
+            Ok(None) => break,
+            Err(e) => {
+                eprintln!("the stream broke: {e:#}");
+                break;
+            }
+        }
+    }
+}
+
+/// Where frames come from.
+type In = Box<dyn Read + Send>;
+
 /// The stream `link` is for, through `meet`, or else the one on this PC
-/// at `from`.
+/// at `from`: the format and pictures, and the sound if it comes apart
+/// from them.
 fn open_input(
     link: Option<&str>,
     meet: &str,
     from: &str,
-) -> Result<(
-    Box<dyn Read + Send>,
-    Option<shuttercrab_connect::Connection>,
-)> {
+) -> Result<(In, Option<In>, Option<shuttercrab_connect::Connection>)> {
     let Some(link) = link else {
         let socket = TcpStream::connect(from).with_context(|| format!("no stream at {from}"))?;
         socket.set_nodelay(true)?;
-        return Ok((Box::new(socket), None));
+        return Ok((Box::new(socket), None, None));
     };
     let link = shuttercrab_connect::Link::parse(link)?;
     println!("Joining the stream...");
@@ -484,7 +520,23 @@ fn open_input(
         connection.remote(),
         connection.round_trip().as_millis()
     );
-    Ok((Box::new(connection.receive()?), Some(connection)))
+    // Two streams, each tagged; they may arrive in either order.
+    let (mut pictures, mut sound): (In, In) = (
+        Box::new(connection.receive()?),
+        Box::new(connection.receive()?),
+    );
+    let mut tag = [0];
+    pictures.read_exact(&mut tag)?;
+    if tag[0] == SOUND {
+        std::mem::swap(&mut pictures, &mut sound);
+        pictures.read_exact(&mut tag)?;
+        ensure!(tag[0] == PICTURES, "the stream's pictures are missing");
+    } else {
+        ensure!(tag[0] == PICTURES, "not a Shuttercrab stream");
+        sound.read_exact(&mut tag)?;
+        ensure!(tag[0] == SOUND, "the stream's sound is missing");
+    }
+    Ok((pictures, Some(sound), Some(connection)))
 }
 
 /// Draw each picture as it falls due, once a refresh of the display the

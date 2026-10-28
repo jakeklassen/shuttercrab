@@ -197,11 +197,14 @@ impl Connection {
         (stats.path.lost_packets, stats.path.sent_packets)
     }
 
-    /// A stream to the other app.
-    pub fn send(&self) -> Result<Sending> {
+    /// A stream to the other app. Of several, one of higher `priority` is
+    /// sent first, so a large write to another cannot hold it up.
+    pub fn send(&self, priority: i32) -> Result<Sending> {
+        let stream = self.runtime.block_on(self.connection.open_uni())?;
+        stream.set_priority(priority)?;
         Ok(Sending {
             runtime: self.runtime.clone(),
-            stream: self.runtime.block_on(self.connection.open_uni())?,
+            stream,
         })
     }
 
