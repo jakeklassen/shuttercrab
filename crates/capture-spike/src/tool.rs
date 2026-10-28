@@ -118,16 +118,24 @@ USAGE
 
   capture-spike stream-send [--monitor M] [--region X,Y,W,H] [--fps 30|60] [--sound on]
                             [--sound-of PID] [--mic on] [--codec pcm|aac] [--port N]
-      Live streaming, spike S0 (issue #66): wait for a viewer on 127.0.0.1
-      (port 47100 by default), then record live and send each frame as it is
-      encoded, until the viewer leaves. The region defaults to 0,0,2560,1440.
-      The sound goes as PCM (1.5 Mbit/s, no delay) unless --codec aac.
+                            [--online on] [--meet URL]
+      Live streaming, spikes S0 and S1 (issue #66): wait for a viewer on
+      127.0.0.1 (port 47100 by default), or with --online on, open a room on
+      the meeting point (shuttercrab.sandbox.gdn unless --meet), print a link
+      to share and wait for a viewer with it, anywhere; then record live and
+      send each frame as it is encoded, until the viewer leaves. --online needs
+      the host key: SHUTTERCRAB_HOST_KEY, or meet/.env in the repository. The
+      region defaults to 0,0,2560,1440. The sound goes as PCM (1.5 Mbit/s, no
+      delay) unless --codec aac.
 
-  capture-spike stream-watch [--from HOST:PORT] [--monitor M] [--sound off]
-      Open a window on monitor M and play a stream-send as it arrives; its title
-      shows the frame rate, the bit rate and how far the picture and the sound
-      are behind the newest picture. Escape closes it, M mutes, [ and ] show
-      the pictures 20 ms earlier or later against the sound.
+  capture-spike stream-watch [--from HOST:PORT | --link LINK] [--meet URL] [--monitor M]
+                             [--sound off]
+      Open a window on monitor M and play a stream-send as it arrives: the one
+      on this PC, or with --link, the one the link is for, connected directly.
+      Its title shows the frame rate, the bit rate, how far the picture and the
+      sound are behind the newest picture and, online, the time there and back
+      and the packets lost. Escape closes it, M mutes, [ and ] show the
+      pictures 20 ms earlier or later against the sound.
 
 Run `capture-spike help` for this text.";
 
