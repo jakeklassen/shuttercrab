@@ -9,7 +9,7 @@ use futures::executor::block_on;
 use shuttercrab_capture::{
     Capture, PhysicalRect,
     gpu::Gpu,
-    live::{LiveFormat, LiveFrame, LivePlayer, SoundCodec, Track},
+    live::{LiveFormat, LiveFrame, LivePlayer, SoundCodec, Track, VideoCodec},
     record::{Live, RecordOptions, Recorder},
 };
 use std::{
@@ -134,6 +134,7 @@ fn sink(player: Arc<LivePlayer>, arrived: Arc<Mutex<Arrived>>, started: Instant)
                 eprintln!("push: {e:#}");
             }
         }),
+        video: VideoCodec::H264,
         sound: SoundCodec::Pcm,
         size: None,
         bitrate: None,
@@ -151,6 +152,7 @@ fn a_live_recording_plays_as_it_is_recorded() {
         width,
         height,
         fps,
+        video: VideoCodec::H264,
         sound: Some(SoundCodec::Pcm),
     };
     let failures = Arc::new(Mutex::new(Vec::new()));
@@ -257,6 +259,7 @@ fn the_player_follows_the_stream_to_a_new_picture_size() {
         width: 1280,
         height: 720,
         fps,
+        video: VideoCodec::H264,
         sound: None,
     };
     let player = Arc::new(LivePlayer::new(format, |_| {}).unwrap_or_else(|e| panic!("{e:#}")));
@@ -279,6 +282,7 @@ fn the_player_follows_the_stream_to_a_new_picture_size() {
                 };
                 to.push(frame).unwrap();
             }),
+            video: VideoCodec::H264,
             sound: SoundCodec::Pcm,
             size: Some(size),
             bitrate: None,
@@ -299,8 +303,9 @@ fn the_player_follows_the_stream_to_a_new_picture_size() {
 
 /// What live pictures look like at each of the spike's qualities, for a
 /// person to judge: the rightmost monitor as captured, then sent at 1080p,
-/// 1440p and 4K through the encoder and the player, each saved as a PNG in
-/// the folder `LIVE_COMPARE` names.
+/// 1440p and 4K through the encoder and the player, in H.264 and in HEVC if
+/// this PC decodes it, each saved as a PNG in the folder `LIVE_COMPARE`
+/// names.
 #[test]
 #[ignore = "records the screen and saves pictures of it: run by hand"]
 fn live_pictures_at_each_quality_can_be_compared() {
@@ -327,12 +332,20 @@ fn live_pictures_at_each_quality_can_be_compared() {
         ("1440p", (2560, 1440), 18_000_000),
         ("4k", (3840, 2160), 35_000_000),
     ] {
-        let (pictures, bytes) = live_picture(monitor.id, (width, height), size, bitrate)
-            .save(&folder.join(format!("{name}.png")));
-        println!(
-            "{name}: {pictures} pictures in 3 s, {:.1} Mbit/s",
-            bytes as f64 * 8.0 / 3.0 / 1e6
-        );
+        for codec in [VideoCodec::H264, VideoCodec::Hevc] {
+            if !LivePlayer::decodes(codec) {
+                println!("this PC cannot decode {codec:?}");
+                continue;
+            }
+            let name = format!("{name}-{codec:?}").to_lowercase();
+            let (pictures, bytes) =
+                live_picture(monitor.id, (width, height), (size, bitrate), codec)
+                    .save(&folder.join(format!("{name}.png")));
+            println!(
+                "{name}: {pictures} pictures in 3 s, {:.1} Mbit/s",
+                bytes as f64 * 8.0 / 3.0 / 1e6
+            );
+        }
     }
 }
 
@@ -344,13 +357,13 @@ struct Drawn {
     bytes: usize,
 }
 
-/// `monitor`, `region` in size, sent live at `size` and `bitrate` for three
-/// seconds: the last picture the player has.
+/// `monitor`, `region` in size, sent live at `size` and `bitrate` as `codec`
+/// for three seconds: the last picture the player has.
 fn live_picture(
     monitor: shuttercrab_capture::MonitorId,
     region: (u32, u32),
-    size: (u32, u32),
-    bitrate: u32,
+    (size, bitrate): ((u32, u32), u32),
+    codec: VideoCodec,
 ) -> Drawn {
     let fps = 60;
     let mut options = options(region.0, region.1, fps);
@@ -361,6 +374,7 @@ fn live_picture(
         width: size.0,
         height: size.1,
         fps,
+        video: codec,
         sound: None,
     };
     let player = Arc::new(LivePlayer::new(format, |_| {}).unwrap());
@@ -375,6 +389,7 @@ fn live_picture(
             }
             to.push(frame).unwrap();
         }),
+        video: codec,
         sound: SoundCodec::Pcm,
         size: Some(size),
         bitrate: Some(bitrate),

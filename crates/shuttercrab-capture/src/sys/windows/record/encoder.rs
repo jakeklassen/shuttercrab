@@ -8,7 +8,7 @@
 
 use super::{live_sink, sound};
 use crate::{
-    live::{LiveFrame, SoundCodec, Track},
+    live::{LiveFrame, SoundCodec, Track, VideoCodec},
     record::{Live, LiveSink},
     sys::imp::gpu::Gpu,
 };
@@ -30,7 +30,8 @@ use windows::{
 };
 
 /// RGBA → NV12 (BT.709, studio range) with the Direct3D video processor,
-/// into a small pool of textures the encoder reads.
+/// into a small pool of textures the encoder reads; P010, the same in 10
+/// bits, for HEVC.
 pub(super) struct Nv12 {
     video: ID3D11VideoContext1,
     processor: ID3D11VideoProcessor,
@@ -48,11 +49,60 @@ struct Slot {
     release: IMFAsyncCallback,
 }
 
+impl Slot {
+    /// A `w`×`h` texture of `format` the video processor writes into.
+    fn new(
+        gpu: &Gpu,
+        device: &ID3D11VideoDevice,
+        enumerator: &ID3D11VideoProcessorEnumerator,
+        (w, h): (u32, u32),
+        format: DXGI_FORMAT,
+    ) -> Result<Self> {
+        let texture = gpu.texture(
+            w,
+            h,
+            format,
+            D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+            None,
+        )?;
+        let mut view = None;
+        unsafe {
+            device.CreateVideoProcessorOutputView(
+                &texture,
+                enumerator,
+                &D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
+                    ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
+                    Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
+                        Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
+                    },
+                },
+                Some(&mut view),
+            )?;
+        }
+        let busy = Arc::new(AtomicUsize::new(0));
+        Ok(Self {
+            texture,
+            view: view.context("no output view")?,
+            release: Released(busy.clone()).into(),
+            busy,
+        })
+    }
+}
+
 /// How many frames can be with the encoder at once.
 const SLOTS: usize = 4;
 
 impl Nv12 {
-    pub(super) fn new(gpu: &Gpu, rgba: &ID3D11Texture2D, w: u32, h: u32, fps: u32) -> Result<Self> {
+    pub(super) fn new(
+        gpu: &Gpu,
+        rgba: &ID3D11Texture2D,
+        (w, h, fps): (u32, u32, u32),
+        codec: VideoCodec,
+    ) -> Result<Self> {
+        let format = match codec {
+            VideoCodec::H264 => DXGI_FORMAT_NV12,
+            VideoCodec::Hevc => DXGI_FORMAT_P010,
+        };
         let device: ID3D11VideoDevice = gpu.device.cast().context("no video device")?;
         let video: ID3D11VideoContext1 = gpu.context.cast().context("no video context")?;
         let content = D3D11_VIDEO_PROCESSOR_CONTENT_DESC {
@@ -78,6 +128,11 @@ impl Nv12 {
                 support & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_INPUT.0 as u32 != 0,
                 "the video processor cannot read RGBA"
             );
+            let support = enumerator.CheckVideoProcessorFormat(format)?;
+            ensure!(
+                support & D3D11_VIDEO_PROCESSOR_FORMAT_SUPPORT_OUTPUT.0 as u32 != 0,
+                "the video processor cannot write {format:?}"
+            );
             let processor = device.CreateVideoProcessor(&enumerator, 0)?;
             let mut input = None;
             device.CreateVideoProcessorInputView(
@@ -95,35 +150,9 @@ impl Nv12 {
                 },
                 Some(&mut input),
             )?;
-            let mut slots = Vec::with_capacity(SLOTS);
-            for _ in 0..SLOTS {
-                let texture = gpu.texture(
-                    w,
-                    h,
-                    DXGI_FORMAT_NV12,
-                    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
-                    None,
-                )?;
-                let mut view = None;
-                device.CreateVideoProcessorOutputView(
-                    &texture,
-                    &enumerator,
-                    &D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC {
-                        ViewDimension: D3D11_VPOV_DIMENSION_TEXTURE2D,
-                        Anonymous: D3D11_VIDEO_PROCESSOR_OUTPUT_VIEW_DESC_0 {
-                            Texture2D: D3D11_TEX2D_VPOV { MipSlice: 0 },
-                        },
-                    },
-                    Some(&mut view),
-                )?;
-                let busy = Arc::new(AtomicUsize::new(0));
-                slots.push(Slot {
-                    texture,
-                    view: view.context("no output view")?,
-                    release: Released(busy.clone()).into(),
-                    busy,
-                });
-            }
+            let slots = (0..SLOTS)
+                .map(|_| Slot::new(gpu, &device, &enumerator, (w, h), format))
+                .collect::<Result<_>>()?;
             video.VideoProcessorSetStreamColorSpace1(
                 &processor,
                 0,
@@ -294,9 +323,11 @@ impl Mp4Writer {
                 Some(bitrate) => u64::from(bitrate),
                 None => ((w as u64 * h as u64 * fps as u64) / 10).clamp(2_000_000, 80_000_000),
             };
-            let video = video_type(&MFVideoFormat_H264, w, h, fps)?;
+            // A file is always H.264, which every player plays.
+            let (coded, profile, raw) = codec_types(live.as_ref().map(|l| l.video));
+            let video = video_type(&coded, w, h, fps)?;
             video.SetUINT32(&MF_MT_AVG_BITRATE, bitrate as u32)?;
-            video.SetUINT32(&MF_MT_MPEG2_PROFILE, eAVEncH264VProfile_High.0 as u32)?;
+            video.SetUINT32(&MF_MT_MPEG2_PROFILE, profile as u32)?;
             if streaming {
                 // A key frame a second: where someone who starts watching
                 // late can start.
@@ -335,10 +366,10 @@ impl Mp4Writer {
             } else {
                 writer.AddStream(&video)?
             };
-            let input = video_type(&MFVideoFormat_NV12, w, h, fps)?;
+            let input = video_type(&raw, w, h, fps)?;
             writer
                 .SetInputMediaType(stream, &input, None)
-                .context("the encoder does not take NV12 at this size")?;
+                .context("the encoder does not take these pictures at this size")?;
             if streaming && let Err(e) = spend_bitrate(&writer, stream, bitrate as u32) {
                 log::warn!("the live encoder keeps its own bit rate: {e:#}");
             }
@@ -487,6 +518,23 @@ fn sound_type(subtype: &windows::core::GUID) -> Result<IMFMediaType> {
     }
 }
 
+/// For pictures coded as `codec` (H.264 if none): their subtype, profile,
+/// and the subtype the encoder takes.
+fn codec_types(codec: Option<VideoCodec>) -> (windows::core::GUID, i32, windows::core::GUID) {
+    match codec {
+        Some(VideoCodec::Hevc) => (
+            MFVideoFormat_HEVC,
+            eAVEncH265VProfile_Main_420_10.0,
+            MFVideoFormat_P010,
+        ),
+        _ => (
+            MFVideoFormat_H264,
+            eAVEncH264VProfile_High.0,
+            MFVideoFormat_NV12,
+        ),
+    }
+}
+
 fn video_type(subtype: &windows::core::GUID, w: u32, h: u32, fps: u32) -> Result<IMFMediaType> {
     unsafe {
         let t = MFCreateMediaType()?;
@@ -533,10 +581,11 @@ mod tests {
         rgba: ID3D11Texture2D,
         nv12: Nv12,
         size: (u32, u32, u32),
+        codec: VideoCodec,
     }
 
     impl Pictures {
-        fn new(w: u32, h: u32, fps: u32) -> Self {
+        fn new(w: u32, h: u32, fps: u32, codec: VideoCodec) -> Self {
             unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.unwrap();
             let gpu = Gpu::video(None).unwrap();
             let rgba = gpu
@@ -548,12 +597,13 @@ mod tests {
                     None,
                 )
                 .unwrap();
-            let nv12 = Nv12::new(&gpu, &rgba, w, h, fps).unwrap();
+            let nv12 = Nv12::new(&gpu, &rgba, (w, h, fps), codec).unwrap();
             Self {
                 gpu,
                 rgba,
                 nv12,
                 size: (w, h, fps),
+                codec,
             }
         }
 
@@ -568,6 +618,7 @@ mod tests {
                 true,
                 Some(Live {
                     sink,
+                    video: self.codec,
                     sound,
                     size: None,
                     bitrate: None,
@@ -652,7 +703,7 @@ mod tests {
     #[ignore = "measures the live path in real time: run by hand"]
     fn live_frames_come_out_soon_after_they_go_in() {
         let (w, fps) = (1280u32, 60u32);
-        let pictures = Pictures::new(w, 720, fps);
+        let pictures = Pictures::new(w, 720, fps, VideoCodec::H264);
         let out = Arc::new(Mutex::new(Vec::<(Instant, LiveFrame)>::new()));
         let sink = out.clone();
         let mut writer = pictures.writer(
@@ -793,25 +844,33 @@ mod tests {
     #[test]
     #[ignore = "measures the live path in real time: run by hand"]
     fn the_live_player_shows_pictures_soon_after_they_go_in_with_aac() {
-        show_numbered(SoundCodec::Aac);
+        show_numbered(SoundCodec::Aac, VideoCodec::H264);
     }
 
     /// The same with the sound sent as PCM.
     #[test]
     #[ignore = "measures the live path in real time: run by hand"]
     fn the_live_player_shows_pictures_soon_after_they_go_in_with_pcm() {
-        show_numbered(SoundCodec::Pcm);
+        show_numbered(SoundCodec::Pcm, VideoCodec::H264);
     }
 
-    fn show_numbered(sound: SoundCodec) {
+    /// The same with the pictures sent as HEVC, in 10 bits.
+    #[test]
+    #[ignore = "measures the live path in real time: run by hand"]
+    fn the_live_player_shows_pictures_soon_after_they_go_in_with_hevc() {
+        show_numbered(SoundCodec::Pcm, VideoCodec::Hevc);
+    }
+
+    fn show_numbered(sound: SoundCodec, codec: VideoCodec) {
         let (w, h, fps) = (1280u32, 720u32, 60u32);
-        let pictures = Pictures::new(w, h, fps);
+        let pictures = Pictures::new(w, h, fps, codec);
         let player = Arc::new(
             LivePlayer::new(
                 LiveFormat {
                     width: w,
                     height: h,
                     fps,
+                    video: codec,
                     sound: Some(sound),
                 },
                 |why| eprintln!("the sound failed: {why}"),

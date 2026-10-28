@@ -208,7 +208,12 @@ impl StreamSink_Impl {
         }
     }
 
-    /// The SPS and PPS in Annex B, as the encoder's output type has them.
+    /// Whether the pictures are HEVC rather than H.264.
+    fn hevc(&self) -> bool {
+        unsafe { self.media_type().GetGUID(&MF_MT_SUBTYPE) }.ok() == Some(MFVideoFormat_HEVC)
+    }
+
+    /// The parameter sets in Annex B, as the encoder's output type has them.
     fn parameter_sets(&self) -> Vec<u8> {
         let media_type = self.media_type();
         unsafe {
@@ -235,7 +240,7 @@ impl StreamSink_Impl {
             buffer.Unlock()?;
             let key = sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
             let data = match self.track {
-                Track::Video if key && !has_sps(&bytes) => {
+                Track::Video if key && !has_sps(&bytes, self.hevc()) => {
                     let mut with = self.parameter_sets();
                     with.extend_from_slice(&bytes);
                     with
@@ -254,11 +259,17 @@ impl StreamSink_Impl {
     }
 }
 
-/// Whether Annex B `bytes` carry a sequence parameter set.
-fn has_sps(bytes: &[u8]) -> bool {
-    bytes
-        .windows(4)
-        .any(|w| w[..3] == [0, 0, 1] && w[3] & 0x1F == 7)
+/// Whether Annex B `bytes` carry the parameter sets: H.264's sequence
+/// parameter set, or with `hevc` the video parameter set that leads HEVC's.
+fn has_sps(bytes: &[u8], hevc: bool) -> bool {
+    bytes.windows(4).any(|w| {
+        w[..3] == [0, 0, 1]
+            && if hevc {
+                (w[3] >> 1) & 0x3F == 32
+            } else {
+                w[3] & 0x1F == 7
+            }
+    })
 }
 
 impl IMFMediaEventGenerator_Impl for StreamSink_Impl {
