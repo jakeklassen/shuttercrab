@@ -180,6 +180,53 @@ impl Nv12 {
     }
 }
 
+/// Have the encoder of `stream` spend `bitrate` (constant bit rate), not
+/// just aim at it: left to choose, it gave a talking head a third of it,
+/// and it showed. Logs what the encoder says it does.
+fn spend_bitrate(writer: &IMFSinkWriter, stream: u32, bitrate: u32) -> Result<()> {
+    let writer: IMFSinkWriterEx = writer.cast()?;
+    for index in 0.. {
+        let mut transform = None;
+        unsafe { writer.GetTransformForStream(stream, index, None, &mut transform) }
+            .context("no encoder that takes settings")?;
+        let Some(codec) = transform.and_then(|t| t.cast::<ICodecAPI>().ok()) else {
+            continue;
+        };
+        unsafe {
+            codec.SetValue(
+                &CODECAPI_AVEncCommonRateControlMode,
+                &u32_variant(eAVEncCommonRateControlMode_CBR.0 as u32),
+            )?;
+            codec.SetValue(&CODECAPI_AVEncCommonMeanBitRate, &u32_variant(bitrate))?;
+            let read = |api| -> Result<u32> {
+                let value = codec.GetValue(api)?;
+                Ok(value.Anonymous.Anonymous.Anonymous.ulVal)
+            };
+            log::info!(
+                "live encoder: rate control {} (0 is constant), {:.1} Mbit/s",
+                read(&CODECAPI_AVEncCommonRateControlMode)?,
+                f64::from(read(&CODECAPI_AVEncCommonMeanBitRate)?) / 1e6
+            );
+        }
+        return Ok(());
+    }
+    unreachable!()
+}
+
+/// A VT_UI4 variant, which holds its value in `ulVal`.
+fn u32_variant(value: u32) -> windows::Win32::System::Variant::VARIANT {
+    use windows::Win32::System::Variant::*;
+    VARIANT {
+        Anonymous: VARIANT_0 {
+            Anonymous: std::mem::ManuallyDrop::new(VARIANT_0_0 {
+                vt: VT_UI4,
+                Anonymous: VARIANT_0_0_0 { ulVal: value },
+                ..Default::default()
+            }),
+        },
+    }
+}
+
 /// Counts a use of a slot off when Media Foundation releases its sample.
 #[implement(IMFAsyncCallback)]
 struct Released(Arc<AtomicUsize>);
@@ -300,6 +347,9 @@ impl Mp4Writer {
             writer
                 .SetInputMediaType(stream, &input, None)
                 .context("the encoder does not take NV12 at this size")?;
+            if streaming && let Err(e) = spend_bitrate(&writer, stream, bitrate as u32) {
+                log::warn!("the live encoder keeps its own bit rate: {e:#}");
+            }
             let sound = if let Some(aac) = aac {
                 let stream = if streaming {
                     1
