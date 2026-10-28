@@ -40,11 +40,14 @@ type Server = v.InferInput<typeof ServerMessage>;
  */
 type State = { host: boolean; addresses: string[]; seen: string; refused?: [number, string] };
 
-/** Whether `given` is the host key, taking the same time either way. */
+/**
+ * Whether `given` is the host key, taking the same time either way. The
+ * stored key may end in the newline it was piped in with.
+ */
 async function isHostKey(given: string): Promise<boolean> {
   const digest = async (text: string) =>
     crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  const [a, b] = await Promise.all([digest(given), digest(env.HOST_KEY)]);
+  const [a, b] = await Promise.all([digest(given), digest(env.HOST_KEY.trim())]);
   return crypto.subtle.timingSafeEqual(a, b);
 }
 
