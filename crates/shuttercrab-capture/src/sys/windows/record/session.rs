@@ -190,21 +190,12 @@ impl Session {
         let (w, h) = (region.width, region.height);
         let [crop, sdr, rgba] = work_textures(&gpu, w, h)?;
         let converter = VideoConverter::new(&gpu, &crop, &sdr, ANALYSE_EVERY)?;
-        let nv12 = Nv12::new(&gpu, &rgba, w, h, options.fps)?;
-        let hardware = w.min(h) >= HARDWARE_MIN_SIDE;
         let sound_lag = if live.is_some() {
             LIVE_SOUND_LAG
         } else {
             SOUND_LAG
         };
-        let writer = Mp4Writer::new(
-            &gpu,
-            &options.path,
-            (w, h, options.fps),
-            hardware,
-            options.has_sound(),
-            live,
-        )?;
+        let (nv12, writer) = encoder(&gpu, &rgba, (w, h), options, live)?;
 
         let window = match target.window {
             Some(hwnd) => Some(WindowTarget {
@@ -749,6 +740,28 @@ impl Drop for Session {
     fn drop(&mut self) {
         self.stop_capture();
     }
+}
+
+/// The NV12 conversion of `rgba`, `(w, h)`, and the writer that encodes
+/// it: at its size, or the smaller one a live recording asks for.
+fn encoder(
+    gpu: &Gpu,
+    rgba: &ID3D11Texture2D,
+    (w, h): (u32, u32),
+    options: &RecordOptions,
+    live: Option<Live>,
+) -> Result<(Nv12, Mp4Writer)> {
+    let (out_w, out_h) = live.as_ref().and_then(|l| l.size).unwrap_or((w, h));
+    let nv12 = Nv12::new(gpu, rgba, (w, h), (out_w, out_h), options.fps)?;
+    let writer = Mp4Writer::new(
+        gpu,
+        &options.path,
+        (out_w, out_h, options.fps),
+        out_w.min(out_h) >= HARDWARE_MIN_SIDE,
+        options.has_sound(),
+        live,
+    )?;
+    Ok((nv12, writer))
 }
 
 /// A frame's working textures, `w`×`h`: the crop (FP16, as captured), the

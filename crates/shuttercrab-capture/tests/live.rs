@@ -135,6 +135,8 @@ fn sink(player: Arc<LivePlayer>, arrived: Arc<Mutex<Arrived>>, started: Instant)
             }
         }),
         sound: SoundCodec::Pcm,
+        size: None,
+        bitrate: None,
     }
 }
 
@@ -207,4 +209,90 @@ fn a_live_recording_plays_as_it_is_recorded() {
     // first key frame.
     assert!(arrived.keys >= 1);
     assert!(drawn > 0, "the player drew nothing");
+}
+
+/// Draw into a texture of the player's size, following it as it changes,
+/// until `done`: how many pictures were drawn at each size.
+fn draw_following(player: &LivePlayer, done: &AtomicBool) -> Vec<((u32, u32), u32)> {
+    let device = player.device();
+    let context = unsafe { device.GetImmediateContext() }.unwrap();
+    let gpu = Gpu::from_device(device, context).unwrap();
+    let mut drawn: Vec<((u32, u32), u32)> = Vec::new();
+    let mut target = None;
+    while !done.load(Ordering::Relaxed) {
+        let size = player.size();
+        if target.as_ref().is_none_or(|(s, _)| *s != size) {
+            let texture = gpu
+                .texture(
+                    size.0,
+                    size.1,
+                    DXGI_FORMAT_B8G8R8A8_UNORM,
+                    D3D11_BIND_RENDER_TARGET | D3D11_BIND_SHADER_RESOURCE,
+                    None,
+                )
+                .unwrap();
+            target = Some((size, texture));
+        }
+        let (size, texture) = target.as_ref().unwrap();
+        if player.draw(texture).unwrap() {
+            match drawn.last_mut() {
+                Some((s, n)) if s == size => *n += 1,
+                _ => drawn.push((*size, 1)),
+            }
+        } else {
+            std::thread::sleep(Duration::from_millis(1));
+        }
+    }
+    drawn
+}
+
+#[test]
+#[ignore = "records the screen and plays it: run by hand"]
+fn the_player_follows_the_stream_to_a_new_picture_size() {
+    let fps = 30;
+    let mut options = options(1280, 720, fps);
+    options.system_sound = false;
+    options.sound_track = false;
+    let format = LiveFormat {
+        width: 1280,
+        height: 720,
+        fps,
+        sound: None,
+    };
+    let player = Arc::new(LivePlayer::new(format, |_| {}).unwrap_or_else(|e| panic!("{e:#}")));
+    let done = Arc::new(AtomicBool::new(false));
+    let drawing = {
+        let (player, done) = (player.clone(), done.clone());
+        std::thread::spawn(move || draw_following(&player, &done))
+    };
+    // As the spike's sender does: each recorder's timeline moved on to
+    // where the stream has got to.
+    let started = Instant::now();
+    for size in [(1280, 720), (640, 360)] {
+        let offset = (started.elapsed().as_nanos() / 100) as i64;
+        let to = player.clone();
+        let live = Live {
+            sink: Arc::new(move |frame: LiveFrame| {
+                let frame = LiveFrame {
+                    time: frame.time + offset,
+                    ..frame
+                };
+                to.push(frame).unwrap();
+            }),
+            sound: SoundCodec::Pcm,
+            size: Some(size),
+            bitrate: None,
+        };
+        let recorder = Recorder::start_live(options.clone(), live).unwrap();
+        std::thread::sleep(Duration::from_millis(1500));
+        recorder.stop().unwrap();
+    }
+    std::thread::sleep(Duration::from_millis(300));
+    done.store(true, Ordering::Relaxed);
+    let drawn = drawing.join().unwrap();
+    println!("pictures drawn at each size: {drawn:?}");
+    let sizes: Vec<_> = drawn.iter().map(|(s, _)| *s).collect();
+    assert_eq!(sizes, [(1280, 720), (640, 360)]);
+    // A still screen sends a picture a second; a moving one more.
+    assert!(drawn.iter().all(|(_, n)| *n >= 1), "{drawn:?}");
 }
