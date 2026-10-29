@@ -6,8 +6,8 @@
 // encrypted, and the key that proves who is streaming stays in the link,
 // never sent to this Worker. No app is told another's own address.
 //
-// The one streaming opens the room with the host key (only the owner's
-// apps have it); anyone else may join a room that is open.
+// The one streaming opens the room with a host key (each person allowed
+// to stream has their own); anyone else may join a room that is open.
 import * as v from 'valibot';
 import { defineRoom } from 'void/ws';
 import { env } from 'void/env';
@@ -60,14 +60,31 @@ const RELAY_TTL = 12 * 60 * 60;
 const TURN_API = 'https://rtc.live.cloudflare.com/v1/turn/keys';
 
 /**
- * Whether `given` is the host key, taking the same time either way. The
- * stored key may end in the newline it was piped in with.
+ * The host keys: each line or comma-separated entry of `HOST_KEYS`, as
+ * `name:key` or a bare key, and `HOST_KEY`. Blank entries are skipped, and
+ * the stored text may end in the newline it was piped in with.
+ */
+function hostKeys(): string[] {
+  const entries = (env.HOST_KEYS ?? '').split(/[\n,]/).map((entry) => {
+    const colon = entry.indexOf(':');
+    return (colon >= 0 ? entry.slice(colon + 1) : entry).trim();
+  });
+  return [...entries, env.HOST_KEY?.trim() ?? ''].filter((key) => key.length > 0);
+}
+
+/**
+ * Whether `given` is one of the host keys, comparing it with every one, so
+ * it takes the same time whichever matches.
  */
 async function isHostKey(given: string): Promise<boolean> {
   const digest = async (text: string) =>
     crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  const [a, b] = await Promise.all([digest(given), digest(env.HOST_KEY.trim())]);
-  return crypto.subtle.timingSafeEqual(a, b);
+  const theirs = await digest(given);
+  let found = false;
+  for (const key of hostKeys()) {
+    found = crypto.subtle.timingSafeEqual(theirs, await digest(key)) || found;
+  }
+  return found;
 }
 
 /** The TURN key's ID and token, if the room has them. */
