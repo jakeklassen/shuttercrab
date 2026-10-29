@@ -302,9 +302,11 @@ impl Drop for Connection {
         self.connection.close(0u32.into(), b"done");
         // Give the close a moment to go out, so the other app hears of it
         // now rather than when the connection times out.
-        let _ = self
-            .runtime
-            .block_on(tokio::time::timeout(CLOSING, self.endpoint.wait_idle()));
+        // The timer is made inside the runtime, which it needs.
+        let endpoint = &self.endpoint;
+        let _ = self.runtime.block_on(async {
+            tokio::time::timeout(CLOSING, endpoint.wait_idle()).await
+        });
     }
 }
 
