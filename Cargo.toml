@@ -5,6 +5,7 @@ members = [
   "crates/shuttercrab-capture",
   "crates/shuttercrab-connect",
   "crates/shuttercrab-platform",
+  "crates/shuttercrab-stream",
   "crates/shuttercrab-types",
 ]
 exclude = ["vendor"]

@@ -10,7 +10,7 @@ license.workspace = true
 [dependencies]
 anyhow = "1"
 shuttercrab-capture = { path = "../shuttercrab-capture" }
-shuttercrab-connect = { path = "../shuttercrab-connect" }
+shuttercrab-stream = { path = "../shuttercrab-stream" }
 shuttercrab-platform = { path = "../shuttercrab-platform" }
 futures = "0.3"
 half = "2.7"
