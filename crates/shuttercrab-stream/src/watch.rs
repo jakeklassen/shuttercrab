@@ -9,7 +9,7 @@ use std::{
     io::{BufReader, Read, Write},
     net::{Shutdown, TcpStream},
     sync::{
-        Arc,
+        Arc, Mutex, PoisonError,
         atomic::{AtomicBool, AtomicU64, Ordering},
         mpsc,
     },
@@ -20,7 +20,19 @@ use windows::{
     Win32::{
         Foundation::{COLORREF, HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
         Graphics::{
-            Direct3D11::{ID3D11Device, ID3D11Texture2D},
+            Direct2D::{
+                Common::{D2D_RECT_F, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT},
+                D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
+                D2D1_RENDER_TARGET_PROPERTIES, D2D1CreateFactory, ID2D1Factory,
+            },
+            Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11Texture2D},
+            DirectWrite::{
+                DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
+                DWRITE_PARAGRAPH_ALIGNMENT, DWRITE_PARAGRAPH_ALIGNMENT_FAR,
+                DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWriteCreateFactory,
+                IDWriteFactory, IDWriteTextFormat,
+            },
             Dxgi::{
                 Common::{
                     DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
@@ -28,7 +40,7 @@ use windows::{
                 },
                 DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
                 DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice,
-                IDXGIFactory2, IDXGISwapChain1,
+                IDXGIFactory2, IDXGISurface, IDXGISwapChain1,
             },
             Gdi::{
                 BLACK_BRUSH, BeginPaint, CLEARTYPE_QUALITY, CLIP_DEFAULT_PRECIS, CreateFontW,
@@ -59,6 +71,9 @@ use windows::{
 
 /// The stream ended.
 const WM_ENDED: u32 = WM_APP;
+
+/// How long a window whose stream has ended stays open, saying so.
+const CLOSE_AFTER_ENDED: Duration = Duration::from_secs(10);
 
 /// The stream was joined, or could not be: posted by the joining thread.
 const WM_JOINED: u32 = WM_APP + 1;
@@ -232,7 +247,12 @@ struct Window {
     stop: Arc<AtomicBool>,
     last: (Instant, u64, u64),
     muted: bool,
-    ended: bool,
+    /// What to draw over the pictures instead of them, if anything: a
+    /// headline and a line below it.
+    over: Over,
+    /// When the stream ended, if it has: the window closes
+    /// [`CLOSE_AFTER_ENDED`] later.
+    ended: Option<Instant>,
     title: String,
     /// The connection to the stream, if it is online.
     connection: Option<Connection>,
@@ -353,11 +373,14 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
         Arc::new(AtomicU64::new(0)),
         Arc::new(AtomicBool::new(false)),
     );
+    let over = Over::default();
     let drawing = {
-        let (player, drawn, stop) = (player.clone(), drawn.clone(), stop.clone());
+        let (player, drawn, stop, over) =
+            (player.clone(), drawn.clone(), stop.clone(), over.clone());
         std::thread::spawn(move || {
             let hwnd = HWND(window as *mut _);
-            if let Err(e) = draw(&player, hwnd, (format.width, format.height), &drawn, &stop)
+            let size = (format.width, format.height);
+            if let Err(e) = draw(&player, hwnd, size, (&drawn, &stop), &over)
                 && !stop.load(Ordering::Relaxed)
             {
                 log::error!("drawing stopped: {e:#}");
@@ -373,7 +396,8 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
             stop: stop.clone(),
             last: (Instant::now(), 0, 0),
             muted: options.muted,
-            ended: false,
+            over: over.clone(),
+            ended: None,
             title: options.title.clone(),
             connection,
         });
@@ -509,7 +533,10 @@ fn read_frames(mut reader: impl Read, player: &LivePlayer, bytes: &AtomicU64) {
                     log::warn!("{e:#}");
                 }
             }
-            Ok(None) => break,
+            Ok(None) => {
+                log::info!("the stream ended");
+                break;
+            }
             Err(e) => {
                 log::warn!("the stream broke: {e:#}");
                 break;
@@ -519,18 +546,21 @@ fn read_frames(mut reader: impl Read, player: &LivePlayer, bytes: &AtomicU64) {
 }
 
 /// Draw each picture as it falls due, once a refresh of the display the
-/// window is on, until `stop`.
+/// window is on, until `stop`; or what is `over` them, once there is
+/// something.
 fn draw(
     player: &LivePlayer,
     hwnd: HWND,
     (width, height): (u32, u32),
-    drawn: &AtomicU64,
-    stop: &AtomicBool,
+    (drawn, stop): (&AtomicU64, &AtomicBool),
+    over: &Mutex<Option<(String, String)>>,
 ) -> Result<()> {
     let swap_chain = swap_chain(&player.device(), hwnd, width, height)?;
     let mut size = (width, height);
     let mut output = None;
     let mut refreshes = 0u32;
+    // Made the first time there is a notice, and the notice last drawn.
+    let (mut notices, mut shown) = (None, None);
     while !stop.load(Ordering::Relaxed) {
         // The window may have moved to another display: look again now
         // and then.
@@ -552,6 +582,21 @@ fn draw(
             size = now;
         }
         let back: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
+        // Drawn into the frames rather than painted on the window: once a
+        // window has shown pictures, what it paints stays behind the last.
+        let notice = lock(over).clone();
+        if let Some(notice) = notice {
+            if shown.as_ref() != Some(&notice) {
+                let notices = match &mut notices {
+                    Some(notices) => notices,
+                    None => notices.insert(Notices::new()?),
+                };
+                notices.draw(&back, &notice)?;
+                unsafe { swap_chain.Present(0, DXGI_PRESENT(0)) }.ok()?;
+                shown = Some(notice);
+            }
+            continue;
+        }
         if player.draw(&back)? {
             // Just after a refresh: shown at the next.
             unsafe { swap_chain.Present(0, DXGI_PRESENT(0)) }.ok()?;
@@ -559,6 +604,114 @@ fn draw(
         }
     }
     Ok(())
+}
+
+/// What to draw over the pictures instead of them, if anything: a headline
+/// and a line below it. Set by the window, drawn by the drawing thread.
+type Over = Arc<Mutex<Option<(String, String)>>>;
+
+/// Draws a notice into a frame: white and grey on black, in the middle,
+/// sized to the frame, which the window stretches as it does the pictures.
+struct Notices {
+    d2d: ID2D1Factory,
+    write: IDWriteFactory,
+}
+
+impl Notices {
+    fn new() -> Result<Self> {
+        unsafe {
+            Ok(Self {
+                d2d: D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?,
+                write: DWriteCreateFactory(DWRITE_FACTORY_TYPE_SHARED)?,
+            })
+        }
+    }
+
+    /// Draw `headline` and `detail` into `frame`.
+    fn draw(&self, frame: &ID3D11Texture2D, (headline, detail): &(String, String)) -> Result<()> {
+        let surface: IDXGISurface = frame.cast()?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { frame.GetDesc(&mut desc) };
+        let (width, height) = (desc.Width as f32, desc.Height as f32);
+        let color = |grey: f32| D2D1_COLOR_F {
+            r: grey,
+            g: grey,
+            b: grey,
+            a: 1.0,
+        };
+        unsafe {
+            let target = self.d2d.CreateDxgiSurfaceRenderTarget(
+                &surface,
+                &D2D1_RENDER_TARGET_PROPERTIES {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    ..Default::default()
+                },
+            )?;
+            let (white, grey) = (
+                target.CreateSolidColorBrush(&color(0.94), None)?,
+                target.CreateSolidColorBrush(&color(0.63), None)?,
+            );
+            // As the window's own notice is, for a frame shown at about
+            // 1080 pixels high.
+            let scale = height / 1080.0;
+            let middle = height / 2.0;
+            let margin = width * 0.1;
+            target.BeginDraw();
+            target.Clear(Some(&color(0.0)));
+            target.DrawText(
+                &headline.encode_utf16().collect::<Vec<_>>(),
+                &self.format(40.0 * scale, DWRITE_PARAGRAPH_ALIGNMENT_FAR)?,
+                &D2D_RECT_F {
+                    left: margin,
+                    top: 0.0,
+                    right: width - margin,
+                    bottom: middle,
+                },
+                &white,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            target.DrawText(
+                &detail.encode_utf16().collect::<Vec<_>>(),
+                &self.format(22.0 * scale, DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?,
+                &D2D_RECT_F {
+                    left: margin,
+                    top: middle + 16.0 * scale,
+                    right: width - margin,
+                    bottom: height,
+                },
+                &grey,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            target.EndDraw(None, None)?;
+        }
+        Ok(())
+    }
+
+    /// Segoe UI `size` pixels high, centred, against the top or the bottom
+    /// of its box.
+    fn format(&self, size: f32, against: DWRITE_PARAGRAPH_ALIGNMENT) -> Result<IDWriteTextFormat> {
+        unsafe {
+            let format = self.write.CreateTextFormat(
+                w!("Segoe UI"),
+                None,
+                DWRITE_FONT_WEIGHT_NORMAL,
+                DWRITE_FONT_STYLE_NORMAL,
+                DWRITE_FONT_STRETCH_NORMAL,
+                size,
+                w!(""),
+            )?;
+            format.SetTextAlignment(DWRITE_TEXT_ALIGNMENT_CENTER)?;
+            format.SetParagraphAlignment(against)?;
+            Ok(format)
+        }
+    }
 }
 
 /// The window's style.
@@ -689,6 +842,26 @@ fn swap_chain(
 }
 
 impl Window {
+    /// The stream has ended: say so over the pictures, with the time left
+    /// before the window closes, or close it.
+    fn count_down(&self) -> After {
+        let ended = self.ended.map_or(Duration::ZERO, |at| at.elapsed());
+        let Some(left) = CLOSE_AFTER_ENDED
+            .checked_sub(ended)
+            .filter(|l| !l.is_zero())
+        else {
+            return After::Close;
+        };
+        *lock(&self.over) = Some((
+            "The stream has ended".into(),
+            format!(
+                "This window closes in {} s. Escape closes it now.",
+                left.as_secs_f64().ceil()
+            ),
+        ));
+        After::Title(format!("{} — the stream has ended", self.title))
+    }
+
     /// The window title with the latest numbers.
     fn status(&mut self) -> String {
         let (at, drawn, bytes) = self.last;
@@ -710,10 +883,9 @@ impl Window {
             )
         });
         let title = format!(
-            "{} — {}{}x{}, {:.0} fps, {:.1} Mbit/s; behind the newest picture: picture {} ms, \
+            "{} — {}x{}, {:.0} fps, {:.1} Mbit/s; behind the newest picture: picture {} ms, \
              {sound}; pictures lead by up to {} ms ([ ]){network}{}",
             self.title,
-            if self.ended { "ENDED — " } else { "" },
             self.player.size().0,
             self.player.size().1,
             (now - drawn) as f64 / seconds,
@@ -742,6 +914,7 @@ impl Window {
 /// messages straight back to `window_proc`.
 enum After {
     Title(String),
+    Close,
 }
 
 extern "system" fn window_proc(
@@ -761,10 +934,13 @@ extern "system" fn window_proc(
     let handled = WINDOW.with_borrow_mut(|window| {
         let window = window.as_mut()?;
         Some(match message {
+            WM_TIMER if window.ended.is_some() => window.count_down(),
             WM_TIMER => After::Title(window.status()),
             WM_ENDED => {
-                window.ended = true;
-                After::Title(window.status())
+                // The last picture would stay, as if the window had frozen:
+                // the notice takes its place.
+                window.ended.get_or_insert_with(Instant::now);
+                window.count_down()
             }
             WM_KEYDOWN if wparam.0 == usize::from(b'M') => {
                 window.muted = !window.muted;
@@ -785,8 +961,15 @@ extern "system" fn window_proc(
             _ => return None,
         })
     });
-    if let Some(After::Title(title)) = handled {
-        let _ = unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) };
+    if let Some(after) = handled {
+        match after {
+            After::Title(title) => {
+                let _ = unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) };
+            }
+            After::Close => {
+                let _ = unsafe { DestroyWindow(hwnd) };
+            }
+        }
         return LRESULT(0);
     }
     if message == WM_DESTROY {
@@ -794,4 +977,10 @@ extern "system" fn window_proc(
         return LRESULT(0);
     }
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+}
+
+/// `mutex`'s value, even if a thread panicked holding it: a notice is only
+/// text.
+fn lock<T>(mutex: &Mutex<T>) -> std::sync::MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
 }
