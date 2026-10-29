@@ -38,6 +38,8 @@ const WAIT_FOR_HOST: Duration = Duration::from_secs(10);
 const ROOM_ANSWERS: Duration = Duration::from_secs(5);
 /// How long a connection may take once both are in the room.
 const CONNECTING: Duration = Duration::from_secs(15);
+/// How long closing waits for the other app to be told.
+const CLOSING: Duration = Duration::from_millis(250);
 
 /// How the two apps reach each other.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -174,7 +176,7 @@ impl Hosting {
             runtime,
             connection,
             relayed,
-            _endpoint: endpoint,
+            endpoint,
             _room: self.room,
         })
     }
@@ -200,7 +202,7 @@ pub fn join(meet: &str, link: &Link, path: Path) -> Result<Connection> {
         runtime,
         connection,
         relayed,
-        _endpoint: endpoint,
+        endpoint,
         _room: room,
     })
 }
@@ -247,7 +249,7 @@ pub struct Connection {
     runtime: Arc<Runtime>,
     connection: quinn::Connection,
     relayed: bool,
-    _endpoint: quinn::Endpoint,
+    endpoint: quinn::Endpoint,
     /// Kept open while connected: leaving the room ends this app's relay
     /// login, and for the streaming app, the stream.
     _room: room::Room,
@@ -298,6 +300,11 @@ impl Connection {
 impl Drop for Connection {
     fn drop(&mut self) {
         self.connection.close(0u32.into(), b"done");
+        // Give the close a moment to go out, so the other app hears of it
+        // now rather than when the connection times out.
+        let _ = self
+            .runtime
+            .block_on(tokio::time::timeout(CLOSING, self.endpoint.wait_idle()));
     }
 }
 
@@ -327,13 +334,14 @@ pub struct Receiving {
 }
 
 impl Read for Receiving {
-    /// The end of the stream, too, when the other app closes the connection.
+    /// The end of the stream, too, when either app closes the connection.
     fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
         match self.runtime.block_on(self.stream.read(buffer)) {
             Ok(read) => Ok(read.unwrap_or(0)),
-            Err(quinn::ReadError::ConnectionLost(quinn::ConnectionError::ApplicationClosed(_))) => {
-                Ok(0)
-            }
+            Err(quinn::ReadError::ConnectionLost(
+                quinn::ConnectionError::ApplicationClosed(_)
+                | quinn::ConnectionError::LocallyClosed,
+            )) => Ok(0),
             Err(e) => Err(io::Error::other(e)),
         }
     }
