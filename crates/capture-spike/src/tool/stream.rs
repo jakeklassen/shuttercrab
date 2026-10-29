@@ -1,59 +1,25 @@
-//! Live streaming, spike S0 (issue #66): a recording sent over a local
-//! socket as it is recorded, and a window that plays it as it arrives.
-//! Both ends on one PC, to judge the picture, the sound and the delay
-//! before any of it goes over a network.
+//! Live streaming, spikes S0 and S1 (issue #66), from the terminal: a
+//! recording streamed as it is recorded, to a viewer on this PC or, through
+//! the meeting point, anywhere; and a window that plays it as it arrives.
+//! The work is in `shuttercrab-stream`; this reads the options and prints
+//! how it goes.
 
 use super::Args;
-use anyhow::{Context, Result, ensure};
+use anyhow::{Context, Result};
 use capture_spike::{analysis::Roi, display};
 use shuttercrab_capture::{
     MonitorId, PhysicalRect,
-    live::{self, LiveFormat, LiveFrame, LivePlayer, SoundCodec, Track, VideoCodec},
-    record::{Live, LiveSink, RecordOptions, Recorder},
+    live::{SoundCodec, VideoCodec},
+    record::RecordOptions,
 };
-use std::{
-    cell::RefCell,
-    io::{BufReader, BufWriter, Read, Write},
-    net::{Shutdown, TcpListener, TcpStream},
-    sync::{
-        Arc, Mutex,
-        atomic::{AtomicBool, AtomicU64, Ordering},
-    },
-    time::{Duration, Instant},
-};
-use windows::{
-    Win32::{
-        Foundation::{HWND, LPARAM, LRESULT, RECT, WPARAM},
-        Graphics::{
-            Direct3D11::{ID3D11Device, ID3D11Texture2D},
-            Dxgi::{
-                Common::{
-                    DXGI_ALPHA_MODE_IGNORE, DXGI_FORMAT_B8G8R8A8_UNORM, DXGI_FORMAT_UNKNOWN,
-                    DXGI_SAMPLE_DESC,
-                },
-                DXGI_PRESENT, DXGI_SCALING_STRETCH, DXGI_SWAP_CHAIN_DESC1,
-                DXGI_SWAP_EFFECT_FLIP_DISCARD, DXGI_USAGE_RENDER_TARGET_OUTPUT, IDXGIDevice,
-                IDXGIFactory2, IDXGISwapChain1,
-            },
-            Gdi::{GetMonitorInfoW, MONITORINFO},
-        },
-        System::LibraryLoader::GetModuleHandleW,
-        UI::{
-            HiDpi::AdjustWindowRectExForDpi,
-            Input::KeyboardAndMouse::{VK_ESCAPE, VK_OEM_4, VK_OEM_6},
-            WindowsAndMessaging::*,
-        },
-    },
-    core::{HSTRING, Interface, w},
-};
+use shuttercrab_stream::{Input, Link, Quality, Room, Stats, Stream, WatchOptions, describe};
+use std::time::{Duration, Instant};
 
 const DEFAULT_PORT: u16 = 47_100;
-/// The stream ended.
-const WM_ENDED: u32 = WM_APP;
 
-/// The recorder's and the player's log, on stderr: how late each source's
-/// sound arrived and how much came too late to mix; when the played sound
-/// ran dry or was cut.
+/// The recorder's, the player's and the connection's log, on stderr: how
+/// late each source's sound arrived and how much came too late to mix;
+/// when the played sound ran dry or was cut; who connected.
 struct Log;
 
 impl log::Log for Log {
@@ -70,14 +36,6 @@ impl log::Log for Log {
     fn flush(&self) {}
 }
 
-/// What has gone over the socket, for the status lines.
-#[derive(Default)]
-struct Sent {
-    pictures: u64,
-    sound: u64,
-    bytes: u64,
-}
-
 pub(super) fn send(mut args: Args) -> Result<()> {
     let monitor = args.option("--monitor")?;
     let region = args
@@ -89,11 +47,10 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         .map(|f| f.parse())
         .transpose()?
         .unwrap_or(60);
-    let quality = args
-        .option("--quality")?
-        .map(|q| Quality::parse(&q))
-        .transpose()?
-        .unwrap_or(Quality::P1440);
+    let quality = match args.option("--quality")? {
+        Some(q) => Quality::parse(&q).context("--quality takes 1080p, 1440p or 4k")?,
+        None => Quality::P1440,
+    };
     let system_sound = args.option("--sound")?.as_deref() == Some("on");
     let sound_process = args
         .option("--sound-of")?
@@ -129,115 +86,100 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         target.device_name,
         describe_sound(sound_process, system_sound, microphone)
     );
-    let (out, sound_out, connection, plays) = open_output(online, &meet, port)?;
-    let video = playable(video, plays);
-    let (w, h) = quality.size(width, height);
-    LiveFormat {
-        width: w,
-        height: h,
-        fps,
-        video,
-        sound: sound.then_some(codec),
-    }
-    .write_to(&mut *out.lock().unwrap())?;
-    out.lock().unwrap().flush()?;
-
-    let streaming = Streaming {
-        options: RecordOptions {
-            monitor: MonitorId::from_raw(target.hmonitor.0 as u64),
-            region: Some(PhysicalRect::new(
-                region.x as i32,
-                region.y as i32,
-                width,
-                height,
-            )),
-            window: None,
-            fps,
-            include_cursor: true,
-            system_sound: system_sound || sound_process.is_some(),
-            sound_process,
-            microphone,
-            microphone_device: None,
-            sound_track: sound,
-            path: "unused.mp4".into(),
-        },
-        video,
-        codec,
-        out,
-        sound_out,
-        gone: Arc::new(AtomicBool::new(false)),
-        sent: Arc::new(Mutex::new(Sent::default())),
-        started: Instant::now(),
+    let viewer = if online {
+        let room = Room::open(&meet.url, &host_key()?, meet.path)?;
+        println!(
+            "Share this link; whoever has it can watch:\n\n  {}\n\n\
+             Waiting for a viewer (capture-spike stream-watch --link LINK)...",
+            room.link()
+        );
+        room.accept()?
+    } else {
+        println!("Waiting for a viewer on 127.0.0.1:{port} (capture-spike stream-watch)...");
+        shuttercrab_stream::wait_locally(port)?
     };
+    let options = RecordOptions {
+        monitor: MonitorId::from_raw(target.hmonitor.0 as u64),
+        region: Some(PhysicalRect::new(
+            region.x as i32,
+            region.y as i32,
+            width,
+            height,
+        )),
+        window: None,
+        fps,
+        include_cursor: true,
+        system_sound: system_sound || sound_process.is_some(),
+        sound_process,
+        microphone,
+        microphone_device: None,
+        sound_track: sound,
+        path: "unused.mp4".into(),
+    };
+    let stream = Stream::start(options, viewer, quality, video, codec)?;
+    println!("Pictures as {}.", describe(stream.video()));
     println!(
         "Streaming. 1, 2 and 3 switch to {}, {} and {}; close the viewer, or Ctrl+C here, to stop.",
         Quality::P1080.name(),
         Quality::P1440.name(),
         Quality::P2160.name()
     );
-    streaming.run(quality, connection.as_ref())
+    run(stream)
 }
 
-/// A size to stream at, and the bit rate for it.
-#[derive(Clone, Copy, PartialEq, Eq)]
-enum Quality {
-    P1080,
-    P1440,
-    P2160,
+/// Stream until the viewer leaves, switching quality as keys in the
+/// terminal say, with a status line a second.
+fn run(mut stream: Stream) -> Result<()> {
+    let keys = keys();
+    let mut last = Instant::now();
+    while !stream.gone() {
+        let wait = Duration::from_secs(1).saturating_sub(last.elapsed());
+        if let Ok(key) = keys.recv_timeout(wait) {
+            let chosen = key
+                .to_digit(10)
+                .and_then(|n| Quality::ALL.get((n as usize).checked_sub(1)?).copied());
+            if let Some(quality) = chosen.filter(|&q| q != stream.quality()) {
+                stream.set_quality(quality)?;
+                println!(
+                    "Now {} ({} Mbit/s).",
+                    quality.name(),
+                    quality.bitrate() / 1_000_000
+                );
+            }
+            continue;
+        }
+        last = Instant::now();
+        report(stream.elapsed(), &stream.stats());
+    }
+    let seconds = stream.elapsed().as_secs_f64();
+    let summary = stream.stop()?;
+    println!(
+        "The viewer left. Streamed {seconds:.0} s, {} encoder.",
+        match summary {
+            Some(s) if !s.hardware_encoder => "software",
+            _ => "hardware",
+        }
+    );
+    Ok(())
 }
 
-impl Quality {
-    fn parse(text: &str) -> Result<Self> {
-        Ok(match text {
-            "1080p" => Self::P1080,
-            "1440p" => Self::P1440,
-            "4k" | "2160p" => Self::P2160,
-            other => anyhow::bail!("--quality takes 1080p, 1440p or 4k, not {other}"),
-        })
-    }
-
-    /// The quality a key in the terminal switches to.
-    fn from_key(key: char) -> Option<Self> {
-        match key {
-            '1' => Some(Self::P1080),
-            '2' => Some(Self::P1440),
-            '3' => Some(Self::P2160),
-            _ => None,
-        }
-    }
-
-    fn name(self) -> &'static str {
-        match self {
-            Self::P1080 => "1080p",
-            Self::P1440 => "1440p",
-            Self::P2160 => "4K",
-        }
-    }
-
-    /// Bits a second: under what Cloudflare's relay passes for one app
-    /// (about 50 Mbit/s), with room for the peaks of busy pictures.
-    fn bitrate(self) -> u32 {
-        match self {
-            Self::P1080 => 10_000_000,
-            Self::P1440 => 18_000_000,
-            Self::P2160 => 35_000_000,
-        }
-    }
-
-    /// The size `w`×`h` is sent at: this height, the same shape, even, and
-    /// never larger than it is.
-    fn size(self, w: u32, h: u32) -> (u32, u32) {
-        let target = match self {
-            Self::P1080 => 1080,
-            Self::P1440 => 1440,
-            Self::P2160 => 2160,
-        };
-        if h <= target {
-            return (w & !1, h & !1);
-        }
-        let scaled = (u64::from(w) * u64::from(target) / u64::from(h)) as u32;
-        (scaled & !1, target)
-    }
+/// A status line.
+fn report(elapsed: Duration, stats: &Stats) {
+    let network = match (stats.round_trip, stats.lost) {
+        (Some(round_trip), Some(lost)) => format!(
+            "; {} ms there and back, {lost:.2}% of packets lost",
+            round_trip.as_millis()
+        ),
+        _ => String::new(),
+    };
+    println!(
+        "{:>4} s: {}, {:.0} pictures/s, {:.0} sound frames/s, {:.1} Mbit/s{network}",
+        elapsed.as_secs(),
+        stats.quality.name(),
+        stats.pictures_per_second,
+        stats.sound_per_second,
+        stats.megabits_per_second,
+    );
 }
 
 /// How the sound and the pictures are to go: `--codec` and `--video`.
@@ -255,93 +197,6 @@ fn codecs(args: &mut Args) -> Result<(SoundCodec, VideoCodec)> {
         Some(other) => anyhow::bail!("--video takes av1, hevc or h264, not {other}"),
     };
     Ok((sound, video))
-}
-
-/// The best codec from `best` down that this PC encodes and the viewer
-/// `plays`; H.264 if none.
-fn playable(best: VideoCodec, plays: u8) -> VideoCodec {
-    let video = VideoCodec::BEST_FIRST
-        .into_iter()
-        .skip_while(|&codec| codec != best)
-        .find(|&codec| plays & codec.bit() != 0 && live::encodes(codec))
-        .unwrap_or(VideoCodec::H264);
-    println!("Pictures as {}.", describe_video(video));
-    video
-}
-
-/// A stream under way: what to record, and where its frames go.
-struct Streaming {
-    options: RecordOptions,
-    video: VideoCodec,
-    codec: SoundCodec,
-    out: SharedOut,
-    sound_out: Option<SharedOut>,
-    gone: Arc<AtomicBool>,
-    sent: Arc<Mutex<Sent>>,
-    started: Instant,
-}
-
-impl Streaming {
-    /// A recorder at `quality`. A new one's timeline starts again at zero:
-    /// its frames are moved to now on the stream's, so the viewer's clock
-    /// runs on.
-    fn record(&self, quality: Quality) -> Result<Recorder> {
-        let region = self.options.region.expect("a region");
-        let size = quality.size(region.width, region.height);
-        let offset = (self.started.elapsed().as_nanos() / 100) as i64;
-        Recorder::start_live(
-            self.options.clone(),
-            Live {
-                sink: sink(self, offset),
-                video: self.video,
-                sound: self.codec,
-                size: Some(size),
-                bitrate: Some(quality.bitrate()),
-            },
-        )
-    }
-
-    /// Stream at `quality` until the viewer leaves, switching as keys in
-    /// the terminal say, with a status line a second.
-    fn run(
-        &self,
-        mut quality: Quality,
-        connection: Option<&shuttercrab_connect::Connection>,
-    ) -> Result<()> {
-        let keys = keys();
-        let mut recorder = self.record(quality)?;
-        let mut last = (Instant::now(), 0, 0);
-        while !self.gone.load(Ordering::Relaxed) {
-            let wait = Duration::from_secs(1).saturating_sub(last.0.elapsed());
-            if let Ok(key) = keys.recv_timeout(wait) {
-                if let Some(chosen) = Quality::from_key(key).filter(|q| *q != quality) {
-                    recorder.stop()?;
-                    quality = chosen;
-                    recorder = self.record(quality)?;
-                    let region = self.options.region.expect("a region");
-                    let (w, h) = quality.size(region.width, region.height);
-                    println!(
-                        "Now {} ({w}x{h}, {} Mbit/s).",
-                        quality.name(),
-                        quality.bitrate() / 1_000_000
-                    );
-                }
-                continue;
-            }
-            last = report(&self.sent, self.started, last, quality, connection);
-        }
-        let summary = recorder.stop()?;
-        println!(
-            "The viewer left. Streamed {:.0} s, {} encoder.",
-            self.started.elapsed().as_secs_f64(),
-            if summary.hardware_encoder {
-                "hardware"
-            } else {
-                "software"
-            }
-        );
-        Ok(())
-    }
 }
 
 /// Keys pressed in the terminal, as they are pressed.
@@ -362,15 +217,13 @@ fn keys() -> std::sync::mpsc::Receiver<char> {
     });
     keys
 }
-/// Where the frames go.
-type Out = Box<dyn Write + Send>;
 
 /// The meeting point to stream or watch through, and how to connect:
 /// `--meet URL` (Shuttercrab's unless given), and `--direct` to connect
 /// without the relay.
 struct Meet {
     url: String,
-    path: shuttercrab_connect::Path,
+    path: shuttercrab_stream::Path,
 }
 
 impl Meet {
@@ -378,118 +231,14 @@ impl Meet {
         Ok(Self {
             url: args
                 .option("--meet")?
-                .unwrap_or_else(|| shuttercrab_connect::MEET.into()),
+                .unwrap_or_else(|| shuttercrab_stream::MEET.into()),
             path: if args.flag("--direct") {
-                shuttercrab_connect::Path::Direct
+                shuttercrab_stream::Path::Direct
             } else {
-                shuttercrab_connect::Path::Relay
+                shuttercrab_stream::Path::Relay
             },
         })
     }
-}
-
-/// How a connection goes, for the status lines.
-fn how(connection: &shuttercrab_connect::Connection) -> &'static str {
-    if connection.relayed() {
-        "through the relay"
-    } else {
-        "directly"
-    }
-}
-
-/// The first byte of each stream online, so the viewer can tell them
-/// apart: the format and the pictures, and the sound.
-const PICTURES: u8 = b'P';
-const SOUND: u8 = b'S';
-
-/// What the viewer says first: the codecs it can play, a bit each.
-fn plays() -> u8 {
-    VideoCodec::BEST_FIRST
-        .into_iter()
-        .filter(|&codec| LivePlayer::decodes(codec))
-        .fold(0, |set, codec| set | codec.bit())
-}
-
-fn describe_video(video: VideoCodec) -> &'static str {
-    match video {
-        VideoCodec::H264 => "H.264, 8 bits",
-        VideoCodec::Hevc => "HEVC, 10 bits",
-        VideoCodec::Av1 => "AV1, 10 bits",
-    }
-}
-
-/// Where the frames go, for the threads that send them.
-type SharedOut = Arc<Mutex<BufWriter<Out>>>;
-
-fn shared(out: Out) -> SharedOut {
-    Arc::new(Mutex::new(BufWriter::new(out)))
-}
-
-/// A viewer anywhere if `online`, through `meet`, else on this PC: where
-/// the pictures go, the sound if it goes apart from them, and the codecs
-/// the viewer can play.
-fn open_output(
-    online: bool,
-    meet: &Meet,
-    port: u16,
-) -> Result<(
-    SharedOut,
-    Option<SharedOut>,
-    Option<shuttercrab_connect::Connection>,
-    u8,
-)> {
-    if online {
-        let (pictures, sound, connection, plays) = host_online(meet)?;
-        Ok((
-            shared(pictures),
-            Some(shared(sound)),
-            Some(connection),
-            plays,
-        ))
-    } else {
-        let (out, plays) = wait_locally(port)?;
-        Ok((shared(out), None, None, plays))
-    }
-}
-
-/// A viewer on this PC, from stream-watch without a link, and whether it
-/// codecs it can play.
-fn wait_locally(port: u16) -> Result<(Out, u8)> {
-    let listener = TcpListener::bind(("127.0.0.1", port))?;
-    println!("Waiting for a viewer on 127.0.0.1:{port} (capture-spike stream-watch)...");
-    let (socket, viewer) = listener.accept()?;
-    socket.set_nodelay(true)?;
-    println!("Viewer {viewer} connected.");
-    let mut plays = [0];
-    (&socket).read_exact(&mut plays)?;
-    Ok((Box::new(socket), plays[0]))
-}
-
-/// A viewer anywhere: a room at `meet`, a link to share, and a direct
-/// connection to whoever comes with it. The sound has a stream of its own,
-/// sent first, so a large picture cannot hold it up. The codecs the viewer
-/// can play come on a stream from it.
-fn host_online(meet: &Meet) -> Result<(Out, Out, shuttercrab_connect::Connection, u8)> {
-    let hosting = shuttercrab_connect::host(&meet.url, &host_key()?, meet.path)?;
-    println!(
-        "Share this link; whoever has it can watch:\n\n  {}\n\n\
-         Waiting for a viewer (capture-spike stream-watch --link LINK)...",
-        hosting.link()
-    );
-    let connection = hosting.accept()?;
-    println!(
-        "Viewer at {} connected {}, {} ms there and back.",
-        connection.remote(),
-        how(&connection),
-        connection.round_trip().as_millis()
-    );
-    let mut plays = [0];
-    connection.receive()?.read_exact(&mut plays)?;
-    let mut pictures = connection.send(0)?;
-    pictures.write_all(&[PICTURES])?;
-    let mut sound = connection.send(1)?;
-    sound.write_all(&[SOUND])?;
-    Ok((Box::new(pictures), Box::new(sound), connection, plays[0]))
 }
 
 /// The key that opens a room on the meeting point: `SHUTTERCRAB_HOST_KEY`,
@@ -520,103 +269,6 @@ fn describe_sound(process: Option<u32>, speakers: bool, microphone: bool) -> Str
     }
 }
 
-/// Each frame onto the stream's socket as it comes, `offset` later on its
-/// timeline, the sound onto its own if it has one, until the viewer is
-/// gone.
-fn sink(streaming: &Streaming, offset: i64) -> LiveSink {
-    let (out, sound_out, gone, sent) = (
-        streaming.out.clone(),
-        streaming.sound_out.clone(),
-        streaming.gone.clone(),
-        streaming.sent.clone(),
-    );
-    Arc::new(move |frame: LiveFrame| {
-        if gone.load(Ordering::Relaxed) {
-            return;
-        }
-        let frame = LiveFrame {
-            time: frame.time + offset,
-            ..frame
-        };
-        let written = {
-            let out = match (frame.track, &sound_out) {
-                (Track::Sound, Some(sound_out)) => sound_out,
-                _ => &out,
-            };
-            let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
-            frame.write_to(&mut *out).and_then(|()| Ok(out.flush()?))
-        };
-        if written.is_err() {
-            gone.store(true, Ordering::Relaxed);
-            return;
-        }
-        let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
-        sent.bytes += frame.data.len() as u64 + 22;
-        match frame.track {
-            Track::Video => sent.pictures += 1,
-            Track::Sound => sent.sound += 1,
-        }
-    })
-}
-
-/// A status line for the time since `last` (when, pictures and bytes
-/// sent by then), with how the `connection` is doing if it is online: the
-/// new `last`.
-fn report(
-    sent: &Mutex<Sent>,
-    started: Instant,
-    (at, pictures, bytes): (Instant, u64, u64),
-    quality: Quality,
-    connection: Option<&shuttercrab_connect::Connection>,
-) -> (Instant, u64, u64) {
-    let mut sent = sent.lock().unwrap_or_else(|e| e.into_inner());
-    let seconds = at.elapsed().as_secs_f64().max(0.001);
-    println!(
-        "{:>4} s: {}, {:.0} pictures/s, {:.0} sound frames/s, {:.1} Mbit/s{}",
-        started.elapsed().as_secs(),
-        quality.name(),
-        (sent.pictures - pictures) as f64 / seconds,
-        sent.sound as f64 / seconds,
-        (sent.bytes - bytes) as f64 * 8.0 / seconds / 1e6,
-        connection.map(network).unwrap_or_default(),
-    );
-    sent.sound = 0;
-    (Instant::now(), sent.pictures, sent.bytes)
-}
-
-/// How an online connection is doing, for the status lines.
-fn network(connection: &shuttercrab_connect::Connection) -> String {
-    let (lost, sent) = connection.lost();
-    format!(
-        "; {} ms there and back, {:.2}% of packets lost",
-        connection.round_trip().as_millis(),
-        lost as f64 * 100.0 / sent.max(1) as f64
-    )
-}
-
-/// The viewer window's state, on its thread. The pictures are drawn on a
-/// thread of their own, so the window keeps up while they are.
-struct Viewer {
-    player: Arc<LivePlayer>,
-    bytes: Arc<AtomicU64>,
-    /// Pictures drawn, counted by the drawing thread.
-    drawn: Arc<AtomicU64>,
-    /// Tells the drawing thread to stop.
-    stop: Arc<AtomicBool>,
-    last: (Instant, u64, u64),
-    muted: bool,
-    ended: bool,
-    /// The connection to the stream, if it is online.
-    connection: Option<shuttercrab_connect::Connection>,
-}
-
-thread_local! {
-    static VIEWER: RefCell<Option<Viewer>> = const { RefCell::new(None) };
-}
-
-/// How much [ and ] change how far ahead of the sound pictures are shown.
-const LEAD_STEP: Duration = Duration::from_millis(20);
-
 pub(super) fn watch(mut args: Args) -> Result<()> {
     let from = args
         .option("--from")?
@@ -629,430 +281,25 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let _ = log::set_logger(&Log);
     log::set_max_level(log::LevelFilter::Info);
 
-    let Input {
-        pictures,
-        sound: sound_input,
-        connection,
-        socket,
-    } = open_input(link.as_deref(), &meet, &from)?;
-    let mut reader = BufReader::new(pictures);
-    let format = LiveFormat::read_from(&mut reader)?;
-    println!(
-        "{}x{} at {} fps, {}, {}. Escape closes the window; M mutes; [ and ] move the \
-         pictures earlier or later against the sound.",
-        format.width,
-        format.height,
-        format.fps,
-        describe_video(format.video),
-        match format.sound {
-            Some(SoundCodec::Aac) => "AAC sound",
-            Some(SoundCodec::Pcm) => "PCM sound",
-            Some(SoundCodec::Opus) => "Opus sound",
-            None => "no sound",
+    let input = match link {
+        Some(link) => {
+            println!("Joining the stream...");
+            Input::online(&Link::parse(&link)?, &meet.url, meet.path)?
         }
-    );
-
+        None => Input::local(&from)?,
+    };
     let monitors = display::enumerate()?;
     let target = display::select(&monitors, monitor.as_deref())?;
-    let hwnd = open_window(&format, target)?;
-    let player = Arc::new(LivePlayer::new(format, |why| {
-        eprintln!("the sound stopped: {why}");
-    })?);
-    player.set_muted(muted);
-
-    let window = hwnd.0 as usize;
-    let bytes = Arc::new(AtomicU64::new(0));
-    let mut readers = Vec::new();
-    if let Some(sound_input) = sound_input {
-        let (player, bytes) = (player.clone(), bytes.clone());
-        readers.push(std::thread::spawn(move || {
-            read_frames(BufReader::new(sound_input), &player, &bytes);
-        }));
-    }
-    let (reader_player, reader_bytes) = (player.clone(), bytes.clone());
-    readers.push(std::thread::spawn(move || {
-        read_frames(reader, &reader_player, &reader_bytes);
-        let _ =
-            unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_ENDED, WPARAM(0), LPARAM(0)) };
-    }));
-
-    let (drawn, stop) = (
-        Arc::new(AtomicU64::new(0)),
-        Arc::new(AtomicBool::new(false)),
-    );
-    let drawing = {
-        let (player, drawn, stop) = (player.clone(), drawn.clone(), stop.clone());
-        std::thread::spawn(move || {
-            let hwnd = HWND(window as *mut _);
-            if let Err(e) = draw(&player, hwnd, (format.width, format.height), &drawn, &stop)
-                && !stop.load(Ordering::Relaxed)
-            {
-                eprintln!("drawing stopped: {e:#}");
-            }
-        })
-    };
-
-    VIEWER.with_borrow_mut(|viewer| {
-        *viewer = Some(Viewer {
-            player,
-            bytes,
-            drawn,
-            stop: stop.clone(),
-            last: (Instant::now(), 0, 0),
-            muted,
-            ended: false,
-            connection,
-        })
-    });
-    unsafe {
-        SetTimer(Some(hwnd), 1, 500, None);
-        let _ = ShowWindow(hwnd, SW_SHOW);
-        let mut message = MSG::default();
-        while GetMessageW(&mut message, None, 0, 0).as_bool() {
-            let _ = TranslateMessage(&message);
-            DispatchMessageW(&message);
-        }
-    }
-    stop.store(true, Ordering::Relaxed);
-    let _ = drawing.join();
-    // Close the connection, which ends the readers, and wait for them, so
-    // the player and its sound are let go here, before the process ends,
-    // rather than mid-call on another thread as it does.
-    VIEWER.with_borrow_mut(|viewer| viewer.take());
-    if let Some(socket) = socket {
-        let _ = socket.shutdown(Shutdown::Both);
-    }
-    for reader in readers {
-        let _ = reader.join();
-    }
-    Ok(())
-}
-
-/// Hand each frame from `reader` to `player` until the stream ends.
-fn read_frames(mut reader: impl Read, player: &LivePlayer, bytes: &AtomicU64) {
-    loop {
-        match LiveFrame::read_from(&mut reader) {
-            Ok(Some(frame)) => {
-                bytes.fetch_add(frame.data.len() as u64 + 22, Ordering::Relaxed);
-                if let Err(e) = player.push(frame) {
-                    eprintln!("{e:#}");
-                }
-            }
-            Ok(None) => break,
-            Err(e) => {
-                eprintln!("the stream broke: {e:#}");
-                break;
-            }
-        }
-    }
-}
-
-/// Where frames come from.
-type In = Box<dyn Read + Send>;
-
-/// A stream to watch.
-struct Input {
-    /// The format and pictures.
-    pictures: In,
-    /// The sound, if it comes apart from the pictures.
-    sound: Option<In>,
-    /// The connection, if the stream is online.
-    connection: Option<shuttercrab_connect::Connection>,
-    /// The socket, if it is on this PC: shut down to stop reading.
-    socket: Option<TcpStream>,
-}
-
-/// The stream `link` is for, through `meet`, or else the one on this PC
-/// at `from`.
-fn open_input(link: Option<&str>, meet: &Meet, from: &str) -> Result<Input> {
-    let Some(link) = link else {
-        let socket = TcpStream::connect(from).with_context(|| format!("no stream at {from}"))?;
-        socket.set_nodelay(true)?;
-        (&socket).write_all(&[plays()])?;
-        return Ok(Input {
-            pictures: Box::new(socket.try_clone()?),
-            sound: None,
-            connection: None,
-            socket: Some(socket),
-        });
-    };
-    let link = shuttercrab_connect::Link::parse(link)?;
-    println!("Joining the stream...");
-    let connection = shuttercrab_connect::join(&meet.url, &link, meet.path)?;
     println!(
-        "Connected {} to {}, {} ms there and back.",
-        how(&connection),
-        connection.remote(),
-        connection.round_trip().as_millis()
+        "Escape closes the window; M mutes; [ and ] move the pictures earlier or later against \
+         the sound."
     );
-    connection.send(0)?.write_all(&[plays()])?;
-    // Two streams, each tagged; they may arrive in either order.
-    let (mut pictures, mut sound): (In, In) = (
-        Box::new(connection.receive()?),
-        Box::new(connection.receive()?),
-    );
-    let mut tag = [0];
-    pictures.read_exact(&mut tag)?;
-    if tag[0] == SOUND {
-        std::mem::swap(&mut pictures, &mut sound);
-        pictures.read_exact(&mut tag)?;
-        ensure!(tag[0] == PICTURES, "the stream's pictures are missing");
-    } else {
-        ensure!(tag[0] == PICTURES, "not a Shuttercrab stream");
-        sound.read_exact(&mut tag)?;
-        ensure!(tag[0] == SOUND, "the stream's sound is missing");
-    }
-    Ok(Input {
-        pictures,
-        sound: Some(sound),
-        connection: Some(connection),
-        socket: None,
-    })
-}
-
-/// Draw each picture as it falls due, once a refresh of the display the
-/// window is on, until `stop`.
-fn draw(
-    player: &LivePlayer,
-    hwnd: HWND,
-    (width, height): (u32, u32),
-    drawn: &AtomicU64,
-    stop: &AtomicBool,
-) -> Result<()> {
-    let swap_chain = swap_chain(&player.device(), hwnd, width, height)?;
-    let mut size = (width, height);
-    let mut output = None;
-    let mut refreshes = 0u32;
-    while !stop.load(Ordering::Relaxed) {
-        // The window may have moved to another display: look again now
-        // and then.
-        if refreshes.is_multiple_of(120) {
-            output = unsafe { swap_chain.GetContainingOutput() }.ok();
-        }
-        refreshes = refreshes.wrapping_add(1);
-        match &output {
-            Some(output) => unsafe { output.WaitForVBlank() }?,
-            None => std::thread::sleep(Duration::from_millis(8)),
-        }
-        // The sender changed its quality: the buffers follow the pictures,
-        // and the window stretches them as before.
-        let now = player.size();
-        if now != size {
-            unsafe {
-                swap_chain.ResizeBuffers(0, now.0, now.1, DXGI_FORMAT_UNKNOWN, Default::default())
-            }?;
-            size = now;
-        }
-        let back: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
-        if player.draw(&back)? {
-            // Just after a refresh: shown at the next.
-            unsafe { swap_chain.Present(0, DXGI_PRESENT(0)) }.ok()?;
-            drawn.fetch_add(1, Ordering::Relaxed);
-        }
-    }
-    Ok(())
-}
-
-/// A window for `format`'s pictures, at their size where it fits on
-/// `monitor` and scaled down where it does not, in the middle.
-fn open_window(format: &LiveFormat, monitor: &display::Monitor) -> Result<HWND> {
-    unsafe {
-        let instance = GetModuleHandleW(None)?;
-        let class = WNDCLASSW {
-            lpfnWndProc: Some(window_proc),
-            hInstance: instance.into(),
-            hCursor: LoadCursorW(None, IDC_ARROW)?,
-            lpszClassName: w!("ShuttercrabLiveSpike"),
-            ..Default::default()
-        };
-        ensure!(
-            RegisterClassW(&class) != 0,
-            "could not register the window class"
-        );
-        let mut info = MONITORINFO {
-            cbSize: size_of::<MONITORINFO>() as u32,
-            ..Default::default()
-        };
-        let _ = GetMonitorInfoW(monitor.hmonitor, &mut info);
-        let work = info.rcWork;
-        let (room_w, room_h) = (
-            (work.right - work.left) as f64 * 0.95,
-            (work.bottom - work.top) as f64 * 0.9,
-        );
-        let scale = (room_w / format.width as f64)
-            .min(room_h / format.height as f64)
-            .min(1.0);
-        let (w, h) = (
-            (format.width as f64 * scale) as i32,
-            (format.height as f64 * scale) as i32,
-        );
-        let style = WS_OVERLAPPEDWINDOW;
-        let mut frame = RECT {
-            left: 0,
-            top: 0,
-            right: w,
-            bottom: h,
-        };
-        AdjustWindowRectExForDpi(&mut frame, style, false, WINDOW_EX_STYLE(0), monitor.dpi)?;
-        let (fw, fh) = (frame.right - frame.left, frame.bottom - frame.top);
-        let x = work.left + ((work.right - work.left) - fw) / 2;
-        let y = work.top + ((work.bottom - work.top) - fh) / 2;
-        let title = HSTRING::from(format!(
-            "Shuttercrab live (spike) — {}x{}{}",
-            format.width,
-            format.height,
-            if scale < 1.0 {
-                format!(", shown at {:.0}%", scale * 100.0)
-            } else {
-                String::new()
-            }
-        ));
-        let hwnd = CreateWindowExW(
-            WINDOW_EX_STYLE(0),
-            w!("ShuttercrabLiveSpike"),
-            &title,
-            style,
-            x,
-            y,
-            fw,
-            fh,
-            None,
-            None,
-            Some(instance.into()),
-            None,
-        )?;
-        Ok(hwnd)
-    }
-}
-
-/// A swap chain at the pictures' own size; the window stretches it.
-fn swap_chain(
-    device: &ID3D11Device,
-    hwnd: HWND,
-    width: u32,
-    height: u32,
-) -> Result<IDXGISwapChain1> {
-    unsafe {
-        let factory: IDXGIFactory2 = device.cast::<IDXGIDevice>()?.GetAdapter()?.GetParent()?;
-        let desc = DXGI_SWAP_CHAIN_DESC1 {
-            Width: width,
-            Height: height,
-            Format: DXGI_FORMAT_B8G8R8A8_UNORM,
-            SampleDesc: DXGI_SAMPLE_DESC {
-                Count: 1,
-                Quality: 0,
-            },
-            BufferUsage: DXGI_USAGE_RENDER_TARGET_OUTPUT,
-            BufferCount: 2,
-            Scaling: DXGI_SCALING_STRETCH,
-            SwapEffect: DXGI_SWAP_EFFECT_FLIP_DISCARD,
-            AlphaMode: DXGI_ALPHA_MODE_IGNORE,
-            ..Default::default()
-        };
-        factory
-            .CreateSwapChainForHwnd(device, hwnd, &desc, None, None)
-            .context("could not make a swap chain")
-    }
-}
-
-impl Viewer {
-    /// The window title with the latest numbers.
-    fn status(&mut self) -> String {
-        let (at, drawn, bytes) = self.last;
-        let seconds = at.elapsed().as_secs_f64().max(0.001);
-        let (now, total) = (
-            self.drawn.load(Ordering::Relaxed),
-            self.bytes.load(Ordering::Relaxed),
-        );
-        let sound = match self.player.sound_behind() {
-            Some(behind) => format!("sound {} ms", behind.as_millis()),
-            None => "no sound".into(),
-        };
-        let title = format!(
-            "Shuttercrab live (spike) — {}{}x{}, {:.0} fps, {:.1} Mbit/s; behind the newest \
-             picture: picture {} ms, {sound}; pictures lead by up to {} ms ([ ]){}{}",
-            if self.ended { "ENDED — " } else { "" },
-            self.player.size().0,
-            self.player.size().1,
-            (now - drawn) as f64 / seconds,
-            (total - bytes) as f64 * 8.0 / seconds / 1e6,
-            self.player.behind().as_millis(),
-            self.player.lead().as_millis(),
-            self.connection.as_ref().map(network).unwrap_or_default(),
-            if self.muted { ", muted (M)" } else { "" }
-        );
-        self.last = (Instant::now(), now, total);
-        title
-    }
-
-    /// Show pictures `step` earlier (or later, if negative) against the
-    /// sound.
-    fn move_lead(&mut self, earlier: bool) -> String {
-        let lead = self.player.lead();
-        self.player.set_lead(if earlier {
-            lead + LEAD_STEP
-        } else {
-            lead.saturating_sub(LEAD_STEP)
-        });
-        self.status()
-    }
-}
-
-/// What the window does once the viewer is no longer borrowed: these send
-/// messages straight back to `window_proc`.
-enum After {
-    Title(String),
-    Close,
-}
-
-extern "system" fn window_proc(
-    hwnd: HWND,
-    message: u32,
-    wparam: WPARAM,
-    lparam: LPARAM,
-) -> LRESULT {
-    let handled = VIEWER.with_borrow_mut(|viewer| {
-        let viewer = viewer.as_mut()?;
-        Some(match message {
-            WM_TIMER => After::Title(viewer.status()),
-            WM_ENDED => {
-                viewer.ended = true;
-                After::Title(viewer.status())
-            }
-            WM_KEYDOWN if wparam.0 == usize::from(VK_ESCAPE.0) => After::Close,
-            WM_KEYDOWN if wparam.0 == usize::from(b'M') => {
-                viewer.muted = !viewer.muted;
-                viewer.player.set_muted(viewer.muted);
-                After::Title(viewer.status())
-            }
-            WM_KEYDOWN if wparam.0 == usize::from(VK_OEM_6.0) => {
-                After::Title(viewer.move_lead(true))
-            }
-            WM_KEYDOWN if wparam.0 == usize::from(VK_OEM_4.0) => {
-                After::Title(viewer.move_lead(false))
-            }
-            WM_DESTROY => {
-                // Before the window goes: drawing into it fails after.
-                viewer.stop.store(true, Ordering::Relaxed);
-                return None;
-            }
-            _ => return None,
-        })
-    });
-    if let Some(after) = handled {
-        match after {
-            After::Title(title) => {
-                let _ = unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) };
-            }
-            After::Close => {
-                let _ = unsafe { DestroyWindow(hwnd) };
-            }
-        }
-        return LRESULT(0);
-    }
-    if message == WM_DESTROY {
-        unsafe { PostQuitMessage(0) };
-        return LRESULT(0);
-    }
-    unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
+    shuttercrab_stream::watch(
+        input,
+        &WatchOptions {
+            monitor: Some(target.hmonitor),
+            muted,
+            title: "Shuttercrab live (spike)".into(),
+        },
+    )
 }
