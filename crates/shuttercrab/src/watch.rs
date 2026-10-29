@@ -53,6 +53,8 @@ pub fn serve() -> i32 {
     let options = WatchOptions {
         monitor: None,
         muted: false,
+        volume: saved_volume(),
+        remember_volume: Some(remember_volume),
         title: "Shuttercrab".into(),
     };
     let join = move || Input::online(&link, shuttercrab_stream::MEET, Path::Relay);
@@ -68,6 +70,41 @@ pub fn serve() -> i32 {
             );
             1
         }
+    }
+}
+
+/// Where the viewer keeps its volume: beside the settings, in a file of its
+/// own, as it runs beside the app and must not write the app's.
+#[cfg(windows)]
+fn volume_file() -> Option<std::path::PathBuf> {
+    let dir = match std::env::var_os("SHUTTERCRAB_DATA_DIR") {
+        Some(dir) => dir.into(),
+        None => crate::settings::default_path()?.parent()?.to_path_buf(),
+    };
+    Some(dir.join("viewer-volume.txt"))
+}
+
+/// The volume the viewer last played at, if it has played.
+#[cfg(windows)]
+fn saved_volume() -> Option<u32> {
+    std::fs::read_to_string(volume_file()?)
+        .ok()?
+        .trim()
+        .parse()
+        .ok()
+}
+
+/// Keep percent as the volume to play at next time.
+#[cfg(windows)]
+fn remember_volume(percent: u32) {
+    let Some(file) = volume_file() else {
+        return;
+    };
+    if let Some(dir) = file.parent() {
+        let _ = std::fs::create_dir_all(dir);
+    }
+    if let Err(e) = std::fs::write(&file, percent.to_string()) {
+        log::warn!("could not keep the volume: {e}");
     }
 }
 

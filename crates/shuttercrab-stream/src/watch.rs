@@ -23,15 +23,16 @@ use windows::{
             Direct2D::{
                 Common::{D2D_RECT_F, D2D1_ALPHA_MODE_IGNORE, D2D1_COLOR_F, D2D1_PIXEL_FORMAT},
                 D2D1_DRAW_TEXT_OPTIONS_NONE, D2D1_FACTORY_TYPE_SINGLE_THREADED,
-                D2D1_RENDER_TARGET_PROPERTIES, D2D1CreateFactory, ID2D1Factory,
+                D2D1_RENDER_TARGET_PROPERTIES, D2D1_ROUNDED_RECT, D2D1CreateFactory, ID2D1Factory,
             },
             Direct3D11::{D3D11_TEXTURE2D_DESC, ID3D11Device, ID3D11Texture2D},
             DirectWrite::{
                 DWRITE_FACTORY_TYPE_SHARED, DWRITE_FONT_STRETCH_NORMAL, DWRITE_FONT_STYLE_NORMAL,
                 DWRITE_FONT_WEIGHT_NORMAL, DWRITE_MEASURING_MODE_NATURAL,
-                DWRITE_PARAGRAPH_ALIGNMENT, DWRITE_PARAGRAPH_ALIGNMENT_FAR,
-                DWRITE_PARAGRAPH_ALIGNMENT_NEAR, DWRITE_TEXT_ALIGNMENT_CENTER, DWriteCreateFactory,
-                IDWriteFactory, IDWriteTextFormat,
+                DWRITE_PARAGRAPH_ALIGNMENT, DWRITE_PARAGRAPH_ALIGNMENT_CENTER,
+                DWRITE_PARAGRAPH_ALIGNMENT_FAR, DWRITE_PARAGRAPH_ALIGNMENT_NEAR,
+                DWRITE_TEXT_ALIGNMENT_CENTER, DWriteCreateFactory, IDWriteFactory,
+                IDWriteTextFormat,
             },
             Dxgi::{
                 Common::{
@@ -62,7 +63,7 @@ use windows::{
                 GetDpiForMonitor, GetDpiForWindow, MDT_EFFECTIVE_DPI,
                 SetProcessDpiAwarenessContext,
             },
-            Input::KeyboardAndMouse::{VK_ESCAPE, VK_OEM_4, VK_OEM_6},
+            Input::KeyboardAndMouse::{VK_DOWN, VK_ESCAPE, VK_OEM_4, VK_OEM_6, VK_UP},
             WindowsAndMessaging::*,
         },
     },
@@ -206,9 +207,24 @@ pub struct WatchOptions {
     /// The monitor to open on: the one under the pointer if none.
     pub monitor: Option<HMONITOR>,
     pub muted: bool,
+    /// The sound's volume to start at, as a percentage of its level as
+    /// sent, up to [`MAX_VOLUME`]: 100 if none.
+    pub volume: Option<u32>,
+    /// Told each volume chosen, to keep for next time.
+    pub remember_volume: Option<fn(u32)>,
     /// What the window's title starts with.
     pub title: String,
 }
+
+/// The loudest the viewer plays the sound, as a percentage of its level as
+/// sent: four times as loud, held under clipping.
+pub const MAX_VOLUME: u32 = 400;
+
+/// How much a key press or a notch of the wheel changes the volume.
+const VOLUME_STEP: u32 = 10;
+
+/// How long a badge stays over the pictures.
+const BADGE_FOR: Duration = Duration::from_millis(1500);
 
 /// The threads playing a stream, and what stops them.
 struct Playing {
@@ -247,6 +263,9 @@ struct Window {
     stop: Arc<AtomicBool>,
     last: (Instant, u64, u64),
     muted: bool,
+    /// A percentage of the sound's level as sent.
+    volume: u32,
+    remember_volume: Option<fn(u32)>,
     /// What to draw over the pictures instead of them, if anything: a
     /// headline and a line below it.
     over: Over,
@@ -348,6 +367,8 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
         log::warn!("the sound stopped: {why}");
     })?);
     player.set_muted(options.muted);
+    let volume = options.volume.unwrap_or(100).min(MAX_VOLUME);
+    player.set_volume(volume);
     if (format.width, format.height) != WAITING_SIZE {
         fit_window(hwnd, (format.width, format.height));
     }
@@ -396,6 +417,8 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
             stop: stop.clone(),
             last: (Instant::now(), 0, 0),
             muted: options.muted,
+            volume,
+            remember_volume: options.remember_volume,
             over: over.clone(),
             ended: None,
             title: options.title.clone(),
@@ -553,7 +576,7 @@ fn draw(
     hwnd: HWND,
     (width, height): (u32, u32),
     (drawn, stop): (&AtomicU64, &AtomicBool),
-    over: &Mutex<Option<(String, String)>>,
+    over: &Mutex<Overlay>,
 ) -> Result<()> {
     let swap_chain = swap_chain(&player.device(), hwnd, width, height)?;
     let mut size = (width, height);
@@ -584,7 +607,7 @@ fn draw(
         let back: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
         // Drawn into the frames rather than painted on the window: once a
         // window has shown pictures, what it paints stays behind the last.
-        let notice = lock(over).clone();
+        let Overlay { notice, badge } = lock(over).clone();
         if let Some(notice) = notice {
             if shown.as_ref() != Some(&notice) {
                 let notices = match &mut notices {
@@ -598,6 +621,14 @@ fn draw(
             continue;
         }
         if player.draw(&back)? {
+            // On each new picture while it lasts: the frames are drawn whole.
+            if let Some((label, _)) = badge.filter(|(_, until)| Instant::now() < *until) {
+                let notices = match &mut notices {
+                    Some(notices) => notices,
+                    None => notices.insert(Notices::new()?),
+                };
+                notices.badge(&back, &label)?;
+            }
             // Just after a refresh: shown at the next.
             unsafe { swap_chain.Present(0, DXGI_PRESENT(0)) }.ok()?;
             drawn.fetch_add(1, Ordering::Relaxed);
@@ -606,9 +637,17 @@ fn draw(
     Ok(())
 }
 
-/// What to draw over the pictures instead of them, if anything: a headline
-/// and a line below it. Set by the window, drawn by the drawing thread.
-type Over = Arc<Mutex<Option<(String, String)>>>;
+/// What the window has the drawing thread draw over the pictures.
+#[derive(Clone, Debug, Default)]
+struct Overlay {
+    /// A notice in place of the pictures: a headline and a line below it.
+    notice: Option<(String, String)>,
+    /// A label over the pictures' top corner, and until when.
+    badge: Option<(String, Instant)>,
+}
+
+/// The overlay, shared: set by the window, drawn by the drawing thread.
+type Over = Arc<Mutex<Overlay>>;
 
 /// Draws a notice into a frame: white and grey on black, in the middle,
 /// sized to the frame, which the window stretches as it does the pictures.
@@ -694,8 +733,78 @@ impl Notices {
         Ok(())
     }
 
-    /// Segoe UI `size` pixels high, centred, against the top or the bottom
-    /// of its box.
+    /// Draw `label` over `frame`'s top right corner, white on a rounded
+    /// dark box, the picture showing around it.
+    fn badge(&self, frame: &ID3D11Texture2D, label: &str) -> Result<()> {
+        let surface: IDXGISurface = frame.cast()?;
+        let mut desc = D3D11_TEXTURE2D_DESC::default();
+        unsafe { frame.GetDesc(&mut desc) };
+        let (width, height) = (desc.Width as f32, desc.Height as f32);
+        // As for the notice: sized for a frame shown about 1080 pixels high.
+        let scale = height / 1080.0;
+        let (box_width, box_height, margin) = (260.0 * scale, 64.0 * scale, 28.0 * scale);
+        let area = D2D_RECT_F {
+            left: width - margin - box_width,
+            top: margin,
+            right: width - margin,
+            bottom: margin + box_height,
+        };
+        unsafe {
+            let target = self.d2d.CreateDxgiSurfaceRenderTarget(
+                &surface,
+                &D2D1_RENDER_TARGET_PROPERTIES {
+                    pixelFormat: D2D1_PIXEL_FORMAT {
+                        format: DXGI_FORMAT_B8G8R8A8_UNORM,
+                        alphaMode: D2D1_ALPHA_MODE_IGNORE,
+                    },
+                    dpiX: 96.0,
+                    dpiY: 96.0,
+                    ..Default::default()
+                },
+            )?;
+            let shade = target.CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: 0.08,
+                    g: 0.08,
+                    b: 0.08,
+                    a: 0.85,
+                },
+                None,
+            )?;
+            let white = target.CreateSolidColorBrush(
+                &D2D1_COLOR_F {
+                    r: 0.94,
+                    g: 0.94,
+                    b: 0.94,
+                    a: 1.0,
+                },
+                None,
+            )?;
+            let format = self.format(28.0 * scale, DWRITE_PARAGRAPH_ALIGNMENT_CENTER)?;
+            target.BeginDraw();
+            target.FillRoundedRectangle(
+                &D2D1_ROUNDED_RECT {
+                    rect: area,
+                    radiusX: 12.0 * scale,
+                    radiusY: 12.0 * scale,
+                },
+                &shade,
+            );
+            target.DrawText(
+                &label.encode_utf16().collect::<Vec<_>>(),
+                &format,
+                &area,
+                &white,
+                D2D1_DRAW_TEXT_OPTIONS_NONE,
+                DWRITE_MEASURING_MODE_NATURAL,
+            );
+            target.EndDraw(None, None)?;
+        }
+        Ok(())
+    }
+
+    /// Segoe UI `size` pixels high, centred, against the top, the middle or
+    /// the bottom of its box.
     fn format(&self, size: f32, against: DWRITE_PARAGRAPH_ALIGNMENT) -> Result<IDWriteTextFormat> {
         unsafe {
             let format = self.write.CreateTextFormat(
@@ -846,6 +955,36 @@ fn swap_chain(
 }
 
 impl Window {
+    /// Raise or lower the volume by `steps` of [`VOLUME_STEP`], within 0 and
+    /// [`MAX_VOLUME`], and keep it for next time.
+    fn change_volume(&mut self, steps: i32) -> After {
+        let volume = (self.volume as i32 + steps * VOLUME_STEP as i32).clamp(0, MAX_VOLUME as i32);
+        if volume as u32 != self.volume {
+            self.volume = volume as u32;
+            self.player.set_volume(self.volume);
+            if let Some(remember) = self.remember_volume {
+                remember(self.volume);
+            }
+        }
+        // Turning it up unmutes, as on a TV.
+        if self.muted && steps > 0 {
+            self.muted = false;
+            self.player.set_muted(false);
+        }
+        self.show_volume();
+        After::Title(self.status())
+    }
+
+    /// Show the volume for a moment over the pictures.
+    fn show_volume(&self) {
+        let label = if self.muted {
+            "Muted".to_string()
+        } else {
+            format!("Volume {}%", self.volume)
+        };
+        lock(&self.over).badge = Some((label, Instant::now() + BADGE_FOR));
+    }
+
     /// The stream has ended: say so over the pictures, with the time left
     /// before the window closes, or close it.
     fn count_down(&self) -> After {
@@ -856,7 +995,7 @@ impl Window {
         else {
             return After::Close;
         };
-        *lock(&self.over) = Some((
+        lock(&self.over).notice = Some((
             "The stream has ended".into(),
             format!(
                 "This window closes in {} s. Escape closes it now.",
@@ -896,7 +1035,11 @@ impl Window {
             (total - bytes) as f64 * 8.0 / seconds / 1e6,
             self.player.behind().as_millis(),
             self.player.lead().as_millis(),
-            if self.muted { ", muted (M)" } else { "" }
+            if self.muted {
+                ", muted (M)".to_string()
+            } else {
+                format!(", volume {}% (Up, Down)", self.volume)
+            }
         );
         self.last = (Instant::now(), now, total);
         title
@@ -949,8 +1092,13 @@ extern "system" fn window_proc(
             WM_KEYDOWN if wparam.0 == usize::from(b'M') => {
                 window.muted = !window.muted;
                 window.player.set_muted(window.muted);
+                window.show_volume();
                 After::Title(window.status())
             }
+            WM_KEYDOWN if wparam.0 == usize::from(VK_UP.0) => window.change_volume(1),
+            WM_KEYDOWN if wparam.0 == usize::from(VK_DOWN.0) => window.change_volume(-1),
+            // A notch is 120, up or down.
+            WM_MOUSEWHEEL => window.change_volume(i32::from((wparam.0 >> 16) as i16) / 120),
             WM_KEYDOWN if wparam.0 == usize::from(VK_OEM_6.0) => {
                 After::Title(window.move_lead(true))
             }

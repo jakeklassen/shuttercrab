@@ -300,6 +300,8 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
         &WatchOptions {
             monitor: Some(target.hmonitor),
             muted,
+            volume: None,
+            remember_volume: None,
             title: "Shuttercrab live (spike)".into(),
         },
     )

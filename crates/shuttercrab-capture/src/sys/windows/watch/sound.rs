@@ -13,7 +13,7 @@ use std::{
     collections::VecDeque,
     sync::{
         Arc, Mutex,
-        atomic::{AtomicBool, Ordering},
+        atomic::{AtomicBool, AtomicU32, Ordering},
     },
     thread::JoinHandle,
     time::{Duration, Instant},
@@ -434,8 +434,52 @@ impl Queue {
     }
 }
 
+/// The loudest a boosted sound is let reach: 1 dB under full scale.
+const CEILING: f32 = 0.89 * i16::MAX as f32;
+
+/// How quickly the limiter gives back what it took, a fraction a frame:
+/// over about 150 ms.
+const RELEASE: f32 = 1.0 / (0.15 * RATE as f32);
+
+/// The viewer's volume: the sound raised or lowered by a gain, its peaks
+/// held under [`CEILING`] so a boost never clips. Where a peak would go
+/// over, the gain drops at once and comes back over about 150 ms.
+#[derive(Debug)]
+struct Volume {
+    /// What the limiter lets through of the gain, 0 to 1.
+    let_through: f32,
+}
+
+impl Default for Volume {
+    fn default() -> Self {
+        Self { let_through: 1.0 }
+    }
+}
+
+impl Volume {
+    /// `frames` (stereo), at `gain`.
+    fn apply(&mut self, frames: &mut [i16], gain: f32) {
+        for frame in frames.as_chunks_mut::<2>().0 {
+            let peak = f32::from(frame[0].unsigned_abs().max(frame[1].unsigned_abs())) * gain;
+            let room = if peak > CEILING { CEILING / peak } else { 1.0 };
+            self.let_through = if room < self.let_through {
+                room
+            } else {
+                self.let_through + (room - self.let_through) * RELEASE
+            };
+            for sample in frame {
+                *sample = (f32::from(*sample) * gain * self.let_through)
+                    .round()
+                    .clamp(-CEILING, CEILING) as i16;
+            }
+        }
+    }
+}
+
 struct Shared {
     queue: Mutex<Queue>,
+    /// The volume, as a percentage of the sound as sent.
+    volume: AtomicU32,
     muted: AtomicBool,
     stop: AtomicBool,
     /// Whether the speakers are playing; once they fail, there is no clock.
@@ -452,6 +496,7 @@ impl Output {
     pub(super) fn start(failed: impl Fn(String) + Send + 'static) -> Result<Self> {
         let shared = Arc::new(Shared {
             queue: Mutex::default(),
+            volume: AtomicU32::new(100),
             muted: AtomicBool::new(false),
             stop: AtomicBool::new(false),
             alive: AtomicBool::new(true),
@@ -490,6 +535,11 @@ impl Output {
 
     pub(super) fn set_muted(&self, muted: bool) {
         self.shared.muted.store(muted, Ordering::Relaxed);
+    }
+
+    /// Play the sound at percent of its level as sent.
+    pub(super) fn set_volume(&self, percent: u32) {
+        self.shared.volume.store(percent, Ordering::Relaxed);
     }
 }
 
@@ -565,6 +615,7 @@ fn play(shared: &Shared) -> Result<()> {
         let size = client.GetBufferSize()?;
         // Each fill: the frames written to the device by its end, and the
         // time just after its last, if it was sound.
+        let mut volume = Volume::default();
         let mut fills = VecDeque::<(u64, Option<i64>)>::new();
         let mut written = 0u64;
         client.Start()?;
@@ -584,8 +635,11 @@ fn play(shared: &Shared) -> Result<()> {
                 free as usize * usize::from(CHANNELS),
             );
             let end = lock(&shared.queue).fill(out);
+            let percent = shared.volume.load(Ordering::Relaxed);
             if shared.muted.load(Ordering::Relaxed) {
                 out.fill(0);
+            } else if percent != 100 {
+                volume.apply(out, percent as f32 / 100.0);
             }
             render.ReleaseBuffer(free, 0)?;
             written += u64::from(free);
@@ -632,6 +686,48 @@ fn play(shared: &Shared) -> Result<()> {
 mod tests {
     use super::*;
 
+    /// A full-scale stereo sine, `frames` long.
+    fn sine(frames: usize, level: f32) -> Vec<i16> {
+        (0..frames)
+            .flat_map(|i| {
+                let s = (level * i16::MAX as f32 * (i as f32 * 0.05).sin()) as i16;
+                [s, s]
+            })
+            .collect()
+    }
+
+    #[test]
+    fn a_boost_never_clips() {
+        let mut volume = Volume::default();
+        let mut loud = sine(RATE as usize, 1.0);
+        volume.apply(&mut loud, 4.0);
+        assert!(loud.iter().all(|&s| f32::from(s).abs() <= CEILING));
+        // And it still plays near the top, not squashed quiet.
+        assert!(loud.iter().map(|s| s.unsigned_abs()).max().unwrap() as f32 > CEILING * 0.95);
+    }
+
+    #[test]
+    fn quiet_sound_is_raised_by_the_gain() {
+        let mut volume = Volume::default();
+        let quiet = sine(RATE as usize, 0.1);
+        let mut raised = quiet.clone();
+        volume.apply(&mut raised, 3.0);
+        for (before, after) in quiet.iter().zip(&raised) {
+            assert!((f32::from(*after) - f32::from(*before) * 3.0).abs() <= 1.0);
+        }
+    }
+
+    #[test]
+    fn the_limiter_lets_go_after_a_loud_moment() {
+        let mut volume = Volume::default();
+        let mut loud = sine(RATE as usize / 10, 1.0);
+        volume.apply(&mut loud, 4.0);
+        assert!(volume.let_through < 0.5);
+        // A second of quiet: the full gain comes back.
+        let mut quiet = sine(RATE as usize, 0.05);
+        volume.apply(&mut quiet, 4.0);
+        assert!(volume.let_through > 0.99, "{}", volume.let_through);
+    }
     fn playing() -> Queue {
         let mut queue = Queue {
             clock: Some(Clock {

@@ -46,10 +46,23 @@ stream…** in the tray, and press Enter: the box fills itself from the
 clipboard when a link is there.
 
 The viewer opens at once, saying "Joining the stream…" until the pictures
-come, or why it could not join. **Escape** closes it,
-**M** mutes it, and **[** and **]** move the pictures 20 ms earlier or later
-against the sound. When testing on one PC, mute the viewer or the sound
-plays twice.
+come, or why it could not join. Its taskbar icon is the app's with the
+colours swapped, coral, so it stands apart from the app's.
+
+| Key | Does |
+|---|---|
+| **Up**, **Down**, or the mouse wheel | Volume, in steps of 10%, from 0 to 400%: above 100% the sound is raised, and a limiter keeps it from clipping. The viewer remembers it for next time |
+| **M** | Mute, and again to unmute; turning the volume up unmutes too |
+| **[** and **]** | Show the pictures 20 ms earlier or later against the sound |
+| **Escape** | Close the viewer |
+
+When the stream ends, the viewer says so and closes after 10 seconds. When
+testing on one PC, mute the viewer or the sound plays twice.
+
+The volume a viewer hears starts from the level the streamer's apps play
+at, before the streamer's Windows volume. So for the streamer, it is best
+to keep apps' own volume sliders high and turn the Windows volume down to
+taste.
 
 ## The host key
 
