@@ -7,6 +7,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.28](https://github.com/jakeklassen/shuttercrab/compare/v0.1.27...v0.1.28) - 2026-10-29
+
+### Added
+
+- the main window guides a stream without a host key
+
+### Fixed
+
+- Stream says what comes next, and asks for the host key
+
 ## [0.1.27](https://github.com/jakeklassen/shuttercrab/compare/v0.1.26...v0.1.27) - 2026-10-29
 
 ### Fixed
