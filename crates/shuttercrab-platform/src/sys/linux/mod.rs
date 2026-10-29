@@ -18,4 +18,4 @@ pub mod targets;
 pub mod tray;
 pub mod window;
 
-pub use super::unsupported::{console, cursor, drag, ocr, open, watch};
+pub use super::unsupported::{console, cursor, drag, links, ocr, open, secret, watch};
