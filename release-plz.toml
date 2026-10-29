@@ -22,7 +22,13 @@ release_commits = "^(feat|fix|perf|refactor|revert)[(:!]"
 name = "shuttercrab"
 version_group = "app"
 changelog_path = "CHANGELOG.md"
-changelog_include = ["shuttercrab-capture", "shuttercrab-platform", "shuttercrab-types"]
+changelog_include = [
+  "shuttercrab-capture",
+  "shuttercrab-connect",
+  "shuttercrab-platform",
+  "shuttercrab-stream",
+  "shuttercrab-types",
+]
 
 [[package]]
 name = "shuttercrab-capture"
@@ -38,12 +44,35 @@ changelog_update = false
 git_tag_enable = false
 git_release_enable = false
 
+# A library added since the last release: release-plz looks for every
+# package in the workspace as it was at the last tag, and fails on one that
+# was not there yet. A tag pattern that matches nothing makes it a first
+# release instead. Only for one release, though: it would stay a first
+# release, and keep proposing a new version, so once a release includes the
+# library, its `git_tag_name` goes.
 [[package]]
 name = "shuttercrab-types"
 version_group = "app"
 changelog_update = false
 git_tag_enable = false
 git_release_enable = false
+git_tag_name = "{{ package }}-v{{ version }}"
+
+[[package]]
+name = "shuttercrab-connect"
+version_group = "app"
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+git_tag_name = "{{ package }}-v{{ version }}"
+
+[[package]]
+name = "shuttercrab-stream"
+version_group = "app"
+changelog_update = false
+git_tag_enable = false
+git_release_enable = false
+git_tag_name = "{{ package }}-v{{ version }}"
 
 # A development tool, never released.
 [[package]]
