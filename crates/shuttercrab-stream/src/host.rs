@@ -1,7 +1,7 @@
 //! The streaming side: a viewer to send to, and the recording sent.
 
 use crate::{PICTURES, Path, Quality, SOUND, playable};
-use anyhow::{Context, Result};
+use anyhow::Result;
 use shuttercrab_capture::{
     live::{self, LiveFormat, LiveFrame, SoundCodec, Track, VideoCodec},
     record::{Live, LiveSink, RecordOptions, Recorder, RecordingSummary, Source},
@@ -128,6 +128,8 @@ pub struct Stats {
 /// A recording streamed to a viewer as it is made.
 pub struct Stream {
     options: RecordOptions,
+    /// What is recorded, physical pixels: the size each quality scales.
+    source: (u32, u32),
     video: VideoCodec,
     sound: SoundCodec,
     viewer: Viewer,
@@ -140,19 +142,30 @@ pub struct Stream {
 }
 
 impl Stream {
-    /// Stream what `options` records (its region set) to `viewer` at
-    /// `quality`, with its pictures in the best codec from `best` down that
-    /// both ends can, and its sound, if it has any, as `sound`.
+    /// Stream what `options` records, `source` physical pixels, to
+    /// `viewer` at `quality`, with its pictures in the best codec from
+    /// `best` down that both ends can, and its sound, if it has any, as
+    /// `sound`.
     pub fn start(
         options: RecordOptions,
+        source: (u32, u32),
         viewer: Viewer,
         quality: Quality,
-        best: VideoCodec,
-        sound: SoundCodec,
+        (best, sound): (VideoCodec, SoundCodec),
     ) -> Result<Self> {
-        let region = options.region.context("a stream needs its region")?;
+        // Keep COM's shared apartment for as long as this thread lives:
+        // switching quality stops one recorder before the next starts, and
+        // the last thread to leave the apartment would take it down with
+        // objects still in use.
+        // SAFETY: no reserved argument; a second call only counts again.
+        let _ = unsafe {
+            windows::Win32::System::Com::CoInitializeEx(
+                None,
+                windows::Win32::System::Com::COINIT_MULTITHREADED,
+            )
+        };
         let video = playable(best, viewer.plays, live::encodes);
-        let (width, height) = quality.size(region.width, region.height);
+        let (width, height) = quality.size(source.0, source.1);
         {
             let mut out = viewer.pictures.lock().unwrap_or_else(|e| e.into_inner());
             LiveFormat {
@@ -168,6 +181,7 @@ impl Stream {
         let now = Instant::now();
         let mut stream = Self {
             options,
+            source,
             video,
             sound,
             viewer,
@@ -205,8 +219,7 @@ impl Stream {
     /// zero: its frames are moved to now on the stream's, so the viewer's
     /// clock runs on.
     fn record(&self) -> Result<Recorder> {
-        let region = self.options.region.context("a stream needs its region")?;
-        let size = self.quality.size(region.width, region.height);
+        let size = self.quality.size(self.source.0, self.source.1);
         let offset = (self.started.elapsed().as_nanos() / 100) as i64;
         Recorder::start_live(
             self.options.clone(),
