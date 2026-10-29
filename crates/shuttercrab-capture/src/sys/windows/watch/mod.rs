@@ -195,6 +195,14 @@ impl LivePlayer {
             output.set_muted(muted);
         }
     }
+
+    /// Play the sound at `percent` of its level as sent, above 100 raised
+    /// without clipping.
+    pub fn set_volume(&self, percent: u32) {
+        if let Some((_, output)) = &self.sound {
+            output.set_volume(percent);
+        }
+    }
 }
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
