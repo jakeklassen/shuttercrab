@@ -281,12 +281,13 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let _ = log::set_logger(&Log);
     log::set_max_level(log::LevelFilter::Info);
 
-    let input = match link {
+    let link = link.as_deref().map(Link::parse).transpose()?;
+    let join = move || match link {
         Some(link) => {
             println!("Joining the stream...");
-            Input::online(&Link::parse(&link)?, &meet.url, meet.path)?
+            Input::online(&link, &meet.url, meet.path)
         }
-        None => Input::local(&from)?,
+        None => Input::local(&from),
     };
     let monitors = display::enumerate()?;
     let target = display::select(&monitors, monitor.as_deref())?;
@@ -295,7 +296,7 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
          the sound."
     );
     shuttercrab_stream::watch(
-        input,
+        join,
         &WatchOptions {
             monitor: Some(target.hmonitor),
             muted,
