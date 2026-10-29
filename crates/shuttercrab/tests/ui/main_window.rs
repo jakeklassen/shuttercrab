@@ -4,8 +4,8 @@
 //!   cargo test -p shuttercrab --test ui main_window::
 
 use gpui_kit::{
-    App, AppContext as _, Entity, InputEvent as _, TestAppContext, Window, component::Root,
-    test::TestWindowExt as _,
+    App, AppContext as _, ClipboardItem, Entity, InputEvent as _, TestAppContext, Window,
+    component::Root, test::TestWindowExt as _,
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
@@ -311,8 +311,14 @@ fn stream_says_what_comes_next_and_where_the_host_key_goes(cx: &mut TestAppConte
     let page = |cx: &mut TestAppContext| cx.update(|cx| opened.view.read(cx).page());
     press(cx, &opened, &["l"]);
     assert_eq!(choice(&opened).0, CaptureMode::Stream);
-    // No key yet: the way to add one, which opens Settings on Streaming.
-    update(cx, &opened, |window, cx| window.click("add-host-key", cx));
+    // No key yet: New does nothing, and the settings link opens Settings
+    // on Streaming.
+    update(cx, &opened, |window, cx| window.click("new", cx));
+    press(cx, &opened, &["n"]);
+    assert!(opened.seen.captures.borrow().is_empty());
+    update(cx, &opened, |window, cx| {
+        window.click("streaming-settings", cx)
+    });
     assert_eq!(page(cx), Page::StreamingSettings);
     update(cx, &opened, |window, _| {
         assert!(window.try_find("host-key-state").is_some());
@@ -325,12 +331,28 @@ fn stream_says_what_comes_next_and_where_the_host_key_goes(cx: &mut TestAppConte
         assert!(window.try_find("host-key-state").is_none());
     });
     press(cx, &opened, &["escape"]);
-    // With a key, nothing to add.
-    opened.settings.borrow_mut().stream_host_key = "00".into();
+
+    // A sentence on the clipboard is turned away, saying why.
+    let kept = || !opened.settings.borrow().stream_host_key.is_empty();
+    cx.write_to_clipboard(ClipboardItem::new_string("Here is your key: abc".into()));
+    update(cx, &opened, |window, cx| window.click("paste-host-key", cx));
+    assert!(!kept());
     update(cx, &opened, |window, _| {
-        assert!(window.try_find("hint").is_some());
-        assert!(window.try_find("add-host-key").is_none());
+        assert!(window.try_find("host-key-note").is_some());
     });
+    // A key is kept, by Ctrl+V too; then New streams.
+    cx.write_to_clipboard(ClipboardItem::new_string("k3y-for-a-test".into()));
+    press(cx, &opened, &["ctrl-v"]);
+    assert!(kept());
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("paste-host-key").is_none());
+        assert!(window.try_find("host-key-note").is_some());
+    });
+    press(cx, &opened, &["n"]);
+    assert_eq!(
+        *opened.seen.captures.borrow(),
+        [(CaptureMode::Stream, CaptureTarget::Area)]
+    );
 }
 
 #[gpui_kit::test]

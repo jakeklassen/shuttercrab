@@ -51,8 +51,8 @@ use crate::{
 use canvas::{Shown, canvas_size, pointer_in_canvas};
 use chrono::NaiveDateTime;
 use gpui_kit::{
-    Animation, AnimationExt as _, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
-    Hsla, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseButton,
+    Animation, AnimationExt as _, App, AppContext as _, ClickEvent, Context, Div, Entity,
+    FocusHandle, Hsla, InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseButton,
     MouseDownEvent, ParentElement as _, Pixels, Render, RenderImage, Role, SharedString, Size,
     StatefulInteractiveElement as _, Styled as _, Task, TestSupportExt as _, Window, actions,
     assets::IconName,
@@ -274,6 +274,14 @@ pub struct Fit {
     pub least_height: u32,
 }
 
+/// What came of pasting a host key on the home page.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+enum KeyNote {
+    Kept,
+    /// Not kept, and why.
+    Refused(&'static str),
+}
+
 /// What the window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -391,6 +399,8 @@ pub struct MainWindow {
     hooks: Rc<MainHooks>,
     page: Page,
     settings: Option<Entity<SettingsWindow>>,
+    /// What came of pasting a host key on the home page: kept, or why not.
+    key_note: Option<KeyNote>,
     menu: Option<Menu>,
     /// The highlighted item of the open menu.
     highlighted: usize,
@@ -469,6 +479,7 @@ impl MainWindow {
             hooks,
             page: Page::Home,
             settings: None,
+            key_note: None,
             menu: None,
             highlighted: 0,
             shown: None,
@@ -728,8 +739,46 @@ impl MainWindow {
 
     fn start(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         self.menu = None;
+        // New is off until there is a key to stream with; the middle of the
+        // window says how to add one.
+        if self.needs_host_key() {
+            return;
+        }
         let (mode, target) = (self.mode(), self.target());
         (self.hooks.capture)(mode, target, window, cx);
+        cx.notify();
+    }
+
+    /// Whether Stream is chosen with no host key to stream with yet.
+    fn needs_host_key(&self) -> bool {
+        self.mode() == CaptureMode::Stream && self.settings().stream_host_key.is_empty()
+    }
+
+    /// Keep the host key on the clipboard, encrypted, and say whether it
+    /// was. The key itself is never shown or logged.
+    fn paste_host_key(&mut self, cx: &mut Context<Self>) {
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default();
+        let note = match Settings::host_key_problem(&text) {
+            Some(problem) => KeyNote::Refused(problem),
+            None => {
+                let mut kept = Ok(());
+                self.change(cx, |s| kept = s.set_host_key(&text));
+                match kept {
+                    Ok(()) => {
+                        log::info!("a host key was kept");
+                        KeyNote::Kept
+                    }
+                    Err(e) => {
+                        log::error!("could not keep the host key: {e:#}");
+                        KeyNote::Refused("The key could not be kept. The log says why.")
+                    }
+                }
+            }
+        };
+        self.key_note = Some(note);
         cx.notify();
     }
 
@@ -882,6 +931,10 @@ impl MainWindow {
                 "0" => self.zoom(window, cx, |view, _| view.fit_to_canvas()),
                 "1" => self.zoom(window, cx, |view, canvas| view.zoom_to(1., None, canvas)),
                 "c" => self.copy(cx),
+                // Only for Stream without a key: nothing else pastes here.
+                "v" if self.needs_host_key() && self.shown.is_none() && self.video.is_none() => {
+                    self.paste_host_key(cx)
+                }
                 "s" => self.save_as(cx),
                 "w" => self.clear(window, cx),
                 "z" if keystroke.modifiers.shift => self.redo(window, cx),
@@ -994,6 +1047,7 @@ impl MainWindow {
     }
 
     fn new_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let off = self.needs_host_key();
         div()
             .id("new")
             .role(Role::Button)
@@ -1008,8 +1062,11 @@ impl MainWindow {
             .bg(tile())
             .border_1()
             .border_color(border())
-            .hover(|s| s.bg(hover()))
-            .cursor_pointer()
+            .when_else(
+                off,
+                |d| d.opacity(0.35),
+                |d| d.hover(|s| s.bg(hover())).cursor_pointer(),
+            )
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start(window, cx)))
             .child(Icon::new(IconName::Plus).size(px(16.)).text_color(coral()))
             .child("New")
@@ -1605,15 +1662,16 @@ impl MainWindow {
             .into_any_element()
     }
 
-    /// What happens next with Stream chosen; or, without a host key yet,
-    /// the way to add one.
+    /// With Stream chosen, the middle of the window: without a host key,
+    /// what streaming is, what the key is for and the way to add it; with
+    /// one, what happens after New.
     fn stream_hint(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let new = if self.single_keys() {
-            "Choose what to stream above, then press N"
+        let column = div().flex().flex_col().items_center().gap_2().px_4();
+        let content = if self.needs_host_key() {
+            self.host_key_ask(column, cx).into_any_element()
         } else {
-            "Choose what to stream above, then click New"
+            self.stream_steps(column).into_any_element()
         };
-        let has_key = !self.settings().stream_host_key.is_empty();
         div()
             .id("hint")
             .test_support()
@@ -1622,38 +1680,141 @@ impl MainWindow {
             .flex_col()
             .items_center()
             .justify_center()
-            .gap_1p5()
+            .child(content)
+    }
+
+    /// Stream with a host key: what happens after New.
+    fn stream_steps(&self, column: Div) -> Div {
+        let new = if self.single_keys() {
+            "Choose what to stream above, then press N"
+        } else {
+            "Choose what to stream above, then click New"
+        };
+        column
+            .children(self.key_note_line())
             .child(new)
-            .child(div().text_xs().text_color(muted()).child(if has_key {
-                "Then check the sound and quality, and Go live: the link to share is copied for you"
-            } else {
-                "Streaming needs a host key, pasted in once"
-            }))
-            .when(!has_key, |d| {
-                d.child(
-                    div()
-                        .id("add-host-key")
-                        .role(Role::Button)
-                        .aria_label("Add your host key")
-                        .test_support()
-                        .mt_2()
-                        .flex()
-                        .items_center()
-                        .gap_1p5()
-                        .px_2p5()
-                        .py_1()
-                        .rounded_md()
-                        .text_xs()
-                        .bg(tile())
-                        .hover(|s| s.bg(hover()))
-                        .cursor_pointer()
-                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.show(Page::StreamingSettings, window, cx);
-                        }))
-                        .child(Icon::new(IconName::Settings).size(px(14.)))
-                        .child("Add your host key"),
-                )
-            })
+            .child(Self::hint_paragraph(
+                "Pick the area, check the sound and quality, then Go live. The link is copied \
+                 for you to send; whoever opens it watches as it happens.",
+            ))
+    }
+
+    /// Stream without a host key: what the key is for, and pasting it in
+    /// here or in the settings.
+    fn host_key_ask(&self, column: Div, cx: &mut Context<Self>) -> Div {
+        let paste = Self::hint_button(
+            (
+                "paste-host-key",
+                IconName::ClipboardPaste,
+                "Paste host key",
+                "Ctrl+V",
+            ),
+            cx.listener(|this, _: &ClickEvent, _, cx| this.paste_host_key(cx)),
+        );
+        let settings = Self::hint_button(
+            (
+                "streaming-settings",
+                IconName::Settings,
+                "Streaming settings",
+                "",
+            ),
+            cx.listener(|this, _: &ClickEvent, window, cx| {
+                this.show(Page::StreamingSettings, window, cx);
+            }),
+        );
+        column
+            .child(
+                div()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(
+                        Icon::new(IconName::KeyRound)
+                            .size(px(18.))
+                            .text_color(coral()),
+                    )
+                    .child(
+                        div()
+                            .font_weight(gpui_kit::FontWeight::SEMIBOLD)
+                            .child("Streaming needs your host key"),
+                    ),
+            )
+            .child(Self::hint_paragraph(
+                "Stream an area, a window or a display, with its sound, to anyone you send the \
+             link to. The key lets this PC open a stream; you paste it in once, and it is \
+             kept encrypted to your Windows account. Watching needs no key.",
+            ))
+            .child(
+                div()
+                    .mt_1()
+                    .flex()
+                    .items_center()
+                    .gap_2()
+                    .child(paste)
+                    .child(settings),
+            )
+            .children(self.key_note_line())
+            .child(Self::hint_paragraph(
+                "Copy your key first. Don't have one? Ask whoever set up your streaming.",
+            ))
+    }
+
+    /// A few lines of explanation in the middle of the window.
+    fn hint_paragraph(text: &'static str) -> impl IntoElement + use<> {
+        div()
+            .max_w(px(500.))
+            .text_sm()
+            .text_center()
+            .text_color(muted())
+            .child(text)
+    }
+
+    /// A button in the middle of the window: an icon, a label and its key.
+    fn hint_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
+        (id, icon, label, key): (&'static str, IconName, &'static str, &'static str),
+        click: F,
+    ) -> impl IntoElement + use<F> {
+        div()
+            .id(id)
+            .role(Role::Button)
+            .aria_label(label)
+            .test_support()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .h(px(32.))
+            .px_3()
+            .rounded_md()
+            .text_sm()
+            .bg(tile())
+            .border_1()
+            .border_color(border())
+            .hover(|s| s.bg(hover()))
+            .cursor_pointer()
+            .on_click(click)
+            .child(Icon::new(icon).size(px(16.)))
+            .child(label)
+            .children(Self::key_hint(key))
+    }
+
+    /// What came of pasting a host key, if one was pasted.
+    fn key_note_line(&self) -> Option<impl IntoElement + use<>> {
+        let (icon, text, color) = match self.key_note? {
+            KeyNote::Kept => (IconName::Check, "Host key kept", gpui_kit::white()),
+            KeyNote::Refused(why) => (IconName::X, why, coral()),
+        };
+        Some(
+            div()
+                .id("host-key-note")
+                .test_support()
+                .flex()
+                .items_center()
+                .gap_1p5()
+                .text_xs()
+                .text_color(color)
+                .child(Icon::new(icon).size(px(14.)))
+                .child(text),
+        )
     }
 
     /// In a narrow window: the target chosen, opening the menu of targets.

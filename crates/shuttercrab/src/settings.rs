@@ -188,6 +188,19 @@ impl Settings {
             .ok()
     }
 
+    /// Why `text`, as pasted, cannot be a host key, if it cannot. A key is
+    /// one word, so a sentence or a page copied by mistake is turned away.
+    pub fn host_key_problem(text: &str) -> Option<&'static str> {
+        let key = text.trim();
+        if key.is_empty() {
+            Some("The clipboard has no key in it. Copy your host key, then paste again.")
+        } else if key.len() > MAX_HOST_KEY || key.chars().any(char::is_whitespace) {
+            Some("That doesn't look like a host key. Copy just the key, then paste again.")
+        } else {
+            None
+        }
+    }
+
     /// Keep `key` as the host key, encrypted; an empty one forgets it.
     pub fn set_host_key(&mut self, key: &str) -> Result<()> {
         let key = key.trim();
@@ -344,6 +357,10 @@ impl Settings {
 /// The undo windows the settings offer, in seconds.
 pub const UNDO_CHOICES: [u32; 4] = [5, 10, 20, 30];
 
+/// The longest text taken as a host key: far longer than any key, and far
+/// shorter than a page copied by mistake.
+const MAX_HOST_KEY: usize = 512;
+
 /// `Pictures\Shuttercrab`, or a `Shuttercrab` folder in the home directory when
 /// there is no Pictures folder.
 pub fn default_output_dir() -> PathBuf {
@@ -425,6 +442,14 @@ fn ink_text(ink: Ink) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_host_key_is_one_word() {
+        assert_eq!(Settings::host_key_problem("  k3y-from-the-owner\r\n"), None);
+        assert!(Settings::host_key_problem(" \n").is_some());
+        assert!(Settings::host_key_problem("Here is your key: abc").is_some());
+        assert!(Settings::host_key_problem(&"a".repeat(MAX_HOST_KEY + 1)).is_some());
+    }
 
     #[test]
     fn shape_choices_are_remembered_and_odd_values_fall_back() {

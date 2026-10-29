@@ -1210,10 +1210,12 @@ fn host_key_row(hooks: Rc<Hooks>) -> impl IntoElement {
             Button::new("paste-host-key")
                 .label("Paste key")
                 .on_click(move |_, _, cx| {
-                    let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
-                        return;
-                    };
-                    if text.trim().is_empty() {
+                    let text = cx
+                        .read_from_clipboard()
+                        .and_then(|item| item.text())
+                        .unwrap_or_default();
+                    if let Some(problem) = Settings::host_key_problem(&text) {
+                        log::warn!("not kept as the host key: {problem}");
                         return;
                     }
                     let kept = paste.settings.borrow_mut().set_host_key(&text);
