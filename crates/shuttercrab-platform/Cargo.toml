@@ -1,6 +1,6 @@
 [package]
 name = "shuttercrab-platform"
-version = "0.1.28"
+version = "0.1.29"
 description = "Shuttercrab's OS integration: global hotkeys, the tray, clipboard, and window behaviour for GPUI windows"
 edition.workspace = true
 rust-version.workspace = true

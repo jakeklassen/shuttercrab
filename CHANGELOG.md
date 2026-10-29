@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.29](https://github.com/jakeklassen/shuttercrab/compare/v0.1.28...v0.1.29) - 2026-10-29
+
+### Fixed
+
+- a stream that doesn't start says why in the main window
+
 ## [0.1.28](https://github.com/jakeklassen/shuttercrab/compare/v0.1.27...v0.1.28) - 2026-10-29
 
 ### Added
