@@ -13,6 +13,7 @@ chrono = { version = "0.4", default-features = false, features = ["std", "clock"
 dirs = "6"
 shuttercrab-capture = { path = "../shuttercrab-capture" }
 shuttercrab-platform = { path = "../shuttercrab-platform" }
+shuttercrab-stream = { path = "../shuttercrab-stream" }
 shuttercrab-types = { path = "../shuttercrab-types" }
 futures = "0.3"
 gpui-kit = "0.7.0"
