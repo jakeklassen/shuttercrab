@@ -32,14 +32,20 @@ use windows::{
                 GetMonitorInfoW, HMONITOR, MONITOR_DEFAULTTOPRIMARY, MONITORINFO, MonitorFromPoint,
             },
         },
-        System::LibraryLoader::GetModuleHandleW,
+        System::{
+            Com::{COINIT_MULTITHREADED, CoInitializeEx},
+            LibraryLoader::GetModuleHandleW,
+        },
         UI::{
-            HiDpi::{AdjustWindowRectExForDpi, GetDpiForMonitor, MDT_EFFECTIVE_DPI},
+            HiDpi::{
+                AdjustWindowRectExForDpi, DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
+                GetDpiForMonitor, MDT_EFFECTIVE_DPI, SetProcessDpiAwarenessContext,
+            },
             Input::KeyboardAndMouse::{VK_ESCAPE, VK_OEM_4, VK_OEM_6},
             WindowsAndMessaging::*,
         },
     },
-    core::{HSTRING, Interface, w},
+    core::{HSTRING, Interface, PCWSTR, w},
 };
 
 /// The stream ended.
@@ -158,6 +164,12 @@ thread_local! {
 /// Play `input` in a window until it is closed: Escape closes it, M mutes,
 /// [ and ] show the pictures 20 ms earlier or later against the sound.
 pub fn watch(input: Input, options: &WatchOptions) -> Result<()> {
+    // Physical pixels, as the app has, and COM for the sound and the
+    // decoders. Either may be set up already.
+    unsafe {
+        let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
+    }
     let Input {
         pictures,
         sound: sound_input,
@@ -257,6 +269,19 @@ pub fn watch(input: Input, options: &WatchOptions) -> Result<()> {
     Ok(())
 }
 
+/// Tell the user `text` in a message box titled `title`, for a viewer with
+/// no window yet to say it in.
+pub fn tell(title: &str, text: &str) {
+    unsafe {
+        MessageBoxW(
+            None,
+            &HSTRING::from(text),
+            &HSTRING::from(title),
+            MB_OK | MB_ICONINFORMATION,
+        );
+    }
+}
+
 /// The monitor under the pointer.
 fn pointer_monitor() -> HMONITOR {
     let mut at = POINT::default();
@@ -336,6 +361,8 @@ fn open_window(format: &LiveFormat, monitor: HMONITOR, title: &str) -> Result<HW
         let class = WNDCLASSW {
             lpfnWndProc: Some(window_proc),
             hInstance: instance.into(),
+            // The program's icon, resource 1, if it has one.
+            hIcon: LoadIconW(Some(instance.into()), PCWSTR(1 as _)).unwrap_or_default(),
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             lpszClassName: w!("ShuttercrabLive"),
             ..Default::default()

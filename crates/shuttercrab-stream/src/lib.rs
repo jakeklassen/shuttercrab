@@ -24,7 +24,7 @@ pub use shuttercrab_connect::{Link, MEET, Path};
 #[cfg(windows)]
 pub use host::{Room, Stats, Stream, Viewer, wait_locally};
 #[cfg(windows)]
-pub use watch::{Input, WatchOptions, watch};
+pub use watch::{Input, WatchOptions, tell, watch};
 
 use shuttercrab_capture::live::VideoCodec;
 

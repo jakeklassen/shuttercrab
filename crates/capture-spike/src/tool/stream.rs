@@ -116,7 +116,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         sound_track: sound,
         path: "unused.mp4".into(),
     };
-    let stream = Stream::start(options, viewer, quality, video, codec)?;
+    let stream = Stream::start(options, (width, height), viewer, quality, (video, codec))?;
     println!("Pictures as {}.", describe(stream.video()));
     println!(
         "Streaming. 1, 2 and 3 switch to {}, {} and {}; close the viewer, or Ctrl+C here, to stop.",
