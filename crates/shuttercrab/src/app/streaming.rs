@@ -137,10 +137,18 @@ pub(super) async fn stream(
             if let Some(controls) = controls {
                 controls.popup.close(cx);
             }
-            return Err(Failure::new(
-                format!("Could not open the stream: {e:#}"),
-                format!("streamer: {e:#}"),
-            ));
+            // Said in the main window, where Stream's steps are, rather than
+            // in a notification that is easily missed.
+            log::error!("streamer: {e:#}");
+            let why = format!("{e:#}");
+            open_main(state, Page::Home, cx);
+            let main = state.main_window.borrow().clone();
+            if let Some((window, view)) = main {
+                let _ = window.update(cx, |_, _, cx| {
+                    view.update(cx, |view, cx| view.stream_failed(&why, cx));
+                });
+            }
+            return Ok(());
         }
     };
     log::info!(

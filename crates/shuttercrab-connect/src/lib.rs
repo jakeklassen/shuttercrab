@@ -32,6 +32,11 @@ use tokio::runtime::Runtime;
 /// The meeting point Shuttercrab uses unless told otherwise.
 pub const MEET: &str = "https://shuttercrab.sandbox.gdn";
 
+/// Why the meeting point turns away a host whose key it does not know, as
+/// meet/routes/rooms/[room].ws.ts says it: the error opening a room ends
+/// with it.
+pub const NOT_THE_HOST_KEY: &str = "Not the host key";
+
 /// How long a viewer waits for the streaming app to be in the room.
 const WAIT_FOR_HOST: Duration = Duration::from_secs(10);
 /// How long the room may take to answer, a refusal or a relay login.
