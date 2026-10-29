@@ -6,7 +6,10 @@
 //! The window reaches the rest of Shuttercrab only through [`Hooks`], so it
 //! can be tested on its own.
 
-use crate::settings::Settings;
+use crate::{
+    palette::{coral, muted},
+    settings::Settings,
+};
 use futures::future::LocalBoxFuture;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
@@ -30,7 +33,11 @@ use shuttercrab_platform::{
     os::{Os, os},
 };
 use shuttercrab_stream::Quality;
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{
+    cell::{Cell, RefCell},
+    path::PathBuf,
+    rc::Rc,
+};
 
 /// What the settings window needs from the rest of Shuttercrab.
 pub struct Hooks {
@@ -465,6 +472,8 @@ pub struct SettingsWindow {
     microphones: Vec<Microphone>,
     /// Open on Streaming, for a stream started without a host key.
     at_streaming: bool,
+    /// What the last press of the host key's buttons did.
+    host_key_note: KeyNote,
 }
 
 impl SettingsWindow {
@@ -484,6 +493,7 @@ impl SettingsWindow {
             on_escape: None,
             microphones,
             at_streaming: false,
+            host_key_note: KeyNote::default(),
         }
     }
 
@@ -882,6 +892,7 @@ impl SettingsWindow {
     /// that lets this PC stream.
     fn streaming(&self) -> SettingPage {
         let (read, write, key) = (self.hooks.clone(), self.hooks.clone(), self.hooks.clone());
+        let note = self.host_key_note.clone();
         let qualities = Quality::ALL
             .iter()
             .map(|q| (SharedString::from(q.name()), SharedString::from(q.name())))
@@ -911,7 +922,7 @@ impl SettingsWindow {
                 .item(
                     SettingItem::new(
                         "Host key",
-                        SettingField::render(move |_, _, _| host_key_row(key.clone())),
+                        SettingField::render(move |_, _, _| host_key_row(key.clone(), note.clone())),
                     )
                     .description("Lets this PC open a stream. Copy the key you were given, then Paste key: it is kept encrypted to your Windows account and never shown."),
                 ),
@@ -1190,58 +1201,77 @@ fn folder_row(hooks: Rc<Hooks>, folder: Folder) -> impl IntoElement {
         )
 }
 
+/// What the last press of Paste key or Forget did, if anything: whether it
+/// went well, and what to say.
+type KeyNote = Rc<Cell<Option<(bool, &'static str)>>>;
+
 /// Whether a host key is kept, with buttons to paste one from the clipboard
-/// and to forget it. The key itself is never shown or logged.
-fn host_key_row(hooks: Rc<Hooks>) -> impl IntoElement {
+/// and to forget it, and what the last press did. The key itself is never
+/// shown or logged.
+fn host_key_row(hooks: Rc<Hooks>, note: KeyNote) -> impl IntoElement {
     let kept = !hooks.settings.borrow().stream_host_key.is_empty();
     let (paste, forget) = (hooks.clone(), hooks);
-    div()
-        .flex()
-        .items_center()
-        .gap_2()
-        .child(
-            div()
-                .id("host-key-state")
-                .test_support()
-                .text_sm()
-                .child(if kept { "Kept" } else { "None yet" }),
-        )
-        .child(
-            Button::new("paste-host-key")
-                .label("Paste key")
-                .on_click(move |_, _, cx| {
+    let (paste_note, forget_note) = (note.clone(), note.clone());
+    let buttons =
+        div()
+            .flex()
+            .items_center()
+            .gap_2()
+            .child(
+                div()
+                    .id("host-key-state")
+                    .test_support()
+                    .text_sm()
+                    .child(if kept { "A key is kept" } else { "No key yet" }),
+            )
+            .child(Button::new("paste-host-key").label("Paste key").on_click(
+                move |_, window, cx| {
                     let text = cx
                         .read_from_clipboard()
                         .and_then(|item| item.text())
                         .unwrap_or_default();
-                    if let Some(problem) = Settings::host_key_problem(&text) {
-                        log::warn!("not kept as the host key: {problem}");
-                        return;
+                    let pasted = paste.settings.borrow_mut().paste_host_key(&text);
+                    if pasted.is_kept() {
+                        (paste.changed)(cx);
                     }
-                    let kept = paste.settings.borrow_mut().set_host_key(&text);
-                    match kept {
-                        Ok(()) => {
-                            log::info!("a host key was kept");
-                            (paste.changed)(cx);
-                        }
-                        Err(e) => log::error!("could not keep the host key: {e:#}"),
-                    }
-                }),
-        )
-        .when(kept, |d| {
-            d.child(
-                Button::new("forget-host-key")
-                    .label("Forget")
-                    .on_click(move |_, _, cx| {
+                    paste_note.set(Some((pasted.is_kept(), pasted.message())));
+                    window.refresh();
+                },
+            ))
+            .when(kept, |d| {
+                d.child(Button::new("forget-host-key").label("Forget").on_click(
+                    move |_, window, cx| {
                         if forget.settings.borrow_mut().set_host_key("").is_ok() {
                             log::info!("the host key was forgotten");
                             (forget.changed)(cx);
+                            forget_note.set(Some((true, "Host key forgotten")));
+                            window.refresh();
                         }
-                    }),
+                    },
+                ))
+            });
+    div()
+        .flex()
+        .flex_col()
+        .items_end()
+        .gap_1()
+        .child(buttons)
+        .when_some(note.get(), |d, (went_well, said)| {
+            d.child(
+                div()
+                    .id("host-key-note")
+                    .test_support()
+                    // As wide as the buttons and no wider: it wraps under
+                    // them rather than pushing them aside.
+                    .w(px(0.))
+                    .min_w_full()
+                    .text_xs()
+                    .text_right()
+                    .text_color(if went_well { muted() } else { coral() })
+                    .child(said),
             )
         })
 }
-
 impl Render for SettingsWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()

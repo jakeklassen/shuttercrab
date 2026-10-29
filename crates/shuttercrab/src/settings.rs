@@ -211,6 +211,61 @@ impl Settings {
         };
         Ok(())
     }
+
+    /// Keep `text`, pasted, as the host key if it can be one, and say what
+    /// came of it. The key itself is never shown or logged.
+    pub fn paste_host_key(&mut self, text: &str) -> KeyPaste {
+        if let Some(problem) = Self::host_key_problem(text) {
+            return KeyPaste::Refused(problem);
+        }
+        let before = self.host_key();
+        if before.as_deref() == Some(text.trim()) {
+            return KeyPaste::Same;
+        }
+        match self.set_host_key(text) {
+            Ok(()) => {
+                log::info!("a host key was kept");
+                if before.is_some() {
+                    KeyPaste::Replaced
+                } else {
+                    KeyPaste::Kept
+                }
+            }
+            Err(e) => {
+                log::error!("could not keep the host key: {e:#}");
+                KeyPaste::Refused("The key could not be kept. The log says why.")
+            }
+        }
+    }
+}
+
+/// What came of pasting a host key.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum KeyPaste {
+    /// Kept, where there was none.
+    Kept,
+    /// Kept in place of another.
+    Replaced,
+    /// The key already kept.
+    Same,
+    /// Not kept, and why.
+    Refused(&'static str),
+}
+
+impl KeyPaste {
+    /// What to tell the user.
+    pub fn message(self) -> &'static str {
+        match self {
+            Self::Kept => "Host key kept",
+            Self::Replaced => "Host key replaced with the one you copied",
+            Self::Same => "That key is already kept",
+            Self::Refused(why) => why,
+        }
+    }
+
+    pub fn is_kept(self) -> bool {
+        !matches!(self, Self::Refused(_))
+    }
 }
 
 impl Settings {
@@ -449,6 +504,20 @@ mod tests {
         assert!(Settings::host_key_problem(" \n").is_some());
         assert!(Settings::host_key_problem("Here is your key: abc").is_some());
         assert!(Settings::host_key_problem(&"a".repeat(MAX_HOST_KEY + 1)).is_some());
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn pasting_a_host_key_says_what_came_of_it() {
+        let mut settings = Settings::default();
+        assert!(matches!(
+            settings.paste_host_key("two words"),
+            KeyPaste::Refused(_)
+        ));
+        assert_eq!(settings.paste_host_key("first-key\n"), KeyPaste::Kept);
+        assert_eq!(settings.paste_host_key(" first-key "), KeyPaste::Same);
+        assert_eq!(settings.paste_host_key("second-key"), KeyPaste::Replaced);
+        assert_eq!(settings.host_key().as_deref(), Some("second-key"));
     }
 
     #[test]
