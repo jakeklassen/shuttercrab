@@ -10,6 +10,7 @@ use crate::{
 };
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use shuttercrab_stream::Quality;
 use std::path::{Path, PathBuf};
 
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -113,6 +114,11 @@ pub struct Settings {
     /// phone numbers.
     pub redact_emails: bool,
     pub redact_phones: bool,
+    /// The quality a stream starts at; the stream's bar switches it.
+    pub stream_quality: Quality,
+    /// The key that lets this PC stream, encrypted to the user: read
+    /// through [`Settings::host_key`]. Empty when none is given.
+    pub stream_host_key: String,
 }
 
 impl Default for Settings {
@@ -165,7 +171,32 @@ impl Default for Settings {
             shape_size: ShapeStyle::DEFAULT.size,
             redact_emails: true,
             redact_phones: true,
+            stream_quality: Quality::P1080,
+            stream_host_key: String::new(),
         }
+    }
+}
+
+impl Settings {
+    /// The host key, if one is kept and this user can read it.
+    pub fn host_key(&self) -> Option<String> {
+        if self.stream_host_key.is_empty() {
+            return None;
+        }
+        shuttercrab_platform::secret::unprotect(&self.stream_host_key)
+            .inspect_err(|e| log::warn!("the host key cannot be read: {e:#}"))
+            .ok()
+    }
+
+    /// Keep `key` as the host key, encrypted; an empty one forgets it.
+    pub fn set_host_key(&mut self, key: &str) -> Result<()> {
+        let key = key.trim();
+        self.stream_host_key = if key.is_empty() {
+            String::new()
+        } else {
+            shuttercrab_platform::secret::protect(key)?
+        };
+        Ok(())
     }
 }
 

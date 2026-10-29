@@ -22,6 +22,11 @@
 //! microphone (M), which one (Down opens the list), and the system sound
 //! (A). Choices there are for that recording only. Both switches stay
 //! while recording, so either source can be switched on or off mid-take.
+//!
+//! The same bar runs a live stream (issue #66), with the stream's own
+//! buttons: the quality (1, 2 and 3 for 1080p, 1440p and 4K) before and
+//! during the stream, Go live (Enter) to open it, then Copy link (C) and
+//! Stop (S). Its status says whether a viewer is watching.
 
 use crate::{
     palette::{border, hover, muted, paused, recording, surface, tile},
@@ -34,6 +39,7 @@ use gpui_kit::{
     assets::IconName, canvas, component::Icon, div, prelude::FluentBuilder as _, px,
 };
 use shuttercrab_capture::record::{Microphone, Source};
+use shuttercrab_stream::Quality;
 use std::{
     cell::Cell,
     rc::Rc,
@@ -63,6 +69,20 @@ pub enum RecordBarEvent {
     /// In a window recording: the system sound is only the window's app's
     /// (`true`), or all of it; the bar already shows it.
     SetAppOnly(bool),
+    /// A stream's quality; the bar already shows it.
+    Quality(Quality),
+    /// Put the stream's link on the clipboard.
+    CopyLink,
+}
+
+/// A stream's part of the bar.
+#[derive(Clone, Debug)]
+struct Stream {
+    quality: Quality,
+    /// A viewer is watching: the clock runs from when it came.
+    live: bool,
+    /// What the stream is doing, after the time while live.
+    detail: SharedString,
 }
 
 /// The sound a recording takes.
@@ -147,6 +167,15 @@ struct Hint {
 /// The bar's size in logical pixels.
 pub const RECORD_BAR_WIDTH: f32 = 1060.0;
 pub const RECORD_BAR_HEIGHT: f32 = 48.0;
+/// A stream's bar, which has the quality besides.
+pub const STREAM_BAR_WIDTH: f32 = 1240.0;
+
+/// The quality buttons' ids and keys, in [`Quality::ALL`]'s order.
+const QUALITY_BUTTONS: [(&str, &str); 3] = [
+    ("stream-1080p", "1"),
+    ("stream-1440p", "2"),
+    ("stream-4k", "3"),
+];
 
 /// The time is redrawn once a second, just after the clock reaches the
 /// next whole second (paused, the countdowns still move each second).
@@ -186,6 +215,8 @@ pub struct RecordBar {
     /// Where the microphone list's button was last drawn, so the list can
     /// open below it.
     list_button: Rc<Cell<Bounds<Pixels>>>,
+    /// For a live stream rather than a recording.
+    stream: Option<Stream>,
     focus: FocusHandle,
 }
 
@@ -234,8 +265,39 @@ impl RecordBar {
             microphones: Vec::new(),
             app_choice: false,
             list_button: Rc::default(),
+            stream: None,
             focus,
         }
+    }
+
+    /// Make the bar a stream's, starting at `quality`.
+    pub fn streaming(mut self, quality: Quality) -> Self {
+        self.stream = Some(Stream {
+            quality,
+            live: false,
+            detail: SharedString::default(),
+        });
+        self
+    }
+
+    /// Say what the stream is doing: `live` while a viewer watches, with
+    /// `detail` after the time; otherwise `detail` alone.
+    pub fn stream_status(
+        &mut self,
+        live: bool,
+        detail: impl Into<SharedString>,
+        cx: &mut Context<Self>,
+    ) {
+        if let Some(stream) = &mut self.stream {
+            stream.live = live;
+            stream.detail = detail.into();
+            cx.notify();
+        }
+    }
+
+    /// The stream's quality, as chosen in the bar.
+    pub fn quality(&self) -> Option<Quality> {
+        self.stream.as_ref().map(|s| s.quality)
     }
 
     /// Show the ready bar, recording `sound` unless switched, with
@@ -342,6 +404,11 @@ impl RecordBar {
         match event {
             RecordBarEvent::SetSound(source, on) => self.sound.set(source, on),
             RecordBarEvent::SetAppOnly(on) => self.sound.app_only = on,
+            RecordBarEvent::Quality(quality) => {
+                if let Some(stream) = &mut self.stream {
+                    stream.quality = quality;
+                }
+            }
             RecordBarEvent::Start => self.mode = BarMode::Starting,
             _ => {}
         }
@@ -372,6 +439,12 @@ impl RecordBar {
 
     fn on_key_down(&mut self, event: &KeyDownEvent, _: &mut Window, cx: &mut Context<Self>) {
         let key = event.keystroke.key.as_str();
+        if self.stream.is_some() {
+            if let Some(request) = self.stream_key(key) {
+                self.ask(request, cx);
+            }
+            return;
+        }
         let request = match (self.mode, key) {
             (_, "m") if self.switches_shown() => Some(self.flip(Source::Microphone)),
             (_, "a") if self.switches_shown() => Some(self.flip(Source::System)),
@@ -398,6 +471,30 @@ impl RecordBar {
         };
         if let Some(request) = request {
             self.ask(request, cx);
+        }
+    }
+
+    /// What `key` asks of a stream's bar.
+    fn stream_key(&self, key: &str) -> Option<RecordBarEvent> {
+        let quality = QUALITY_BUTTONS
+            .iter()
+            .position(|(_, k)| *k == key)
+            .map(|i| RecordBarEvent::Quality(Quality::ALL[i]));
+        match (self.mode, key) {
+            (_, "m") if self.switches_shown() => Some(self.flip(Source::Microphone)),
+            (_, "a") if self.switches_shown() => Some(self.flip(Source::System)),
+            (_, "b") if self.switches_shown() && self.app_choice => {
+                Some(RecordBarEvent::SetAppOnly(!self.sound.app_only))
+            }
+            (BarMode::Ready | BarMode::Starting | BarMode::Controls, _) if quality.is_some() => {
+                quality
+            }
+            (BarMode::Ready, "enter") => Some(RecordBarEvent::Start),
+            (BarMode::Ready, "escape") => Some(RecordBarEvent::Close),
+            (BarMode::Ready, "down") => Some(RecordBarEvent::ChooseMicrophone),
+            (BarMode::Controls, "c") => Some(RecordBarEvent::CopyLink),
+            (BarMode::Controls, "s") => Some(RecordBarEvent::Stop),
+            _ => None,
         }
     }
 
@@ -648,6 +745,17 @@ impl RecordBar {
         {
             return (text.clone(), gpui_kit::white());
         }
+        if let Some(stream) = &self.stream {
+            return match self.mode {
+                BarMode::Ready => ("Ready to stream".into(), gpui_kit::white()),
+                BarMode::Starting => ("Opening the stream…".into(), muted()),
+                _ if stream.live => (
+                    format!("Live {} · {}", self.time(), stream.detail).into(),
+                    gpui_kit::white(),
+                ),
+                _ => (stream.detail.clone(), gpui_kit::white()),
+            };
+        }
         let is_paused = self.clock.get().is_paused();
         match self.mode {
             BarMode::Ready => ("Ready to record".into(), gpui_kit::white()),
@@ -677,6 +785,9 @@ impl RecordBar {
     }
 
     fn buttons(&self, now: Instant, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        if self.stream.is_some() {
+            return self.stream_buttons(cx);
+        }
         match self.mode {
             BarMode::Ready => self.ready_buttons(cx),
             BarMode::Starting => self.switches(cx),
@@ -717,6 +828,112 @@ impl RecordBar {
                 RecordBarEvent::Close,
             ),
         ]
+    }
+
+    /// A stream's buttons: before it, the sound to send, the quality, Go
+    /// live and Cancel; while it runs, the sound switches, the quality,
+    /// Copy link and Stop.
+    fn stream_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let white = gpui_kit::white();
+        let mut buttons = match self.mode {
+            BarMode::Ready => vec![
+                self.sound_switch(Source::Microphone, cx),
+                self.microphone_list(cx),
+                self.sound_switch(Source::System, cx),
+                self.app_sound(cx),
+            ],
+            _ => vec![
+                self.sound_switch(Source::Microphone, cx),
+                self.sound_switch(Source::System, cx),
+                self.app_sound(cx),
+            ],
+        };
+        buttons.push(div().w(px(4.)).into_any_element());
+        buttons.extend(self.quality_buttons(cx));
+        buttons.push(div().w(px(4.)).into_any_element());
+        match self.mode {
+            BarMode::Ready => {
+                buttons.push(self.button(
+                    "stream-start",
+                    IconName::Radio,
+                    "Go live",
+                    self.letter("Enter"),
+                    recording(),
+                    cx,
+                    RecordBarEvent::Start,
+                ));
+                buttons.push(self.button(
+                    "stream-close",
+                    IconName::X,
+                    "Cancel",
+                    self.letter("Esc"),
+                    white,
+                    cx,
+                    RecordBarEvent::Close,
+                ));
+            }
+            BarMode::Controls => {
+                buttons.push(self.button(
+                    "stream-copy-link",
+                    IconName::Copy,
+                    "Copy link",
+                    self.letter("C"),
+                    white,
+                    cx,
+                    RecordBarEvent::CopyLink,
+                ));
+                buttons.push(self.button(
+                    "stream-stop",
+                    IconName::Square,
+                    "Stop",
+                    self.letter("S"),
+                    recording(),
+                    cx,
+                    RecordBarEvent::Stop,
+                ));
+            }
+            _ => {}
+        }
+        buttons
+    }
+
+    /// The stream's qualities, the chosen one lit, each with its key.
+    fn quality_buttons(&self, cx: &mut Context<Self>) -> Vec<AnyElement> {
+        let chosen = self.quality();
+        Quality::ALL
+            .into_iter()
+            .zip(QUALITY_BUTTONS)
+            .map(|(quality, (id, key))| {
+                let on = chosen == Some(quality);
+                div()
+                    .id(id)
+                    .role(Role::Button)
+                    .aria_label(format!(
+                        "{}{}",
+                        quality.name(),
+                        if on { ", chosen" } else { "" }
+                    ))
+                    .test_support()
+                    .flex()
+                    .flex_none()
+                    .items_center()
+                    .gap_1p5()
+                    .h(px(32.))
+                    .px_2()
+                    .rounded_md()
+                    .bg(if on { hover() } else { tile() })
+                    .hover(|s| s.bg(hover()))
+                    .cursor_pointer()
+                    .text_sm()
+                    .text_color(if on { gpui_kit::white() } else { muted() })
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        this.ask(RecordBarEvent::Quality(quality), cx)
+                    }))
+                    .child(quality.name())
+                    .children(self.key_hint(id, &self.letter(key)))
+                    .into_any_element()
+            })
+            .collect()
     }
 
     /// The sound switches alone, set apart from what follows.
@@ -853,8 +1070,10 @@ impl RecordBar {
 impl Render for RecordBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         let now = Instant::now();
+        let waiting = self.stream.as_ref().is_some_and(|s| !s.live);
         let dot = match self.mode {
             BarMode::Ready | BarMode::Starting | BarMode::Discarded { .. } => muted(),
+            _ if waiting => muted(),
             _ if self.clock.get().is_paused() => paused(),
             _ => recording(),
         };

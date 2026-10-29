@@ -220,6 +220,7 @@ fn start_from_main(
         ),
         // Recordings have their own countdown, over the chosen area.
         CaptureMode::Record => (Start::Record(target), Duration::ZERO),
+        CaptureMode::Stream => (Start::Stream(target), Duration::ZERO),
     };
     let state = state.clone();
     cx.spawn(async move |cx| start(&state, what, Some(TRAY_DELAY + wait), cx))
@@ -231,13 +232,18 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
     let (capture, folder, quitting) = (state.clone(), state.clone(), state.clone());
     let (ready, restarting) = (state.clone(), state.clone());
     let (copying, saving) = (state.clone(), state.clone());
-    let opening = state.clone();
+    let (opening, watching) = (state.clone(), state.clone());
     let editor = shuttercrab_platform::os::os().image_editor;
     let (copying_file, saving_file) = (state.clone(), state.clone());
     MainHooks {
         settings: Rc::new(settings_hooks(state, monitors)),
         capture: Rc::new(move |mode, target, window, cx| {
             start_from_main(&capture, mode, target, window, cx)
+        }),
+        watch: Rc::new(move |cx| {
+            let state = watching.clone();
+            cx.spawn(async move |cx| start(&state, Start::Watch, None, cx))
+                .detach();
         }),
         open_folder: Rc::new(move |shot, cx| match shot.and_then(|s| s.saved.as_ref()) {
             Some(path) => cx.reveal_path(path),

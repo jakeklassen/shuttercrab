@@ -75,6 +75,10 @@ pub(super) async fn capture_bar(
             log::info!("Capture Bar dismissed");
             Ok(())
         }
+        CaptureBarEvent::Watch => {
+            log::info!("Capture Bar: watch a stream");
+            super::watching::open_watch_box(state, monitor, cx).await
+        }
         CaptureBarEvent::Chosen(mode, target) => {
             log::info!("Capture Bar: {mode:?} {target:?}");
             state.update_settings(
@@ -89,6 +93,9 @@ pub(super) async fn capture_bar(
                     capture(state, target, monitor, Instant::now(), cx).await
                 }
                 CaptureMode::Record => record(state, target, monitor, Instant::now(), cx).await,
+                CaptureMode::Stream => {
+                    super::streaming::stream(state, target, monitor, Instant::now(), cx).await
+                }
             }
         }
     }
@@ -426,7 +433,7 @@ mod tests {
             adapter: String::new(),
         };
         let rect = bar_rect(&monitor);
-        assert_eq!((rect.width, rect.height), (612, 198));
-        assert_eq!((rect.x, rect.y), (3840 + (3840 - 612) / 2, 36));
+        assert_eq!((rect.width, rect.height), (780, 198));
+        assert_eq!((rect.x, rect.y), (3840 + (3840 - 780) / 2, 36));
     }
 }
