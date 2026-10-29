@@ -974,13 +974,15 @@ impl MainWindow {
     }
 
     /// A small "key" hint: a letter in capitals, anything longer as written.
-    fn key_hint(text: &str) -> impl IntoElement + use<> {
-        let text = if text.len() == 1 {
-            text.to_uppercase()
-        } else {
-            text.to_string()
+    /// None for no key, so a hidden hint takes no room: an empty one still
+    /// had its gap, which put the icons beside it off centre.
+    fn key_hint(text: &str) -> Option<impl IntoElement + use<>> {
+        let text = match text.len() {
+            0 => return None,
+            1 => text.to_uppercase(),
+            _ => text.to_string(),
         };
-        div().text_xs().text_color(muted()).child(text)
+        Some(div().text_xs().text_color(muted()).child(text))
     }
 
     fn new_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1003,7 +1005,7 @@ impl MainWindow {
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start(window, cx)))
             .child(Icon::new(IconName::Plus).size(px(16.)).text_color(coral()))
             .child("New")
-            .child(Self::key_hint(self.shown_key("n")))
+            .children(Self::key_hint(self.shown_key("n")))
     }
 
     /// One item of a segmented control: an icon and its key, underlined in
@@ -1053,7 +1055,7 @@ impl MainWindow {
                     .size(px(18.))
                     .when_some(icon_color.filter(|_| on), |i, c| i.text_color(c)),
             )
-            .child(Self::key_hint(key))
+            .children(Self::key_hint(key))
             .when(on, |d| {
                 d.child(
                     div()
@@ -1186,7 +1188,7 @@ impl MainWindow {
             .cursor_pointer()
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
             .child(Icon::new(icon).size(px(18.)))
-            .child(Self::key_hint(key))
+            .children(Self::key_hint(key))
     }
 
     /// Copy, which turns into a check mark and "Copied", fading in, for a
@@ -1202,7 +1204,7 @@ impl MainWindow {
             .items_center()
             .gap_1p5()
             .child(Icon::new(icon).size(px(18.)))
-            .child(Self::key_hint(key));
+            .children(Self::key_hint(key));
         div()
             .id("copy")
             .role(Role::Button)
@@ -1380,7 +1382,7 @@ impl MainWindow {
                             })
                             .when_some(icon, |d, icon| d.child(Icon::new(icon).size(px(16.))))
                             .child(div().flex_1().child(label))
-                            .child(Self::key_hint(&key))
+                            .children(Self::key_hint(&key))
                     }),
             )
     }
@@ -1408,7 +1410,7 @@ impl MainWindow {
                 d.child(div().text_sm().child(format!("{now}s")))
             })
             .child(Icon::new(IconName::ChevronDown).size(px(14.)))
-            .child(Self::key_hint(self.shown_key("t")));
+            .children(Self::key_hint(self.shown_key("t")));
         self.menu_button("delay", label, Menu::Delay, content, cx)
     }
 
@@ -1663,7 +1665,7 @@ impl MainWindow {
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| (this.hooks.restart_to_update)(cx)))
             .child(Icon::new(IconName::RotateCcw).size(px(12.)))
             .child(label)
-            .child(Self::key_hint(self.shown_key("u")))
+            .children(Self::key_hint(self.shown_key("u")))
     }
 
     /// Which build is running, quietly, so an update is easy to confirm; in    /// its place, once a newer release is downloaded, a way to restart into
