@@ -57,7 +57,7 @@ enum Request {
 
 /// [`RecordOptions`] on the wire.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-struct Options {
+pub(crate) struct Options {
     monitor: u64,
     region: Option<(i32, i32, u32, u32)>,
     window: Option<u64>,
@@ -192,7 +192,7 @@ impl From<Summary> for RecordingSummary {
 }
 
 /// Write one message as a JSON line.
-fn send(to: &mut impl Write, message: &impl Serialize) -> Result<()> {
+pub(crate) fn send(to: &mut impl Write, message: &impl Serialize) -> Result<()> {
     let mut line = serde_json::to_string(message)?;
     line.push('\n');
     to.write_all(line.as_bytes())?;
@@ -392,7 +392,7 @@ fn read_replies(
 
 /// The helper's log, from its standard error, into the app's log until the
 /// helper exits. A read error ends it too: the log is only for diagnosis.
-fn forward_logs(errors: File) {
+pub(crate) fn forward_logs(errors: File) {
     for line in BufReader::new(errors).lines().map_while(Result::ok) {
         forward_log(&line);
     }
@@ -413,7 +413,7 @@ fn forward_log(line: &str) {
 
 /// The helper's logger: one tab-separated line per message on standard
 /// error, for [`forward_log`].
-struct HelperLogger;
+pub(crate) struct HelperLogger;
 
 impl log::Log for HelperLogger {
     fn enabled(&self, metadata: &log::Metadata) -> bool {

@@ -6676,6 +6676,7 @@ dependencies = [
  "serde_json",
  "shuttercrab-capture",
  "shuttercrab-platform",
+ "shuttercrab-stream",
  "shuttercrab-types",
  "tiny-skia",
  "velopack",

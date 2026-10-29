@@ -103,10 +103,17 @@ pub fn default_dir() -> Option<PathBuf> {
 /// Start logging to stderr and, if it can be created, a file in `dir`.
 /// Returns the log file's path.
 pub fn init(dir: Option<&Path>) -> Option<PathBuf> {
+    init_as(dir, "shuttercrab")
+}
+
+/// As [`init`], to `NAME.log`, the previous one kept as `NAME.previous.log`:
+/// for a process of Shuttercrab's own, such as the stream viewer, that
+/// runs beside the app.
+pub fn init_as(dir: Option<&Path>, name: &str) -> Option<PathBuf> {
     let path = dir.and_then(|dir| {
         std::fs::create_dir_all(dir).ok()?;
-        let path = dir.join("shuttercrab.log");
-        let _ = std::fs::rename(&path, dir.join("shuttercrab.previous.log"));
+        let path = dir.join(format!("{name}.log"));
+        let _ = std::fs::rename(&path, dir.join(format!("{name}.previous.log")));
         Some(path)
     });
     let file = path

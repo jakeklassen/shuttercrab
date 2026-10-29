@@ -30,6 +30,15 @@ fn main() {
     if std::env::args().nth(1).as_deref() == Some(shuttercrab::recorder_process::FLAG) {
         std::process::exit(shuttercrab::recorder_process::serve());
     }
+    // The streaming helper and the viewer window, likewise.
+    #[cfg(windows)]
+    match std::env::args().nth(1).as_deref() {
+        Some(shuttercrab::stream_process::FLAG) => {
+            std::process::exit(shuttercrab::stream_process::serve());
+        }
+        Some(shuttercrab::watch::FLAG) => std::process::exit(shuttercrab::watch::serve()),
+        _ => {}
+    }
     // Next, before anything else: Velopack may run an install or uninstall
     // hook here and exit, or apply a downloaded update and restart. The
     // recording helper above never does, so an update can't end a
