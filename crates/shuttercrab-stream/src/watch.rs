@@ -727,8 +727,12 @@ fn open_window(size: (u32, u32), monitor: HMONITOR, title: &str) -> Result<HWND>
             style: CS_HREDRAW | CS_VREDRAW,
             lpfnWndProc: Some(window_proc),
             hInstance: instance.into(),
-            // The program's icon, resource 1, if it has one.
-            hIcon: LoadIconW(Some(instance.into()), PCWSTR(1 as _)).unwrap_or_default(),
+            // The viewer's own icon, resource 2, so its taskbar button stands
+            // apart from the app's; else the program's, resource 1, if it
+            // has one. Windows takes the small size from it too.
+            hIcon: LoadIconW(Some(instance.into()), PCWSTR(2 as _))
+                .or_else(|_| LoadIconW(Some(instance.into()), PCWSTR(1 as _)))
+                .unwrap_or_default(),
             hCursor: LoadCursorW(None, IDC_ARROW)?,
             lpszClassName: w!("ShuttercrabLive"),
             ..Default::default()
