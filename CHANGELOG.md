@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.27](https://github.com/jakeklassen/shuttercrab/compare/v0.1.26...v0.1.27) - 2026-10-29
+
+### Fixed
+
+- the toolbar's icons sit in the middle of their buttons
+
 ## [0.1.26](https://github.com/jakeklassen/shuttercrab/compare/v0.1.25...v0.1.26) - 2026-10-29
 
 ### Added
