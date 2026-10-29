@@ -50,23 +50,15 @@ pub fn serve() -> i32 {
         }
     };
     log::info!("joining {link:?}");
-    let input = match Input::online(&link, shuttercrab_stream::MEET, Path::Relay) {
-        Ok(input) => input,
-        Err(e) => {
-            log::error!("could not join the stream: {e:#}");
-            tell(
-                "Shuttercrab",
-                &format!("Could not join the stream.\n\n{e:#}"),
-            );
-            return 1;
-        }
-    };
     let options = WatchOptions {
         monitor: None,
         muted: false,
         title: "Shuttercrab".into(),
     };
-    match shuttercrab_stream::watch(input, &options) {
+    let join = move || Input::online(&link, shuttercrab_stream::MEET, Path::Relay);
+    // Errors once the window is open are shown in it; this is for a window
+    // that could not open.
+    match shuttercrab_stream::watch(join, &options) {
         Ok(()) => 0,
         Err(e) => {
             log::error!("the stream could not play: {e:#}");
