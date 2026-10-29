@@ -10,9 +10,11 @@ use super::{
         Border, Chosen, FRAME_RECORDING, FRAME_WAITING, Following, choose_area, ready, show,
         show_frame, sound, stop_following,
     },
+    windows::open_main,
 };
 use crate::{
     capture_choice::CaptureTarget,
+    main_window::Page,
     record_bar::{BarMode, RecordBarEvent, Sound},
     recording::Clock,
     settings::Settings,
@@ -51,6 +53,17 @@ impl Streaming {
     }
 }
 
+/// The host key to stream with; or, with none kept yet, Settings opened on
+/// Streaming, where it is pasted in, and `None`.
+pub(super) fn host_key_or_ask(state: &Rc<State>, cx: &mut AsyncApp) -> Option<String> {
+    let key = state.settings.borrow().host_key();
+    if key.is_none() {
+        log::info!("no host key to stream with: Settings opened on Streaming");
+        open_main(state, Page::StreamingSettings, cx);
+    }
+    key
+}
+
 /// Stream `target`, chosen as for a recording, from `monitor`: the stream's
 /// bar, then the room, then the link on the clipboard. It runs until Stop or
 /// the viewer leaves.
@@ -65,11 +78,8 @@ pub(super) async fn stream(
         log::info!("already recording or streaming; the stream is not started");
         return Ok(());
     }
-    let Some(host_key) = state.settings.borrow().host_key() else {
-        return Err(Failure::new(
-            "Streaming needs a host key. Paste yours in Settings, under Streaming.",
-            "no host key to stream with",
-        ));
+    let Some(host_key) = host_key_or_ask(state, cx) else {
+        return Ok(());
     };
     let Some(Chosen {
         region,

@@ -15,7 +15,10 @@ use gpui_kit::{
     component::{
         ActiveTheme as _, Disableable as _,
         button::Button,
-        setting::{SettingField, SettingGroup, SettingItem, SettingPage, Settings as SettingsUi},
+        setting::{
+            SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage,
+            Settings as SettingsUi,
+        },
     },
     div,
     prelude::FluentBuilder as _,
@@ -460,6 +463,8 @@ pub struct SettingsWindow {
     on_escape: Option<Escape>,
     /// The microphones plugged in when the settings opened.
     microphones: Vec<Microphone>,
+    /// Open on Streaming, for a stream started without a host key.
+    at_streaming: bool,
 }
 
 impl SettingsWindow {
@@ -478,12 +483,19 @@ impl SettingsWindow {
             focus,
             on_escape: None,
             microphones,
+            at_streaming: false,
         }
     }
 
     /// Escape calls `f` rather than closing the window.
     pub fn on_escape(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
         self.on_escape = Some(Rc::new(f));
+        self
+    }
+
+    /// Open on the Streaming page, where the host key goes.
+    pub fn at_streaming(mut self) -> Self {
+        self.at_streaming = true;
         self
     }
 
@@ -1190,6 +1202,7 @@ fn host_key_row(hooks: Rc<Hooks>) -> impl IntoElement {
         .child(
             div()
                 .id("host-key-state")
+                .test_support()
                 .text_sm()
                 .child(if kept { "Kept" } else { "None yet" }),
         )
@@ -1247,17 +1260,28 @@ impl Render for SettingsWindow {
                     }
                 }
             }))
-            .child(
-                SettingsUi::new("shuttercrab-settings")
-                    .sidebar_width(px(200.))
-                    .pages(
-                        [self.general(), self.screenshot(), self.recording()]
-                            .into_iter()
-                            // Streaming is Windows only for now.
-                            .chain(cfg!(windows).then(|| self.streaming()))
-                            .chain([self.diagnostics(), notices()]),
-                    ),
-            )
+            .child({
+                let mut pages = vec![self.general(), self.screenshot(), self.recording()];
+                let streaming = pages.len();
+                // Streaming is Windows only for now.
+                if cfg!(windows) {
+                    pages.push(self.streaming());
+                }
+                pages.extend([self.diagnostics(), notices()]);
+                // Another id for the page chosen first: the page shown is
+                // kept by id, and the settings may be open already.
+                let settings = if self.at_streaming && cfg!(windows) {
+                    SettingsUi::new("shuttercrab-settings-streaming").default_selected_index(
+                        SelectIndex {
+                            page_ix: streaming,
+                            group_ix: None,
+                        },
+                    )
+                } else {
+                    SettingsUi::new("shuttercrab-settings")
+                };
+                settings.sidebar_width(px(200.)).pages(pages)
+            })
     }
 }
 

@@ -590,6 +590,11 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
             return;
         }
     }
+    // Without a host key, straight to where it goes, before the main window
+    // is hidden for a stream that cannot start.
+    if matches!(what, Start::Stream(_)) && streaming::host_key_or_ask(state, cx).is_none() {
+        return;
+    }
     state.busy.set(Busy::Choosing);
     let fading = !matches!(what, Start::ScreenshotWithWindow) && state.hide_main(cx);
     // A hidden window the OS could not leave out of captures needs a moment

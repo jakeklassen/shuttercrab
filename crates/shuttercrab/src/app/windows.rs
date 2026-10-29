@@ -120,7 +120,7 @@ fn open_window(state: &Rc<State>, page: Page, mut content: Option<Content>, cx: 
         let slot = out.clone();
         let size = match page {
             Page::Home => main_window::HOME_SIZE,
-            Page::Settings => main_window::SETTINGS_SIZE,
+            Page::Settings | Page::StreamingSettings => main_window::SETTINGS_SIZE,
         };
         let opened = cx.update(|cx| {
             let options = WindowOptions {

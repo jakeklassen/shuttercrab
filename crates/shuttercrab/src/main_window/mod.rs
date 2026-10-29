@@ -279,6 +279,8 @@ pub struct Fit {
 pub enum Page {
     Home,
     Settings,
+    /// Settings, open on Streaming: where a stream's host key goes.
+    StreamingSettings,
 }
 
 actions!(main_menu, [NextItem, PreviousItem]);
@@ -643,13 +645,19 @@ impl MainWindow {
                 self.fit_home(window, cx);
                 window.focus(&self.focus, cx);
             }
-            Page::Settings => {
+            Page::Settings | Page::StreamingSettings => {
                 let hooks = self.hooks.settings.clone();
                 let main = cx.entity().downgrade();
                 self.settings = Some(cx.new(|cx| {
-                    SettingsWindow::new(hooks, window, cx).on_escape(move |window, cx| {
-                        let _ = main.update(cx, |this, cx| this.show(Page::Home, window, cx));
-                    })
+                    let settings =
+                        SettingsWindow::new(hooks, window, cx).on_escape(move |window, cx| {
+                            let _ = main.update(cx, |this, cx| this.show(Page::Home, window, cx));
+                        });
+                    if page == Page::StreamingSettings {
+                        settings.at_streaming()
+                    } else {
+                        settings
+                    }
                 }));
                 window.resize(SETTINGS_SIZE);
             }
@@ -1534,6 +1542,9 @@ impl MainWindow {
                 .font_weight(gpui_kit::FontWeight::SEMIBOLD)
                 .child(text)
         };
+        if self.mode() == CaptureMode::Stream && back.is_none() {
+            return self.stream_hint(cx).into_any_element();
+        }
         div()
             .id("hint")
             .test_support()
@@ -1589,6 +1600,58 @@ impl MainWindow {
                         .child(Icon::new(IconName::Undo2).size(px(14.)))
                         .child(back)
                         .child(div().text_color(muted()).child("Ctrl+Z")),
+                )
+            })
+            .into_any_element()
+    }
+
+    /// What happens next with Stream chosen; or, without a host key yet,
+    /// the way to add one.
+    fn stream_hint(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        let new = if self.single_keys() {
+            "Choose what to stream above, then press N"
+        } else {
+            "Choose what to stream above, then click New"
+        };
+        let has_key = !self.settings().stream_host_key.is_empty();
+        div()
+            .id("hint")
+            .test_support()
+            .flex_1()
+            .flex()
+            .flex_col()
+            .items_center()
+            .justify_center()
+            .gap_1p5()
+            .child(new)
+            .child(div().text_xs().text_color(muted()).child(if has_key {
+                "Then check the sound and quality, and Go live: the link to share is copied for you"
+            } else {
+                "Streaming needs a host key, pasted in once"
+            }))
+            .when(!has_key, |d| {
+                d.child(
+                    div()
+                        .id("add-host-key")
+                        .role(Role::Button)
+                        .aria_label("Add your host key")
+                        .test_support()
+                        .mt_2()
+                        .flex()
+                        .items_center()
+                        .gap_1p5()
+                        .px_2p5()
+                        .py_1()
+                        .rounded_md()
+                        .text_xs()
+                        .bg(tile())
+                        .hover(|s| s.bg(hover()))
+                        .cursor_pointer()
+                        .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
+                            this.show(Page::StreamingSettings, window, cx);
+                        }))
+                        .child(Icon::new(IconName::Settings).size(px(14.)))
+                        .child("Add your host key"),
                 )
             })
     }
@@ -1810,7 +1873,9 @@ impl Render for MainWindow {
                 }),
             );
         match (self.page, self.settings.clone()) {
-            (Page::Settings, Some(settings)) => root.child(self.settings_page(settings, cx)),
+            (Page::Settings | Page::StreamingSettings, Some(settings)) => {
+                root.child(self.settings_page(settings, cx))
+            }
             _ => root
                 .child(self.toolbar(zoom, cx))
                 .map(|d| match (&self.shown, &self.video) {
