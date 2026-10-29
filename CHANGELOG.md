@@ -7,6 +7,74 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.26](https://github.com/jakeklassen/shuttercrab/compare/v0.1.25...v0.1.26) - 2026-10-29
+
+### Added
+
+- *(stream)* the viewer opens at once and says it is joining
+- stream and watch from the app
+- the app streams and watches in processes of its own
+- *(capture)* recording on Linux under X11, picture only
+- Shuttercrab adds itself to the app launcher on Linux
+- the selection overlay on Linux under X11
+- start Shuttercrab with --screenshot, --capture-bar or --record
+- *(capture)* a live stream can send its sound as Opus
+- *(capture)* a live stream can send its pictures as 10-bit AV1
+- *(capture)* a live stream can send its pictures as 10-bit HEVC
+- *(capture)* a live recording can be sent smaller, and played as it changes
+- *(capture)* the live player keeps picture and sound exactly together
+- *(capture)* our own live player, and PCM sound for live recordings
+- *(capture)* spike S0 of live streaming, the recorder to a live player
+- *(capture)* screenshots on Linux under X11
+- *(connect)* connect through Cloudflare's relay by default
+- *(spike)* online, the sound has a stream of its own, sent first
+- *(connect)* two Shuttercrabs meet on Cloudflare, then connect directly
+- *(platform)* secrets kept encrypted, and links that open Shuttercrab
+- *(platform)* the recording border on Linux under X11
+- *(platform)* starting at sign-in on Linux
+- *(platform)* Linux tray menu items show their hotkeys
+- *(platform)* the tray icon on Linux
+- *(platform)* global hotkeys on Linux under X11
+- *(platform)* copying on Linux under X11
+- *(platform)* window mode on Linux under X11
+- *(platform)* memory figures on Linux
+- *(platform)* a Linux backend to start with
+
+### Changed
+
+- *(capture)* a live recording mixes its sound 20 ms behind, not 200
+
+### Fixed
+
+- a tray menu checkmark item stays one when unticked
+- a taken hotkey's notice doesn't point at a missing tray
+- without a tray, closing the main window quits
+- the log leaves out D-Bus handshake chatter
+- *(capture)* text keeps its colour in a live stream sent smaller
+- *(capture)* a live stream keeps its delay across a change of quality
+- *(capture)* the live player keeps as much sound in hand as the network needs
+- *(capture)* the live player's sound no longer crackles as it settles
+- *(capture)* the live player's clock is where the speakers are playing
+- *(capture)* a live recording mixes its sound 50 ms behind
+- *(capture)* a live recording always has a sound track
+- *(connect)* closing waits for the other app inside the runtime
+- *(connect)* tell the other app at once when a connection closes
+- *(connect)* the stream ends cleanly when the other app closes it
+- build without warnings off Windows
+- *(platform)* dropping Linux hotkeys lets go of their keys
+- *(platform)* Linux notifications stay up
+- *(stream)* switching quality keeps COM's apartment up
+
+### Other
+
+- the OS's own name for things comes from the platform crate
+- *(platform)* a hotkey's key is a key, not a Win32 code
+- opaque window and monitor ids in shuttercrab-types
+- *(capture)* put the Windows code behind sys/windows
+- *(capture)* move the OS-neutral parts out of Windows files
+- *(platform)* put the Windows code behind sys/windows
+- streaming moves into shuttercrab-stream, for the app
+
 ## [0.1.25](https://github.com/jakeklassen/shuttercrab/compare/v0.1.24...v0.1.25) - 2026-10-10
 
 ### Fixed
