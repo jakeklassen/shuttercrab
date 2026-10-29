@@ -232,6 +232,23 @@ fn clicking_works_like_the_keys(cx: &mut TestAppContext) {
 }
 
 #[gpui_kit::test]
+fn the_toolbar_icons_sit_in_the_middle_of_their_buttons(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    // Single keys off, as by default: their letters are hidden.
+    opened.settings.borrow_mut().single_key_shortcuts = false;
+    update(cx, &opened, |window, _| {
+        // An 18 px icon and 8 px either side, under the underline's middle:
+        // a hidden key hint takes no room beside it. Watch is only on
+        // Windows, where streaming is.
+        let ids = ["mode-screenshot", "mode-record", "target-display", "watch"];
+        for id in ids.into_iter().filter(|&id| cfg!(windows) || id != "watch") {
+            let width = f32::from(window.find(id).bounds().size.width);
+            assert_eq!(width, 34.0, "{id} has room for more than its icon");
+        }
+    });
+}
+
+#[gpui_kit::test]
 fn t_steps_through_the_delays_for_the_mode(cx: &mut TestAppContext) {
     let opened = open(cx);
     press(cx, &opened, &["t", "t"]);
