@@ -304,9 +304,9 @@ impl Drop for Connection {
         // now rather than when the connection times out.
         // The timer is made inside the runtime, which it needs.
         let endpoint = &self.endpoint;
-        let _ = self.runtime.block_on(async {
-            tokio::time::timeout(CLOSING, endpoint.wait_idle()).await
-        });
+        let _ = self
+            .runtime
+            .block_on(async { tokio::time::timeout(CLOSING, endpoint.wait_idle()).await });
     }
 }
 
