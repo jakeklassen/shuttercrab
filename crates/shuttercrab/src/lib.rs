@@ -34,6 +34,7 @@ pub mod text;
 pub mod thumbnail;
 pub mod update;
 pub mod watch;
+pub mod watch_box;
 
 /// A folder for the unit tests' files: `tmp` in the target folder, which
 /// `cargo clean` takes too. Cargo names it only for integration tests

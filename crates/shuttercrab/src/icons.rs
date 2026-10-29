@@ -57,7 +57,9 @@ icon_assets!(
         ScanText,
         ClipboardType,
         EyeOff,
-        LoaderCircle
+        LoaderCircle,
+        Radio,
+        MonitorPlay
     ]
 );
 
@@ -139,6 +141,8 @@ mod tests {
             IconName::MicOff,
             IconName::Volume2,
             IconName::VolumeX,
+            IconName::Radio,
+            IconName::MonitorPlay,
         ] {
             let path = icon.path();
             assert!(Icons.load(&path).unwrap().is_some(), "{path}");

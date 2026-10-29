@@ -1,25 +1,34 @@
-//! What the user chooses to capture: a screenshot or a recording, and of
-//! what. The Capture Bar, the main window and the settings share these.
+//! What the user chooses to capture: a screenshot, a recording or a live
+//! stream, and of what. The Capture Bar, the main window and the settings
+//! share these.
 
 use gpui_kit::assets::IconName;
 use serde::{Deserialize, Serialize};
 
-/// Whether to take a screenshot or start a recording.
+/// Whether to take a screenshot, start a recording, or stream live.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
 pub enum CaptureMode {
     #[default]
     Screenshot,
     Record,
+    /// Live, to a viewer anywhere (issue #66); Windows only for now.
+    Stream,
 }
 
 impl CaptureMode {
-    pub const ALL: [CaptureMode; 2] = [Self::Screenshot, Self::Record];
+    /// The modes this system offers.
+    pub const ALL: &[CaptureMode] = if cfg!(windows) {
+        &[Self::Screenshot, Self::Record, Self::Stream]
+    } else {
+        &[Self::Screenshot, Self::Record]
+    };
 
     pub fn label(self) -> &'static str {
         match self {
             Self::Screenshot => "Screenshot",
             Self::Record => "Record",
+            Self::Stream => "Stream",
         }
     }
 
@@ -28,6 +37,7 @@ impl CaptureMode {
         match self {
             Self::Screenshot => "s",
             Self::Record => "r",
+            Self::Stream => "l",
         }
     }
 
@@ -35,6 +45,7 @@ impl CaptureMode {
         match self {
             Self::Screenshot => IconName::Camera,
             Self::Record => IconName::Video,
+            Self::Stream => IconName::Radio,
         }
     }
 
@@ -42,15 +53,25 @@ impl CaptureMode {
         match self {
             Self::Screenshot => "mode-screenshot",
             Self::Record => "mode-record",
+            Self::Stream => "mode-stream",
         }
     }
 
-    /// Whether `target` can be captured this way: recordings are of an
-    /// area, a window or a display (PRD §7.7).
+    /// Whether `target` can be captured this way: recordings and streams
+    /// are of an area, a window or a display (PRD §7.7).
     pub fn offers(self, target: CaptureTarget) -> bool {
         self == Self::Screenshot || target != CaptureTarget::Freeform
     }
+
+    /// Whether it records video: a recording or a stream.
+    pub fn is_video(self) -> bool {
+        self != Self::Screenshot
+    }
 }
+
+/// Watching someone's stream: not a capture, but offered beside them.
+pub const WATCH_LABEL: &str = "Watch";
+pub const WATCH_KEY: &str = "j";
 
 /// What a screenshot or recording captures.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]

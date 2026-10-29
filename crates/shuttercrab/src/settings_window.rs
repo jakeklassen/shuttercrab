@@ -26,6 +26,7 @@ use shuttercrab_platform::{
     Hotkey, Request,
     os::{Os, os},
 };
+use shuttercrab_stream::Quality;
 use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 /// What the settings window needs from the rest of Shuttercrab.
@@ -865,6 +866,46 @@ impl SettingsWindow {
             )
     }
 
+    /// Live streaming: the quality a stream starts at, and the host key
+    /// that lets this PC stream.
+    fn streaming(&self) -> SettingPage {
+        let (read, write, key) = (self.hooks.clone(), self.hooks.clone(), self.hooks.clone());
+        let qualities = Quality::ALL
+            .iter()
+            .map(|q| (SharedString::from(q.name()), SharedString::from(q.name())))
+            .collect();
+        SettingPage::new("Streaming").group(
+            SettingGroup::new()
+                .item(heading(
+                    "Streaming",
+                    Some("Stream an area, a window or a display to someone anywhere: they open the link you share. Watching needs no key."),
+                ))
+                .item(
+                    SettingItem::new(
+                        "Start at",
+                        SettingField::dropdown(
+                            qualities,
+                            move |_| read.settings.borrow().stream_quality.name().into(),
+                            move |name: SharedString, cx| {
+                                if let Some(quality) = Quality::parse(&name) {
+                                    write.settings.borrow_mut().stream_quality = quality;
+                                    (write.changed)(cx);
+                                }
+                            },
+                        ),
+                    )
+                    .description("1080p is lightest for both PCs. 1, 2 and 3 switch while streaming."),
+                )
+                .item(
+                    SettingItem::new(
+                        "Host key",
+                        SettingField::render(move |_, _, _| host_key_row(key.clone())),
+                    )
+                    .description("Lets this PC open a stream. Copy the key you were given, then Paste key: it is kept encrypted to your Windows account and never shown."),
+                ),
+        )
+    }
+
     fn diagnostics(&self) -> SettingPage {
         let d = &self.hooks.diagnostics;
         let info = |title: &str, value: String| {
@@ -1137,6 +1178,55 @@ fn folder_row(hooks: Rc<Hooks>, folder: Folder) -> impl IntoElement {
         )
 }
 
+/// Whether a host key is kept, with buttons to paste one from the clipboard
+/// and to forget it. The key itself is never shown or logged.
+fn host_key_row(hooks: Rc<Hooks>) -> impl IntoElement {
+    let kept = !hooks.settings.borrow().stream_host_key.is_empty();
+    let (paste, forget) = (hooks.clone(), hooks);
+    div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .id("host-key-state")
+                .text_sm()
+                .child(if kept { "Kept" } else { "None yet" }),
+        )
+        .child(
+            Button::new("paste-host-key")
+                .label("Paste key")
+                .on_click(move |_, _, cx| {
+                    let Some(text) = cx.read_from_clipboard().and_then(|item| item.text()) else {
+                        return;
+                    };
+                    if text.trim().is_empty() {
+                        return;
+                    }
+                    let kept = paste.settings.borrow_mut().set_host_key(&text);
+                    match kept {
+                        Ok(()) => {
+                            log::info!("a host key was kept");
+                            (paste.changed)(cx);
+                        }
+                        Err(e) => log::error!("could not keep the host key: {e:#}"),
+                    }
+                }),
+        )
+        .when(kept, |d| {
+            d.child(
+                Button::new("forget-host-key")
+                    .label("Forget")
+                    .on_click(move |_, _, cx| {
+                        if forget.settings.borrow_mut().set_host_key("").is_ok() {
+                            log::info!("the host key was forgotten");
+                            (forget.changed)(cx);
+                        }
+                    }),
+            )
+        })
+}
+
 impl Render for SettingsWindow {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
@@ -1160,13 +1250,13 @@ impl Render for SettingsWindow {
             .child(
                 SettingsUi::new("shuttercrab-settings")
                     .sidebar_width(px(200.))
-                    .pages([
-                        self.general(),
-                        self.screenshot(),
-                        self.recording(),
-                        self.diagnostics(),
-                        notices(),
-                    ]),
+                    .pages(
+                        [self.general(), self.screenshot(), self.recording()]
+                            .into_iter()
+                            // Streaming is Windows only for now.
+                            .chain(cfg!(windows).then(|| self.streaming()))
+                            .chain([self.diagnostics(), notices()]),
+                    ),
             )
     }
 }

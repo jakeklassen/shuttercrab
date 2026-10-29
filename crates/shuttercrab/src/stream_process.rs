@@ -109,7 +109,10 @@ pub struct Stats {
 /// What the app hears of the stream once it is up.
 #[derive(Clone, Debug, PartialEq)]
 pub enum StreamEvent {
-    Viewer { codec: String, relayed: bool },
+    Viewer {
+        codec: String,
+        relayed: bool,
+    },
     Stats(Stats),
     /// Over, and why; nothing follows.
     Ended(String),
@@ -273,8 +276,7 @@ mod helper {
         let mut out = std::io::stdout();
         let mut first = String::new();
         let read = std::io::stdin().read_line(&mut first);
-        let Ok(Ok(Request::Start(start))) = read.map(|_| serde_json::from_str(first.trim()))
-        else {
+        let Ok(Ok(Request::Start(start))) = read.map(|_| serde_json::from_str(first.trim())) else {
             log::error!("the streamer was not asked to start");
             return 2;
         };

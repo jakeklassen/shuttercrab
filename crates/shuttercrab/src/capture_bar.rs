@@ -1,28 +1,31 @@
 //! The Capture Bar (PRD §7.5): a small bar at the top of the screen that
-//! asks whether to take a screenshot or record, and of what. It opens from
-//! its own hotkey or the tray menu, remembers the last choice, works from
-//! the keyboard, and disappears as soon as a target is chosen.
+//! asks whether to take a screenshot, record or stream, and of what, or to
+//! watch someone's stream. It opens from its own hotkey or the tray menu,
+//! remembers the last choice, works from the keyboard, and disappears as
+//! soon as a target is chosen.
 
 use crate::{
-    capture_choice::{CaptureMode, CaptureTarget},
+    capture_choice::{CaptureMode, CaptureTarget, WATCH_KEY, WATCH_LABEL},
     palette::{accent, border, hover, muted, recording, surface, tile},
 };
 use gpui_kit::{
     ClickEvent, Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,
-    Styled as _, TestSupportExt as _, Window, component::Icon, div, prelude::FluentBuilder as _,
-    px,
+    Styled as _, TestSupportExt as _, Window, assets::IconName, component::Icon, div,
+    prelude::FluentBuilder as _, px,
 };
 
 /// What the user did with the bar.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CaptureBarEvent {
     Chosen(CaptureMode, CaptureTarget),
+    /// Watch someone's stream.
+    Watch,
     Dismissed,
 }
 
 /// The bar's size in logical pixels.
-pub const BAR_WIDTH: f32 = 408.0;
+pub const BAR_WIDTH: f32 = 520.0;
 pub const BAR_HEIGHT: f32 = 132.0;
 
 pub struct CaptureBar {
@@ -115,7 +118,9 @@ impl CaptureBar {
             "tab" if event.keystroke.modifiers.shift => self.step(-1, cx),
             "tab" => self.step(1, cx),
             _ => {
-                if let Some(mode) = CaptureMode::ALL.into_iter().find(|m| m.key() == key) {
+                if key == WATCH_KEY && CaptureMode::ALL.contains(&CaptureMode::Stream) {
+                    self.finish(CaptureBarEvent::Watch, cx);
+                } else if let Some(&mode) = CaptureMode::ALL.iter().find(|m| m.key() == key) {
                     self.set_mode(mode);
                     cx.notify();
                 } else if let Some(target) = CaptureTarget::ALL.into_iter().find(|t| t.key() == key)
@@ -156,9 +161,7 @@ impl CaptureBar {
             .child(
                 Icon::new(mode.icon())
                     .size(px(16.))
-                    .when(on && mode == CaptureMode::Record, |icon| {
-                        icon.text_color(recording())
-                    }),
+                    .when(on && mode.is_video(), |icon| icon.text_color(recording())),
             )
             .child(mode.label())
             .child(
@@ -166,6 +169,36 @@ impl CaptureBar {
                     .text_xs()
                     .text_color(muted())
                     .child(mode.key().to_uppercase()),
+            )
+    }
+
+    /// Watch someone's stream: a tab like the modes', but it acts at once.
+    fn watch_tab(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        div()
+            .id("watch")
+            .role(Role::Button)
+            .aria_label(WATCH_LABEL)
+            .test_support()
+            .flex()
+            .items_center()
+            .gap_1p5()
+            .px_2()
+            .py_1()
+            .rounded_md()
+            .text_color(muted())
+            .hover(|s| s.text_color(gpui_kit::white()))
+            .cursor_pointer()
+            .on_click(cx.listener(|this, _: &ClickEvent, _, cx| {
+                this.finish(CaptureBarEvent::Watch, cx);
+            }))
+            .text_sm()
+            .child(Icon::new(IconName::MonitorPlay).size(px(16.)))
+            .child(WATCH_LABEL)
+            .child(
+                div()
+                    .text_xs()
+                    .text_color(muted())
+                    .child(WATCH_KEY.to_uppercase()),
             )
     }
 
@@ -241,7 +274,10 @@ impl Render for CaptureBar {
                     .flex()
                     .items_center()
                     .gap_1()
-                    .children(CaptureMode::ALL.map(|m| self.mode_tab(m, cx))),
+                    .children(CaptureMode::ALL.iter().map(|&m| self.mode_tab(m, cx)))
+                    .when(CaptureMode::ALL.contains(&CaptureMode::Stream), |d| {
+                        d.child(div().flex_1()).child(self.watch_tab(cx))
+                    }),
             )
             .child(
                 div()

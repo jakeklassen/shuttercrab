@@ -36,7 +36,9 @@ mod delivery;
 mod failure;
 mod recording;
 mod screenshot;
+mod streaming;
 mod tray;
+mod watching;
 mod windows;
 
 use delivery::show_file_in_main;
@@ -46,9 +48,9 @@ pub use screenshot::bar_rect;
 pub use tray::{
     CAPTURE_BAR_HOTKEY, DISCARD_HOTKEY, MENU_AUTO_SAVE, MENU_CAPTURE_BAR, MENU_OPEN,
     MENU_OPEN_FOLDER, MENU_PAUSE, MENU_QUIT, MENU_RECORD, MENU_SCREENSHOT, MENU_SETTINGS,
-    MENU_UPDATE, PAUSE_HOTKEY, QUIT_HOTKEY, QUIT_KEYS, RECORD_HOTKEY, RESTART_HOTKEY,
-    SCREENSHOT_HOTKEY, SCREENSHOT_WITH_WINDOW_HOTKEY, TrayRecording, UNDO_HOTKEY, hotkeys,
-    tray_menu,
+    MENU_STREAM, MENU_UPDATE, MENU_WATCH, PAUSE_HOTKEY, QUIT_HOTKEY, QUIT_KEYS, RECORD_HOTKEY,
+    RESTART_HOTKEY, SCREENSHOT_HOTKEY, SCREENSHOT_WITH_WINDOW_HOTKEY, TrayRecording, UNDO_HOTKEY,
+    hotkeys, tray_menu,
 };
 
 use crate::{
@@ -72,7 +74,9 @@ use recording::{
 };
 use screenshot::{capture, capture_bar};
 use shuttercrab_capture::{Capture, monitor_under_pointer};
-use shuttercrab_platform::{Hotkey, Platform, PlatformEvent, Request, window as platform_window};
+use shuttercrab_platform::{
+    Hotkey, Platform, PlatformEvent, Request, WindowChange, window as platform_window,
+};
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -126,6 +130,8 @@ struct State {
     thumbnail_generation: Cell<u64>,
     /// The recording in progress, if any.
     recording: RefCell<Option<Recording>>,
+    /// The live stream in progress, if any.
+    streaming: RefCell<Option<streaming::Streaming>>,
     /// The recorded window, followed from when it is chosen until its
     /// recording ends.
     followed: RefCell<Option<Followed>>,
@@ -141,6 +147,9 @@ struct State {
 impl State {
     /// The recording, as the tray menu shows it.
     fn tray_recording(&self) -> TrayRecording {
+        if self.streaming.borrow().is_some() {
+            return TrayRecording::Streaming;
+        }
         match &*self.recording.borrow() {
             None => TrayRecording::Idle,
             Some(r) if r.clock.get().is_paused() => TrayRecording::Paused,
@@ -189,6 +198,7 @@ impl State {
     fn show_hidden_main(&self) {
         if self.busy.get() == Busy::Idle
             && self.recording.borrow().is_none()
+            && self.streaming.borrow().is_none()
             && let Some(os_window) = self.hidden_main.take()
         {
             platform_window::include_in_capture(os_window);
@@ -267,6 +277,9 @@ enum Start {
     /// An area screenshot that leaves Shuttercrab's window in the picture.
     ScreenshotWithWindow,
     Record(CaptureTarget),
+    Stream(CaptureTarget),
+    /// The Watch box, for someone's stream.
+    Watch,
 }
 
 /// What the current request is doing.
@@ -307,6 +320,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         thumbnail: RefCell::new(None),
         thumbnail_generation: Cell::new(0),
         recording: RefCell::new(None),
+        streaming: RefCell::new(None),
         followed: RefCell::new(None),
         previous_take: RefCell::new(None),
         undo_generation: Cell::new(0),
@@ -354,6 +368,10 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                 PlatformEvent::TrayCommand(MENU_RECORD) => {
                     toggle_recording(&state, Some(TRAY_DELAY), cx)
                 }
+                PlatformEvent::TrayCommand(MENU_STREAM) => toggle_streaming(&state, cx),
+                PlatformEvent::TrayCommand(MENU_WATCH) => {
+                    start(&state, Start::Watch, Some(TRAY_DELAY), cx)
+                }
                 PlatformEvent::TrayCommand(MENU_OPEN_FOLDER) => open_folder(&state, cx),
                 // Clicking the tray icon opens the window, as in any tray app.
                 PlatformEvent::TrayActivated | PlatformEvent::TrayCommand(MENU_OPEN) => {
@@ -378,6 +396,8 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                 }
                 PlatformEvent::NotificationClicked => notification_clicked(&state, cx),
                 PlatformEvent::DisplaysChanged => displays_changed(&state),
+                PlatformEvent::Window(WindowChange::Closed)
+                    if streaming::window_closed(&state, cx).is_break() => {}
                 PlatformEvent::Window(change) => window_changed(&state, change, cx),
                 PlatformEvent::Hotkey(id) => print_screen_pressed(&state, id, cx),
                 PlatformEvent::TrayCommand(_) => {}
@@ -455,6 +475,7 @@ fn watch_for_updates(state: &Rc<State>, cx: &mut App) {
 /// stopped (even one discarded moments ago), and a take a restart replaced
 /// is kept.
 async fn quit(state: &Rc<State>, cx: &mut AsyncApp) {
+    streaming::stop_streaming(state, "Stopped.".into(), cx);
     let previous = state.previous_take.take();
     if let Some(previous) = previous {
         keep_previous_take(previous, cx).await;
@@ -481,7 +502,10 @@ async fn restart_to_update(state: &Rc<State>, cx: &mut AsyncApp) {
     let Some(backend) = state.updates.clone() else {
         return;
     };
-    if state.busy.get() != Busy::Idle || state.recording.borrow().is_some() {
+    if state.busy.get() != Busy::Idle
+        || state.recording.borrow().is_some()
+        || state.streaming.borrow().is_some()
+    {
         log::info!("not restarting to update: a capture or recording is in progress");
         return;
     }
@@ -529,6 +553,20 @@ fn requested(state: &Rc<State>, request: Request, cx: &mut AsyncApp) {
     }
 }
 
+/// The tray's stream item starts an area stream, or stops the one running.
+fn toggle_streaming(state: &Rc<State>, cx: &mut AsyncApp) {
+    if state.streaming.borrow().is_some() {
+        streaming::stop_streaming(state, "Stopped.".into(), cx);
+    } else {
+        start(
+            state,
+            Start::Stream(CaptureTarget::Area),
+            Some(TRAY_DELAY),
+            cx,
+        );
+    }
+}
+
 /// One hotkey starts a recording and stops it. `delay` lets a menu that
 /// asked close first.
 fn toggle_recording(state: &Rc<State>, delay: Option<Duration>, cx: &mut AsyncApp) {
@@ -572,6 +610,10 @@ fn start(state: &Rc<State>, what: Start, delay: Option<Duration>, cx: &mut Async
                     capture(&state, CaptureTarget::Area, monitor, pressed, cx).await
                 }
                 Start::Record(target) => record(&state, target, monitor, pressed, cx).await,
+                Start::Stream(target) => {
+                    streaming::stream(&state, target, monitor, pressed, cx).await
+                }
+                Start::Watch => watching::open_watch_box(&state, monitor, cx).await,
             },
         };
         if let Err(failure) = result {

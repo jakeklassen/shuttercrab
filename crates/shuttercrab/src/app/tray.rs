@@ -53,6 +53,8 @@ pub const MENU_RECORD: u32 = 7;
 pub const MENU_PAUSE: u32 = 8;
 pub const MENU_UPDATE: u32 = 9;
 pub const MENU_OPEN: u32 = 10;
+pub const MENU_STREAM: u32 = 11;
+pub const MENU_WATCH: u32 = 12;
 
 /// Quits without the tray menu; kept for development.
 pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
@@ -88,12 +90,13 @@ pub fn hotkeys(settings: &Settings, recording: bool, undo: bool) -> Vec<(u32, Ho
     .collect()
 }
 
-/// A recording, as the tray menu shows it.
+/// A recording, or a live stream, as the tray menu shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum TrayRecording {
     Idle,
     Running,
     Paused,
+    Streaming,
 }
 
 /// A capture started from the tray menu waits this long, so the menu has
@@ -113,13 +116,17 @@ pub fn tray_menu(
     update: Option<&str>,
 ) -> Vec<MenuItem> {
     let record = match recording {
-        TrayRecording::Idle => "Record an area",
+        TrayRecording::Idle | TrayRecording::Streaming => "Record an area",
         TrayRecording::Running | TrayRecording::Paused => "Stop recording",
     };
     let pause = match recording {
-        TrayRecording::Idle => None,
+        TrayRecording::Idle | TrayRecording::Streaming => None,
         TrayRecording::Running => Some("Pause recording"),
         TrayRecording::Paused => Some("Resume recording"),
+    };
+    let stream = match recording {
+        TrayRecording::Streaming => "Stop streaming",
+        _ => "Stream an area…",
     };
     let pause = pause
         .map(|label| MenuItem::item(MENU_PAUSE, format!("{label}\t{}", settings.pause_hotkey)));
@@ -140,6 +147,10 @@ pub fn tray_menu(
     ]
     .into_iter()
     .chain(pause)
+    .chain([
+        MenuItem::item(MENU_STREAM, stream),
+        MenuItem::item(MENU_WATCH, "Watch a stream…"),
+    ])
     .chain(rest_of_tray_menu(
         settings,
         update.filter(|_| recording == TrayRecording::Idle),
@@ -203,6 +214,10 @@ mod tests {
             "Screenshot an area\tCtrl+Alt+S"
         )));
         assert!(menu.contains(&MenuItem::item(MENU_RECORD, "Record an area\tCtrl+Alt+R")));
+        assert!(menu.contains(&MenuItem::item(MENU_STREAM, "Stream an area…")));
+        assert!(menu.contains(&MenuItem::item(MENU_WATCH, "Watch a stream…")));
+        let streaming = tray_menu(&settings, TrayRecording::Streaming, None);
+        assert!(streaming.contains(&MenuItem::item(MENU_STREAM, "Stop streaming")));
         let pause_item = |menu: &[MenuItem]| {
             menu.iter()
                 .find(|item| matches!(item, MenuItem::Item { id: MENU_PAUSE, .. }))
@@ -244,7 +259,11 @@ mod tests {
             .expect("offered");
         assert_eq!(idle[at + 1], MenuItem::Separator);
         assert!(matches!(idle[at + 2], MenuItem::Item { id: MENU_QUIT, .. }));
-        for recording in [TrayRecording::Running, TrayRecording::Paused] {
+        for recording in [
+            TrayRecording::Running,
+            TrayRecording::Paused,
+            TrayRecording::Streaming,
+        ] {
             assert!(!tray_menu(&settings, recording, Some("0.2.0")).contains(&offer));
         }
     }

@@ -26,37 +26,10 @@ static HEAP: shuttercrab::heap::Counting = shuttercrab::heap::Counting;
 type Notice = (String, String);
 
 fn main() {
-    // The recording helper: no tray, no UI, no single-instance check.
-    if std::env::args().nth(1).as_deref() == Some(shuttercrab::recorder_process::FLAG) {
-        std::process::exit(shuttercrab::recorder_process::serve());
-    }
-    // The streaming helper and the viewer window, likewise.
-    #[cfg(windows)]
-    match std::env::args().nth(1).as_deref() {
-        Some(shuttercrab::stream_process::FLAG) => {
-            std::process::exit(shuttercrab::stream_process::serve());
-        }
-        Some(shuttercrab::watch::FLAG) => std::process::exit(shuttercrab::watch::serve()),
-        _ => {}
-    }
-    // Next, before anything else: Velopack may run an install or uninstall
-    // hook here and exit, or apply a downloaded update and restart. The
-    // recording helper above never does, so an update can't end a
-    // recording.
-    let mut velopack = velopack::VelopackApp::build();
-    // Velopack runs install and uninstall hooks only on Windows.
-    #[cfg(windows)]
-    {
-        velopack = velopack.on_before_uninstall_fast_callback(|_| {
-            // Don't leave a startup entry pointing at a deleted program.
-            let _ = startup::set_launch_at_startup(false);
-        });
-    }
-    velopack.run();
+    run_helper_or_installer();
     // Release builds have no console; print to the terminal that started us.
     #[cfg(not(debug_assertions))]
     shuttercrab_platform::attach_to_parent_terminal();
-
     // What this start asks for: `--screenshot` and the like, from a desktop
     // shortcut, or to show the window.
     let request = Request::from_args(std::env::args().skip(1));
@@ -137,6 +110,51 @@ fn main() {
                 cx,
             );
         });
+}
+
+/// Run as one of Shuttercrab's helper processes, or as Velopack's install,
+/// update or uninstall hook, and exit, if this start is one.
+fn run_helper_or_installer() {
+    // The recording helper: no tray, no UI, no single-instance check.
+    if std::env::args().nth(1).as_deref() == Some(shuttercrab::recorder_process::FLAG) {
+        std::process::exit(shuttercrab::recorder_process::serve());
+    }
+    // The streaming helper and the viewer window, likewise.
+    #[cfg(windows)]
+    match std::env::args().nth(1).as_deref() {
+        Some(shuttercrab::stream_process::FLAG) => {
+            std::process::exit(shuttercrab::stream_process::serve());
+        }
+        Some(shuttercrab::watch::FLAG) => std::process::exit(shuttercrab::watch::serve()),
+        _ => {}
+    }
+    // Next, before anything else: Velopack may run an install or uninstall
+    // hook here and exit, or apply a downloaded update and restart. The
+    // helpers above never do, so an update can't end a recording or a
+    // stream.
+    let mut velopack = velopack::VelopackApp::build();
+    // Velopack runs install and uninstall hooks only on Windows.
+    #[cfg(windows)]
+    {
+        // Stream links open the viewer, once installed (issue #66).
+        let register = |_| {
+            let _ = shuttercrab_platform::links::register(
+                shuttercrab::watch::SCHEME,
+                shuttercrab::watch::FLAG,
+                "Shuttercrab stream",
+            );
+        };
+        velopack = velopack
+            .on_after_install_fast_callback(register)
+            .on_after_update_fast_callback(register)
+            .on_before_uninstall_fast_callback(|_| {
+                // Don't leave a startup entry pointing at a deleted program,
+                // or links that start it.
+                let _ = startup::set_launch_at_startup(false);
+                let _ = shuttercrab_platform::links::unregister(shuttercrab::watch::SCHEME);
+            });
+    }
+    velopack.run();
 }
 
 /// Work from the user's folder instead of the one Shuttercrab is installed

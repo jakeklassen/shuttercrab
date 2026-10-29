@@ -70,7 +70,10 @@ pub fn serve() -> i32 {
         Ok(()) => 0,
         Err(e) => {
             log::error!("the stream could not play: {e:#}");
-            tell("Shuttercrab", &format!("The stream could not play.\n\n{e:#}"));
+            tell(
+                "Shuttercrab",
+                &format!("The stream could not play.\n\n{e:#}"),
+            );
             1
         }
     }

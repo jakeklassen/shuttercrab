@@ -117,6 +117,7 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
             },
         }),
         capture: Rc::new(move |mode, target, _, _| s1.captures.borrow_mut().push((mode, target))),
+        watch: Rc::new(|_| {}),
         open_folder: Rc::new(move |_, _| s2.folders.set(s2.folders.get() + 1)),
         quit: Rc::new(move |_| s3.quits.set(s3.quits.get() + 1)),
         update_ready: Rc::new(move || s4.update.borrow().clone()),

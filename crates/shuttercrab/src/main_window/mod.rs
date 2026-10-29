@@ -85,7 +85,7 @@ pub const SETTINGS_SIZE: Size<Pixels> = Size {
 /// pixels. Narrower, with a screenshot shown, the drawing tools move to a
 /// bar at the bottom and the targets fold into one menu, as in Snipping
 /// Tool.
-pub const WIDE_WIDTH: f32 = 1300.;
+pub const WIDE_WIDTH: f32 = 1360.;
 
 /// The width the window is sized to at least around a screenshot, logical
 /// pixels: wide enough for one row of tools.
@@ -118,6 +118,9 @@ pub(super) fn bottom_height(window: &Window) -> f32 {
 
 /// Starts a capture of a mode and target.
 pub type CaptureHook = Rc<dyn Fn(CaptureMode, CaptureTarget, &mut Window, &mut App)>;
+
+/// Opens the Watch box, for someone's live stream.
+pub type WatchHook = Rc<dyn Fn(&mut App)>;
 
 /// Acts on the screenshot shown.
 pub type ShotHook = Rc<dyn Fn(&Shot, &mut App)>;
@@ -197,6 +200,8 @@ pub struct MainHooks {
     /// Start a capture: `mode` of `target`, after the delay the settings
     /// name. The app hides the window meanwhile.
     pub capture: CaptureHook,
+    /// Open the Watch box.
+    pub watch: WatchHook,
     /// Open the screenshots folder, with the screenshot shown selected if
     /// it was saved there.
     pub open_folder: FolderHook,
@@ -683,6 +688,8 @@ impl MainWindow {
         match settings.last_mode {
             CaptureMode::Screenshot => (settings.delay(), &DELAY_CHOICES),
             CaptureMode::Record => (settings.countdown(), &COUNTDOWN_CHOICES),
+            // A stream starts when its bar says Go live.
+            CaptureMode::Stream => (0, &[0]),
         }
     }
 
@@ -691,6 +698,7 @@ impl MainWindow {
         self.change(cx, |s| match mode {
             CaptureMode::Screenshot => s.screenshot_delay = seconds,
             CaptureMode::Record => s.recording_countdown = seconds,
+            CaptureMode::Stream => {}
         });
     }
 
@@ -922,6 +930,12 @@ impl MainWindow {
             "n" | "enter" => self.start(window, cx),
             "s" => self.set_mode(CaptureMode::Screenshot, cx),
             "r" => self.set_mode(CaptureMode::Record, cx),
+            "l" if CaptureMode::ALL.contains(&CaptureMode::Stream) => {
+                self.set_mode(CaptureMode::Stream, cx)
+            }
+            "j" if CaptureMode::ALL.contains(&CaptureMode::Stream) => {
+                (self.hooks.watch.clone())(cx)
+            }
             "t" => self.step_delay(cx),
             "," => self.choose_more(More::Settings, window, cx),
             "o" => self.choose_more(More::OpenFolder, window, cx),
@@ -1069,32 +1083,66 @@ impl MainWindow {
 
     fn modes(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let mode = self.mode();
-        Self::segmented([
+        let stream = CaptureMode::ALL.contains(&CaptureMode::Stream).then(|| {
             Self::segment(
-                "mode-screenshot",
-                "Screenshot",
-                IconName::Camera,
-                self.shown_key("s"),
-                mode == CaptureMode::Screenshot,
-                true,
-                None,
-                cx,
-                |this, cx| this.set_mode(CaptureMode::Screenshot, cx),
-            )
-            .into_any_element(),
-            Self::segment(
-                "mode-record",
-                "Record",
-                IconName::Video,
-                self.shown_key("r"),
-                mode == CaptureMode::Record,
+                "mode-stream",
+                "Stream",
+                IconName::Radio,
+                self.shown_key("l"),
+                mode == CaptureMode::Stream,
                 true,
                 Some(recording()),
                 cx,
-                |this, cx| this.set_mode(CaptureMode::Record, cx),
+                |this, cx| this.set_mode(CaptureMode::Stream, cx),
             )
-            .into_any_element(),
-        ])
+            .into_any_element()
+        });
+        Self::segmented(
+            [
+                Self::segment(
+                    "mode-screenshot",
+                    "Screenshot",
+                    IconName::Camera,
+                    self.shown_key("s"),
+                    mode == CaptureMode::Screenshot,
+                    true,
+                    None,
+                    cx,
+                    |this, cx| this.set_mode(CaptureMode::Screenshot, cx),
+                )
+                .into_any_element(),
+                Self::segment(
+                    "mode-record",
+                    "Record",
+                    IconName::Video,
+                    self.shown_key("r"),
+                    mode == CaptureMode::Record,
+                    true,
+                    Some(recording()),
+                    cx,
+                    |this, cx| this.set_mode(CaptureMode::Record, cx),
+                )
+                .into_any_element(),
+            ]
+            .into_iter()
+            .chain(stream),
+        )
+    }
+
+    /// Watch someone's stream: opens the Watch box. On the home page only,
+    /// where the toolbar has room.
+    fn watch_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
+        Self::segmented([Self::segment(
+            "watch",
+            "Watch a stream",
+            IconName::MonitorPlay,
+            self.shown_key("j"),
+            false,
+            true,
+            None,
+            cx,
+            |this, cx| (this.hooks.watch.clone())(cx),
+        )])
     }
 
     fn targets(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1342,6 +1390,7 @@ impl MainWindow {
         let label = match self.mode() {
             CaptureMode::Screenshot => format!("Delay: {}", seconds(now)),
             CaptureMode::Record => format!("Countdown: {}", seconds(now)),
+            CaptureMode::Stream => String::new(),
         };
         let content = div()
             .flex()
@@ -1389,7 +1438,15 @@ impl MainWindow {
                 true => d.child(self.target_button(cx)),
                 false => d.child(self.targets(cx)),
             })
-            .child(self.delay_button(cx))
+            .when(self.mode() != CaptureMode::Stream, |d| {
+                d.child(self.delay_button(cx))
+            })
+            .when(
+                self.shown.is_none()
+                    && self.video.is_none()
+                    && CaptureMode::ALL.contains(&CaptureMode::Stream),
+                |d| d.child(self.watch_button(cx)),
+            )
             // Crop mode has its own bar over the screenshot instead.
             .when(
                 self.shown.is_some() && !self.is_cropping() && !self.tools_below,
