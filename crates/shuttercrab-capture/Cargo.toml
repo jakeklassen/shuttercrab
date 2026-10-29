@@ -1,6 +1,6 @@
 [package]
 name = "shuttercrab-capture"
-version = "0.1.30"
+version = "0.1.31"
 description = "Shuttercrab's capture and color pipeline: monitors, capture, recording, playback, and the HDR/WCG to SDR transform"
 edition.workspace = true
 rust-version.workspace = true

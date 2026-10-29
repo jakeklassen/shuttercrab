@@ -1,6 +1,6 @@
 [package]
 name = "shuttercrab-stream"
-version = "0.1.30"
+version = "0.1.31"
 description = "Live streaming (issue #66): a recording sent to a viewer as it is made, and the window that plays it"
 edition.workspace = true
 rust-version.workspace = true
