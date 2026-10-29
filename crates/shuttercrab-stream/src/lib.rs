@@ -30,7 +30,9 @@ use shuttercrab_capture::live::VideoCodec;
 
 /// The first byte of each stream online, so the viewer can tell them
 /// apart: the format and the pictures, and the sound.
+#[cfg(windows)]
 const PICTURES: u8 = b'P';
+#[cfg(windows)]
 const SOUND: u8 = b'S';
 
 /// The best codec from `best` down that this PC encodes, by `encodes`, and

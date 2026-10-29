@@ -6,11 +6,13 @@
 pub use crate::sys::imp::secret::{protect, unprotect};
 
 /// `bytes` as lowercase hex, for the settings file.
+#[cfg(any(windows, test))]
 pub(crate) fn to_hex(bytes: &[u8]) -> String {
     bytes.iter().map(|b| format!("{b:02x}")).collect()
 }
 
 /// The bytes `hex` spells, if it is hex.
+#[cfg(any(windows, test))]
 pub(crate) fn from_hex(hex: &str) -> Option<Vec<u8>> {
     if !hex.len().is_multiple_of(2) {
         return None;
