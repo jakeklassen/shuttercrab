@@ -304,6 +304,35 @@ fn settings_open_in_the_window_and_escape_comes_back(cx: &mut TestAppContext) {
     assert_eq!(page(cx), Page::Home);
 }
 
+#[cfg(windows)]
+#[gpui_kit::test]
+fn stream_says_what_comes_next_and_where_the_host_key_goes(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    let page = |cx: &mut TestAppContext| cx.update(|cx| opened.view.read(cx).page());
+    press(cx, &opened, &["l"]);
+    assert_eq!(choice(&opened).0, CaptureMode::Stream);
+    // No key yet: the way to add one, which opens Settings on Streaming.
+    update(cx, &opened, |window, cx| window.click("add-host-key", cx));
+    assert_eq!(page(cx), Page::StreamingSettings);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("host-key-state").is_some());
+    });
+    press(cx, &opened, &["escape"]);
+    assert_eq!(page(cx), Page::Home);
+    // Settings opened otherwise start on General, without the key.
+    press(cx, &opened, &[","]);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("host-key-state").is_none());
+    });
+    press(cx, &opened, &["escape"]);
+    // With a key, nothing to add.
+    opened.settings.borrow_mut().stream_host_key = "00".into();
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("hint").is_some());
+        assert!(window.try_find("add-host-key").is_none());
+    });
+}
+
 #[gpui_kit::test]
 fn the_folder_and_quit_have_keys(cx: &mut TestAppContext) {
     let opened = open(cx);
