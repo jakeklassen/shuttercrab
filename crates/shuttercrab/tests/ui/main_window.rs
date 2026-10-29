@@ -359,6 +359,46 @@ fn stream_says_what_comes_next_and_where_the_host_key_goes(cx: &mut TestAppConte
 
 #[cfg(windows)]
 #[gpui_kit::test]
+fn paste_key_in_the_settings_says_what_it_did(cx: &mut TestAppContext) {
+    // The test window keeps its size: the settings' own, to see the buttons.
+    let opened = open_sized(cx, shuttercrab::main_window::SETTINGS_SIZE);
+    press(cx, &opened, &["l"]);
+    update(cx, &opened, |window, cx| {
+        window.click("streaming-settings", cx)
+    });
+    let paste_at = |cx: &mut TestAppContext| {
+        let mut at = None;
+        update(cx, &opened, |window, _| {
+            at = Some(window.find("paste-host-key").bounds())
+        });
+        at.unwrap()
+    };
+    let before = paste_at(cx);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("host-key-note").is_none());
+    });
+    // Nothing on the clipboard: not kept, and it says so.
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(String::new()));
+    update(cx, &opened, |window, cx| window.click("paste-host-key", cx));
+    assert!(opened.settings.borrow().stream_host_key.is_empty());
+    update(cx, &opened, |window, _| {
+        let note = window.find("host-key-note").bounds();
+        assert!(note.size.width > gpui_kit::px(150.), "{note:?}");
+    });
+    // The note wraps under the buttons rather than pushing them aside.
+    assert_eq!(paste_at(cx).origin.x, before.origin.x);
+    // A key: kept, and Forget appears.
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("k3y-for-a-test".into()));
+    update(cx, &opened, |window, cx| window.click("paste-host-key", cx));
+    assert!(!opened.settings.borrow().stream_host_key.is_empty());
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("host-key-note").is_some());
+        assert!(window.try_find("forget-host-key").is_some());
+    });
+}
+
+#[cfg(windows)]
+#[gpui_kit::test]
 fn a_stream_that_did_not_start_says_why(cx: &mut TestAppContext) {
     let opened = open(cx);
     opened.settings.borrow_mut().stream_host_key = "00".into();
