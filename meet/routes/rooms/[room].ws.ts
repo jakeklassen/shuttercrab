@@ -139,6 +139,8 @@ async function revoke(username: string) {
 async function refusal(auth: string | null, open: boolean): Promise<[number, string] | null> {
   if (auth !== null) {
     if (!auth.startsWith('Bearer ') || !(await isHostKey(auth.slice(7)))) {
+      // The app knows this reason by its words (shuttercrab-connect's
+      // NOT_THE_HOST_KEY): keep them as they are.
       return [4401, 'Not the host key'];
     }
     return open ? [4409, 'Someone is already streaming here'] : null;

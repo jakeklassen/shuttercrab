@@ -274,12 +274,13 @@ pub struct Fit {
     pub least_height: u32,
 }
 
-/// What came of pasting a host key on the home page.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum KeyNote {
-    Kept,
-    /// Not kept, and why.
-    Refused(&'static str),
+/// A line under Stream's steps: what came of pasting a host key, or why a
+/// stream did not start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum StreamNote {
+    KeyKept,
+    /// A key not kept, or a stream not started, and why.
+    Problem(SharedString),
 }
 
 /// What the window shows.
@@ -400,7 +401,7 @@ pub struct MainWindow {
     page: Page,
     settings: Option<Entity<SettingsWindow>>,
     /// What came of pasting a host key on the home page: kept, or why not.
-    key_note: Option<KeyNote>,
+    stream_note: Option<StreamNote>,
     menu: Option<Menu>,
     /// The highlighted item of the open menu.
     highlighted: usize,
@@ -479,7 +480,7 @@ impl MainWindow {
             hooks,
             page: Page::Home,
             settings: None,
-            key_note: None,
+            stream_note: None,
             menu: None,
             highlighted: 0,
             shown: None,
@@ -744,6 +745,7 @@ impl MainWindow {
         if self.needs_host_key() {
             return;
         }
+        self.stream_note = None;
         let (mode, target) = (self.mode(), self.target());
         (self.hooks.capture)(mode, target, window, cx);
         cx.notify();
@@ -762,23 +764,45 @@ impl MainWindow {
             .and_then(|item| item.text())
             .unwrap_or_default();
         let note = match Settings::host_key_problem(&text) {
-            Some(problem) => KeyNote::Refused(problem),
+            Some(problem) => StreamNote::Problem(problem.into()),
             None => {
                 let mut kept = Ok(());
                 self.change(cx, |s| kept = s.set_host_key(&text));
                 match kept {
                     Ok(()) => {
                         log::info!("a host key was kept");
-                        KeyNote::Kept
+                        StreamNote::KeyKept
                     }
                     Err(e) => {
                         log::error!("could not keep the host key: {e:#}");
-                        KeyNote::Refused("The key could not be kept. The log says why.")
+                        StreamNote::Problem("The key could not be kept. The log says why.".into())
                     }
                 }
             }
         };
-        self.key_note = Some(note);
+        self.stream_note = Some(note);
+        cx.notify();
+    }
+
+    /// A stream did not start, for why: said under Stream's steps. A key
+    /// the meeting point turned away is forgotten, so the window asks for
+    /// the right one.
+    pub fn stream_failed(&mut self, why: &str, cx: &mut Context<Self>) {
+        let refused = why.contains(shuttercrab_stream::NOT_THE_HOST_KEY);
+        self.change(cx, |s| {
+            s.last_mode = CaptureMode::Stream;
+            if refused {
+                let _ = s.set_host_key("");
+            }
+        });
+        let note = if refused {
+            "The meeting point didn't accept that host key. Copy the whole key you were "
+                .to_string()
+                + "given, then paste it again."
+        } else {
+            format!("The stream didn't start: {why}")
+        };
+        self.stream_note = Some(StreamNote::Problem(note.into()));
         cx.notify();
     }
 
@@ -1691,7 +1715,7 @@ impl MainWindow {
             "Choose what to stream above, then click New"
         };
         column
-            .children(self.key_note_line())
+            .children(self.stream_note_line())
             .child(new)
             .child(Self::hint_paragraph(
                 "Pick the area, check the sound and quality, then Go live. The link is copied \
@@ -1753,7 +1777,7 @@ impl MainWindow {
                     .child(paste)
                     .child(settings),
             )
-            .children(self.key_note_line())
+            .children(self.stream_note_line())
             .child(Self::hint_paragraph(
                 "Copy your key first. Don't have one? Ask whoever set up your streaming.",
             ))
@@ -1798,22 +1822,23 @@ impl MainWindow {
     }
 
     /// What came of pasting a host key, if one was pasted.
-    fn key_note_line(&self) -> Option<impl IntoElement + use<>> {
-        let (icon, text, color) = match self.key_note? {
-            KeyNote::Kept => (IconName::Check, "Host key kept", gpui_kit::white()),
-            KeyNote::Refused(why) => (IconName::X, why, coral()),
+    fn stream_note_line(&self) -> Option<impl IntoElement + use<>> {
+        let (icon, text, color) = match self.stream_note.clone()? {
+            StreamNote::KeyKept => (IconName::Check, "Host key kept".into(), gpui_kit::white()),
+            StreamNote::Problem(why) => (IconName::X, why, coral()),
         };
         Some(
             div()
-                .id("host-key-note")
+                .id("stream-note")
                 .test_support()
+                .max_w(px(500.))
                 .flex()
                 .items_center()
                 .gap_1p5()
                 .text_xs()
                 .text_color(color)
                 .child(Icon::new(icon).size(px(14.)))
-                .child(text),
+                .child(div().flex_1().child(text)),
         )
     }
 

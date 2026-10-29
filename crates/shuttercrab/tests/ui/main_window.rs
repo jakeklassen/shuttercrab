@@ -340,7 +340,7 @@ fn stream_says_what_comes_next_and_where_the_host_key_goes(cx: &mut TestAppConte
     update(cx, &opened, |window, cx| window.click("paste-host-key", cx));
     assert!(!kept());
     update(cx, &opened, |window, _| {
-        assert!(window.try_find("host-key-note").is_some());
+        assert!(window.try_find("stream-note").is_some());
     });
     // A key is kept, by Ctrl+V too; then New streams.
     cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("k3y-for-a-test".into()));
@@ -348,13 +348,44 @@ fn stream_says_what_comes_next_and_where_the_host_key_goes(cx: &mut TestAppConte
     assert!(kept());
     update(cx, &opened, |window, _| {
         assert!(window.try_find("paste-host-key").is_none());
-        assert!(window.try_find("host-key-note").is_some());
+        assert!(window.try_find("stream-note").is_some());
     });
     press(cx, &opened, &["n"]);
     assert_eq!(
         *opened.seen.captures.borrow(),
         [(CaptureMode::Stream, CaptureTarget::Area)]
     );
+}
+
+#[cfg(windows)]
+#[gpui_kit::test]
+fn a_stream_that_did_not_start_says_why(cx: &mut TestAppContext) {
+    let opened = open(cx);
+    opened.settings.borrow_mut().stream_host_key = "00".into();
+    let fail = |cx: &mut TestAppContext, why: &str| {
+        cx.update(|cx| {
+            opened
+                .view
+                .update(cx, |view, cx| view.stream_failed(why, cx))
+        });
+    };
+    // Any other failure keeps the key and says why under the steps.
+    fail(cx, "no answer from the relay");
+    assert_eq!(choice(&opened).0, CaptureMode::Stream);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("stream-note").is_some());
+        assert!(window.try_find("paste-host-key").is_none());
+    });
+    // A key the meeting point turned away is forgotten, to paste again.
+    fail(
+        cx,
+        &format!("opening the room: {}", shuttercrab_stream::NOT_THE_HOST_KEY),
+    );
+    assert!(opened.settings.borrow().stream_host_key.is_empty());
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("paste-host-key").is_some());
+        assert!(window.try_find("stream-note").is_some());
+    });
 }
 
 #[gpui_kit::test]
