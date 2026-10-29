@@ -10,11 +10,12 @@ use gpui_kit::{
 use shuttercrab::{
     record_bar::{
         BarMode, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent,
-        RecordKeys, Sound, default_microphone,
+        RecordKeys, STREAM_BAR_WIDTH, Sound, default_microphone,
     },
     recording::Clock,
 };
 use shuttercrab_capture::record::{Microphone, Source};
+use shuttercrab_stream::Quality;
 use std::{
     cell::{Cell, RefCell},
     rc::Rc,
@@ -701,4 +702,110 @@ fn a_window_recording_offers_its_app_sound_alone(cx: &mut TestAppContext) {
         window.press("b", cx);
     });
     assert_eq!(events(&opened)[2..], [RecordBarEvent::SetAppOnly(false)]);
+}
+
+/// A stream's ready bar, starting at 1080p, as wide as the app makes it.
+fn open_stream(cx: &mut TestAppContext) -> Opened {
+    cx.update(gpui_kit::init);
+    let clock = Rc::new(Cell::new(Clock::new(Instant::now())));
+    let events = Rc::new(RefCell::new(Vec::new()));
+    let (sink, shared) = (events.clone(), clock.clone());
+    let handle = cx.open_window(
+        size(px(STREAM_BAR_WIDTH), px(RECORD_BAR_HEIGHT)),
+        move |window, cx| {
+            cx.subscribe_self(move |_, event: &RecordBarEvent, _| sink.borrow_mut().push(*event))
+                .detach();
+            let keys = RecordKeys {
+                pause: "Ctrl+Alt+P".into(),
+                stop: "Ctrl+Alt+R".into(),
+                restart: "Ctrl+Alt+N".into(),
+                discard: "Ctrl+Alt+D".into(),
+                undo: "Ctrl+Alt+Z".into(),
+            };
+            RecordBar::new(shared, keys, window, cx)
+                .ready(Sound::default(), microphones())
+                .streaming(Quality::P1080)
+        },
+    );
+    Opened {
+        handle,
+        clock,
+        events,
+    }
+}
+
+#[gpui_kit::test]
+fn a_stream_picks_its_quality_goes_live_and_shares_its_link(cx: &mut TestAppContext) {
+    let opened = open_stream(cx);
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-time").unwrap(), "Ready to stream");
+        assert_eq!(label(window, "stream-1080p").unwrap(), "1080p, chosen");
+        for id in [
+            "record-microphone",
+            "stream-4k",
+            "stream-start",
+            "stream-close",
+        ] {
+            assert!(label(window, id).is_some(), "{id} is shown");
+        }
+    });
+    // 1, 2 and 3 pick the quality; Enter goes live.
+    update(cx, &opened, |window, cx| {
+        window.press("3", cx);
+        window.press("enter", cx);
+    });
+    assert_eq!(
+        events(&opened),
+        [
+            RecordBarEvent::Quality(Quality::P2160),
+            RecordBarEvent::Start
+        ]
+    );
+    assert_eq!(mode(cx, &opened), BarMode::Starting);
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "stream-4k").unwrap(), "4K, chosen");
+    });
+
+    // Waiting for a viewer, then live: Copy link and Stop, and the quality
+    // still switches.
+    set_mode(cx, &opened, BarMode::Controls);
+    let status = |cx: &mut TestAppContext, live: bool, text: &'static str| {
+        cx.update(|cx| {
+            opened
+                .handle
+                .update(cx, |bar, _, cx| bar.stream_status(live, text, cx))
+                .unwrap()
+        });
+    };
+    status(cx, false, "Link copied · waiting for a viewer");
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "record-time").unwrap(),
+            "Link copied · waiting for a viewer"
+        );
+        assert!(label(window, "stream-copy-link").is_some());
+        assert!(label(window, "stream-start").is_none());
+    });
+    status(cx, true, "AV1 · 4K · 30 ms");
+    update(cx, &opened, |window, _| {
+        assert_eq!(
+            label(window, "record-time").unwrap(),
+            "Live 0:00 · AV1 · 4K · 30 ms"
+        );
+    });
+    opened.events.borrow_mut().clear();
+    activate(cx, &opened);
+    update(cx, &opened, |window, cx| {
+        window.press("2", cx);
+        window.press("c", cx);
+        window.press("s", cx);
+    });
+    assert_eq!(
+        events(&opened),
+        [
+            RecordBarEvent::Quality(Quality::P1440),
+            RecordBarEvent::CopyLink,
+            RecordBarEvent::Stop
+        ]
+    );
 }
