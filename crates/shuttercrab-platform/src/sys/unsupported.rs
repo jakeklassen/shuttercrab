@@ -352,6 +352,32 @@ pub mod launcher {
     }
 }
 
+pub mod secret {
+    use super::unsupported;
+    use anyhow::Result;
+
+    pub fn protect(_secret: &str) -> Result<String> {
+        Err(unsupported("Keeping a secret"))
+    }
+
+    pub fn unprotect(_kept: &str) -> Result<String> {
+        Err(unsupported("Keeping a secret"))
+    }
+}
+
+pub mod links {
+    use super::unsupported;
+    use anyhow::Result;
+
+    pub fn register(_scheme: &str, _flag: &str, _description: &str) -> Result<()> {
+        Err(unsupported("Opening links"))
+    }
+
+    pub fn unregister(_scheme: &str) -> Result<()> {
+        Ok(())
+    }
+}
+
 #[cfg(not(target_os = "linux"))]
 pub mod startup {
     use super::unsupported;
