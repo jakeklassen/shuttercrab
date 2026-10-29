@@ -211,3 +211,27 @@ fn clicking_record_then_display_records_the_display(cx: &mut TestAppContext) {
         )]
     );
 }
+
+#[cfg(windows)]
+#[gpui_kit::test]
+fn l_streams_and_j_watches(cx: &mut TestAppContext) {
+    let opened = open(cx, CaptureTarget::Freeform);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("mode-stream").is_some());
+        assert!(window.try_find("watch").is_some());
+    });
+    // A stream is of an area, a window or a display, as a recording is.
+    update(cx, &opened, |window, cx| window.press("l", cx));
+    assert_eq!(selected(cx, &opened), CaptureTarget::Area);
+    update(cx, &opened, |window, cx| window.press("d", cx));
+    assert_eq!(
+        *opened.events.borrow(),
+        [CaptureBarEvent::Chosen(
+            CaptureMode::Stream,
+            CaptureTarget::Display
+        )]
+    );
+    let opened = open(cx, CaptureTarget::Area);
+    update(cx, &opened, |window, cx| window.press("j", cx));
+    assert_eq!(*opened.events.borrow(), [CaptureBarEvent::Watch]);
+}
