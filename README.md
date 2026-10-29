@@ -35,6 +35,8 @@ Documentation:
   equations, and the measurements behind it.
 - [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md): automated checks, the
   Milestone 0 gate, and the Milestone 1 acceptance test.
+- [docs/STREAMING.md](docs/STREAMING.md): live streaming, watching, host
+  keys and running the meeting point.
 
 ## Install
 
@@ -90,6 +92,9 @@ neither is ever in the video. All the keys can be changed in Settings.
 |---|---|
 | Settings | `%APPDATA%\Shuttercrab\settings.json` |
 | Log (this run, and the previous one) | `%LOCALAPPDATA%\Shuttercrab\logs` |
+
+**L** streams live and **J** watches a stream: see
+[docs/STREAMING.md](docs/STREAMING.md).
 
 Setting `SHUTTERCRAB_DATA_DIR` keeps settings and logs in that folder instead,
 for testing.
