@@ -711,7 +711,8 @@ fn start_take(
 ) -> Result<Take, Failure> {
     // Said before anything starts: what to install (on Linux, a GStreamer
     // plugin package), in the notification.
-    if let Some(message) = shuttercrab_capture::record::missing_software() {
+    let sound = options.system_sound || options.microphone;
+    if let Some(message) = shuttercrab_capture::record::missing_software(sound) {
         return Err(Failure::new(
             message.clone(),
             format!("recorder: {message}"),

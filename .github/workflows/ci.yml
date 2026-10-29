@@ -61,7 +61,7 @@ jobs:
             libxcb1-dev libssl-dev libzstd-dev libvulkan1 xvfb openbox \
             libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev \
             gstreamer1.0-plugins-base gstreamer1.0-plugins-good \
-            gstreamer1.0-plugins-ugly
+            gstreamer1.0-plugins-ugly gstreamer1.0-libav
 
       - uses: jdx/mise-action@v5
       - uses: Swatinem/rust-cache@v2

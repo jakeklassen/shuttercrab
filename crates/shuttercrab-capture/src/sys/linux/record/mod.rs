@@ -1,6 +1,7 @@
 //! Screen recording on Linux under X11 (PRD §13): the area is read from the
 //! root window at the frame rate ([`grab`]), with the pointer drawn in, and
-//! encoded to H.264 in an MP4 by GStreamer ([`encoder`]). No sound yet.
+//! encoded to H.264 in an MP4 by GStreamer ([`encoder`]), with what the
+//! speakers play and a microphone mixed into an AAC track ([`sound`]).
 //!
 //! X11 says nothing when the screen changes, so a frame is read every
 //! frame period. Paused time is left out of the timeline; a frame that
@@ -9,17 +10,20 @@
 
 mod encoder;
 mod grab;
+mod sound;
 
 pub use encoder::missing_software;
+pub use sound::microphones;
 
 use super::service::X11;
 use crate::{
-    record::{Interruption, Microphone, RecordOptions, RecordingSummary, Source},
+    record::{Interruption, RecordOptions, RecordingSummary, Source, TICKS_PER_SECOND},
     screen::MonitorId,
 };
 use anyhow::{Context, Result, bail};
 use encoder::Encoder;
 use grab::Grab;
+use sound::Sound;
 use std::{
     sync::mpsc::{Receiver, RecvTimeoutError, Sender, channel},
     thread::JoinHandle,
@@ -33,7 +37,15 @@ enum Event {
     DisplayGone,
     WindowClosed,
     ShowCursor(bool),
+    /// Sound from a source.
+    Sound(sound::Packet),
+    /// Switch a sound source on or off.
+    SetSound(Source, bool),
 }
+
+/// How far behind now the sound track is kept: sound arrives in packets a
+/// little after it plays.
+const SOUND_LAG: i64 = TICKS_PER_SECOND / 5;
 
 /// A recording in progress, on its own thread.
 pub struct Recorder {
@@ -51,11 +63,13 @@ impl Recorder {
         let (ready, started) = channel::<Result<()>>();
         // Dropped when the thread ends, which resolves `ended`.
         let (ending, ended) = futures::channel::oneshot::channel::<()>();
+        // The sound captures send to the same thread.
+        let sounds = events.clone();
         let thread = std::thread::Builder::new()
             .name("shuttercrab-record".into())
             .spawn(move || {
                 let _ending = ending;
-                record(&options, &inbox, &ready)
+                record(&options, &inbox, sounds, &ready)
             })
             .context("could not start the recording thread")?;
         match started.recv() {
@@ -83,9 +97,14 @@ impl Recorder {
         let _ = self.events.send(Event::Resume);
     }
 
-    /// No sound on Linux yet.
-    pub fn set_sound(&self, _source: Source, _on: bool) {}
+    /// Switch a sound source on or off mid-recording. Only for a file with
+    /// a sound track ([`RecordOptions::has_sound`]).
+    pub fn set_sound(&self, source: Source, on: bool) {
+        let _ = self.events.send(Event::SetSound(source, on));
+    }
 
+    /// Nothing to switch: one app's sound alone cannot be recorded here,
+    /// so the speakers' sound is all of it.
     pub fn set_sound_process(&self, _process: Option<u32>) {}
 
     /// Leave the pointer out for now (`false`), or put it back as the
@@ -144,11 +163,6 @@ pub fn attached(monitor: MonitorId) -> bool {
         .is_ok_and(|monitors| monitors.iter().any(|m| m.id == monitor))
 }
 
-/// No microphones on Linux yet.
-pub fn microphones() -> Result<Vec<Microphone>> {
-    Ok(Vec::new())
-}
-
 /// What `e`, an error during recording, means for the user.
 pub(crate) fn interruption(e: &anyhow::Error) -> Interruption {
     let text = format!("{e:#}");
@@ -159,22 +173,27 @@ pub(crate) fn interruption(e: &anyhow::Error) -> Interruption {
     }
 }
 
+/// Get ready to record: the area to read, the encoder, and the first
+/// frame, read before saying recording started, so one that cannot be read
+/// fails now, with a reason.
+fn start(options: &RecordOptions) -> Result<(Grab, Encoder, Vec<u8>)> {
+    let grab = Grab::new(options)?;
+    let first = grab.frame(options.include_cursor)?;
+    let sound = options.has_sound();
+    let encoder = Encoder::start(&options.path, grab.size(), options.fps, sound)?;
+    Ok((grab, encoder, first))
+}
+
 /// Record until told to stop, then finish the file. Says on `ready` once
-/// recording has started, or why it could not.
+/// recording has started, or why it could not. Sound captures send to
+/// `sounds`, which `inbox` receives.
 fn record(
     options: &RecordOptions,
     inbox: &Receiver<Event>,
+    sounds: Sender<Event>,
     ready: &Sender<Result<()>>,
 ) -> Result<RecordingSummary> {
-    let started = (|| {
-        let grab = Grab::new(options)?;
-        // The first frame, read before saying recording started: one that
-        // cannot be read fails now, with a reason.
-        let first = grab.frame(options.include_cursor)?;
-        let encoder = Encoder::start(&options.path, grab.size(), options.fps)?;
-        Ok((grab, encoder, first))
-    })();
-    let (grab, encoder, first) = match started {
+    let (grab, encoder, first) = match start(options) {
         Ok(started) => started,
         Err(e) => {
             let reason = format!("{e:#}");
@@ -182,6 +201,8 @@ fn record(
             bail!("{reason}");
         }
     };
+    // A source that cannot start leaves its part of the track silent.
+    let mut sound = encoder.has_sound().then(|| Sound::start(options, sounds));
     let _ = ready.send(Ok(()));
     let (width, height) = grab.size();
     log::info!(
@@ -204,6 +225,17 @@ fn record(
             Ok(Event::Pause) => timeline.pause(),
             Ok(Event::Resume) => timeline.resume(),
             Ok(Event::ShowCursor(show)) => pointer = show && options.include_cursor,
+            // Sound while paused is left out, as frames are.
+            Ok(Event::Sound(packet)) => {
+                if let Some(sound) = sound.as_mut().filter(|_| !timeline.paused()) {
+                    sound.place(&packet, timeline.sound_time(packet.captured));
+                }
+            }
+            Ok(Event::SetSound(source, on)) => {
+                if let Some(sound) = &mut sound {
+                    sound.set(source, on);
+                }
+            }
             Ok(Event::DisplayGone) => {
                 interrupted = Some(Interruption::DisplayGone);
                 break;
@@ -217,8 +249,15 @@ fn record(
                     Some(frame) => Ok(frame),
                     None => grab.frame(pointer),
                 };
-                let written =
-                    frame.and_then(|frame| encoder.push(frame, timeline.now(), timeline.period));
+                let written = frame
+                    .and_then(|frame| encoder.push(frame, timeline.now(), timeline.period))
+                    // The track keeps up with the picture, a little behind.
+                    .and_then(|()| match &mut sound {
+                        Some(sound) => {
+                            sound.write_until(&encoder, ticks(timeline.now()) - SOUND_LAG)
+                        }
+                        None => Ok(()),
+                    });
                 if let Err(e) = written {
                     log::error!("recording stopped: {e:#}");
                     interrupted = Some(interruption(&e));
@@ -226,6 +265,14 @@ fn record(
                 }
                 timeline.written();
             }
+        }
+    }
+    let duration = timeline.now();
+    if let Some(sound) = &mut sound {
+        sound.stop();
+        // The sound lasts as long as the picture.
+        if interrupted.is_none() {
+            sound.write_until(&encoder, ticks(duration))?;
         }
     }
     let finished = encoder.finish();
@@ -242,10 +289,10 @@ fn record(
         frames: timeline.frames,
         dropped_busy: 0,
         skipped_rate: timeline.skipped,
-        duration: timeline.now(),
+        duration,
         paused: timeline.paused_for(),
         hardware_encoder: false,
-        sound: false,
+        sound: sound.is_some(),
         interrupted,
         timing: None,
     })
@@ -306,6 +353,16 @@ impl Timeline {
         self.started.elapsed().saturating_sub(self.paused_for())
     }
 
+    /// When sound captured at `captured` falls on the timeline, 100 ns
+    /// ticks: before the start if it was captured before recording began.
+    fn sound_time(&self, captured: Instant) -> i64 {
+        let since = match captured.checked_duration_since(self.started) {
+            Some(after) => ticks(after),
+            None => -ticks(self.started - captured),
+        };
+        since - ticks(self.paused)
+    }
+
     fn until_next(&self) -> Duration {
         self.next.saturating_duration_since(Instant::now())
     }
@@ -326,9 +383,32 @@ impl Timeline {
     }
 }
 
+/// `duration` as 100 ns ticks, the sound track's clock.
+fn ticks(duration: Duration) -> i64 {
+    (duration.as_nanos() / 100) as i64
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn sound_falls_where_it_was_captured_less_the_pauses() {
+        let mut timeline = Timeline::new(30);
+        timeline.paused = Duration::from_millis(100);
+        let started = timeline.started;
+        let at = |ms: u64| started + Duration::from_millis(ms);
+        assert_eq!(
+            timeline.sound_time(at(300)),
+            ticks(Duration::from_millis(200))
+        );
+        // Captured just before recording began.
+        let before = started - Duration::from_millis(10);
+        assert_eq!(
+            timeline.sound_time(before),
+            -ticks(Duration::from_millis(110))
+        );
+    }
 
     #[test]
     fn paused_time_is_left_out() {
