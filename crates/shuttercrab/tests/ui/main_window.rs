@@ -4,8 +4,8 @@
 //!   cargo test -p shuttercrab --test ui main_window::
 
 use gpui_kit::{
-    App, AppContext as _, ClipboardItem, Entity, InputEvent as _, TestAppContext, Window,
-    component::Root, test::TestWindowExt as _,
+    App, AppContext as _, Entity, InputEvent as _, TestAppContext, Window, component::Root,
+    test::TestWindowExt as _,
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
@@ -334,14 +334,16 @@ fn stream_says_what_comes_next_and_where_the_host_key_goes(cx: &mut TestAppConte
 
     // A sentence on the clipboard is turned away, saying why.
     let kept = || !opened.settings.borrow().stream_host_key.is_empty();
-    cx.write_to_clipboard(ClipboardItem::new_string("Here is your key: abc".into()));
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string(
+        "Here is your key: abc".into(),
+    ));
     update(cx, &opened, |window, cx| window.click("paste-host-key", cx));
     assert!(!kept());
     update(cx, &opened, |window, _| {
         assert!(window.try_find("host-key-note").is_some());
     });
     // A key is kept, by Ctrl+V too; then New streams.
-    cx.write_to_clipboard(ClipboardItem::new_string("k3y-for-a-test".into()));
+    cx.write_to_clipboard(gpui_kit::ClipboardItem::new_string("k3y-for-a-test".into()));
     press(cx, &opened, &["ctrl-v"]);
     assert!(kept());
     update(cx, &opened, |window, _| {
