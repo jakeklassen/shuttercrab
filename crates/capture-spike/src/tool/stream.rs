@@ -14,7 +14,7 @@ use shuttercrab_capture::{
 use std::{
     cell::RefCell,
     io::{BufReader, BufWriter, Read, Write},
-    net::{TcpListener, TcpStream},
+    net::{Shutdown, TcpListener, TcpStream},
     sync::{
         Arc, Mutex,
         atomic::{AtomicBool, AtomicU64, Ordering},
@@ -629,8 +629,13 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let _ = log::set_logger(&Log);
     log::set_max_level(log::LevelFilter::Info);
 
-    let (input, sound_input, connection) = open_input(link.as_deref(), &meet, &from)?;
-    let mut reader = BufReader::new(input);
+    let Input {
+        pictures,
+        sound: sound_input,
+        connection,
+        socket,
+    } = open_input(link.as_deref(), &meet, &from)?;
+    let mut reader = BufReader::new(pictures);
     let format = LiveFormat::read_from(&mut reader)?;
     println!(
         "{}x{} at {} fps, {}, {}. Escape closes the window; M mutes; [ and ] move the \
@@ -657,16 +662,19 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
 
     let window = hwnd.0 as usize;
     let bytes = Arc::new(AtomicU64::new(0));
+    let mut readers = Vec::new();
     if let Some(sound_input) = sound_input {
         let (player, bytes) = (player.clone(), bytes.clone());
-        std::thread::spawn(move || read_frames(BufReader::new(sound_input), &player, &bytes));
+        readers.push(std::thread::spawn(move || {
+            read_frames(BufReader::new(sound_input), &player, &bytes);
+        }));
     }
     let (reader_player, reader_bytes) = (player.clone(), bytes.clone());
-    std::thread::spawn(move || {
+    readers.push(std::thread::spawn(move || {
         read_frames(reader, &reader_player, &reader_bytes);
         let _ =
             unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_ENDED, WPARAM(0), LPARAM(0)) };
-    });
+    }));
 
     let (drawn, stop) = (
         Arc::new(AtomicU64::new(0)),
@@ -707,7 +715,16 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     }
     stop.store(true, Ordering::Relaxed);
     let _ = drawing.join();
+    // Close the connection, which ends the readers, and wait for them, so
+    // the player and its sound are let go here, before the process ends,
+    // rather than mid-call on another thread as it does.
     VIEWER.with_borrow_mut(|viewer| viewer.take());
+    if let Some(socket) = socket {
+        let _ = socket.shutdown(Shutdown::Both);
+    }
+    for reader in readers {
+        let _ = reader.join();
+    }
     Ok(())
 }
 
@@ -733,19 +750,31 @@ fn read_frames(mut reader: impl Read, player: &LivePlayer, bytes: &AtomicU64) {
 /// Where frames come from.
 type In = Box<dyn Read + Send>;
 
+/// A stream to watch.
+struct Input {
+    /// The format and pictures.
+    pictures: In,
+    /// The sound, if it comes apart from the pictures.
+    sound: Option<In>,
+    /// The connection, if the stream is online.
+    connection: Option<shuttercrab_connect::Connection>,
+    /// The socket, if it is on this PC: shut down to stop reading.
+    socket: Option<TcpStream>,
+}
+
 /// The stream `link` is for, through `meet`, or else the one on this PC
-/// at `from`: the format and pictures, and the sound if it comes apart
-/// from them.
-fn open_input(
-    link: Option<&str>,
-    meet: &Meet,
-    from: &str,
-) -> Result<(In, Option<In>, Option<shuttercrab_connect::Connection>)> {
+/// at `from`.
+fn open_input(link: Option<&str>, meet: &Meet, from: &str) -> Result<Input> {
     let Some(link) = link else {
         let socket = TcpStream::connect(from).with_context(|| format!("no stream at {from}"))?;
         socket.set_nodelay(true)?;
         (&socket).write_all(&[plays()])?;
-        return Ok((Box::new(socket), None, None));
+        return Ok(Input {
+            pictures: Box::new(socket.try_clone()?),
+            sound: None,
+            connection: None,
+            socket: Some(socket),
+        });
     };
     let link = shuttercrab_connect::Link::parse(link)?;
     println!("Joining the stream...");
@@ -773,7 +802,12 @@ fn open_input(
         sound.read_exact(&mut tag)?;
         ensure!(tag[0] == SOUND, "the stream's sound is missing");
     }
-    Ok((pictures, Some(sound), Some(connection)))
+    Ok(Input {
+        pictures,
+        sound: Some(sound),
+        connection: Some(connection),
+        socket: None,
+    })
 }
 
 /// Draw each picture as it falls due, once a refresh of the display the
