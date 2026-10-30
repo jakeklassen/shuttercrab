@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.32](https://github.com/jakeklassen/shuttercrab/compare/v0.1.31...v0.1.32) - 2026-10-30
+
+### Added
+
+- the viewer's volume, up to 400%, without clipping
+
 ## [0.1.31](https://github.com/jakeklassen/shuttercrab/compare/v0.1.30...v0.1.31) - 2026-10-29
 
 ### Added
