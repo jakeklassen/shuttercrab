@@ -2,12 +2,13 @@
 //! the countdown, the border and the controls; pausing, restarting,
 //! discarding and undoing; switching the sound; and finishing the file.
 //!
-//! This module holds the recording in progress, its border and controls,
-//! starting a take, the countdown, and pausing. The rest is split by
-//! responsibility:
+//! This module holds the recording in progress, starting a take, the
+//! countdown, and pausing. The rest is split by responsibility:
 //!
 //! - `ready`: choosing what to record, and the ready bar with its
 //!   microphone list.
+//! - `border`: the dashed border around what is recorded.
+//! - `controls`: showing the recording controls, and doing what they ask.
 //! - `follow`: following a recorded window with the border and the bar.
 //! - `window_changes`: the recorded window moving, going out of sight and
 //!   coming back, and closing.
@@ -16,12 +17,16 @@
 //! - `finish`: stopping or discarding the recording, finishing its file,
 //!   and telling the user.
 
+mod border;
+mod controls;
 mod finish;
 mod follow;
 mod ready;
 mod takes;
 mod window_changes;
 
+pub(super) use border::{BORDER_RECORDING, BORDER_WAITING, Border, show_border};
+pub(super) use controls::{Controls, show};
 pub(super) use finish::{finish_recording, report_recording, stop_recording};
 pub(super) use follow::{Followed, Following, stop_following};
 pub(super) use ready::{Chosen, choose_area, ready, sound};
@@ -35,27 +40,21 @@ use crate::{
     files,
     generation::Generation,
     popup::{self, Activation},
-    record_bar::{
-        BarMode, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent,
-        RecordKeys, STREAM_BAR_WIDTH, Sound,
-    },
+    record_bar::{BarMode, RecordBar, RecordBarEvent},
     recorder_process::RecorderProcess,
     recording::{self, Clock},
 };
+use border::BORDER_PAUSED;
 use chrono::{Local, NaiveDateTime};
+use controls::handle_controls;
 use follow::{Waiting, waiting_on};
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{AppContext as _, AsyncApp, Entity};
 use shuttercrab_capture::{
     MonitorId, MonitorInfo, PhysicalRect,
-    record::{Microphone, RecordOptions, Source},
+    record::{RecordOptions, Source},
 };
-use shuttercrab_platform::{
-    frame::{Frame, FrameStyle, NO_EDGE},
-    window as platform_window,
-};
-use shuttercrab_stream::Quality;
-use shuttercrab_types::WindowId;
+use shuttercrab_platform::window as platform_window;
 use std::{
     cell::{Cell, RefCell},
     ops::ControlFlow,
@@ -63,7 +62,7 @@ use std::{
     rc::Rc,
     time::Instant,
 };
-use takes::{Asking, Discarded, confirm, keep_take};
+use takes::{Asking, Discarded, keep_take};
 
 /// A recording in progress.
 pub(super) struct Recording {
@@ -92,29 +91,6 @@ pub(super) struct Recording {
     /// Each time the window goes out of sight, so a resume waiting for a
     /// restored window to settle knows if it went again.
     hidings: Generation,
-}
-
-/// The dashed border, shared with what moves it after a recorded window.
-pub(super) type Border = Rc<RefCell<Option<Frame>>>;
-
-/// The border's colours (RGB): recording, paused, and discarded.
-pub(super) const BORDER_RECORDING: [u8; 3] = [0xE5, 0x48, 0x4D];
-const BORDER_PAUSED: [u8; 3] = [0xF5, 0xA5, 0x24];
-const BORDER_DISCARDED: [u8; 3] = [0x9D, 0x9D, 0x9D];
-/// Before recording starts, during a countdown.
-pub(super) const BORDER_WAITING: [u8; 3] = BORDER_DISCARDED;
-
-/// The border's look, logical pixels.
-const BORDER_THICKNESS: f32 = 2.0;
-const BORDER_DASH: f32 = 8.0;
-const BORDER_GAP: f32 = 5.0;
-
-/// The recording controls' window and view.
-pub(super) struct Controls {
-    pub(super) popup: popup::Popup,
-    pub(super) view: Entity<RecordBar>,
-    /// Where the bar is, physical virtual-desktop pixels.
-    rect: PhysicalRect,
 }
 
 impl Recording {
@@ -219,20 +195,6 @@ impl Recording {
         });
     }
 }
-
-/// Change what the controls show, outside any borrow of the state.
-pub(super) fn show(
-    view: Option<Entity<RecordBar>>,
-    cx: &mut AsyncApp,
-    f: impl FnOnce(&mut RecordBar, &mut gpui_kit::Context<RecordBar>),
-) {
-    if let Some(view) = view {
-        view.update(cx, f);
-    }
-}
-
-/// The recording controls' distance from the recorded area, logical pixels.
-const CONTROLS_GAP: f32 = 12.0;
 
 /// Record `target`: all of `monitor`, or an area chosen on frozen frames of
 /// every monitor, `monitor` first. Show the controls, then start the
@@ -423,91 +385,6 @@ fn begin(
     watch_recording(state, ended, watched, cx);
 }
 
-/// Show the recording controls next to `region` (physical pixels relative
-/// to the monitor; `None` for all of it), excluded from capture: a live
-/// stream's, at `stream` quality, if given. If Windows cannot exclude them
-/// and they would cover the region, they are not shown (PRD §16); the
-/// hotkey and the tray still stop the recording.
-fn open_controls(
-    info: &MonitorInfo,
-    region: Option<PhysicalRect>,
-    clock: Rc<Cell<Clock>>,
-    (keys, sound, microphones): (RecordKeys, Sound, Vec<Microphone>),
-    stream: Option<Quality>,
-    cx: &mut AsyncApp,
-) -> Option<(Controls, UnboundedReceiver<RecordBarEvent>)> {
-    let (b, scale) = (info.bounds, info.scale_factor);
-    let recorded = shuttercrab_capture::record::recordable(region, b.width, b.height);
-    let recorded = PhysicalRect::new(
-        b.x + recorded.x,
-        b.y + recorded.y,
-        recorded.width,
-        recorded.height,
-    );
-    let work = platform_window::work_area(info.id).unwrap_or(b);
-    let width = if stream.is_some() {
-        STREAM_BAR_WIDTH
-    } else {
-        RECORD_BAR_WIDTH
-    };
-    let size = (
-        (width * scale).round() as u32,
-        (RECORD_BAR_HEIGHT * scale).round() as u32,
-    );
-    let gap = (CONTROLS_GAP * scale).round() as u32;
-    let (rect, covers) = recording::controls_rect(work, recorded, size, gap);
-
-    let view = Rc::new(RefCell::new(None));
-    let slot = view.clone();
-    let opened = popup::open(info, rect, Activation::OnClick, cx, move |window, cx| {
-        let bar = cx.new(|cx| {
-            let bar = RecordBar::new(clock, keys, window, cx).ready(sound, microphones);
-            match stream {
-                Some(quality) => bar.streaming(quality),
-                None => bar,
-            }
-        });
-        slot.replace(Some(bar.clone()));
-        bar
-    });
-    let (popup, requests) = match opened {
-        Ok(opened) => opened,
-        Err(e) => {
-            log::error!("could not show the recording controls: {e}");
-            return None;
-        }
-    };
-    let view = view.take()?;
-    let excluded = match popup.os_window() {
-        Some(os_window) => {
-            platform_window::round_corners(os_window);
-            exclude_from_capture(os_window, "recording controls")
-        }
-        None => false,
-    };
-    if !excluded && covers {
-        log::warn!("the recording controls would be recorded; recording without them");
-        popup.close(cx);
-        return None;
-    }
-    log::info!(
-        "recording controls at {},{} ({}, {})",
-        rect.x,
-        rect.y,
-        if covers {
-            "over the area"
-        } else {
-            "outside the area"
-        },
-        if excluded {
-            "excluded from capture"
-        } else {
-            "not excluded"
-        }
-    );
-    Some((Controls { popup, view, rect }, requests))
-}
-
 /// Notice when the take written to `path` ends by itself (the display went
 /// away, the device was lost, the disk filled up: PRD §25) and finish it as
 /// if stopped: what was recorded is saved, and the notification says why.
@@ -615,89 +492,6 @@ async fn count_down(
         platform_window::bring_to_front(window);
     }
     event == CountdownEvent::Go
-}
-
-/// Show the dashed border around `region` (physical pixels relative to the
-/// monitor; `None` for all of it), or around `window`, in `color`, before
-/// recording starts, so it is excluded from the first frame.
-pub(super) fn show_border(
-    info: &MonitorInfo,
-    region: Option<PhysicalRect>,
-    window: Option<WindowId>,
-    color: [u8; 3],
-) -> Option<Frame> {
-    let (b, scale) = (info.bounds, info.scale_factor);
-    let area = shuttercrab_capture::record::recordable(region, b.width, b.height);
-    let px = |logical: f32| ((logical * scale).round() as u32).max(1);
-    let style = FrameStyle {
-        thickness: px(BORDER_THICKNESS),
-        dash: px(BORDER_DASH),
-        gap: px(BORDER_GAP),
-    };
-    let area = PhysicalRect::new(b.x + area.x, b.y + area.y, area.width, area.height);
-    let bounds = b;
-    // A window's own picture is recorded, never the border: it goes
-    // outside the window wherever the window is.
-    let (area, bounds) = match window {
-        Some(window) => (
-            shuttercrab_platform::visible_bounds(window).unwrap_or(area),
-            NO_EDGE,
-        ),
-        None => (area, bounds),
-    };
-    match Frame::show(area, bounds, style, color) {
-        Ok((frame, 0)) => Some(frame),
-        Ok((frame, missing)) => {
-            log::warn!("{missing} sides of the recording border would be recorded; left out");
-            Some(frame)
-        }
-        Err(e) => {
-            log::warn!("could not show the recording border: {e:#}");
-            None
-        }
-    }
-}
-
-/// Do what the recording controls ask until they close.
-fn handle_controls(
-    state: Rc<State>,
-    mut requests: UnboundedReceiver<RecordBarEvent>,
-    cx: &mut AsyncApp,
-) {
-    cx.spawn(async move |cx| {
-        while let Some(asked) = requests.next().await {
-            match asked {
-                RecordBarEvent::TogglePause => toggle_pause(&state, cx),
-                RecordBarEvent::Stop => stop_recording(&state, cx),
-                RecordBarEvent::Restart => request(&state, Destructive::Restart, cx).await,
-                RecordBarEvent::Discard => request(&state, Destructive::Discard, cx).await,
-                RecordBarEvent::Confirm => confirm(&state, cx).await,
-                RecordBarEvent::KeepRecording => keep_take(&state, cx),
-                RecordBarEvent::Undo => undo(&state, cx),
-                RecordBarEvent::SetAppOnly(on) => {
-                    if let Some(recording) = state.recording.borrow_mut().as_mut() {
-                        recording.set_app_only(on);
-                    }
-                }
-                RecordBarEvent::SetSound(source, on) => {
-                    if let Some(recording) = state.recording.borrow_mut().as_mut() {
-                        recording.set_sound(source, on);
-                    }
-                }
-                // Only the ready bar asks these, before recording; only a
-                // stream's bar the last two.
-                RecordBarEvent::Start
-                | RecordBarEvent::Close
-                | RecordBarEvent::ChooseMicrophone
-                | RecordBarEvent::Quality(_)
-                | RecordBarEvent::CopyLink => {}
-            }
-            if state.recording.borrow().is_none() {
-                break;
-            }
-        }
-    })
-    .detach();
 }
 
 /// Pause the recording, or resume it if it is paused. While the controls
