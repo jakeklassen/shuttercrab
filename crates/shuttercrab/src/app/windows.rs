@@ -1,13 +1,11 @@
 //! The main window, with its Settings page, and the hooks it uses to reach
 //! the rest of Shuttercrab.
 
-use super::{
-    Busy, Start, State, quit, restart_to_update, start,
-    tray::{TRAY_DELAY, hotkeys, print_screen_hotkeys},
-};
+use super::{Busy, Start, State, quit, restart_to_update, start, tray::TRAY_DELAY};
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
     files,
+    hotkeys::{hotkeys, print_screen_hotkeys},
     main_window::{self, MainHooks, MainWindow, Page, Shot},
     markup, pixels, playback, popup,
     settings_window::{Diagnostics, SettingsHooks},

@@ -8,12 +8,10 @@ use gpui_kit::{
     test::TestWindowExt as _,
 };
 use shuttercrab::{
-    app::CAPTURE_BAR_HOTKEY,
+    hotkeys::HotkeyKind,
     popup,
     settings::Settings,
-    settings_window::{
-        Diagnostics, HotkeyField, HotkeyKind, OnPrintScreen, SettingsHooks, SettingsPage,
-    },
+    settings_window::{Diagnostics, HotkeyField, OnPrintScreen, SettingsHooks, SettingsPage},
 };
 use shuttercrab_capture::{MonitorId, MonitorInfo, PhysicalRect};
 use shuttercrab_platform::{Hotkey, os::Os};
@@ -258,7 +256,11 @@ fn a_field_says_when_windows_keeps_print_screen(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_hotkey_another_app_owns_is_refused_and_the_old_one_kept(cx: &mut TestAppContext) {
     let opened = open(cx);
-    opened.seen.taken.borrow_mut().push(CAPTURE_BAR_HOTKEY);
+    opened
+        .seen
+        .taken
+        .borrow_mut()
+        .push(HotkeyKind::CaptureBar.hotkey_id());
     update(cx, &opened, |window, cx| {
         window.click("hotkey-capture-bar", cx);
         window.press("ctrl-alt-x", cx);
@@ -374,7 +376,7 @@ fn a_recording_chord_another_app_owns_is_refused(cx: &mut TestAppContext) {
         .seen
         .taken
         .borrow_mut()
-        .push(shuttercrab::app::UNDO_HOTKEY);
+        .push(HotkeyKind::Undo.hotkey_id());
     update(cx, &opened, |window, cx| {
         window.click("hotkey-undo", cx);
         window.press("ctrl-alt-u", cx);

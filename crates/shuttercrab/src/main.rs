@@ -3,7 +3,8 @@
 
 use futures::channel::mpsc::UnboundedReceiver;
 use shuttercrab::{
-    app::{self, QUIT_HOTKEY, Shuttercrab},
+    app::{self, Shuttercrab},
+    hotkeys::{HotkeyKind, QUIT_HOTKEY, QUIT_KEYS, hotkeys},
     logging,
     settings::{self, Loaded, Settings},
     update::{UpdateBackend, Velopack},
@@ -80,7 +81,7 @@ fn main() {
         settings.capture_bar_hotkey,
         settings.screenshot_hotkey,
         settings.record_hotkey,
-        app::QUIT_KEYS
+        QUIT_KEYS
     );
     let updates = Velopack::new().map(|velopack| {
         log::info!(
@@ -255,31 +256,21 @@ fn tidy_up() {
 /// the defaults, with a notice.
 fn normalize_hotkeys(settings: &mut Settings, notices: &mut Vec<Notice>) {
     let defaults = Settings::default();
-    let mut normalize = |value: &mut String, fallback: &str| match Hotkey::parse(value) {
-        Ok(hotkey) => *value = hotkey.to_string(),
+    let mut normalize = |value: &str, fallback: &str| match Hotkey::parse(value) {
+        Ok(hotkey) => hotkey.to_string(),
         Err(e) => {
             log::error!("hotkey {value:?} is not valid ({e:#}); using {fallback}");
             notices.push((
                 "Hotkey not recognised".to_string(),
                 format!("\"{value}\" is not a valid hotkey, so {fallback} is used instead."),
             ));
-            *value = fallback.to_string();
+            fallback.to_string()
         }
     };
-    normalize(
-        &mut settings.capture_bar_hotkey,
-        &defaults.capture_bar_hotkey,
-    );
-    normalize(&mut settings.screenshot_hotkey, &defaults.screenshot_hotkey);
-    normalize(
-        &mut settings.screenshot_with_window_hotkey,
-        &defaults.screenshot_with_window_hotkey,
-    );
-    normalize(&mut settings.record_hotkey, &defaults.record_hotkey);
-    normalize(&mut settings.pause_hotkey, &defaults.pause_hotkey);
-    normalize(&mut settings.restart_hotkey, &defaults.restart_hotkey);
-    normalize(&mut settings.discard_hotkey, &defaults.discard_hotkey);
-    normalize(&mut settings.undo_hotkey, &defaults.undo_hotkey);
+    for kind in HotkeyKind::ALL {
+        let chord = normalize(kind.get(settings), kind.get(&defaults));
+        kind.set(settings, chord);
+    }
 }
 
 /// Start the platform thread with the hotkeys and the tray icon. Adds a
@@ -291,7 +282,7 @@ fn start_platform(
     notices: &mut Vec<Notice>,
 ) -> (Platform, UnboundedReceiver<PlatformEvent>) {
     // Every hotkey in the settings is valid by now.
-    let hotkeys = app::hotkeys(settings, false, false);
+    let hotkeys = hotkeys(settings, false, false);
     let tray = Tray {
         tooltip: "Shuttercrab".into(),
         menu: app::tray_menu(settings, app::TrayRecording::Idle, None),

@@ -8,6 +8,7 @@
 //! [`SettingsHooks`], so it can be tested on its own.
 
 use crate::{
+    hotkeys::HotkeyKind,
     palette::{coral, muted},
     settings::{KeyPaste, Settings},
 };
@@ -119,58 +120,8 @@ pub struct Diagnostics {
     pub settings_path: Option<PathBuf>,
 }
 
-/// Which hotkey a recorder edits.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum HotkeyKind {
-    CaptureBar,
-    Screenshot,
-    ScreenshotWithWindow,
-    Record,
-    Pause,
-    Restart,
-    Discard,
-    Undo,
-}
-
+/// The Settings window's words for each hotkey.
 impl HotkeyKind {
-    pub const ALL: [HotkeyKind; 8] = [
-        Self::CaptureBar,
-        Self::Screenshot,
-        Self::ScreenshotWithWindow,
-        Self::Record,
-        Self::Pause,
-        Self::Restart,
-        Self::Discard,
-        Self::Undo,
-    ];
-
-    fn get(self, s: &Settings) -> &str {
-        match self {
-            Self::CaptureBar => &s.capture_bar_hotkey,
-            Self::Screenshot => &s.screenshot_hotkey,
-            Self::ScreenshotWithWindow => &s.screenshot_with_window_hotkey,
-            Self::Record => &s.record_hotkey,
-            Self::Pause => &s.pause_hotkey,
-            Self::Restart => &s.restart_hotkey,
-            Self::Discard => &s.discard_hotkey,
-            Self::Undo => &s.undo_hotkey,
-        }
-    }
-
-    fn set(self, s: &mut Settings, value: String) {
-        let slot = match self {
-            Self::CaptureBar => &mut s.capture_bar_hotkey,
-            Self::Screenshot => &mut s.screenshot_hotkey,
-            Self::ScreenshotWithWindow => &mut s.screenshot_with_window_hotkey,
-            Self::Record => &mut s.record_hotkey,
-            Self::Pause => &mut s.pause_hotkey,
-            Self::Restart => &mut s.restart_hotkey,
-            Self::Discard => &mut s.discard_hotkey,
-            Self::Undo => &mut s.undo_hotkey,
-        };
-        *slot = value;
-    }
-
     /// What the hotkey does, to finish "Ctrl+Alt+S already …".
     fn does(self) -> &'static str {
         match self {
@@ -196,21 +147,6 @@ impl HotkeyKind {
             Self::Restart => "hotkey-restart",
             Self::Discard => "hotkey-discard",
             Self::Undo => "hotkey-undo",
-        }
-    }
-
-    /// The id the app registers it under.
-    fn id(self) -> u32 {
-        use crate::app::*;
-        match self {
-            Self::CaptureBar => CAPTURE_BAR_HOTKEY,
-            Self::Screenshot => SCREENSHOT_HOTKEY,
-            Self::ScreenshotWithWindow => SCREENSHOT_WITH_WINDOW_HOTKEY,
-            Self::Record => RECORD_HOTKEY,
-            Self::Pause => PAUSE_HOTKEY,
-            Self::Restart => RESTART_HOTKEY,
-            Self::Discard => DISCARD_HOTKEY,
-            Self::Undo => UNDO_HOTKEY,
         }
     }
 }
@@ -370,7 +306,11 @@ impl HotkeyField {
         cx.notify();
         // Every hotkey, including those taken only while recording, so a
         // clash shows now rather than mid-recording.
-        let (applied, id, kind) = ((self.hooks.probe_hotkeys)(), self.kind.id(), self.kind);
+        let (applied, id, kind) = (
+            (self.hooks.probe_hotkeys)(),
+            self.kind.hotkey_id(),
+            self.kind,
+        );
         cx.spawn(async move |this, cx| {
             let taken = applied.await;
             let _ = this.update(cx, |this, cx| {

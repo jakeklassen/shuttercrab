@@ -15,6 +15,7 @@ pub mod files;
 pub mod generation;
 pub mod heap;
 mod helper_process;
+pub mod hotkeys;
 pub mod icons;
 pub mod logging;
 pub mod main_window;
