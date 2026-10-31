@@ -1145,7 +1145,7 @@ impl MainWindow {
             .children(self.crop_overlay(shown, placing, cx))
             .children(self.text_overlay(shown, placing, cx))
             .children(self.tip(shown, per_pixel))
-            .children(self.notice.clone().map(notice))
+            .children(self.notice.get().cloned().map(notice))
             .children(self.shapes_bar(cx))
             .children(self.shape_context_menu(cx))
     }
@@ -1176,7 +1176,7 @@ impl MainWindow {
                 (vec![outline], side)
             }
         };
-        if self.size_note
+        if self.size_note.is_shown()
             && let Some(note) = self.size_label()
         {
             tip.push(
