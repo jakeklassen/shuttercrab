@@ -270,26 +270,26 @@ fn record(
     ready: Sender<Result<()>>,
     live: Option<Live>,
 ) -> Result<RecordingSummary> {
-    let setup = (|| {
-        unsafe {
-            let _ = RoInitialize(RO_INIT_MULTITHREADED);
-            SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
-            MFStartup(MF_VERSION, MFSTARTUP_FULL).context("MFStartup failed")?;
-        }
-        Session::new(&options, frames, live)
-    })();
-    let mut session = match setup {
-        Ok(session) => {
-            let _ = ready.send(Ok(()));
-            session
-        }
-        Err(e) => {
-            let _ = ready.send(Err(anyhow::anyhow!("{e:#}")));
-            return Err(e);
-        }
+    let failed = |e: anyhow::Error| {
+        let _ = ready.send(Err(anyhow::anyhow!("{e:#}")));
+        Err(e)
     };
-    let result = session.run(&inbox);
-    drop(session);
+    unsafe {
+        let _ = RoInitialize(RO_INIT_MULTITHREADED);
+        SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
+        if let Err(e) = MFStartup(MF_VERSION, MFSTARTUP_FULL) {
+            return failed(anyhow::Error::from(e).context("MFStartup failed"));
+        }
+    }
+    // Media Foundation is shut down once the session is gone, however it
+    // went.
+    let result = match Session::new(&options, frames, live) {
+        Ok(mut session) => {
+            let _ = ready.send(Ok(()));
+            session.run(&inbox)
+        }
+        Err(e) => failed(e),
+    };
     unsafe {
         let _ = MFShutdown();
     }
