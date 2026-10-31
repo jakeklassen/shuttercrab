@@ -9,7 +9,7 @@
 
 use crate::{
     palette::{coral, muted},
-    settings::Settings,
+    settings::{KeyPaste, Settings},
 };
 use futures::future::LocalBoxFuture;
 use gpui_kit::{
@@ -35,11 +35,7 @@ use shuttercrab_platform::{
     os::{Os, os},
 };
 use shuttercrab_stream::Quality;
-use std::{
-    cell::{Cell, RefCell},
-    path::PathBuf,
-    rc::Rc,
-};
+use std::{cell::RefCell, path::PathBuf, rc::Rc};
 
 /// What the settings page needs from the rest of Shuttercrab.
 pub struct SettingsHooks {
@@ -65,6 +61,44 @@ pub struct SettingsHooks {
     pub set_launch_at_startup: Rc<dyn Fn(bool)>,
     /// What the Diagnostics page shows.
     pub diagnostics: Diagnostics,
+}
+
+impl SettingsHooks {
+    /// Keep the host key that is on the clipboard, encrypted in the
+    /// settings, and say what came of it. The key itself is never shown or
+    /// logged. The settings page and the main window's Stream both paste
+    /// with this.
+    pub fn paste_host_key(&self, cx: &mut App) -> KeyPaste {
+        let text = cx
+            .read_from_clipboard()
+            .and_then(|item| item.text())
+            .unwrap_or_default();
+        let pasted = self.settings.borrow_mut().paste_host_key(&text);
+        if pasted.is_kept() {
+            (self.changed)(cx);
+        }
+        pasted
+    }
+}
+
+/// A line under the host key's buttons: what a press did, or why it did
+/// not. The main window also says with one why a stream did not start.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum HostKeyNote {
+    /// Done, and how.
+    Done(&'static str),
+    /// Not done, and why.
+    Problem(SharedString),
+}
+
+impl From<KeyPaste> for HostKeyNote {
+    fn from(pasted: KeyPaste) -> Self {
+        if pasted.is_kept() {
+            Self::Done(pasted.message())
+        } else {
+            Self::Problem(pasted.message().into())
+        }
+    }
 }
 
 /// Shown by a hotkey field while Windows keeps Print Screen (only Windows
@@ -1203,9 +1237,9 @@ fn folder_row(hooks: Rc<SettingsHooks>, folder: Folder) -> impl IntoElement {
         )
 }
 
-/// What the last press of Paste key or Forget did, if anything: whether it
-/// went well, and what to say.
-type KeyNote = Rc<Cell<Option<(bool, &'static str)>>>;
+/// What the last press of Paste key or Forget did, if anything, shared
+/// with the buttons that set it.
+type KeyNote = Rc<RefCell<Option<HostKeyNote>>>;
 
 /// Whether a host key is kept, with buttons to paste one from the clipboard
 /// and to forget it, and what the last press did. The key itself is never
@@ -1214,51 +1248,49 @@ fn host_key_row(hooks: Rc<SettingsHooks>, note: KeyNote) -> impl IntoElement {
     let kept = !hooks.settings.borrow().stream_host_key.is_empty();
     let (paste, forget) = (hooks.clone(), hooks);
     let (paste_note, forget_note) = (note.clone(), note.clone());
-    let buttons =
-        div()
-            .flex()
-            .items_center()
-            .gap_2()
-            .child(
-                div()
-                    .id("host-key-state")
-                    .test_support()
-                    .text_sm()
-                    .child(if kept { "A key is kept" } else { "No key yet" }),
-            )
-            .child(Button::new("paste-host-key").label("Paste key").on_click(
-                move |_, window, cx| {
-                    let text = cx
-                        .read_from_clipboard()
-                        .and_then(|item| item.text())
-                        .unwrap_or_default();
-                    let pasted = paste.settings.borrow_mut().paste_host_key(&text);
-                    if pasted.is_kept() {
-                        (paste.changed)(cx);
-                    }
-                    paste_note.set(Some((pasted.is_kept(), pasted.message())));
+    let said = note.borrow().clone().map(|note| match note {
+        HostKeyNote::Done(what) => (SharedString::from(what), muted()),
+        HostKeyNote::Problem(why) => (why, coral()),
+    });
+    let buttons = div()
+        .flex()
+        .items_center()
+        .gap_2()
+        .child(
+            div()
+                .id("host-key-state")
+                .test_support()
+                .text_sm()
+                .child(if kept { "A key is kept" } else { "No key yet" }),
+        )
+        .child(
+            Button::new("paste-host-key")
+                .label("Paste key")
+                .on_click(move |_, window, cx| {
+                    let pasted = paste.paste_host_key(cx);
+                    *paste_note.borrow_mut() = Some(pasted.into());
                     window.refresh();
+                }),
+        )
+        .when(kept, |d| {
+            d.child(Button::new("forget-host-key").label("Forget").on_click(
+                move |_, window, cx| {
+                    if forget.settings.borrow_mut().set_host_key("").is_ok() {
+                        log::info!("the host key was forgotten");
+                        (forget.changed)(cx);
+                        *forget_note.borrow_mut() = Some(HostKeyNote::Done("Host key forgotten"));
+                        window.refresh();
+                    }
                 },
             ))
-            .when(kept, |d| {
-                d.child(Button::new("forget-host-key").label("Forget").on_click(
-                    move |_, window, cx| {
-                        if forget.settings.borrow_mut().set_host_key("").is_ok() {
-                            log::info!("the host key was forgotten");
-                            (forget.changed)(cx);
-                            forget_note.set(Some((true, "Host key forgotten")));
-                            window.refresh();
-                        }
-                    },
-                ))
-            });
+        });
     div()
         .flex()
         .flex_col()
         .items_end()
         .gap_1()
         .child(buttons)
-        .when_some(note.get(), |d, (went_well, said)| {
+        .when_some(said, |d, (said, color)| {
             d.child(
                 div()
                     .id("host-key-note")
@@ -1269,7 +1301,7 @@ fn host_key_row(hooks: Rc<SettingsHooks>, note: KeyNote) -> impl IntoElement {
                     .min_w_full()
                     .text_xs()
                     .text_right()
-                    .text_color(if went_well { muted() } else { coral() })
+                    .text_color(color)
                     .child(said),
             )
         })
