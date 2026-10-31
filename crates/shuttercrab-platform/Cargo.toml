@@ -60,8 +60,9 @@ features = [
 
 [target.'cfg(target_os = "linux")'.dependencies]
 arboard = "3.6.1"
-zbus = "5.19.0"
-# The tray icon: a StatusNotifierItem, on the same zbus.
+zbus = "6.1.0"
+# The tray icon: a StatusNotifierItem. It still uses zbus 5, so Linux
+# builds have both for now.
 ksni = { version = "0.3.6", default-features = false, features = ["async-io", "blocking"] }
 x11rb = { version = "0.14", features = ["randr", "shape", "xkb"] }
 

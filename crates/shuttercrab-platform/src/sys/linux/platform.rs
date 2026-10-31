@@ -21,9 +21,9 @@ use std::{
     io::{BufRead, BufReader},
     os::unix::net::UnixListener,
     path::PathBuf,
-    sync::{Arc, Mutex, PoisonError},
+    sync::{Arc, OnceLock},
 };
-use zbus::{blocking::Connection, zvariant::Value};
+use zbus::{Connection, Variant};
 
 pub use super::instance::signal_running_instance;
 
@@ -118,18 +118,26 @@ impl Platform {
     pub fn watch_window(&self, _window: Option<WindowId>) {}
 
     /// A desktop notification, through the freedesktop notification
-    /// service. Sent from a thread of its own: it is a D-Bus call.
+    /// service. Sent from a thread of their own, started with the first:
+    /// they are D-Bus calls.
     pub fn notify(&self, title: impl Into<String>, message: impl Into<String>) {
-        let (title, message) = (title.into(), message.into());
-        let sent = std::thread::Builder::new()
-            .name("shuttercrab-notify".into())
-            .spawn(move || {
-                if let Err(e) = send_notification(&title, &message) {
-                    log::warn!("could not show a notification: {e}");
+        static NOTIFICATIONS: OnceLock<Option<std::sync::mpsc::Sender<(String, String)>>> =
+            OnceLock::new();
+        let notifications = NOTIFICATIONS.get_or_init(|| {
+            let (send, notifications) = std::sync::mpsc::channel();
+            let started = std::thread::Builder::new()
+                .name("shuttercrab-notify".into())
+                .spawn(move || send_notifications(&notifications));
+            match started {
+                Ok(_) => Some(send),
+                Err(e) => {
+                    log::warn!("could not start notifications: {e}");
+                    None
                 }
-            });
-        if let Err(e) = sent {
-            log::warn!("could not start a notification: {e}");
+            }
+        });
+        if let Some(notifications) = notifications {
+            let _ = notifications.send((title.into(), message.into()));
         }
     }
 }
@@ -153,40 +161,53 @@ fn on_thread(
     }
 }
 
-/// Send a notification on Shuttercrab's session bus connection, made at
-/// the first and kept open: GNOME takes back an app's notifications as
-/// soon as the connection they came on closes. It is named by the launcher
-/// entry, as the desktop finds the app's name and icon there.
-fn send_notification(title: &str, message: &str) -> zbus::Result<()> {
-    static SESSION: Mutex<Option<Connection>> = Mutex::new(None);
-    let connection = {
-        let mut session = SESSION.lock().unwrap_or_else(PoisonError::into_inner);
-        match &*session {
-            Some(connection) => connection.clone(),
-            None => session.insert(Connection::session()?).clone(),
+/// Send each notification (title, message) on Shuttercrab's session bus
+/// connection, made at the first and kept open: GNOME takes back an app's
+/// notifications as soon as the connection they came on closes. zbus runs
+/// a connection on the thread that made it, so this thread keeps it.
+fn send_notifications(notifications: &std::sync::mpsc::Receiver<(String, String)>) {
+    let mut session = None;
+    for (title, message) in notifications {
+        if let Err(e) = zbus::block_on(send_notification(&mut session, &title, &message)) {
+            log::warn!("could not show a notification: {e}");
         }
+    }
+}
+
+/// Send one notification, on `session` once it is open. It is named by the
+/// launcher entry, as the desktop finds the app's name and icon there.
+async fn send_notification(
+    session: &mut Option<Connection>,
+    title: &str,
+    message: &str,
+) -> zbus::Result<()> {
+    let connection = match session {
+        Some(connection) => connection,
+        None => session.insert(Connection::session().await?),
     };
     let icon = icon_path().map_or_else(String::new, |p| p.to_string_lossy().into_owned());
-    let hints = HashMap::from([("desktop-entry", Value::from(APP_ID))]);
+    let hints = HashMap::from([("desktop-entry", Variant::from(APP_ID))]);
     let actions: &[&str] = &[];
     // Notify(app name, replaces id, icon, summary, body, actions, hints,
     // timeout: the server's own).
-    connection.call_method(
-        Some("org.freedesktop.Notifications"),
-        "/org/freedesktop/Notifications",
-        Some("org.freedesktop.Notifications"),
-        "Notify",
-        &(
-            "Shuttercrab",
-            0u32,
-            icon.as_str(),
-            title,
-            message,
-            actions,
-            hints,
-            -1i32,
-        ),
-    )?;
+    connection
+        .call_method(
+            Some("org.freedesktop.Notifications"),
+            "/org/freedesktop/Notifications",
+            Some("org.freedesktop.Notifications"),
+            "Notify",
+            &(
+                "Shuttercrab",
+                0u32,
+                icon.as_str(),
+                title,
+                message,
+                actions,
+                hints,
+                -1i32,
+            ),
+        )
+        .await?;
     Ok(())
 }
 
