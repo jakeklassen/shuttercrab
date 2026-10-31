@@ -7,11 +7,67 @@
 //! helper's log lines come over standard error and go into the app's log.
 
 use anyhow::Result;
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
+use shuttercrab_capture::{MonitorId, PhysicalRect, record::RecordOptions};
+use shuttercrab_types::WindowId;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
+    path::PathBuf,
 };
+
+/// [`RecordOptions`] on the wire. Both helpers record: the streamer
+/// streams what it records.
+#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
+pub(crate) struct Options {
+    monitor: u64,
+    region: Option<(i32, i32, u32, u32)>,
+    window: Option<u64>,
+    fps: u32,
+    include_cursor: bool,
+    system_sound: bool,
+    sound_process: Option<u32>,
+    microphone: bool,
+    microphone_device: Option<String>,
+    sound_track: bool,
+    path: PathBuf,
+}
+
+impl From<RecordOptions> for Options {
+    fn from(o: RecordOptions) -> Self {
+        Self {
+            monitor: o.monitor.raw(),
+            region: o.region.map(|r| (r.x, r.y, r.width, r.height)),
+            window: o.window.map(WindowId::raw),
+            fps: o.fps,
+            include_cursor: o.include_cursor,
+            system_sound: o.system_sound,
+            sound_process: o.sound_process,
+            microphone: o.microphone,
+            microphone_device: o.microphone_device,
+            sound_track: o.sound_track,
+            path: o.path,
+        }
+    }
+}
+
+impl From<Options> for RecordOptions {
+    fn from(o: Options) -> Self {
+        Self {
+            monitor: MonitorId::from_raw(o.monitor),
+            region: o.region.map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h)),
+            window: o.window.map(WindowId::from_raw),
+            fps: o.fps,
+            include_cursor: o.include_cursor,
+            system_sound: o.system_sound,
+            sound_process: o.sound_process,
+            microphone: o.microphone,
+            microphone_device: o.microphone_device,
+            sound_track: o.sound_track,
+            path: o.path,
+        }
+    }
+}
 
 /// Write one message as a JSON line.
 pub(crate) fn send(to: &mut impl Write, message: &impl Serialize) -> Result<()> {
