@@ -275,6 +275,27 @@ enum StreamNote {
     Problem(SharedString),
 }
 
+/// What Clear took away, which Undo brings back.
+enum Cleared {
+    /// A screenshot, with its marks, and where the window was.
+    Shot {
+        // Boxed: a screenshot shown holds far more than a closed recording.
+        shown: Box<Shown>,
+        place: Option<Place>,
+    },
+    /// A recording, which is saved in its folder already, so only closed.
+    Recording(video::ClearedRecording),
+}
+
+impl Cleared {
+    /// Let go of a screenshot's pictures; a closed recording holds none.
+    fn release(self, window: &mut Window) {
+        if let Cleared::Shot { shown, .. } = self {
+            shown.release(window);
+        }
+    }
+}
+
 /// What the window shows.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Page {
@@ -412,11 +433,10 @@ pub struct MainWindow {
     shown: Option<Shown>,
     /// The recording shown on the home page instead, if any, and a count
     /// of those shown, which tells their players' updates apart.
-    video: Option<video::Video>,
-    videos: u64,
-    /// The recording Clear closed, which Undo opens again until the next
-    /// capture.
-    closed: Option<video::Closed>,
+    recording: Option<video::Video>,
+    recordings_shown: u64,
+    /// What Clear took away, which Undo brings back until the next capture.
+    cleared: Option<Cleared>,
     /// The drawing tools are in the bar at the bottom: the window is too
     /// narrow for one row. Set as each frame is drawn.
     tools_below: bool,
@@ -424,9 +444,6 @@ pub struct MainWindow {
     /// one row with a screenshot or a recording shown. Set as each frame is
     /// drawn.
     folded: bool,
-    /// The screenshot Clear took away, with its marks, and where the window
-    /// was then: Undo brings both back until the next capture.
-    cleared: Option<(Shown, Option<Place>)>,
     /// Copy's check mark, shown for a moment after each copy.
     copied: Momentary<()>,
     /// The tool in hand, if any: dragging on the screenshot draws or erases
@@ -480,12 +497,11 @@ impl MainWindow {
             menu: None,
             highlighted: 0,
             shown: None,
-            video: None,
-            videos: 0,
-            closed: None,
+            recording: None,
+            recordings_shown: 0,
+            cleared: None,
             tools_below: false,
             folded: false,
-            cleared: None,
             copied: Momentary::default(),
             hand: None,
             flyout: None,
@@ -535,14 +551,10 @@ impl MainWindow {
         if let Some(previous) = self.shown.replace(shown) {
             previous.release(window);
         }
-        if let Some(video) = self.video.take() {
+        if let Some(video) = self.recording.take() {
             video.release(window);
         }
-        // A new capture: the cleared one can no longer come back.
-        if let Some((cleared, _)) = self.cleared.take() {
-            cleared.release(window);
-        }
-        self.closed = None;
+        self.forget_cleared(window);
         self.page = Page::Home;
         self.settings = None;
         self.menu = None;
@@ -551,11 +563,12 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// Clear the screenshot shown, back to the start view. It is kept, with
-    /// its marks, so Undo brings it back, until the next capture.
+    /// Clear the screenshot or the recording shown, back to the start view.
+    /// It is kept, a screenshot with its marks, so Undo brings it back,
+    /// until the next capture.
     pub fn clear(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         // A recording is saved in its folder already: it just closes.
-        if self.close_recording(window, cx) {
+        if self.clear_recording(window, cx) {
             return;
         }
         let Some(mut shown) = self.shown.take() else {
@@ -571,45 +584,70 @@ impl MainWindow {
             shown.reading = None;
         }
         let place = (self.hooks.window_place)(window);
-        if let Some((older, _)) = self.cleared.replace((shown, place)) {
-            older.release(window);
-        }
+        self.keep_cleared(
+            Cleared::Shot {
+                shown: Box::new(shown),
+                place,
+            },
+            window,
+        );
         self.menu = None;
         self.fit_home(window, cx);
         cx.notify();
     }
 
-    /// Bring back the screenshot Clear took away. Returns whether there was
-    /// one.
-    pub(super) fn unclear(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        if self.shown.is_some() || self.video.is_some() {
+    /// Bring back what Clear took away. Returns whether there was anything.
+    pub(super) fn undo_clear(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        if self.shown.is_some() || self.recording.is_some() {
             return false;
         }
-        let Some((shown, place)) = self.cleared.take() else {
-            return self.reopen_recording(window, cx);
-        };
-        self.shown = Some(shown);
-        // Exactly where it was, at the size it was: fitting it afresh
-        // would centre it on the smaller start view and move it.
-        match place {
-            Some(place) => (self.hooks.restore_place)(window, cx, place),
-            None => self.fit_home(window, cx),
+        match self.cleared.take() {
+            Some(Cleared::Shot { shown, place }) => {
+                self.shown = Some(*shown);
+                // Exactly where it was, at the size it was: fitting it afresh
+                // would centre it on the smaller start view and move it.
+                match place {
+                    Some(place) => (self.hooks.restore_place)(window, cx, place),
+                    None => self.fit_home(window, cx),
+                }
+                cx.notify();
+                true
+            }
+            Some(Cleared::Recording(cleared)) => {
+                self.undo_clear_recording(cleared, window, cx);
+                true
+            }
+            None => false,
         }
-        cx.notify();
-        true
+    }
+
+    /// Keep what Clear took away, for Undo, letting go of anything kept
+    /// before.
+    fn keep_cleared(&mut self, cleared: Cleared, window: &mut Window) {
+        if let Some(older) = self.cleared.replace(cleared) {
+            older.release(window);
+        }
+    }
+
+    /// Let go of what Clear took away: after a new capture, it can no longer
+    /// come back.
+    fn forget_cleared(&mut self, window: &mut Window) {
+        if let Some(cleared) = self.cleared.take() {
+            cleared.release(window);
+        }
     }
 
     /// Size the window for the home page: the toolbar and the hint, or the
     /// screenshot shown at full size.
     fn fit_home(&self, window: &mut Window, cx: &mut App) {
-        let content = match (self.shot(), &self.video) {
+        let content = match (self.shot(), &self.recording) {
             (Some(shot), _) => Some(shot.size()),
             (None, Some(video)) => video.size,
             (None, None) => None,
         };
         let Some((width, height)) = content else {
             // A recording not yet open keeps the window as it is.
-            if self.video.is_none() {
+            if self.recording.is_none() {
                 window.resize(HOME_SIZE);
             }
             return;
@@ -621,7 +659,7 @@ impl MainWindow {
         let width = (width as f32 / scale + around).max(least.0);
         // Narrower than one row of tools, the tools' bar sits at the bottom;
         // a recording has none.
-        let bottom = if width < WIDE_WIDTH && self.video.is_none() {
+        let bottom = if width < WIDE_WIDTH && self.recording.is_none() {
             BOTTOM_BAR_HEIGHT
         } else {
             FOOTER_HEIGHT
@@ -792,7 +830,7 @@ impl MainWindow {
     /// clipboard, Copy shows a check mark for a moment, as Snipping Tool's
     /// does.
     fn copy(&mut self, cx: &mut Context<Self>) {
-        let done = match (&self.video, self.marked_shot()) {
+        let done = match (&self.recording, self.marked_shot()) {
             (Some(video), _) => (self.hooks.copy_file)(&video.path, cx),
             (None, Some(shot)) => (self.hooks.copy)(&shot, cx),
             (None, None) => return,
@@ -808,7 +846,7 @@ impl MainWindow {
     }
 
     fn save_as(&mut self, cx: &mut Context<Self>) {
-        match &self.video {
+        match &self.recording {
             Some(video) => (self.hooks.save_file_as)(&video.path, cx),
             None => self.with_shot(cx, |hooks| &hooks.save_as),
         }
@@ -860,7 +898,7 @@ impl MainWindow {
                 More::OpenWith,
                 More::Quit,
             ]
-        } else if self.video.is_some() {
+        } else if self.recording.is_some() {
             &[More::Settings, More::OpenFolder, More::OpenWith, More::Quit]
         } else {
             &[More::Settings, More::OpenFolder, More::Quit]
@@ -885,12 +923,12 @@ impl MainWindow {
         self.menu = None;
         match item {
             More::Settings => self.show(Page::Settings, window, cx),
-            More::OpenFolder => match &self.video {
+            More::OpenFolder => match &self.recording {
                 Some(video) => (self.hooks.reveal)(&video.path, cx),
                 None => (self.hooks.open_folder)(self.shot(), cx),
             },
             More::EditIn => self.with_shot(cx, |hooks| &hooks.edit_in_editor),
-            More::OpenWith => match &self.video {
+            More::OpenWith => match &self.recording {
                 Some(video) => (self.hooks.open_file_with)(&video.path, cx),
                 None => self.with_shot(cx, |hooks| &hooks.open_with),
             },
@@ -939,7 +977,10 @@ impl MainWindow {
                 "1" => self.zoom(window, cx, |view, canvas| view.zoom_to(1., None, canvas)),
                 "c" => self.copy(cx),
                 // Only for Stream without a key: nothing else pastes here.
-                "v" if self.needs_host_key() && self.shown.is_none() && self.video.is_none() => {
+                "v" if self.needs_host_key()
+                    && self.shown.is_none()
+                    && self.recording.is_none() =>
+                {
                     self.paste_host_key(cx)
                 }
                 "s" => self.save_as(cx),
@@ -1333,8 +1374,8 @@ impl MainWindow {
                     .collect()
             }
             Menu::More => {
-                let saved =
-                    self.shot().is_some_and(|shot| shot.saved.is_some()) || self.video.is_some();
+                let saved = self.shot().is_some_and(|shot| shot.saved.is_some())
+                    || self.recording.is_some();
                 let editor = self.hooks.image_editor.unwrap_or_default();
                 self.more_items()
                     .iter()
@@ -1495,7 +1536,7 @@ impl MainWindow {
                 d.child(self.delay_button(cx))
             })
             .when(
-                self.shown.is_none() && self.video.is_none() && CaptureMode::offers_streaming(),
+                self.shown.is_none() && self.recording.is_none() && CaptureMode::offers_streaming(),
                 |d| d.child(self.watch_button(cx)),
             )
             // Crop mode has its own bar over the screenshot instead.
@@ -1504,7 +1545,7 @@ impl MainWindow {
                 |d| d.child(self.drawing_tools(true, cx)),
             )
             // A recording has nothing to draw with: only Clear.
-            .when(self.video.is_some(), |d| {
+            .when(self.recording.is_some(), |d| {
                 d.child(div().w(px(1.)).h(px(28.)).mx_1().bg(border()))
                     .child(Self::history_button(
                         "clear",
@@ -1518,7 +1559,7 @@ impl MainWindow {
             .child(div().flex_1())
             .when_some(zoom, |d, zoom| d.child(Self::zoom_button(zoom, cx)))
             .when(
-                (self.shown.is_some() && !self.is_cropping()) || self.video.is_some(),
+                (self.shown.is_some() && !self.is_cropping()) || self.recording.is_some(),
                 |d| {
                     let save_as = ButtonFace {
                         id: "save-as",
@@ -1567,12 +1608,10 @@ impl MainWindow {
     }
 
     fn hint(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let back = if self.cleared.is_some() {
-            Some("Bring the screenshot back")
-        } else if self.can_reopen() {
-            Some("Bring the recording back")
-        } else {
-            None
+        let back = match self.cleared {
+            Some(Cleared::Shot { .. }) => Some("Bring the screenshot back"),
+            Some(Cleared::Recording(_)) => Some("Bring the recording back"),
+            None => None,
         };
         let (bar, area) = {
             let settings = self.settings();
@@ -1639,7 +1678,7 @@ impl MainWindow {
                         .hover(|s| s.bg(hover()))
                         .cursor_pointer()
                         .on_click(cx.listener(|this, _: &ClickEvent, window, cx| {
-                            this.unclear(window, cx);
+                            this.undo_clear(window, cx);
                         }))
                         .child(Icon::new(IconName::Undo2).size(px(14.)))
                         .child(back)
@@ -1967,7 +2006,7 @@ impl Render for MainWindow {
         if let Some(shown) = &self.shown {
             shown.drop_stale_pictures(window);
         }
-        if let Some(video) = &mut self.video {
+        if let Some(video) = &mut self.recording {
             video.drop_stale(window);
         }
         // No screenshot to point at: none of the window's own pointers.
@@ -1975,7 +2014,7 @@ impl Render for MainWindow {
             canvas::show_pointer(window, None);
         }
         self.tools_below = self.shown.is_some() && is_narrow(window);
-        self.folded = (self.shown.is_some() || self.video.is_some()) && is_narrow(window);
+        self.folded = (self.shown.is_some() || self.recording.is_some()) && is_narrow(window);
         self.pointer = pointer_in_canvas(window).filter(|_| self.shown.is_some());
         let zoom = self
             .shown
@@ -2028,7 +2067,7 @@ impl Render for MainWindow {
             }
             _ => root
                 .child(self.toolbar(zoom, cx))
-                .map(|d| match (&self.shown, &self.video) {
+                .map(|d| match (&self.shown, &self.recording) {
                     (Some(shown), _) => d.child(self.canvas(shown, window, cx)),
                     (None, Some(_)) => d.child(self.video_view(window, cx)),
                     (None, None) => d.child(self.hint(cx)),
