@@ -1,10 +1,11 @@
 //! The settings (PRD §26): General, Screenshot, Recording, Streaming,
-//! Diagnostics and Notices pages, shown as a page of the main window. Every change applies at once;
-//! there is no Save button. It all works from the keyboard: Tab between
-//! controls, Space or Enter to use them, Escape to go back.
+//! Diagnostics and Notices pages, shown as a page of the main window.
+//! Every change applies at once; there is no Save button. It all works
+//! from the keyboard: Tab between controls, Space or Enter to use them,
+//! Escape to go back.
 //!
-//! The window reaches the rest of Shuttercrab only through [`Hooks`], so it
-//! can be tested on its own.
+//! The page reaches the rest of Shuttercrab only through
+//! [`SettingsHooks`], so it can be tested on its own.
 
 use crate::{
     palette::{coral, muted},
@@ -40,8 +41,8 @@ use std::{
     rc::Rc,
 };
 
-/// What the settings window needs from the rest of Shuttercrab.
-pub struct Hooks {
+/// What the settings page needs from the rest of Shuttercrab.
+pub struct SettingsHooks {
     /// The live settings, shared with the capture flows.
     pub settings: Rc<RefCell<Settings>>,
     /// After any change: save the settings and refresh the tray menu.
@@ -217,7 +218,7 @@ pub fn hotkey_from_keystroke(keystroke: &Keystroke) -> Result<String, String> {
 /// Shows one hotkey; Enter, Space or a click starts recording a new one.
 pub struct HotkeyField {
     kind: HotkeyKind,
-    hooks: Rc<Hooks>,
+    hooks: Rc<SettingsHooks>,
     recording: bool,
     message: Option<SharedString>,
     focus: FocusHandle,
@@ -226,7 +227,7 @@ pub struct HotkeyField {
 impl HotkeyField {
     pub fn new(
         kind: HotkeyKind,
-        hooks: Rc<Hooks>,
+        hooks: Rc<SettingsHooks>,
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> Self {
@@ -458,18 +459,17 @@ impl Render for HotkeyField {
     }
 }
 
-/// What Escape does in place of closing.
+/// What Escape does: go back from the settings.
 type Escape = Rc<dyn Fn(&mut Window, &mut App)>;
 
-/// The settings window's content.
-pub struct SettingsWindow {
-    hooks: Rc<Hooks>,
+/// The settings, as a page of the main window.
+pub struct SettingsPage {
+    hooks: Rc<SettingsHooks>,
     /// A field for every hotkey, in [`HotkeyKind::ALL`] order.
     hotkeys: Vec<Entity<HotkeyField>>,
     focus: FocusHandle,
-    /// What Escape does instead of closing the window, when the settings
-    /// are a page of a larger window.
-    on_escape: Option<Escape>,
+    /// What Escape does, unless a hotkey field is taking keys.
+    on_escape: Escape,
     /// The microphones plugged in when the settings opened.
     microphones: Vec<Microphone>,
     /// Open on Streaming, for a stream started without a host key.
@@ -478,8 +478,14 @@ pub struct SettingsWindow {
     host_key_note: KeyNote,
 }
 
-impl SettingsWindow {
-    pub fn new(hooks: Rc<Hooks>, window: &mut Window, cx: &mut Context<Self>) -> Self {
+impl SettingsPage {
+    /// The page, on which Escape calls `on_escape`.
+    pub fn new(
+        hooks: Rc<SettingsHooks>,
+        on_escape: impl Fn(&mut Window, &mut App) + 'static,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) -> Self {
         let hotkeys = HotkeyKind::ALL
             .map(|kind| cx.new(|cx| HotkeyField::new(kind, hooks.clone(), window, cx)))
             .to_vec();
@@ -492,17 +498,11 @@ impl SettingsWindow {
             hooks,
             hotkeys,
             focus,
-            on_escape: None,
+            on_escape: Rc::new(on_escape),
             microphones,
             at_streaming: false,
             host_key_note: KeyNote::default(),
         }
-    }
-
-    /// Escape calls `f` rather than closing the window.
-    pub fn on_escape(mut self, f: impl Fn(&mut Window, &mut App) + 'static) -> Self {
-        self.on_escape = Some(Rc::new(f));
-        self
     }
 
     /// Open on the Streaming page, where the host key goes.
@@ -1054,9 +1054,6 @@ fn notices() -> SettingPage {
     )
 }
 
-/// A section heading inside a page. Sections are untitled groups, so the
-/// sidebar lists only the pages (the owner found per-section entries
-/// that merely scroll the page confusing).
 /// Where the OS lets no app set hotkeys (Wayland): the commands to give
 /// desktop shortcuts instead, each with a button to copy it.
 fn desktop_shortcuts() -> SettingGroup {
@@ -1092,6 +1089,9 @@ fn desktop_shortcuts() -> SettingGroup {
         .item(shortcut("Record an area", "copy-record", Request::Record))
 }
 
+/// A section heading inside a page. Sections are untitled groups, so the
+/// sidebar lists only the pages (the owner found per-section entries
+/// that merely scroll the page confusing).
 fn heading(title: &'static str, description: Option<&'static str>) -> SettingItem {
     SettingItem::render(move |_, _, cx| {
         div()
@@ -1154,7 +1154,7 @@ impl Folder {
 }
 
 /// An output folder, with buttons to change and open it.
-fn folder_row(hooks: Rc<Hooks>, folder: Folder) -> impl IntoElement {
+fn folder_row(hooks: Rc<SettingsHooks>, folder: Folder) -> impl IntoElement {
     let dir = folder.get(&hooks.settings.borrow());
     let (pick, open) = (hooks.clone(), dir.clone());
     let (text_id, choose_id, open_id) = folder.ids();
@@ -1210,7 +1210,7 @@ type KeyNote = Rc<Cell<Option<(bool, &'static str)>>>;
 /// Whether a host key is kept, with buttons to paste one from the clipboard
 /// and to forget it, and what the last press did. The key itself is never
 /// shown or logged.
-fn host_key_row(hooks: Rc<Hooks>, note: KeyNote) -> impl IntoElement {
+fn host_key_row(hooks: Rc<SettingsHooks>, note: KeyNote) -> impl IntoElement {
     let kept = !hooks.settings.borrow().stream_host_key.is_empty();
     let (paste, forget) = (hooks.clone(), hooks);
     let (paste_note, forget_note) = (note.clone(), note.clone());
@@ -1274,7 +1274,7 @@ fn host_key_row(hooks: Rc<Hooks>, note: KeyNote) -> impl IntoElement {
             )
         })
 }
-impl Render for SettingsWindow {
+impl Render for SettingsPage {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
         div()
             .id("settings-window")
@@ -1288,10 +1288,8 @@ impl Render for SettingsWindow {
             .on_key_down(cx.listener(|this, event: &KeyDownEvent, window, cx| {
                 let recording = this.hotkeys.iter().any(|f| f.read(cx).is_recording());
                 if event.keystroke.key == "escape" && !recording {
-                    match this.on_escape.clone() {
-                        Some(back) => back(window, cx),
-                        None => crate::popup::close_window(window, cx),
-                    }
+                    let back = this.on_escape.clone();
+                    back(window, cx);
                 }
             }))
             .child({

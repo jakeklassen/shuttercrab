@@ -10,7 +10,7 @@ use crate::{
     files,
     main_window::{self, MainHooks, MainWindow, Page, Place, Shot},
     markup, pixels, playback, popup,
-    settings_window::{Diagnostics, Hooks},
+    settings_window::{Diagnostics, SettingsHooks},
 };
 use gpui_kit::{
     App, AppContext as _, AsyncApp, Bounds, Context, Task, TitlebarOptions, Window, WindowBounds,
@@ -572,11 +572,11 @@ fn flatten(shot: &Shot) -> anyhow::Result<(Vec<u8>, Arc<Vec<u8>>)> {
     Ok((marked, Arc::new(png)))
 }
 
-/// How the settings window reaches the rest of Shuttercrab.
-fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> Hooks {
+/// How the settings page reaches the rest of Shuttercrab.
+fn settings_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> SettingsHooks {
     let (changed, pause, apply, probe) =
         (state.clone(), state.clone(), state.clone(), state.clone());
-    Hooks {
+    SettingsHooks {
         settings: state.settings.clone(),
         changed: Rc::new(move |cx: &mut App| {
             let settings = changed.settings.borrow().clone();

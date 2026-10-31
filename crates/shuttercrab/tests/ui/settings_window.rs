@@ -9,8 +9,11 @@ use gpui_kit::{
 };
 use shuttercrab::{
     app::CAPTURE_BAR_HOTKEY,
+    popup,
     settings::Settings,
-    settings_window::{Diagnostics, Hooks, HotkeyField, HotkeyKind, OnPrintScreen, SettingsWindow},
+    settings_window::{
+        Diagnostics, HotkeyField, HotkeyKind, OnPrintScreen, SettingsHooks, SettingsPage,
+    },
 };
 use shuttercrab_capture::{MonitorId, MonitorInfo, PhysicalRect};
 use shuttercrab_platform::{Hotkey, os::Os};
@@ -42,13 +45,13 @@ struct Opened {
 
 /// Hooks that record what the window asks of Shuttercrab, on an OS with
 /// global hotkeys.
-fn hooks() -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
+fn hooks() -> (Rc<SettingsHooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
     hooks_on(true)
 }
 
 /// As [`hooks`], on an OS with or without `global_hotkeys`, whichever runs
 /// the tests.
-fn hooks_on(global_hotkeys: bool) -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
+fn hooks_on(global_hotkeys: bool) -> (Rc<SettingsHooks>, Rc<RefCell<Settings>>, Rc<Seen>) {
     let os: &'static Os = Box::leak(Box::new(Os {
         global_hotkeys,
         ..shuttercrab_platform::os::os().clone()
@@ -57,7 +60,7 @@ fn hooks_on(global_hotkeys: bool) -> (Rc<Hooks>, Rc<RefCell<Settings>>, Rc<Seen>
     let seen = Rc::new(Seen::default());
     let (s1, s2, s3, s4) = (seen.clone(), seen.clone(), seen.clone(), seen.clone());
     let s5 = seen.clone();
-    let hooks = Rc::new(Hooks {
+    let hooks = Rc::new(SettingsHooks {
         settings: settings.clone(),
         changed: Rc::new(move |_| s1.changed.set(s1.changed.get() + 1)),
         pause_hotkeys: Rc::new(move |on_print_screen| {
@@ -105,7 +108,7 @@ fn open_on(cx: &mut TestAppContext, global_hotkeys: bool) -> Opened {
     cx.update(gpui_kit::init);
     let (hooks, settings, seen) = hooks_on(global_hotkeys);
     let handle = cx.open_window(size(px(880.0), px(640.0)), move |window, cx| {
-        let view = cx.new(|cx| SettingsWindow::new(hooks, window, cx));
+        let view = cx.new(|cx| SettingsPage::new(hooks, popup::close_window, window, cx));
         Root::new(view, window, cx)
     });
     Opened {

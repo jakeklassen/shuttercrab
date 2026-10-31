@@ -35,7 +35,7 @@ use crate::{
     markup::{Mark, Region, Tool},
     palette::{border, coral, hover, muted, recording, surface, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, KeyPaste, Settings},
-    settings_window::{Hooks, SettingsWindow},
+    settings_window::{SettingsHooks, SettingsPage},
     shot_view::{self, Xy},
 };
 use canvas::{Shown, canvas_size, pointer_in_canvas};
@@ -187,7 +187,7 @@ impl Shot {
 /// What the window needs from the rest of Shuttercrab.
 pub struct MainHooks {
     /// The settings page's hooks, and through them the live settings.
-    pub settings: Rc<Hooks>,
+    pub settings: Rc<SettingsHooks>,
     /// Start a capture: `mode` of `target`, after the delay the settings
     /// name. The app hides the window meanwhile.
     pub capture: CaptureHook,
@@ -423,7 +423,7 @@ fn seconds(s: u32) -> String {
 pub struct MainWindow {
     hooks: Rc<MainHooks>,
     page: Page,
-    settings: Option<Entity<SettingsWindow>>,
+    settings: Option<Entity<SettingsPage>>,
     /// What came of pasting a host key on the home page: kept, or why not.
     stream_note: Option<StreamNote>,
     menu: Option<Menu>,
@@ -691,11 +691,11 @@ impl MainWindow {
             Page::Settings | Page::StreamingSettings => {
                 let hooks = self.hooks.settings.clone();
                 let main = cx.entity().downgrade();
+                let back = move |window: &mut Window, cx: &mut App| {
+                    let _ = main.update(cx, |this, cx| this.show(Page::Home, window, cx));
+                };
                 self.settings = Some(cx.new(|cx| {
-                    let settings =
-                        SettingsWindow::new(hooks, window, cx).on_escape(move |window, cx| {
-                            let _ = main.update(cx, |this, cx| this.show(Page::Home, window, cx));
-                        });
+                    let settings = SettingsPage::new(hooks, back, window, cx);
                     if page == Page::StreamingSettings {
                         settings.at_streaming()
                     } else {
@@ -1949,7 +1949,7 @@ impl MainWindow {
 
     fn settings_page(
         &self,
-        settings: Entity<SettingsWindow>,
+        settings: Entity<SettingsPage>,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
         div()
