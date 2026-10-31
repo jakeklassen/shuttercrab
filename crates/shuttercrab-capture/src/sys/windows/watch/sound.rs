@@ -73,6 +73,10 @@ const DEVICE_BUFFER: i64 = 200_000;
 /// stop.
 const WAKE_MS: u32 = 100;
 
+/// How long speakers must have played for, when they stop, to be opened
+/// again.
+const REOPEN_AFTER: Duration = Duration::from_secs(1);
+
 fn frames_to_ticks(frames: usize) -> i64 {
     frames as i64 * TICKS / i64::from(RATE)
 }
@@ -287,6 +291,15 @@ struct Queue {
 }
 
 impl Queue {
+    /// Start again from nothing, for speakers opened again: what was
+    /// queued has missed its time.
+    fn restart(&mut self) {
+        self.frames.clear();
+        self.filling = true;
+        self.clock = None;
+        self.next = None;
+    }
+
     fn push(&mut self, time: i64, samples: &[i16]) {
         // Sound that does not follow on from what is queued (the sender
         // started its recorder again, after a pause) starts the queue
@@ -506,9 +519,20 @@ impl Output {
             .name("live sound".into())
             .spawn(move || {
                 let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-                if let Err(e) = play(&playing) {
+                // Speakers that stop after playing a while (headphones
+                // unplugged, another default chosen) are opened again: the
+                // default is then another device. Ones that fail at once
+                // are given up on.
+                loop {
+                    let opened = Instant::now();
+                    let Err(e) = play(&playing) else { break };
                     playing.alive.store(false, Ordering::Relaxed);
-                    failed(format!("{e:#}"));
+                    lock(&playing.queue).restart();
+                    if playing.stop.load(Ordering::Acquire) || opened.elapsed() < REOPEN_AFTER {
+                        failed(format!("{e:#}"));
+                        break;
+                    }
+                    log::warn!("the speakers stopped, opening the default ones again: {e:#}");
                 }
                 if com {
                     unsafe { CoUninitialize() };
@@ -521,7 +545,10 @@ impl Output {
     }
 
     pub(super) fn queue(&self, time: i64, samples: Vec<i16>) -> Result<()> {
-        lock(&self.shared.queue).push(time, &samples);
+        // With no speakers playing, nothing would ever take it.
+        if self.shared.alive.load(Ordering::Relaxed) {
+            lock(&self.shared.queue).push(time, &samples);
+        }
         Ok(())
     }
 
@@ -619,6 +646,7 @@ fn play(shared: &Shared) -> Result<()> {
         let mut fills = VecDeque::<(u64, Option<i64>)>::new();
         let mut written = 0u64;
         client.Start()?;
+        shared.alive.store(true, Ordering::Relaxed);
         while !shared.stop.load(Ordering::Acquire) {
             if WaitForSingleObject(event.0, WAKE_MS) != WAIT_OBJECT_0 {
                 continue;

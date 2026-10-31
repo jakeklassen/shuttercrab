@@ -33,11 +33,18 @@ use windows::Win32::{
 /// a voice over the screen should match it.
 const LEAD: i64 = 0;
 
+/// The most seconds of coded pictures that wait to be drawn before they are
+/// left out.
+const MOST_WAITING_SECONDS: usize = 10;
+
 /// A live recording playing as its frames arrive.
 pub struct LivePlayer {
     /// Coded pictures waiting until they are due: decoding one takes a
     /// millisecond or two, and they are small, where decoded ones are not.
     coded: Mutex<VecDeque<LiveFrame>>,
+    /// Coded pictures are left out until the next key frame, after too many
+    /// waited.
+    skipping: AtomicBool,
     video: Mutex<video::Decoder>,
     pictures: Mutex<video::Pictures>,
     sound: Option<(Mutex<sound::Decoder>, sound::Output)>,
@@ -74,6 +81,7 @@ impl LivePlayer {
         };
         Ok(Self {
             coded: Mutex::default(),
+            skipping: AtomicBool::new(false),
             video: Mutex::new(video),
             pictures: Mutex::new(pictures),
             sound,
@@ -105,7 +113,20 @@ impl LivePlayer {
         match frame.track {
             Track::Video => {
                 self.newest.fetch_max(frame.time, Ordering::Relaxed);
-                lock(&self.coded).push_back(frame);
+                let mut coded = lock(&self.coded);
+                // Nothing is drawing them (drawing stopped), or it has
+                // fallen far behind: start again at the next key frame,
+                // which decodes on its own.
+                if coded.len() >= MOST_WAITING_SECONDS * self.fps as usize {
+                    log::warn!("{} pictures waited to be drawn: left out", coded.len());
+                    coded.clear();
+                    self.skipping.store(true, Ordering::Relaxed);
+                }
+                if self.skipping.load(Ordering::Relaxed) && !frame.key {
+                    return Ok(());
+                }
+                self.skipping.store(false, Ordering::Relaxed);
+                coded.push_back(frame);
                 Ok(())
             }
             Track::Sound => match &self.sound {

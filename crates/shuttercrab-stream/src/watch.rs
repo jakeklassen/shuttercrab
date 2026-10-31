@@ -396,15 +396,26 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
     );
     let over = Over::default();
     let drawing = {
-        let (player, drawn, stop, over) =
-            (player.clone(), drawn.clone(), stop.clone(), over.clone());
+        let (player, drawn, stop, over, title) = (
+            player.clone(),
+            drawn.clone(),
+            stop.clone(),
+            over.clone(),
+            options.title.clone(),
+        );
         std::thread::spawn(move || {
             let hwnd = HWND(window as *mut _);
             let size = (format.width, format.height);
             if let Err(e) = draw(&player, hwnd, size, (&drawn, &stop), &over)
                 && !stop.load(Ordering::Relaxed)
             {
+                // The last picture would stay, as if the stream had frozen.
                 log::error!("drawing stopped: {e:#}");
+                tell(
+                    &title,
+                    &format!("The viewer could not show the stream any more: {e:#}"),
+                );
+                let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
             }
         })
     };
