@@ -1,6 +1,6 @@
 [package]
 name = "shuttercrab-connect"
-version = "0.1.32"
+version = "0.1.33"
 description = "Live streaming's connection (issue #66): two Shuttercrabs meet in a room on Cloudflare, then connect directly with QUIC"
 edition.workspace = true
 rust-version.workspace = true
