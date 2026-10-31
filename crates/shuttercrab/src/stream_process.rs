@@ -137,7 +137,7 @@ impl StreamProcess {
         } = spawn_quiet(&exe, &[FLAG]).context("could not start the streaming process")?;
         thread::Builder::new()
             .name("shuttercrab-streamer-log".into())
-            .spawn(move || forward_logs(errors))?;
+            .spawn(move || forward_logs(errors, "shuttercrab::streamer"))?;
         send(&mut input, &Request::Start(start))?;
         let (opened_tx, opened_rx) = mpsc::channel();
         let (events_tx, events_rx) = unbounded();

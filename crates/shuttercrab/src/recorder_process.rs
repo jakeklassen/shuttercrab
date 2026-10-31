@@ -226,7 +226,7 @@ impl RecorderProcess {
         } = spawn_quiet(&exe, &[FLAG]).context("could not start the recording process")?;
         thread::Builder::new()
             .name("shuttercrab-recorder-log".into())
-            .spawn(move || forward_logs(errors))?;
+            .spawn(move || forward_logs(errors, "shuttercrab::recorder"))?;
         send(&mut input, &Request::Start(options.into()))?;
 
         let (started_tx, started_rx) = mpsc::channel();
@@ -390,17 +390,18 @@ fn read_replies(
     let _ = outcome.send(ended.unwrap_or_else(|| Err(gone())));
 }
 
-/// The helper's log, from its standard error, into the app's log until the
-/// helper exits. A read error ends it too: the log is only for diagnosis.
-pub(crate) fn forward_logs(errors: File) {
+/// The helper's log, from its standard error, into the app's log under
+/// `target` until the helper exits. A read error ends it too: the log is
+/// only for diagnosis.
+pub(crate) fn forward_logs(errors: File, target: &'static str) {
     for line in BufReader::new(errors).lines().map_while(Result::ok) {
-        forward_log(&line);
+        forward_log(&line, target);
     }
 }
 
 /// One of the helper's log lines, `LEVEL\tsource\tmessage`, into the app's
-/// log.
-fn forward_log(line: &str) {
+/// log under `target`.
+fn forward_log(line: &str, target: &'static str) {
     let mut parts = line.splitn(3, '\t');
     let (level, source, message) = match (parts.next(), parts.next(), parts.next()) {
         (Some(level), Some(source), Some(message)) => {
@@ -408,7 +409,7 @@ fn forward_log(line: &str) {
         }
         _ => (log::Level::Info, "", line),
     };
-    log::log!(target: "shuttercrab::recorder", level, "{source}: {message}");
+    log::log!(target: target, level, "{source}: {message}");
 }
 
 /// The helper's logger: one tab-separated line per message on standard
@@ -581,8 +582,11 @@ mod tests {
     #[test]
     fn helper_log_lines_keep_their_level_and_source() {
         // A line that is not in the helper's format is still kept.
-        forward_log("WARN\tshuttercrab_capture::record\trecording interrupted");
-        forward_log("not tab separated");
+        forward_log(
+            "WARN\tshuttercrab_capture::record\trecording interrupted",
+            "shuttercrab::recorder",
+        );
+        forward_log("not tab separated", "shuttercrab::recorder");
         let mut parts = "ERROR\tsrc\ta\tb".splitn(3, '\t');
         assert_eq!(parts.next(), Some("ERROR"));
         assert_eq!(parts.nth(1), Some("a\tb"));
