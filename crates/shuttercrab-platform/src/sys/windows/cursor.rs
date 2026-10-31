@@ -9,7 +9,7 @@ use anyhow::{Context, Result};
 use shuttercrab_types::WindowId;
 use std::{cell::RefCell, collections::HashMap};
 use windows::Win32::{
-    Foundation::{HWND, LPARAM, LRESULT, POINT, RECT, WPARAM},
+    Foundation::{HWND, LPARAM, LRESULT, POINT, WPARAM},
     Graphics::Gdi::{CreateBitmap, DeleteObject, ScreenToClient},
     UI::{
         Shell::{DefSubclassProc, RemoveWindowSubclass, SetWindowSubclass},
@@ -132,15 +132,9 @@ fn cursor_at(hwnd: isize) -> Option<HCURSOR> {
         GetCursorPos(&mut at).ok()?;
         ScreenToClient(HWND(hwnd as _), &mut at).ok().ok()?;
     }
-    let (x, y, width, height) = over.area;
-    let area = RECT {
-        left: x,
-        top: y,
-        right: x + width,
-        bottom: y + height,
-    };
-    let inside = (area.left..area.right).contains(&at.x) && (area.top..area.bottom).contains(&at.y);
-    inside.then_some(HCURSOR(over.cursor.0 as _))
+    over.area
+        .contains(at.x, at.y)
+        .then_some(HCURSOR(over.cursor.0 as _))
 }
 
 unsafe extern "system" fn subclass(

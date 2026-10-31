@@ -176,7 +176,7 @@ pub fn cut_shape(
     height: u32,
     outline: &[(f32, f32)],
 ) -> Result<Screenshot> {
-    let Some((x, y, w, h)) = shape::bounds(outline, width, height) else {
+    let Some(region) = shape::bounds(outline, width, height) else {
         return Err(CaptureError::new(
             CaptureErrorCode::InvalidRegion,
             "The outline is empty or outside the screen",
@@ -185,15 +185,9 @@ pub fn cut_shape(
     };
     let relative: Vec<_> = outline
         .iter()
-        .map(|&(px, py)| (px - x as f32, py - y as f32))
+        .map(|&(x, y)| (x - region.x as f32, y - region.y as f32))
         .collect();
-    cut_masked(
-        bgra,
-        width,
-        height,
-        PhysicalRect::new(x, y, w, h),
-        Some(&relative),
-    )
+    cut_masked(bgra, width, height, region, Some(&relative))
 }
 
 /// Cut `region`; with `outline` (relative to the region), clear everything
