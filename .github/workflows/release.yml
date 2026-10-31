@@ -115,10 +115,11 @@ jobs:
         run: |
           mkdir publish
           cp target/release/shuttercrab.exe publish/
-          # The previous release, so vpk can build a small delta from it. The
-          # first release has none.
+          # The previous release, so vpk can build a small delta from it.
+          # With no earlier release, vpk warns and succeeds, so only a real
+          # failure (the network, the token, the feed) stops here.
           vpk download github --repoUrl "$REPO" --token "$GITHUB_TOKEN" \
-            --channel win --outputDir Releases || true
+            --channel win --outputDir Releases
           # A tray app: a Start menu shortcut, no desktop shortcut.
           vpk pack --packId Shuttercrab --packVersion "$VERSION" --packTitle Shuttercrab \
             --packAuthors Shuttercrab --packDir publish --mainExe shuttercrab.exe \
