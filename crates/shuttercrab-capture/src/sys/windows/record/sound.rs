@@ -484,6 +484,10 @@ impl Mixer {
         // What falls on what is written out already is too late to mix.
         let late = self.written.saturating_sub(start).min(frames - trim);
         self.late[source.index()] += late;
+        if late == frames - trim {
+            // All of it: nothing is left to mix.
+            return;
+        }
         let from = (start + late - self.written) as usize * channels;
         let kept = &samples[(trim + late) as usize * channels..];
         if self.pending.len() < from + kept.len() {
@@ -593,5 +597,18 @@ mod tests {
         );
         let out = mixer.take_until(TICKS_PER_SECOND + TENTH_TICKS);
         assert_eq!((out[0], out[TENTH / 2 * 2], out[TENTH * 2 - 1]), (7, 0, 0));
+    }
+
+    #[test]
+    fn a_packet_wholly_before_what_is_written_is_left_out() {
+        // The recording loop stalled: a packet comes after the track has
+        // been written out past its end.
+        let mut mixer = Mixer::default();
+        mixer.add(Source::System, 0, &tone(1));
+        mixer.take_until(3 * TENTH_TICKS);
+        mixer.add(Source::System, TENTH_TICKS, &tone(2));
+        assert_eq!(mixer.late(Source::System), TENTH_TICKS);
+        let out = mixer.take_until(4 * TENTH_TICKS);
+        assert_eq!(out, vec![0; TENTH * 2]);
     }
 }
