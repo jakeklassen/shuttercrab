@@ -13,6 +13,7 @@ pub mod countdown;
 pub mod cursors;
 pub mod files;
 pub mod heap;
+mod helper_process;
 pub mod icons;
 pub mod logging;
 pub mod main_window;

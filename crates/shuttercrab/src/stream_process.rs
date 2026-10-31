@@ -10,7 +10,10 @@
 //! standard error. If the app goes away, the helper's input ends and it
 //! stops.
 
-use crate::recorder_process::{Options, forward_logs, send};
+use crate::{
+    helper_process::{forward_logs, send},
+    recorder_process::Options,
+};
 use anyhow::{Context, Result, anyhow};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde::{Deserialize, Serialize};
@@ -270,9 +273,7 @@ mod helper {
     /// stream, and write [`Reply`]s to standard output. Returns the exit
     /// code.
     pub fn serve() -> i32 {
-        if log::set_boxed_logger(Box::new(crate::recorder_process::HelperLogger)).is_ok() {
-            log::set_max_level(log::LevelFilter::Info);
-        }
+        crate::helper_process::log_to_app(log::LevelFilter::Info);
         let mut out = std::io::stdout();
         let mut first = String::new();
         let read = std::io::stdin().read_line(&mut first);
