@@ -34,8 +34,8 @@ use crate::{
     capture_choice::{CaptureMode, CaptureTarget, WATCH_KEY},
     markup::{Mark, Region, Tool},
     palette::{border, coral, hover, muted, recording, surface, tile},
-    settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, KeyPaste, Settings},
-    settings_window::{SettingsHooks, SettingsPage},
+    settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, Settings},
+    settings_window::{HostKeyNote, SettingsHooks, SettingsPage},
     shot_view::{self, Xy},
 };
 use canvas::{Shown, canvas_size, pointer_in_canvas};
@@ -265,16 +265,6 @@ pub struct Fit {
     pub least_height: u32,
 }
 
-/// A line under Stream's steps: what came of pasting a host key, or why a
-/// stream did not start.
-#[derive(Clone, Debug, PartialEq, Eq)]
-enum StreamNote {
-    /// A key kept, and how.
-    Done(&'static str),
-    /// A key not kept, or a stream not started, and why.
-    Problem(SharedString),
-}
-
 /// What Clear took away, which Undo brings back.
 enum Cleared {
     /// A screenshot, with its marks, and where the window was.
@@ -425,7 +415,7 @@ pub struct MainWindow {
     page: Page,
     settings: Option<Entity<SettingsPage>>,
     /// What came of pasting a host key on the home page: kept, or why not.
-    stream_note: Option<StreamNote>,
+    stream_note: Option<HostKeyNote>,
     menu: Option<Menu>,
     /// The highlighted item of the open menu.
     highlighted: usize,
@@ -787,23 +777,14 @@ impl MainWindow {
         self.mode() == CaptureMode::Stream && self.settings().stream_host_key.is_empty()
     }
 
-    /// Keep the host key that is on the clipboard, encrypted in the
-    /// settings, and say what came of it. The key itself is never shown or
-    /// logged.
+    /// Keep the host key that is on the clipboard, and say under Stream's
+    /// steps what came of it.
     fn paste_host_key(&mut self, cx: &mut Context<Self>) {
-        let text = cx
-            .read_from_clipboard()
-            .and_then(|item| item.text())
-            .unwrap_or_default();
-        let mut pasted = KeyPaste::Same;
-        self.change(cx, |s| pasted = s.paste_host_key(&text));
-        self.stream_note = Some(if pasted.is_kept() {
-            StreamNote::Done(pasted.message())
-        } else {
-            StreamNote::Problem(pasted.message().into())
-        });
+        let pasted = self.hooks.settings.paste_host_key(cx);
+        self.stream_note = Some(pasted.into());
         cx.notify();
     }
+
     /// A stream did not start, for why: said under Stream's steps. A key
     /// the meeting point turned away is forgotten, so the window asks for
     /// the right one.
@@ -822,7 +803,7 @@ impl MainWindow {
         } else {
             format!("The stream didn't start: {why}")
         };
-        self.stream_note = Some(StreamNote::Problem(note.into()));
+        self.stream_note = Some(HostKeyNote::Problem(note.into()));
         cx.notify();
     }
 
@@ -1826,8 +1807,8 @@ impl MainWindow {
     /// What came of pasting a host key, if one was pasted.
     fn stream_note_line(&self) -> Option<impl IntoElement + use<>> {
         let (icon, text, color) = match self.stream_note.clone()? {
-            StreamNote::Done(what) => (IconName::Check, what.into(), gpui_kit::white()),
-            StreamNote::Problem(why) => (IconName::X, why, coral()),
+            HostKeyNote::Done(what) => (IconName::Check, what.into(), gpui_kit::white()),
+            HostKeyNote::Problem(why) => (IconName::X, why, coral()),
         };
         Some(
             div()
