@@ -13,7 +13,7 @@
 
 use super::Event;
 use crate::record::{Microphone, Source, TICKS_PER_SECOND};
-use crate::sys::imp::clock;
+use crate::sys::imp::{clock, com::ComApartment};
 use anyhow::{Context, Result, bail};
 use std::{
     sync::{
@@ -44,9 +44,8 @@ use windows::{
         },
         System::{
             Com::{
-                BLOB, CLSCTX_ALL, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
-                CoTaskMemFree, CoUninitialize, IAgileObject, IAgileObject_Impl, STGM_READ,
-                StructuredStorage::PROPVARIANT,
+                BLOB, CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, IAgileObject, IAgileObject_Impl,
+                STGM_READ, StructuredStorage::PROPVARIANT,
             },
             Threading::{CreateEventW, WaitForSingleObject},
             Variant::VT_BLOB,
@@ -196,7 +195,7 @@ fn capture(
     stop: &AtomicBool,
     ready: std::sync::mpsc::Sender<Result<()>>,
 ) {
-    let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+    let _com = ComApartment::multithreaded();
     let mut ready = Some(ready);
     while !stop.load(Ordering::Acquire) {
         let stream = match Stream::open(source, &device) {
@@ -231,9 +230,6 @@ fn capture(
                 }
             }
         }
-    }
-    if com {
-        unsafe { CoUninitialize() };
     }
 }
 

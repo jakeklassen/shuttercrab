@@ -9,6 +9,7 @@
 use super::{choose_output, drain, feed, lock};
 use crate::live::{LiveFrame, SoundCodec};
 use crate::sys::imp::clock::{self, TICKS_PER_SECOND};
+use crate::sys::imp::com::ComApartment;
 use anyhow::{Context, Result};
 use std::{
     collections::VecDeque,
@@ -23,10 +24,7 @@ use windows::Win32::{
     Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
     Media::{Audio::*, MediaFoundation::*},
     System::{
-        Com::{
-            CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance,
-            CoInitializeEx, CoUninitialize,
-        },
+        Com::{CLSCTX_ALL, CLSCTX_INPROC_SERVER, CoCreateInstance},
         Threading::{CreateEventW, WaitForSingleObject},
     },
 };
@@ -515,7 +513,7 @@ impl Output {
         let thread = std::thread::Builder::new()
             .name("live sound".into())
             .spawn(move || {
-                let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
+                let _com = ComApartment::multithreaded();
                 // Speakers that stop after playing a while (headphones
                 // unplugged, another default chosen) are opened again: the
                 // default is then another device. Ones that fail at once
@@ -530,9 +528,6 @@ impl Output {
                         break;
                     }
                     log::warn!("the speakers stopped, opening the default ones again: {e:#}");
-                }
-                if com {
-                    unsafe { CoUninitialize() };
                 }
             })?;
         Ok(Self {
