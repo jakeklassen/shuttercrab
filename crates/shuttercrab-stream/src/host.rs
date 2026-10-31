@@ -1,7 +1,7 @@
 //! The streaming side: a viewer to send to, and the recording sent.
 
 use crate::{
-    Path, Quality, playable,
+    Quality, playable,
     wire::{self, PICTURES, SOUND},
 };
 use anyhow::Result;
@@ -66,9 +66,9 @@ pub fn wait_locally(port: u16) -> Result<Viewer> {
 pub struct Room(Hosting);
 
 impl Room {
-    /// Open a room at `meet` with `host_key`, reached by `path`.
-    pub fn open(meet: &str, host_key: &str, path: Path) -> Result<Self> {
-        Ok(Self(shuttercrab_connect::host(meet, host_key, path)?))
+    /// Open a room at `meet` with `host_key`.
+    pub fn open(meet: &str, host_key: &str) -> Result<Self> {
+        Ok(Self(shuttercrab_connect::host(meet, host_key)?))
     }
 
     /// What to share: whoever has it can watch.
@@ -82,13 +82,8 @@ impl Room {
     pub fn accept(self) -> Result<Viewer> {
         let connection = self.0.accept()?;
         log::info!(
-            "viewer at {} connected {}, {} ms there and back",
+            "viewer at {} connected, {} ms there and back",
             connection.remote(),
-            if connection.relayed() {
-                "through the relay"
-            } else {
-                "directly"
-            },
             connection.round_trip().as_millis()
         );
         let mut plays = [0];
@@ -121,11 +116,10 @@ pub struct Stats {
     pub pictures_per_second: f64,
     pub sound_per_second: f64,
     pub megabits_per_second: f64,
-    /// Online: the time there and back, the share of packets lost so far,
-    /// and whether it goes through the relay.
+    /// Online: the time there and back, and the share of packets lost so
+    /// far.
     pub round_trip: Option<Duration>,
     pub lost: Option<f64>,
-    pub relayed: Option<bool>,
 }
 
 /// A recording streamed to a viewer as it is made.
@@ -299,7 +293,6 @@ impl Stream {
                 let (lost, sent) = c.lost();
                 lost as f64 * 100.0 / sent.max(1) as f64
             }),
-            relayed: connection.map(Connection::relayed),
         };
         sent.sound = 0;
         self.last = (Instant::now(), sent.pictures, sent.bytes);

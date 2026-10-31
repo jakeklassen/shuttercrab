@@ -34,7 +34,7 @@ pub fn open(link: &str) -> Result<()> {
 /// window is closed. Returns the exit code.
 #[cfg(windows)]
 pub fn serve() -> i32 {
-    use shuttercrab_stream::{Input, Link, Path, WatchOptions, tell};
+    use shuttercrab_stream::{Input, Link, WatchOptions, tell};
 
     let _ = crate::logging::init_as(crate::logging::default_dir().as_deref(), "viewer");
     let given = std::env::args().nth(2).unwrap_or_default();
@@ -57,7 +57,7 @@ pub fn serve() -> i32 {
         remember_volume: Some(remember_volume),
         title: "Shuttercrab".into(),
     };
-    let join = move || Input::online(&link, shuttercrab_stream::MEET, Path::Relay);
+    let join = move || Input::online(&link, shuttercrab_stream::MEET);
     // Errors once the window is open are shown in it; this is for a window
     // that could not open.
     match shuttercrab_stream::watch(join, &options) {

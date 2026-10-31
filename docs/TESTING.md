@@ -75,7 +75,7 @@ purpose, with `-- --ignored`:
 | `shuttercrab-platform`, `platform`: `puts_png_and_bitmap_on_the_clipboard` | Replaces the clipboard | `mise exec -- cargo test -p shuttercrab-platform --test platform -- --ignored` |
 | `shuttercrab-capture`, `live`: three tests | Record the screen and play it. `live_pictures_at_each_quality_can_be_compared` saves pictures for a person to judge, into the folder `LIVE_COMPARE` names, and does nothing without it | `mise exec -- cargo test -p shuttercrab-capture --test live -- --ignored --nocapture` |
 | `shuttercrab-capture`, the Windows encoder's unit tests: `live_frames_come_out_soon_after_they_go_in` and five `the_live_player_shows_pictures_soon_after_they_go_in_with_…` | Measure the live path's delay in real time | `mise exec -- cargo test -p shuttercrab-capture --lib soon_after -- --ignored --nocapture` |
-| `shuttercrab-connect`, `online`: `two_apps_meet_and_connect_directly` | Meets through the real meeting point. Needs the internet and a host key, from `SHUTTERCRAB_HOST_KEY` or `meet/.env`; the key is never printed | `mise exec -- cargo test -p shuttercrab-connect --test online -- --ignored --nocapture` |
+| `shuttercrab-connect`, `online`: `two_apps_meet_and_connect_through_the_relay` | Meets through the real meeting point. Needs the internet and a host key, from `SHUTTERCRAB_HOST_KEY` or `meet/.env`; the key is never printed | `mise exec -- cargo test -p shuttercrab-connect --test online -- --ignored --nocapture` |
 | `shuttercrab-platform`, `x11`: five tests; `shuttercrab-capture`, `x11_record`: one | Need a private X server | `scripts/linux-x11-tests.sh` |
 
 ## What CI runs

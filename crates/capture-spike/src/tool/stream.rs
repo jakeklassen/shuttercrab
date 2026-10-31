@@ -87,7 +87,7 @@ pub(super) fn send(mut args: Args) -> Result<()> {
         describe_sound(sound_process, system_sound, microphone)
     );
     let viewer = if online {
-        let room = Room::open(&meet.url, &host_key()?, meet.path)?;
+        let room = Room::open(&meet.url, &host_key()?)?;
         println!(
             "Share this link; whoever has it can watch:\n\n  {}\n\n\
              Waiting for a viewer (capture-spike stream-watch --link LINK)...",
@@ -218,12 +218,10 @@ fn keys() -> std::sync::mpsc::Receiver<char> {
     keys
 }
 
-/// The meeting point to stream or watch through, and how to connect:
-/// `--meet URL` (Shuttercrab's unless given), and `--direct` to connect
-/// without the relay.
+/// The meeting point to stream or watch through: `--meet URL`
+/// (Shuttercrab's unless given).
 struct Meet {
     url: String,
-    path: shuttercrab_stream::Path,
 }
 
 impl Meet {
@@ -232,11 +230,6 @@ impl Meet {
             url: args
                 .option("--meet")?
                 .unwrap_or_else(|| shuttercrab_stream::MEET.into()),
-            path: if args.flag("--direct") {
-                shuttercrab_stream::Path::Direct
-            } else {
-                shuttercrab_stream::Path::Relay
-            },
         })
     }
 }
@@ -285,7 +278,7 @@ pub(super) fn watch(mut args: Args) -> Result<()> {
     let join = move || match link {
         Some(link) => {
             println!("Joining the stream...");
-            Input::online(&link, &meet.url, meet.path)
+            Input::online(&link, &meet.url)
         }
         None => Input::local(&from),
     };
