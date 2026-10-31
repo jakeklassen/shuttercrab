@@ -7,13 +7,15 @@
 //! helper's log lines come over standard error and go into the app's log.
 
 use anyhow::Result;
-use serde::{Deserialize, Serialize};
+use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use shuttercrab_capture::{MonitorId, PhysicalRect, record::RecordOptions};
 use shuttercrab_types::WindowId;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
+    sync::mpsc,
+    thread,
 };
 
 /// [`RecordOptions`] on the wire. Both helpers record: the streamer
@@ -98,6 +100,40 @@ fn forward_log(line: &str, target: &str) {
         _ => (log::Level::Info, "", line),
     };
     log::log!(target: target, level, "{source}: {message}");
+}
+
+/// In the helper: the app's first request, from standard input. `None` if
+/// the input ended first or the line could not be read.
+pub(crate) fn first_request<R: DeserializeOwned>() -> Option<R> {
+    let mut first = String::new();
+    std::io::stdin().read_line(&mut first).ok()?;
+    serde_json::from_str(first.trim()).ok()
+}
+
+/// In the helper: read the app's requests from standard input on a thread
+/// of their own, sending each to `next` as `asked(request)`. When the input
+/// ends, because the app closed it or went away, sends `asked(stop)`.
+///
+/// A line that is not a request is logged and skipped. The thread ends
+/// early if nobody listens on `next` any more.
+pub(crate) fn read_requests<R, N>(next: mpsc::Sender<N>, asked: fn(R) -> N, stop: R)
+where
+    R: DeserializeOwned + Send + 'static,
+    N: Send + 'static,
+{
+    thread::spawn(move || {
+        for line in std::io::stdin().lines().map_while(Result::ok) {
+            match serde_json::from_str(&line) {
+                Ok(request) => {
+                    if next.send(asked(request)).is_err() {
+                        return;
+                    }
+                }
+                Err(e) => log::warn!("unreadable request: {e}"),
+            }
+        }
+        let _ = next.send(asked(stop));
+    });
 }
 
 /// In the helper: send its log, as detailed as `max`, to the app, which
