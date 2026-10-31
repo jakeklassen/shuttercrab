@@ -55,16 +55,16 @@ fn target(x: &X11, window: Window, current: Option<u32>) -> Option<WindowTarget>
         return None;
     }
     let id = WindowId::from_raw(u64::from(window));
-    let (cx, cy, cw, ch) = client_bounds(id).ok()?;
+    let client = client_bounds(id).ok()?;
     // The window manager's frame around it, less the invisible shadow a
     // GTK window draws around itself.
     let [left, right, top, bottom] = frame_extents(x, window);
     let [s_left, s_right, s_top, s_bottom] = sides(x, window, atoms._GTK_FRAME_EXTENTS);
     let bounds = Bounds {
-        x: cx - left as i32 + s_left as i32,
-        y: cy - top as i32 + s_top as i32,
-        width: (cw + left + right).saturating_sub(s_left + s_right),
-        height: (ch + top + bottom).saturating_sub(s_top + s_bottom),
+        x: client.x - left as i32 + s_left as i32,
+        y: client.y - top as i32 + s_top as i32,
+        width: (client.width + left + right).saturating_sub(s_left + s_right),
+        height: (client.height + top + bottom).saturating_sub(s_top + s_bottom),
     };
     if bounds.width == 0 || bounds.height == 0 {
         return None;

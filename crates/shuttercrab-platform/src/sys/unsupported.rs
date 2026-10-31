@@ -14,7 +14,7 @@ pub mod platform {
     use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray};
     use anyhow::Result;
     use futures::channel::mpsc;
-    use shuttercrab_types::{PhysicalRect, WindowId};
+    use shuttercrab_types::WindowId;
     use std::{future::Future, path::PathBuf, sync::Arc};
 
     /// The platform thread, with nothing to do: no tray, no hotkeys.
@@ -100,13 +100,13 @@ pub mod window {
     use super::unsupported;
     use anyhow::Result;
     use raw_window_handle::HasWindowHandle;
-    use shuttercrab_types::{MonitorId, WindowId};
+    use shuttercrab_types::{MonitorId, PhysicalRect, WindowId};
 
-    pub fn outer_bounds(_window: WindowId) -> Result<(i32, i32, u32, u32)> {
+    pub fn outer_bounds(_window: WindowId) -> Result<PhysicalRect> {
         Err(unsupported("Window placement"))
     }
 
-    pub fn place(_window: WindowId, _bounds: (i32, i32, u32, u32)) -> Result<()> {
+    pub fn place(_window: WindowId, _bounds: PhysicalRect) -> Result<()> {
         Err(unsupported("Window placement"))
     }
 
@@ -118,11 +118,11 @@ pub mod window {
         MonitorId::from_raw(0)
     }
 
-    pub fn cover(_window: WindowId, _x: i32, _y: i32, _width: u32, _height: u32) -> Result<()> {
+    pub fn cover(_window: WindowId, _area: PhysicalRect) -> Result<()> {
         Err(unsupported("Window placement"))
     }
 
-    pub fn client_bounds(_window: WindowId) -> Result<(i32, i32, u32, u32)> {
+    pub fn client_bounds(_window: WindowId) -> Result<PhysicalRect> {
         Err(unsupported("Window placement"))
     }
 
@@ -148,7 +148,7 @@ pub mod window {
 
     pub fn never_activate(_window: WindowId) {}
 
-    pub fn work_area(_monitor: MonitorId) -> Option<(i32, i32, u32, u32)> {
+    pub fn work_area(_monitor: MonitorId) -> Option<PhysicalRect> {
         None
     }
 
@@ -181,7 +181,7 @@ pub mod cursor {
     use super::unsupported;
     use crate::cursor::CursorOver;
     use anyhow::Result;
-    use shuttercrab_types::{PhysicalRect, WindowId};
+    use shuttercrab_types::WindowId;
 
     /// A cursor the OS cannot show yet.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -204,7 +204,7 @@ pub mod drag {
     use super::unsupported;
     use crate::drag::DragImage;
     use anyhow::Result;
-    use shuttercrab_types::{PhysicalRect, WindowId};
+    use shuttercrab_types::WindowId;
     use std::path::Path;
 
     pub fn drag_file(_path: &Path, _image: Option<DragImage>) -> Result<bool> {
@@ -221,7 +221,6 @@ pub mod frame {
     use super::unsupported;
     use crate::frame::FrameStyle;
     use anyhow::Result;
-    use shuttercrab_types::PhysicalRect;
     use shuttercrab_types::{PhysicalRect, WindowId};
 
     /// A recording border the OS cannot show yet.

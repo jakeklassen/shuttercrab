@@ -151,12 +151,10 @@ impl Followed {
         let Some(bar) = self.bar.get() else {
             return;
         };
-        let work = platform_window::work_area(platform_window::monitor_of(self.window))
-            .map_or(bounds, |(x, y, w, h)| PhysicalRect::new(x, y, w, h));
+        let work =
+            platform_window::work_area(platform_window::monitor_of(self.window)).unwrap_or(bounds);
         let (rect, _) = recording::controls_rect(work, bounds, bar.size, bar.gap);
-        if let Err(e) =
-            platform_window::cover(bar.os_window, rect.x, rect.y, rect.width, rect.height)
-        {
+        if let Err(e) = platform_window::cover(bar.os_window, rect) {
             log::warn!("could not move the recording controls: {e:#}");
         }
     }
@@ -638,15 +636,14 @@ async fn choose_microphone(
         .popup
         .os_window()
         .and_then(|os_window| platform_window::client_bounds(os_window).ok())
-        .map_or(controls.rect, |(x, y, w, h)| PhysicalRect::new(x, y, w, h));
+        .unwrap_or(controls.rect);
     let gap = to_physical(LIST_GAP);
-    let (wx, wy, ww, wh) =
-        platform_window::work_area(info.id).unwrap_or((bar.x, bar.y, bar.width, bar.height));
+    let work = platform_window::work_area(info.id).unwrap_or(bar);
     let x = (bar.x + to_physical(f32::from(button.origin.x)))
-        .min(wx + ww as i32 - w)
-        .max(wx);
-    let below = bar.y + bar.height as i32 + gap;
-    let y = if below + h <= wy + wh as i32 {
+        .min(work.right() - w)
+        .max(work.x);
+    let below = bar.bottom() + gap;
+    let y = if below + h <= work.bottom() {
         below
     } else {
         bar.y - gap - h
@@ -780,9 +777,7 @@ fn open_controls(
         recorded.width,
         recorded.height,
     );
-    let work = platform_window::work_area(info.id)
-        .map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h))
-        .unwrap_or(b);
+    let work = platform_window::work_area(info.id).unwrap_or(b);
     let width = if stream.is_some() {
         STREAM_BAR_WIDTH
     } else {

@@ -122,14 +122,13 @@ where
         .flatten();
     match os_window {
         Some(os_window) => {
-            let (x, y, w, h) = (rect.x, rect.y, rect.width, rect.height);
-            if let Err(e) = platform_window::cover(os_window, x, y, w, h) {
+            if let Err(e) = platform_window::cover(os_window, rect) {
                 log::error!("could not place a popup: {e:#}");
             }
             // Views map pointer positions assuming the drawable area is
             // exactly the rectangle.
             match platform_window::client_bounds(os_window) {
-                Ok(client) if client != (x, y, w, h) => {
+                Ok(client) if client != rect => {
                     log::error!("popup area {client:?} does not match {rect:?}")
                 }
                 Ok(_) => {}

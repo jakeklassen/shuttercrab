@@ -3,7 +3,7 @@
 
 use anyhow::{Context, Result};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use shuttercrab_types::{MonitorId, WindowId};
+use shuttercrab_types::{MonitorId, PhysicalRect, WindowId};
 use windows::Win32::{
     Foundation::{HWND, POINT, RECT},
     Graphics::Gdi::ClientToScreen,
@@ -16,32 +16,37 @@ use windows::Win32::{
     },
 };
 
-/// The window's outer bounds, physical virtual-desktop pixels:
-/// `(x, y, width, height)`, as [`place`] takes them.
-pub fn outer_bounds(hwnd: WindowId) -> Result<(i32, i32, u32, u32)> {
+/// A Windows `RECT` as a [`PhysicalRect`]; an inverted one is empty.
+pub(crate) fn physical(r: RECT) -> PhysicalRect {
+    PhysicalRect::new(
+        r.left,
+        r.top,
+        (r.right - r.left).max(0) as u32,
+        (r.bottom - r.top).max(0) as u32,
+    )
+}
+
+/// The window's outer bounds, physical virtual-desktop pixels, as
+/// [`place`] takes them.
+pub fn outer_bounds(hwnd: WindowId) -> Result<PhysicalRect> {
     let mut rect = RECT::default();
     unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(to_hwnd(hwnd), &mut rect) }
         .context("GetWindowRect failed")?;
-    Ok((
-        rect.left,
-        rect.top,
-        (rect.right - rect.left) as u32,
-        (rect.bottom - rect.top) as u32,
-    ))
+    Ok(physical(rect))
 }
 
 /// Put the window at `bounds` (as [`outer_bounds`] gave them), without
 /// taking the keyboard or changing which windows are in front.
-pub fn place(hwnd: WindowId, (x, y, width, height): (i32, i32, u32, u32)) -> Result<()> {
+pub fn place(hwnd: WindowId, bounds: PhysicalRect) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER;
     unsafe {
         SetWindowPos(
             to_hwnd(hwnd),
             None,
-            x,
-            y,
-            width as i32,
-            height as i32,
+            bounds.x,
+            bounds.y,
+            bounds.width as i32,
+            bounds.height as i32,
             SWP_NOZORDER | SWP_NOACTIVATE,
         )
     }
@@ -97,7 +102,7 @@ pub fn monitor_of(hwnd: WindowId) -> MonitorId {
 /// and bottom at 150%. Replacing the frame styles with `WS_POPUP` makes the
 /// client area the whole window. Positioning in physical pixels also avoids
 /// the one-pixel gaps logical bounds can leave at fractional scale factors.
-pub fn cover(hwnd: WindowId, x: i32, y: i32, width: u32, height: u32) -> Result<()> {
+pub fn cover(hwnd: WindowId, area: PhysicalRect) -> Result<()> {
     let hwnd = to_hwnd(hwnd);
     unsafe {
         let frame =
@@ -108,18 +113,18 @@ pub fn cover(hwnd: WindowId, x: i32, y: i32, width: u32, height: u32) -> Result<
         SetWindowPos(
             hwnd,
             Some(HWND_TOPMOST),
-            x,
-            y,
-            width as i32,
-            height as i32,
+            area.x,
+            area.y,
+            area.width as i32,
+            area.height as i32,
             SWP_SHOWWINDOW | SWP_NOACTIVATE | SWP_FRAMECHANGED,
         )
     }
     .context("SetWindowPos failed")
 }
 
-/// The window's client area in screen coordinates: `(x, y, width, height)`.
-pub fn client_bounds(hwnd: WindowId) -> Result<(i32, i32, u32, u32)> {
+/// The window's client area in screen coordinates.
+pub fn client_bounds(hwnd: WindowId) -> Result<PhysicalRect> {
     let hwnd = to_hwnd(hwnd);
     let mut rect = RECT::default();
     let mut origin = POINT::default();
@@ -129,7 +134,12 @@ pub fn client_bounds(hwnd: WindowId) -> Result<(i32, i32, u32, u32)> {
             .ok()
             .context("ClientToScreen failed")?;
     }
-    Ok((origin.x, origin.y, rect.right as u32, rect.bottom as u32))
+    Ok(PhysicalRect::new(
+        origin.x,
+        origin.y,
+        rect.right as u32,
+        rect.bottom as u32,
+    ))
 }
 
 /// Make the window the foreground window so it receives the keyboard
@@ -232,8 +242,8 @@ pub fn never_activate(hwnd: WindowId) {
 }
 
 /// The part of `monitor` not covered by the taskbar (physical
-/// pixels, virtual-desktop coordinates): x, y, width, height.
-pub fn work_area(monitor: MonitorId) -> Option<(i32, i32, u32, u32)> {
+/// pixels, virtual-desktop coordinates).
+pub fn work_area(monitor: MonitorId) -> Option<PhysicalRect> {
     use windows::Win32::Graphics::Gdi::{GetMonitorInfoW, HMONITOR, MONITORINFO};
     let mut info = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
@@ -247,15 +257,8 @@ pub fn work_area(monitor: MonitorId) -> Option<(i32, i32, u32, u32)> {
     };
     let found = unsafe { GetMonitorInfoW(HMONITOR(monitor.raw() as _), &mut info) }.as_bool();
     unsafe { windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(previous) };
-    let r = info.rcWork;
-    (found && r.right > r.left && r.bottom > r.top).then(|| {
-        (
-            r.left,
-            r.top,
-            (r.right - r.left) as u32,
-            (r.bottom - r.top) as u32,
-        )
-    })
+    let work = physical(info.rcWork);
+    (found && !work.is_empty()).then_some(work)
 }
 
 /// Resize a normal window so its client area is `width` × `height`

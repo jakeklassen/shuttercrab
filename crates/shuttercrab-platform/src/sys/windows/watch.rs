@@ -5,7 +5,7 @@
 //! polled).
 
 use super::platform::send_event;
-use super::window::{to_hwnd, to_window_id};
+use super::window::{physical, to_hwnd, to_window_id};
 use crate::{PlatformEvent, WindowChange};
 use shuttercrab_types::{PhysicalRect, WindowId};
 use std::cell::RefCell;
@@ -151,9 +151,8 @@ pub fn visible_bounds(window: WindowId) -> Option<PhysicalRect> {
         )
     }
     .ok()?;
-    let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
-    (width > 0 && height > 0)
-        .then(|| PhysicalRect::new(rect.left, rect.top, width as u32, height as u32))
+    let bounds = physical(rect);
+    (!bounds.is_empty()).then_some(bounds)
 }
 
 unsafe extern "system" fn on_event(
