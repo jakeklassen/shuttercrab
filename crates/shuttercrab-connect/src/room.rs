@@ -2,18 +2,19 @@
 //! streaming app and its viewers say which addresses they can be reached
 //! at. A WebSocket of JSON events.
 
-use anyhow::{Context, Result, bail};
+use anyhow::{Context, Result, anyhow, bail};
 use std::{
-    net::{SocketAddr, TcpStream},
+    net::{SocketAddr, TcpStream, ToSocketAddrs},
     sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
-        mpsc::{Receiver, Sender, channel},
+        mpsc::{Receiver, RecvTimeoutError, Sender, channel},
     },
     time::{Duration, Instant},
 };
 use tungstenite::{
-    Message, WebSocket, client::IntoClientRequest, http::HeaderValue, stream::MaybeTlsStream,
+    Message, WebSocket, client::IntoClientRequest, handshake::client::Request, http::HeaderValue,
+    stream::MaybeTlsStream,
 };
 
 /// Another app in the room.
@@ -44,6 +45,10 @@ pub struct Room {
 /// How often the room is pinged, so nothing between closes a quiet socket.
 const PING: Duration = Duration::from_secs(20);
 
+/// How long each step of reaching the room may take: connecting, the TLS
+/// handshake, the WebSocket's, and each send.
+const CONNECT_TIMEOUT: Duration = Duration::from_secs(10);
+
 impl Room {
     /// Join room `name` at `meet` (`https://…`), as its host with
     /// `host_key`, or as a viewer, and say this app is at `addresses`.
@@ -67,8 +72,8 @@ impl Room {
                     .context("the host key has characters a header cannot hold")?,
             );
         }
-        let (mut socket, _) =
-            tungstenite::connect(request).with_context(|| format!("could not reach {meet}"))?;
+        let mut socket =
+            connect(request, CONNECT_TIMEOUT).with_context(|| format!("could not reach {meet}"))?;
         socket.send(Message::text(hello(addresses)))?;
         // Reads wake now and then to send, to ping, and to see whether to
         // stop.
@@ -99,9 +104,10 @@ impl Room {
 
     /// The next event, waiting up to `timeout`.
     pub fn next(&self, timeout: Duration) -> Result<Event> {
-        self.events
-            .recv_timeout(timeout)
-            .context("the room said nothing in time")
+        self.events.recv_timeout(timeout).map_err(|e| match e {
+            RecvTimeoutError::Timeout => anyhow!("the room said nothing in time"),
+            RecvTimeoutError::Disconnected => anyhow!("the room's connection has closed"),
+        })
     }
 
     /// Wait for the other side, up to `timeout`: the host for a viewer, a
@@ -133,6 +139,41 @@ fn hello(addresses: &[SocketAddr]) -> String {
         "addresses": addresses.iter().map(ToString::to_string).collect::<Vec<_>>(),
     })
     .to_string()
+}
+
+/// Open a WebSocket for `request`, giving up on a meeting point that does
+/// not answer within `timeout` at any step: a socket that never connects,
+/// or a server that takes it but never answers.
+fn connect(request: Request, timeout: Duration) -> Result<WebSocket<MaybeTlsStream<TcpStream>>> {
+    let uri = request.uri();
+    let host = uri.host().context("the address has no host")?;
+    let port = uri
+        .port_u16()
+        .unwrap_or(if uri.scheme_str() == Some("wss") {
+            443
+        } else {
+            80
+        });
+    let mut failed = None;
+    let mut tcp = None;
+    for address in (host, port).to_socket_addrs()? {
+        match TcpStream::connect_timeout(&address, timeout) {
+            Ok(connected) => {
+                tcp = Some(connected);
+                break;
+            }
+            Err(e) => failed = Some(e),
+        }
+    }
+    let tcp = match (tcp, failed) {
+        (Some(tcp), _) => tcp,
+        (None, Some(e)) => return Err(e.into()),
+        (None, None) => bail!("{host} has no address"),
+    };
+    tcp.set_read_timeout(Some(timeout))?;
+    tcp.set_write_timeout(Some(timeout))?;
+    let (socket, _) = tungstenite::client_tls(request, tcp).map_err(|e| anyhow!("{e}"))?;
+    Ok(socket)
 }
 
 fn tcp(socket: &WebSocket<MaybeTlsStream<TcpStream>>) -> Option<&TcpStream> {
@@ -219,6 +260,17 @@ fn parse(text: &str) -> Option<Event> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_meeting_point_that_never_answers_is_given_up_on() {
+        // Takes the connection, then says nothing.
+        let silent = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let url = format!("ws://{}/rooms/test", silent.local_addr().unwrap());
+        let started = Instant::now();
+        let request = url.as_str().into_client_request().unwrap();
+        assert!(connect(request, Duration::from_millis(200)).is_err());
+        assert!(started.elapsed() < Duration::from_secs(5));
+    }
 
     #[test]
     fn the_rooms_events_are_read() {
