@@ -34,6 +34,7 @@ use gpui_kit::{
 };
 use lyon_tessellation::{LineCap, LineJoin, StrokeOptions};
 use shuttercrab_platform::cursor::{Cursor, CursorOver};
+use shuttercrab_types::PhysicalRect;
 use std::{cell::RefCell, sync::Arc};
 
 /// The screenshot shown, how it sits in the canvas, and the marks on it.
@@ -440,10 +441,10 @@ pub(super) fn show_pointer(window: &Window, over: Option<(Pointer, Xy)>) {
         Pointer::Move => Cursor::move_all().ok(),
         Pointer::Style(_) => None,
     };
-    let physical = |logical: f32| (logical * scale).round() as i32;
-    let area = (
+    let physical = |logical: f32| (logical * scale).round() as u32;
+    let area = PhysicalRect::new(
         0,
-        physical(TOOLBAR_HEIGHT),
+        physical(TOOLBAR_HEIGHT) as i32,
         physical(canvas.x),
         physical(canvas.y),
     );

@@ -2,10 +2,12 @@
 //! closed hands and the four-way move arrow.
 
 pub use crate::sys::imp::cursor::{Cursor, show};
+use shuttercrab_types::PhysicalRect;
 
-/// A cursor over a part of a window: client pixels, x, y, width, height.
+/// A cursor over a part of a window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct CursorOver {
     pub cursor: Cursor,
-    pub area: (i32, i32, i32, i32),
+    /// The part, in the window's client pixels.
+    pub area: PhysicalRect,
 }

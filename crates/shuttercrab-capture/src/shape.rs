@@ -5,6 +5,8 @@
 //! itself still fills solid. Each pixel's coverage is sampled on
 //! `SUBROWS` rows per pixel, with exact horizontal coverage on each.
 
+use shuttercrab_types::PhysicalRect;
+
 /// Sample rows per pixel row.
 const SUBROWS: usize = 4;
 
@@ -68,9 +70,8 @@ fn add_span(coverage: &mut [f32], start: f32, end: f32, weight: f32) {
 }
 
 /// The smallest whole-pixel rectangle around `outline`, clamped to a
-/// `width` × `height` image: (x, y, width, height), or `None` if nothing of
-/// it is inside.
-pub fn bounds(outline: &[(f32, f32)], width: u32, height: u32) -> Option<(i32, i32, u32, u32)> {
+/// `width` × `height` image, or `None` if nothing of it is inside.
+pub fn bounds(outline: &[(f32, f32)], width: u32, height: u32) -> Option<PhysicalRect> {
     let (mut left, mut top) = (f32::INFINITY, f32::INFINITY);
     let (mut right, mut bottom) = (f32::NEG_INFINITY, f32::NEG_INFINITY);
     for &(x, y) in outline {
@@ -84,7 +85,7 @@ pub fn bounds(outline: &[(f32, f32)], width: u32, height: u32) -> Option<(i32, i
     let right = (right.ceil() as i32).min(width as i32);
     let bottom = (bottom.ceil() as i32).min(height as i32);
     (right > left && bottom > top)
-        .then(|| (left, top, (right - left) as u32, (bottom - top) as u32))
+        .then(|| PhysicalRect::new(left, top, (right - left) as u32, (bottom - top) as u32))
 }
 
 #[cfg(test)]
@@ -144,7 +145,10 @@ mod tests {
     #[test]
     fn bounds_are_whole_pixels_inside_the_image() {
         let outline = [(-3.0, 2.4), (7.6, 1.2), (4.0, 12.0)];
-        assert_eq!(bounds(&outline, 10, 10), Some((0, 1, 8, 9)));
+        assert_eq!(
+            bounds(&outline, 10, 10),
+            Some(PhysicalRect::new(0, 1, 8, 9))
+        );
         assert_eq!(bounds(&[(20.0, 20.0), (30.0, 30.0)], 10, 10), None);
     }
 }
