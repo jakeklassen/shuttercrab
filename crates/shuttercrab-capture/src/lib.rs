@@ -9,8 +9,6 @@
 pub mod color;
 pub mod live;
 pub mod play;
-pub mod png_io;
-pub mod raw;
 pub mod record;
 pub mod screen;
 pub mod service;
@@ -27,15 +25,3 @@ pub use screen::{
     WindowId, cut, cut_shape, encode_png, premultiplied_bgra_to_rgba,
 };
 pub use service::{Capture, monitor_under_pointer};
-
-/// A folder for the unit tests' files: `tmp` in the target folder, which
-/// `cargo clean` takes too. Cargo names it only for integration tests
-/// (`CARGO_TARGET_TMPDIR`), so it is found from the test binary, in
-/// `target/<profile>/deps`.
-#[cfg(test)]
-fn test_folder() -> std::path::PathBuf {
-    let binary = std::env::current_exe().unwrap();
-    let folder = binary.ancestors().nth(3).unwrap().join("tmp");
-    std::fs::create_dir_all(&folder).unwrap();
-    folder
-}
