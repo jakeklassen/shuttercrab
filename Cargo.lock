@@ -6692,7 +6692,7 @@ dependencies = [
  "image",
  "log",
  "lyon_tessellation",
- "resvg 0.45.1",
+ "resvg 0.46.0",
  "serde",
  "serde_json",
  "shuttercrab-capture",
