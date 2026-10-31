@@ -1,35 +1,42 @@
 # Shuttercrab
 
-A Windows 11 screenshot and screen-recording utility, written in Rust with
-[GPUI Kit](https://gpui-kit.com). It works like Snipping Tool (one hotkey, drag,
-paste) and produces SDR output that looks right when Windows HDR is enabled.
+A Windows 11 tray app for screenshots, screen recording and live streaming,
+written in Rust with [GPUI Kit](https://gpui-kit.com). It works like
+Snipping Tool (one hotkey, drag, paste) and produces SDR output that looks
+right when Windows HDR is enabled.
 
-The specification is [docs/PRD.md](docs/PRD.md).
+The original specification is [docs/PRD.md](docs/PRD.md); the app has
+grown past it.
 
-## Status
+## What it does
 
-- **Milestone 0** (prove HDR-to-SDR color correctness) passed on 2026-09-27.
-- **Milestone 1** (area screenshot MVP) passed its acceptance test on 2026-09-27:
-  hotkey → drag → release → paste.
-- **Milestone 2** (screenshot workflow) is complete (2026-09-28). Step 1 of 6
-  (tray icon, settings, log file, auto-save, single instance) passed its
-  acceptance test on 2026-09-27. Step 2 (window and display capture, Space
-  toggle, snapping) passed on 2026-09-28. Step 3 (the Capture Bar) passed on
-  2026-09-28. Step 4 (thumbnail, notifications, capture exclusion)
-  passed on 2026-09-28. Step 5 (the settings window) passed on
-  2026-09-28. Step 6 (hardening, HDR video) passed on 2026-09-28; sleep and
-  wake is left for the owner to try.
-- **Milestone 3** (video technical spike) passed on 2026-09-29:
-  `capture-spike record` writes H.264 MP4 through the GPU pipeline.
-- **Milestone 4** (area recording) is complete (2026-10-01): record an area
-  or a display from the Capture Bar or Ctrl+Alt+R, with controls that are
-  never in the video (pause, stop, restart, discard, each with a hotkey),
-  a dashed border round the area, an optional countdown, and recording
-  settings. Steps 1–4 passed on 2026-09-29, 2026-09-30 and 2026-10-01.
+- **Screenshots** of an area, a window, a display or a freeform shape. The
+  screen freezes first, so what you select is what you get. The screenshot
+  goes on the clipboard, is saved as a PNG, and shows a thumbnail to open
+  or drag into another app.
+- **Markup** in the main window: the pen, the highlighter, the eraser,
+  shapes, emoji and crop, with undo and redo.
+- **Text actions**: read a screenshot's text with Windows' own text
+  recognition, on the device, then copy it, or black out email addresses,
+  phone numbers or the words you pick.
+- **Recording** of an area, a window or a display to an H.264 MP4 in SDR,
+  with the speakers' sound and a microphone if you turn them on. The
+  controls and the border round the area are never in the video. The main
+  window plays recordings back.
+- **Live streaming** of an area, a window or a display to someone
+  anywhere, who watches in Shuttercrab from a link. Windows only for now.
+
+**Linux** has no release yet. Under X11, Shuttercrab takes screenshots and
+records (the picture only, through GStreamer), with the tray, global
+hotkeys, the clipboard and starting at sign-in. Text actions, playing a
+recording and streaming are Windows only. Under Wayland it cannot read the
+screen yet. CI builds and tests Linux and macOS, and each pull request gets
+a Linux build to try. macOS has no backend: Shuttercrab builds there and
+says capture is not supported.
 
 Documentation:
 
-- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): crates, the UI/capture
+- [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md): crates, processes, the UI/capture
   boundary, coordinates and DPI, and other decisions.
 - [docs/COLOR_PIPELINE.md](docs/COLOR_PIPELINE.md): the color transform, its
   equations, and the measurements behind it.
@@ -59,21 +66,29 @@ Starting Shuttercrab opens its window: **N** (or New) starts a capture,
 **S** or **R** picks screenshot or recording, **A**, **W**, **D** or **F**
 the target, **T** the delay, and **,** opens Settings in the same window.
 The window hides while you capture. Closing it leaves Shuttercrab running
-in the tray; **Open Shuttercrab** in the tray menu brings it back. Started at sign-in,
-it starts in the tray only. Only one copy runs at a time.
+in the tray; **Open Shuttercrab** in the tray menu brings it back.
 
 | Keys | Does |
 |---|---|
-| **Ctrl+Alt+C** | Open the Capture Bar: **S**creenshot or **R**ecord, then **A**rea, **W**indow, **D**isplay or **F**reeform (click, arrow keys and Enter, or the letter). It starts on your last choice |
+| **Ctrl+Alt+C** | Open the Capture Bar: **S**creenshot, **R**ecord or stream (**L**), then **A**rea, **W**indow, **D**isplay or **F**reeform (click, arrow keys and Enter, or the letter). It starts on your last choice |
 | **Ctrl+Alt+S** | Straight to an area: freeze every monitor, drag on any of them, release to copy. Edges snap to nearby windows |
 | **Space** while selecting | Switch to Window mode: click a window to capture it, or the desktop for the whole display. Space again returns to Area |
 | Escape or right-click | Cancel the selection |
 | **Ctrl+Alt+R** | Record an area (drag it); again to stop |
 | While recording | **Ctrl+Alt+P** pause and resume, **Ctrl+Alt+N** restart, **Ctrl+Alt+D** discard (each asks first unless turned off in Settings; then **Ctrl+Alt+Z** undoes) |
 | Click the tray icon | Open the Shuttercrab window |
-| Right-click the tray icon | Open Shuttercrab, capture, Settings…, open the screenshots folder, turn saving on or off, quit |
-| Start Shuttercrab again | Opens its settings window |
+| Right-click the tray icon | Open Shuttercrab, capture, record, stream or watch, open the screenshots folder, turn saving on or off, Settings…, quit |
 | Ctrl+Alt+Shift+Q | Quit (for development) |
+
+Each way of starting Shuttercrab does one thing. While a copy is running,
+a new start passes the request to it and exits.
+
+| Start | Does |
+|---|---|
+| From the Start menu, or `shuttercrab.exe` | Shows the Shuttercrab window |
+| `shuttercrab.exe --capture-bar`, `--screenshot` or `--record` | Acts as that hotkey would: opens the Capture Bar, takes an area screenshot, or starts an area recording (or stops the one running). For desktop shortcuts |
+| At sign-in, if turned on in Settings | The tray only, with no window |
+| A `shuttercrab://` link, in an installed copy | Opens the viewer for that stream, in a process of its own (see [docs/STREAMING.md](docs/STREAMING.md)) |
 
 The screenshot is on the clipboard as PNG and as a bitmap; paste it anywhere.
 Window captures keep the window's rounded corners transparent in the PNG
@@ -101,16 +116,26 @@ for testing.
 
 ## Setup
 
-Rust is pinned with [mise](https://mise.jdx.dev) in `mise.toml`.
+Rust, and CMake for the Opus library a stream's sound needs on Windows,
+are pinned with [mise](https://mise.jdx.dev) in `mise.toml`.
 
 ```powershell
 mise install
-mise exec -- cargo clippy --all-targets -- -D warnings
-mise exec -- cargo test
+mise run check
 ```
 
-The Milestone 0 tools remain: `mise exec -- cargo run --release -p
-capture-spike -- help`.
+`mise run check` runs formatting, Clippy and the tests as CI does. It
+skips one test, which would signal the Shuttercrab you have running, and
+first empties `target/` if it has grown past 30 GiB. To run one crate's
+tests, or one test, use Cargo through mise:
+
+```powershell
+mise exec -- cargo test -p shuttercrab-capture
+mise exec -- cargo test -p shuttercrab --test ui overlay::
+```
+
+The measurement and diagnostic tools remain: `mise exec -- cargo run
+--release -p capture-spike -- help`.
 
 ## Releases
 
@@ -120,8 +145,10 @@ to date with the next version and its [CHANGELOG.md](CHANGELOG.md) entry;
 only `feat`, `fix`, `perf`, `refactor` and `revert` commits call for one.
 Merging that PR runs CI, tags `vX.Y.Z`, builds the installer and update
 packages with [Velopack](https://velopack.io), and publishes them to GitHub
-Releases. The app and its two library crates share one version; the
-workflows are in `.github/workflows`.
+Releases. The app and its five library crates share one version, one tag
+and one changelog, since a change in a library is a change in the app;
+`capture-spike` is never released. The settings are in `release-plz.toml`
+and the workflows in `.github/workflows`.
 
 To try an update before publishing it, point an installed copy at a folder
 of packages built with `vpk pack`: set `SHUTTERCRAB_UPDATE_SOURCE` to that
