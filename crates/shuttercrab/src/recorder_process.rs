@@ -14,7 +14,9 @@
 //! [`RecorderProcess`] has the same methods as the in-process
 //! [`Recorder`], which [`serve`] runs inside the helper.
 
-use crate::helper_process::{Options, forward_logs, log_to_app, send};
+use crate::helper_process::{
+    Options, first_request, forward_logs, log_to_app, read_requests, send,
+};
 use anyhow::{Context, Result, anyhow};
 use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
@@ -333,14 +335,9 @@ fn read_replies(
 pub fn serve() -> i32 {
     log_to_app(log::LevelFilter::Debug);
     let mut out = std::io::stdout();
-    let mut first = String::new();
-    let read = std::io::stdin().read_line(&mut first);
-    let options = match read.map(|_| serde_json::from_str(first.trim())) {
-        Ok(Ok(Request::Start(options))) => options,
-        _ => {
-            log::error!("the recorder was not asked to start");
-            return 2;
-        }
+    let Some(Request::Start(options)) = first_request() else {
+        log::error!("the recorder was not asked to start");
+        return 2;
     };
     let mut recorder = match Recorder::start(options.into()) {
         Ok(recorder) => recorder,
@@ -358,21 +355,7 @@ pub fn serve() -> i32 {
         Ended,
     }
     let (tx, rx) = mpsc::channel();
-    let asked = tx.clone();
-    thread::spawn(move || {
-        for line in std::io::stdin().lines().map_while(Result::ok) {
-            match serde_json::from_str(&line) {
-                Ok(request) => {
-                    if asked.send(Next::Asked(request)).is_err() {
-                        return;
-                    }
-                }
-                Err(e) => log::warn!("unreadable request: {e}"),
-            }
-        }
-        // The app closed our input, or went away: stop.
-        let _ = asked.send(Next::Asked(Request::Stop));
-    });
+    read_requests(tx.clone(), Next::Asked, Request::Stop);
     if let Some(ended) = recorder.ended() {
         thread::spawn(move || {
             futures::executor::block_on(ended);
