@@ -12,17 +12,19 @@ anyhow = "1"
 base64 = "0.23"
 log = "0.4"
 rand = "0.10"
+serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 sha2 = "0.11"
 # The direct connection, on the socket the routers were opened with.
 quinn = { version = "0.11", default-features = false, features = ["rustls-ring", "runtime-tokio", "log"] }
-tokio = { version = "1", features = ["rt-multi-thread", "time", "net"] }
+tokio = { version = "1", features = ["rt-multi-thread", "time", "net", "macros", "sync"] }
 # Its TLS: ring, as the rest of the workspace uses, and a certificate made
 # for each stream, which the link vouches for.
 rustls = { version = "0.23", default-features = false, features = ["ring", "std", "logging"] }
 rcgen = { version = "0.14", default-features = false, features = ["ring"] }
-# The room, a WebSocket on Cloudflare.
-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+# The room, a WebSocket on Cloudflare, served as its messages come.
+tokio-tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink"] }
 # The relay's login: MD5 for its key, ring's HMAC-SHA1 to sign with.
 md-5 = "0.11"
 ring = "0.17"
