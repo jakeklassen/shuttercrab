@@ -12,3 +12,12 @@ pub mod play;
 pub mod record;
 pub mod service;
 pub mod watch;
+
+use std::sync::{Mutex, MutexGuard, PoisonError};
+
+/// What `mutex` guards, even if a thread panicked holding it: the threads
+/// that share one leave it whole between steps, and a player or sink that
+/// gave up on it would stop for good.
+pub(crate) fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
+    mutex.lock().unwrap_or_else(PoisonError::into_inner)
+}

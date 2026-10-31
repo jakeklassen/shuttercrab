@@ -11,6 +11,7 @@
 use crate::{
     live::{LiveFrame, Track, VideoCodec, adts},
     record::LiveSink,
+    sys::imp::lock,
 };
 use std::sync::Mutex;
 use windows::{
@@ -41,7 +42,7 @@ pub(super) fn create(
     .into();
     for stream in &streams {
         let inner: &StreamSink = unsafe { stream.as_impl() };
-        *inner.sink.lock().unwrap_or_else(|e| e.into_inner()) = Some(sink.clone());
+        *lock(&inner.sink) = Some(sink.clone());
     }
     Ok(sink)
 }
@@ -103,7 +104,7 @@ impl IMFMediaSink_Impl for MediaSink_Impl {
     }
 
     fn SetPresentationClock(&self, clock: Ref<IMFPresentationClock>) -> Result<()> {
-        let mut current = self.clock.lock().unwrap_or_else(|e| e.into_inner());
+        let mut current = lock(&self.clock);
         let me: IMFClockStateSink = self.to_interface();
         if let Some(old) = current.take() {
             unsafe { old.RemoveClockStateSink(&me)? };
@@ -124,13 +125,13 @@ impl IMFMediaSink_Impl for MediaSink_Impl {
     }
 
     fn Shutdown(&self) -> Result<()> {
-        if let Some(clock) = self.clock.lock().unwrap_or_else(|e| e.into_inner()).take() {
+        if let Some(clock) = lock(&self.clock).take() {
             let me: IMFClockStateSink = self.to_interface();
             let _ = unsafe { clock.RemoveClockStateSink(&me) };
         }
         for stream in &self.streams {
             let inner: &StreamSink = unsafe { stream.as_impl() };
-            inner.sink.lock().unwrap_or_else(|e| e.into_inner()).take();
+            lock(&inner.sink).take();
             let _ = unsafe { inner.queue.Shutdown() };
         }
         Ok(())
@@ -439,7 +440,7 @@ impl IMFMediaTypeHandler_Impl for StreamSink_Impl {
         if !self.takes(media_type)? {
             return Err(MF_E_INVALIDMEDIATYPE.into());
         }
-        *self.media_type.lock().unwrap_or_else(|e| e.into_inner()) = media_type.clone();
+        *lock(&self.media_type) = media_type.clone();
         Ok(())
     }
 

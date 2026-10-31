@@ -11,13 +11,13 @@
 mod sound;
 mod video;
 
-use super::{clock, gpu::Gpu, play::Started};
+use super::{clock, gpu::Gpu, lock, play::Started};
 use crate::live::{LiveFormat, LiveFrame, Track, VideoCodec};
 use anyhow::{Context, Result};
 use std::{
     collections::VecDeque,
     sync::{
-        Mutex, MutexGuard,
+        Mutex,
         atomic::{AtomicBool, AtomicI64, Ordering},
     },
     time::Duration,
@@ -224,10 +224,6 @@ impl LivePlayer {
             output.set_volume(percent);
         }
     }
-}
-
-fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
-    mutex.lock().unwrap_or_else(|e| e.into_inner())
 }
 
 /// A frame as a Media Foundation sample, for a decoder.
