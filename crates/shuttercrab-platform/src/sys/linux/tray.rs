@@ -11,12 +11,14 @@ use ksni::blocking::{Handle, TrayMethods};
 /// Whether the desktop shows tray icons: something owns the
 /// StatusNotifierWatcher name on the session bus.
 pub(super) fn available() -> bool {
-    let has_owner = || -> zbus::Result<bool> {
-        let bus = zbus::blocking::Connection::session()?;
-        let proxy = zbus::blocking::fdo::DBusProxy::new(&bus)?;
-        Ok(proxy.name_has_owner("org.kde.StatusNotifierWatcher".try_into()?)?)
+    let has_owner = async || -> zbus::Result<bool> {
+        let bus = zbus::Connection::session().await?;
+        let proxy = zbus::fdo::DBusProxy::new(&bus).await?;
+        Ok(proxy
+            .name_has_owner("org.kde.StatusNotifierWatcher".try_into()?)
+            .await?)
     };
-    has_owner().unwrap_or(false)
+    zbus::block_on(has_owner()).unwrap_or(false)
 }
 
 /// The icon on the desktop's tray, kept while Shuttercrab runs.
