@@ -39,24 +39,11 @@ pub(crate) fn virtual_key(key: Key) -> u32 {
 /// Screen hotkey registers but never fires. Windows 11 has it on until the
 /// user turns it off, which is when the value is first written.
 pub fn print_screen_taken() -> bool {
-    use windows::{
-        Win32::System::Registry::{HKEY_CURRENT_USER, RRF_RT_REG_DWORD, RegGetValueW},
-        core::w,
-    };
-    let mut value = 0u32;
-    let mut size = size_of::<u32>() as u32;
-    let read = unsafe {
-        RegGetValueW(
-            HKEY_CURRENT_USER,
-            w!(r"Control Panel\Keyboard"),
-            w!("PrintScreenKeyForSnippingEnabled"),
-            RRF_RT_REG_DWORD,
-            None,
-            Some((&raw mut value).cast()),
-            Some(&mut size),
-        )
-    };
-    read.is_err() || value != 0
+    let enabled = windows_registry::CURRENT_USER
+        .open(r"Control Panel\Keyboard")
+        .and_then(|k| k.get_u32("PrintScreenKeyForSnippingEnabled"));
+    // Only a 0 written there frees the key.
+    !matches!(enabled, Ok(0))
 }
 
 #[cfg(test)]
