@@ -309,26 +309,6 @@ enum More {
 }
 
 impl More {
-    /// The items, with a screenshot shown, a recording, or neither; Edit in
-    /// only with an image editor.
-    fn items(shot: bool, recording: bool, editor: bool) -> Vec<More> {
-        let all: &[More] = match (shot, recording) {
-            (true, _) => &[
-                More::Settings,
-                More::OpenFolder,
-                More::EditIn,
-                More::OpenWith,
-                More::Quit,
-            ],
-            (false, true) => &[More::Settings, More::OpenFolder, More::OpenWith, More::Quit],
-            (false, false) => &[More::Settings, More::OpenFolder, More::Quit],
-        };
-        all.iter()
-            .copied()
-            .filter(|item| editor || *item != More::EditIn)
-            .collect()
-    }
-
     /// `saved`: a screenshot shown, saved in the folder, which opens with
     /// it selected. `editor`: the image editor Edit in opens.
     fn label(self, saved: bool, editor: &str) -> String {
@@ -361,6 +341,37 @@ impl More {
             More::Quit => IconName::Power,
         }
     }
+}
+
+/// One row of a toolbar menu.
+struct MenuRow {
+    label: String,
+    /// Its key hint, as shown: empty for none.
+    key: &'static str,
+    icon: Option<IconName>,
+    /// The choice in force, marked with a coral bar.
+    chosen: bool,
+}
+
+/// What names a button and what it shows: its element id, the label read
+/// out for it, its icon, and its key hint (empty for none).
+#[derive(Clone, Copy)]
+struct ButtonFace {
+    id: &'static str,
+    label: &'static str,
+    icon: IconName,
+    key: &'static str,
+}
+
+/// One item of a segmented control, such as a mode or a target.
+struct Segment {
+    face: ButtonFace,
+    /// The one chosen: lit, and underlined in coral.
+    chosen: bool,
+    /// Whether it can be chosen now; dimmed when not.
+    offered: bool,
+    /// Its icon's colour while chosen, if not the text's.
+    chosen_color: Option<Hsla>,
 }
 
 /// Give the theme the window's own colours, so the Settings page matches
@@ -860,13 +871,28 @@ impl MainWindow {
             .collect()
     }
 
-    /// The ⋯ menu's items now.
+    /// The ⋯ menu's items now: more with a screenshot or a recording shown;
+    /// Edit in only with an image editor.
     fn more_items(&self) -> Vec<More> {
-        More::items(
-            self.shown.is_some(),
-            self.video.is_some(),
-            self.hooks.image_editor.is_some(),
-        )
+        let items: &[More] = if self.shown.is_some() {
+            &[
+                More::Settings,
+                More::OpenFolder,
+                More::EditIn,
+                More::OpenWith,
+                More::Quit,
+            ]
+        } else if self.video.is_some() {
+            &[More::Settings, More::OpenFolder, More::OpenWith, More::Quit]
+        } else {
+            &[More::Settings, More::OpenFolder, More::Quit]
+        };
+        let has_editor = self.hooks.image_editor.is_some();
+        items
+            .iter()
+            .copied()
+            .filter(|item| has_editor || *item != More::EditIn)
+            .collect()
     }
 
     fn menu_len(&self, menu: Menu) -> usize {
@@ -1075,26 +1101,22 @@ impl MainWindow {
     }
 
     /// One item of a segmented control: an icon and its key, underlined in
-    /// coral when chosen, dimmed when not `offered`.
-    #[expect(
-        clippy::too_many_arguments,
-        reason = "each is one part of the segment, named at the call; a struct would only repeat the names"
-    )]
+    /// coral when chosen, dimmed when not offered.
     fn segment<F: Fn(&mut Self, &mut Context<Self>) + 'static>(
-        id: &'static str,
-        label: &'static str,
-        icon: IconName,
-        key: &'static str,
-        on: bool,
-        offered: bool,
-        icon_color: Option<Hsla>,
+        segment: Segment,
         cx: &mut Context<Self>,
         choose: F,
     ) -> impl IntoElement + use<F> {
+        let Segment {
+            face,
+            chosen,
+            offered,
+            chosen_color,
+        } = segment;
         div()
-            .id(id)
+            .id(face.id)
             .role(Role::RadioButton)
-            .aria_label(label)
+            .aria_label(face.label)
             .test_support()
             .relative()
             .flex()
@@ -1104,12 +1126,12 @@ impl MainWindow {
             .px_2()
             .rounded_md()
             .when_else(
-                on,
+                chosen,
                 |d| d.bg(tile()).text_color(gpui_kit::white()),
                 |d| d.text_color(muted()),
             )
             .when(!offered, |d| d.opacity(0.35))
-            .when(offered && !on, |d| {
+            .when(offered && !chosen, |d| {
                 d.hover(|s| s.text_color(gpui_kit::white()))
                     .cursor_pointer()
             })
@@ -1117,12 +1139,12 @@ impl MainWindow {
                 d.on_click(cx.listener(move |this, _: &ClickEvent, _, cx| choose(this, cx)))
             })
             .child(
-                Icon::new(icon)
+                Icon::new(face.icon)
                     .size(px(18.))
-                    .when_some(icon_color.filter(|_| on), |i, c| i.text_color(c)),
+                    .when_some(chosen_color.filter(|_| chosen), |i, c| i.text_color(c)),
             )
-            .children(Self::key_hint(key))
-            .when(on, |d| {
+            .children(Self::key_hint(face.key))
+            .when(chosen, |d| {
                 d.child(
                     div()
                         .absolute()
@@ -1154,18 +1176,19 @@ impl MainWindow {
         let segments: Vec<_> = CaptureMode::ALL
             .iter()
             .map(|&mode| {
-                Self::segment(
-                    mode.id(),
-                    mode.label(),
-                    mode.icon(),
-                    self.shown_key(mode.key()),
-                    mode == chosen,
-                    true,
+                let segment = Segment {
+                    face: ButtonFace {
+                        id: mode.id(),
+                        label: mode.label(),
+                        icon: mode.icon(),
+                        key: self.shown_key(mode.key()),
+                    },
+                    chosen: mode == chosen,
+                    offered: true,
                     // Recording and streaming show in the recording red.
-                    mode.is_video().then(recording),
-                    cx,
-                    move |this, cx| this.set_mode(mode, cx),
-                )
+                    chosen_color: mode.is_video().then(recording),
+                };
+                Self::segment(segment, cx, move |this, cx| this.set_mode(mode, cx))
             })
             .collect();
         Self::segmented(segments)
@@ -1174,49 +1197,50 @@ impl MainWindow {
     /// Watch someone's stream: opens the Watch box. On the home page only,
     /// where the toolbar has room.
     fn watch_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        Self::segmented([Self::segment(
-            "watch",
-            "Watch a stream",
-            IconName::MonitorPlay,
-            self.shown_key(WATCH_KEY),
-            false,
-            true,
-            None,
-            cx,
-            |this, cx| (this.hooks.watch.clone())(cx),
-        )])
+        let segment = Segment {
+            face: ButtonFace {
+                id: "watch",
+                label: "Watch a stream",
+                icon: IconName::MonitorPlay,
+                key: self.shown_key(WATCH_KEY),
+            },
+            chosen: false,
+            offered: true,
+            chosen_color: None,
+        };
+        Self::segmented([Self::segment(segment, cx, |this, cx| {
+            (this.hooks.watch.clone())(cx)
+        })])
     }
 
     fn targets(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let (mode, chosen) = (self.mode(), self.target());
         Self::segmented(CaptureTarget::ALL.map(|target| {
-            Self::segment(
-                target.id(),
-                target.label(),
-                target.icon(),
-                self.shown_key(target.key()),
-                target == chosen,
-                mode.offers(target),
-                None,
-                cx,
-                move |this, cx| this.set_target(target, cx),
-            )
+            let segment = Segment {
+                face: ButtonFace {
+                    id: target.id(),
+                    label: target.label(),
+                    icon: target.icon(),
+                    key: self.shown_key(target.key()),
+                },
+                chosen: target == chosen,
+                offered: mode.offers(target),
+                chosen_color: None,
+            };
+            Self::segment(segment, cx, move |this, cx| this.set_target(target, cx))
         }))
     }
 
     /// A toolbar button for the screenshot shown: an icon and its key.
     fn shot_button(
-        id: &'static str,
-        label: &'static str,
-        icon: IconName,
-        key: &'static str,
+        face: ButtonFace,
         cx: &mut Context<Self>,
         action: fn(&mut Self, &mut Context<Self>),
     ) -> impl IntoElement + use<> {
         div()
-            .id(id)
+            .id(face.id)
             .role(Role::Button)
-            .aria_label(label)
+            .aria_label(face.label)
             .test_support()
             .flex()
             .items_center()
@@ -1227,8 +1251,8 @@ impl MainWindow {
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
             .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| action(this, cx)))
-            .child(Icon::new(icon).size(px(18.)))
-            .children(Self::key_hint(key))
+            .child(Icon::new(face.icon).size(px(18.)))
+            .children(Self::key_hint(face.key))
     }
 
     /// Copy, which turns into a check mark and "Copied", fading in, for a
@@ -1316,14 +1340,19 @@ impl MainWindow {
             })
     }
 
-    /// A menu's items: label, key hint, icon, and whether it is chosen.
-    fn menu_items(&self, menu: Menu) -> Vec<(String, String, Option<IconName>, bool)> {
+    /// A menu's rows.
+    fn menu_rows(&self, menu: Menu) -> Vec<MenuRow> {
         match menu {
             Menu::Delay => {
                 let (now, choices) = self.delay();
                 choices
                     .iter()
-                    .map(|s| (seconds(*s), String::new(), None, *s == now))
+                    .map(|s| MenuRow {
+                        label: seconds(*s),
+                        key: "",
+                        icon: None,
+                        chosen: *s == now,
+                    })
                     .collect()
             }
             Menu::More => {
@@ -1332,9 +1361,11 @@ impl MainWindow {
                 let editor = self.hooks.image_editor.unwrap_or_default();
                 self.more_items()
                     .iter()
-                    .map(|m| {
-                        let key = self.shown_key(m.key());
-                        (m.label(saved, editor), key.into(), Some(m.icon()), false)
+                    .map(|m| MenuRow {
+                        label: m.label(saved, editor),
+                        key: self.shown_key(m.key()),
+                        icon: Some(m.icon()),
+                        chosen: false,
                     })
                     .collect()
             }
@@ -1342,9 +1373,11 @@ impl MainWindow {
                 let chosen = self.target();
                 self.offered_targets()
                     .into_iter()
-                    .map(|t| {
-                        let key = self.shown_key(t.key());
-                        (t.label().into(), key.into(), Some(t.icon()), t == chosen)
+                    .map(|t| MenuRow {
+                        label: t.label().into(),
+                        key: self.shown_key(t.key()),
+                        icon: Some(t.icon()),
+                        chosen: t == chosen,
                     })
                     .collect()
             }
@@ -1352,7 +1385,7 @@ impl MainWindow {
     }
 
     fn menu_list(&self, menu: Menu, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let items = self.menu_items(menu);
+        let rows = self.menu_rows(menu);
         let right = menu == Menu::More;
         div()
             .id(match menu {
@@ -1374,57 +1407,58 @@ impl MainWindow {
             .shadow_lg()
             .occlude()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
-            .children(
-                items
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (label, key, icon, chosen))| {
-                        let highlighted = i == self.highlighted;
-                        div()
-                            .id(SharedString::from(format!(
-                                "{}-{i}",
-                                match menu {
-                                    Menu::Delay => "delay",
-                                    Menu::More => "more",
-                                    Menu::Target => "target-choice",
-                                }
-                            )))
-                            .role(Role::MenuItem)
-                            .aria_label(label.clone())
-                            .test_support()
-                            .relative()
-                            .flex()
-                            .items_center()
-                            .gap_2p5()
-                            .h(px(36.))
-                            .px_3()
-                            .rounded_md()
-                            .text_sm()
-                            .text_color(gpui_kit::white())
-                            .when(highlighted, |d| d.bg(rgb(0x383838)))
-                            .hover(|s| s.bg(rgb(0x383838)))
-                            .cursor_pointer()
-                            .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
-                                this.highlighted = i;
-                                this.choose_highlighted(menu, window, cx);
-                            }))
-                            .when(chosen, |d| {
-                                d.child(
-                                    div()
-                                        .absolute()
-                                        .left(px(0.))
-                                        .top(px(10.))
-                                        .bottom(px(10.))
-                                        .w(px(3.))
-                                        .rounded_full()
-                                        .bg(coral()),
-                                )
-                            })
-                            .when_some(icon, |d, icon| d.child(Icon::new(icon).size(px(16.))))
-                            .child(div().flex_1().child(label))
-                            .children(Self::key_hint(&key))
-                    }),
-            )
+            .children(rows.into_iter().enumerate().map(|(i, row)| {
+                let MenuRow {
+                    label,
+                    key,
+                    icon,
+                    chosen,
+                } = row;
+                let highlighted = i == self.highlighted;
+                div()
+                    .id(SharedString::from(format!(
+                        "{}-{i}",
+                        match menu {
+                            Menu::Delay => "delay",
+                            Menu::More => "more",
+                            Menu::Target => "target-choice",
+                        }
+                    )))
+                    .role(Role::MenuItem)
+                    .aria_label(label.clone())
+                    .test_support()
+                    .relative()
+                    .flex()
+                    .items_center()
+                    .gap_2p5()
+                    .h(px(36.))
+                    .px_3()
+                    .rounded_md()
+                    .text_sm()
+                    .text_color(gpui_kit::white())
+                    .when(highlighted, |d| d.bg(rgb(0x383838)))
+                    .hover(|s| s.bg(rgb(0x383838)))
+                    .cursor_pointer()
+                    .on_click(cx.listener(move |this, _: &ClickEvent, window, cx| {
+                        this.highlighted = i;
+                        this.choose_highlighted(menu, window, cx);
+                    }))
+                    .when(chosen, |d| {
+                        d.child(
+                            div()
+                                .absolute()
+                                .left(px(0.))
+                                .top(px(10.))
+                                .bottom(px(10.))
+                                .w(px(3.))
+                                .rounded_full()
+                                .bg(coral()),
+                        )
+                    })
+                    .when_some(icon, |d, icon| d.child(Icon::new(icon).size(px(16.))))
+                    .child(div().flex_1().child(label))
+                    .children(Self::key_hint(key))
+            }))
     }
 
     fn delay_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
@@ -1509,11 +1543,14 @@ impl MainWindow {
             .when(
                 (self.shown.is_some() && !self.is_cropping()) || self.video.is_some(),
                 |d| {
+                    let save_as = ButtonFace {
+                        id: "save-as",
+                        label: "Save as",
+                        icon: IconName::Save,
+                        key: "Ctrl+S",
+                    };
                     d.child(self.copy_button(cx)).child(Self::shot_button(
-                        "save-as",
-                        "Save as",
-                        IconName::Save,
-                        "Ctrl+S",
+                        save_as,
                         cx,
                         Self::save_as,
                     ))
@@ -1676,21 +1713,21 @@ impl MainWindow {
     /// here or in the settings.
     fn host_key_ask(&self, column: Div, cx: &mut Context<Self>) -> Div {
         let paste = Self::hint_button(
-            (
-                "paste-host-key",
-                IconName::ClipboardPaste,
-                "Paste host key",
-                "Ctrl+V",
-            ),
+            ButtonFace {
+                id: "paste-host-key",
+                label: "Paste host key",
+                icon: IconName::ClipboardPaste,
+                key: "Ctrl+V",
+            },
             cx.listener(|this, _: &ClickEvent, _, cx| this.paste_host_key(cx)),
         );
         let settings = Self::hint_button(
-            (
-                "streaming-settings",
-                IconName::Settings,
-                "Streaming settings",
-                "",
-            ),
+            ButtonFace {
+                id: "streaming-settings",
+                label: "Streaming settings",
+                icon: IconName::Settings,
+                key: "",
+            },
             cx.listener(|this, _: &ClickEvent, window, cx| {
                 this.show(Page::StreamingSettings, window, cx);
             }),
@@ -1744,13 +1781,13 @@ impl MainWindow {
 
     /// A button in the middle of the window: an icon, a label and its key.
     fn hint_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
-        (id, icon, label, key): (&'static str, IconName, &'static str, &'static str),
+        face: ButtonFace,
         click: F,
     ) -> impl IntoElement + use<F> {
         div()
-            .id(id)
+            .id(face.id)
             .role(Role::Button)
-            .aria_label(label)
+            .aria_label(face.label)
             .test_support()
             .flex()
             .items_center()
@@ -1765,9 +1802,9 @@ impl MainWindow {
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
             .on_click(click)
-            .child(Icon::new(icon).size(px(16.)))
-            .child(label)
-            .children(Self::key_hint(key))
+            .child(Icon::new(face.icon).size(px(16.)))
+            .child(face.label)
+            .children(Self::key_hint(face.key))
     }
 
     /// What came of pasting a host key, if one was pasted.
