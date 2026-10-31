@@ -61,7 +61,7 @@ features = [
 ]
 
 [target.'cfg(target_os = "linux")'.dependencies]
-x11rb = { version = "0.13", features = ["randr", "resource_manager", "xfixes"] }
+x11rb = { version = "0.14", features = ["randr", "resource_manager", "xfixes"] }
 # Recording: H.264 in an MP4, through the GStreamer the desktop has.
 gstreamer = "0.25.4"
 gstreamer-app = "0.25.2"
