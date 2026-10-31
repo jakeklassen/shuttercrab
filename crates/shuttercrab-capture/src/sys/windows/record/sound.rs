@@ -13,7 +13,7 @@
 
 use super::{Event, qpc_ticks};
 use crate::record::{Microphone, Source, TICKS_PER_SECOND};
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, bail};
 use std::{
     sync::{
         Arc,
@@ -21,6 +21,7 @@ use std::{
         mpsc::Sender,
     },
     thread::JoinHandle,
+    time::Duration,
 };
 use windows::{
     Win32::{
@@ -46,7 +47,7 @@ use windows::{
                 CoTaskMemFree, CoUninitialize, IAgileObject, IAgileObject_Impl, STGM_READ,
                 StructuredStorage::PROPVARIANT,
             },
-            Threading::{CreateEventW, SetEvent, WaitForSingleObject},
+            Threading::{CreateEventW, WaitForSingleObject},
             Variant::VT_BLOB,
         },
     },
@@ -383,42 +384,44 @@ unsafe fn process_client(id: u32) -> Result<IAudioClient> {
             cbSize: size_of::<AUDIOCLIENT_ACTIVATION_PARAMS>() as u32,
             pBlobData: (&raw const params).cast_mut().cast(),
         };
-        let done = CreateEventW(None, false, false, None).context("no event")?;
-        let handler: IActivateAudioInterfaceCompletionHandler = Activated(done).into();
-        let activated = ActivateAudioInterfaceAsync(
+        // A channel, not an event handle: the handler may still be called
+        // after a timeout here, and sending then is harmless.
+        let (activated, done) = std::sync::mpsc::channel();
+        let handler: IActivateAudioInterfaceCompletionHandler = Activated(activated).into();
+        let operation = ActivateAudioInterfaceAsync(
             VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
             &IAudioClient::IID,
             Some(&raw const *variant),
             &handler,
         )
-        .context("could not ask for the app's sound")
-        .and_then(|operation| {
-            WaitForSingleObject(done, 5_000);
-            let (mut result, mut client) = (HRESULT(0), None::<IUnknown>);
-            operation.GetActivateResult(&mut result, &mut client)?;
-            result
-                .ok()
-                .context("Windows would not give the app's sound")?;
-            Ok(client
-                .context("no sound client for the app")?
-                .cast::<IAudioClient>()?)
-        });
-        let _ = CloseHandle(done);
-        activated
+        .context("could not ask for the app's sound")?;
+        if done.recv_timeout(Duration::from_secs(5)).is_err() {
+            bail!("Windows did not hand over the app's sound within 5 s");
+        }
+        let (mut result, mut client) = (HRESULT(0), None::<IUnknown>);
+        operation.GetActivateResult(&mut result, &mut client)?;
+        result
+            .ok()
+            .context("Windows would not give the app's sound")?;
+        Ok(client
+            .context("no sound client for the app")?
+            .cast::<IAudioClient>()?)
     }
 }
 
 /// Says when Windows has activated a process's sound client. Agile, as
 /// Windows calls it from a thread of its own.
 #[implement(IActivateAudioInterfaceCompletionHandler, IAgileObject)]
-struct Activated(HANDLE);
+struct Activated(std::sync::mpsc::Sender<()>);
 
 impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
     fn ActivateCompleted(
         &self,
         _: Ref<IActivateAudioInterfaceAsyncOperation>,
     ) -> windows::core::Result<()> {
-        unsafe { SetEvent(self.0) }
+        // Nobody waits any more after a timeout: nothing to tell.
+        let _ = self.0.send(());
+        Ok(())
     }
 }
 

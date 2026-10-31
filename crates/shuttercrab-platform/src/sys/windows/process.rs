@@ -11,7 +11,7 @@ use crate::process::Spawned;
 use anyhow::{Context, Result, bail};
 use std::{
     fs::File,
-    os::windows::io::{FromRawHandle, OwnedHandle},
+    os::windows::io::{AsRawHandle, FromRawHandle, OwnedHandle},
     path::Path,
 };
 use windows::{
@@ -53,10 +53,11 @@ impl Process {
     }
 }
 
-/// One pipe: the end the child gets (inheritable) and the parent's end.
+/// One pipe: the end the child gets (inheritable) and the parent's end,
+/// each closed when dropped.
 struct Pipe {
-    child: HANDLE,
-    parent: HANDLE,
+    child: OwnedHandle,
+    parent: OwnedHandle,
 }
 
 impl Pipe {
@@ -70,24 +71,32 @@ impl Pipe {
         let (mut read, mut write) = (HANDLE::default(), HANDLE::default());
         unsafe { CreatePipe(&mut read, &mut write, Some(&inherit), 0) }
             .context("could not make a pipe")?;
+        // SAFETY: CreatePipe opened both, and nothing else owns them.
+        let (read, write) = unsafe {
+            (
+                OwnedHandle::from_raw_handle(read.0),
+                OwnedHandle::from_raw_handle(write.0),
+            )
+        };
         let (child, parent) = if child_reads {
             (read, write)
         } else {
             (write, read)
         };
         // Only the child's end is inherited.
-        unsafe { SetHandleInformation(parent, HANDLE_FLAG_INHERIT.0, Default::default()) }
+        unsafe { SetHandleInformation(raw(&parent), HANDLE_FLAG_INHERIT.0, Default::default()) }
             .context("could not keep a pipe to this process")?;
         Ok(Self { child, parent })
     }
 
-    /// The parent's end, owned.
+    /// The parent's end; the child's closes, as the child has its own.
     fn into_parent(self) -> File {
-        unsafe {
-            let _ = CloseHandle(self.child);
-            File::from_raw_handle(self.parent.0)
-        }
+        File::from(self.parent)
     }
+}
+
+fn raw(handle: &OwnedHandle) -> HANDLE {
+    HANDLE(handle.as_raw_handle())
 }
 
 /// Start `exe` with `args`, without a console window and without the busy
@@ -103,7 +112,11 @@ pub fn spawn_quiet(exe: &Path, args: &[&str]) -> Result<Spawned> {
         .collect();
     // Only the three pipes are inherited, even if another thread starts a
     // process meanwhile with handles of its own marked inheritable.
-    let handles = [pipes[0].child, pipes[1].child, pipes[2].child];
+    let handles = [
+        raw(&pipes[0].child),
+        raw(&pipes[1].child),
+        raw(&pipes[2].child),
+    ];
     let mut size = 0;
     unsafe {
         let _ = InitializeProcThreadAttributeList(None, 1, None, &mut size);
@@ -150,15 +163,8 @@ pub fn spawn_quiet(exe: &Path, args: &[&str]) -> Result<Spawned> {
         DeleteProcThreadAttributeList(list);
         result
     };
-    let info = match started {
-        Ok(info) => info,
-        Err(e) => {
-            for pipe in pipes {
-                drop(pipe.into_parent());
-            }
-            return Err(e);
-        }
-    };
+    // On failure, the pipes close as they drop.
+    let info = started?;
     unsafe {
         let _ = CloseHandle(info.hThread);
     }
