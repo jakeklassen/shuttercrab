@@ -6,7 +6,8 @@
     "dev": "vite dev",
     "build": "vite build",
     "deploy": "void deploy",
-    "check": "void prepare && tsc -p ."
+    "check": "void prepare && tsc -p .",
+    "test": "vitest run"
   },
   "devDependencies": {
     "@cloudflare/workers-types": "^5.20261026.1",
@@ -14,6 +15,7 @@
     "typescript": "^7.0.2",
     "valibot": "^1.5.0",
     "vite": "^8.3.5",
+    "vitest": "^5.0.5",
     "void": "^1.2.1"
   }
 }
