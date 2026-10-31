@@ -59,6 +59,7 @@ pub use tray::{
 
 use crate::{
     capture_choice::CaptureTarget,
+    generation::{Generation, Token},
     heap,
     hotkeys::{HotkeyKind, QUIT_HOTKEY, hotkeys, print_screen_hotkey},
     main_window::{MainWindow, Page},
@@ -129,10 +130,10 @@ struct State {
     /// and saved waits for it, in `next`.
     busy: Cell<Busy>,
     next: Cell<Option<(Start, Option<Duration>)>>,
-    /// The thumbnail on screen, and a count that tells its handler whether
-    /// a newer one has replaced it.
+    /// The thumbnail on screen, and its showings, which tell its handler
+    /// whether a newer one has replaced it.
     thumbnail: RefCell<Option<popup::Popup>>,
-    thumbnail_generation: Cell<u64>,
+    thumbnails: RefCell<Generation>,
     /// The recording in progress, if any.
     recording: RefCell<Option<Recording>>,
     /// The live stream in progress, if any.
@@ -142,9 +143,9 @@ struct State {
     followed: RefCell<Option<Followed>>,
     /// The take a restart replaced, kept until its undo window closes.
     previous_take: RefCell<Option<PreviousTake>>,
-    /// Counts undo windows, so a timer knows whether its window is still
-    /// the current one.
-    undo_generation: Cell<u64>,
+    /// The undo windows opened, so a timer knows whether its window is
+    /// still the one open.
+    undo_windows: RefCell<Generation>,
     /// While a hotkey field records: what it does with Print Screen.
     print_screen: RefCell<Option<OnPrintScreen>>,
 }
@@ -266,11 +267,9 @@ impl State {
         hotkeys(&self.settings.borrow(), recording.is_some(), undo)
     }
 
-    /// A new undo window's number.
-    fn next_generation(&self) -> u64 {
-        let generation = self.undo_generation.get() + 1;
-        self.undo_generation.set(generation);
-        generation
+    /// Open a new undo window, closing any before it.
+    fn new_undo_window(&self) -> Token {
+        self.undo_windows.borrow_mut().start()
     }
 }
 
@@ -323,12 +322,12 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         busy: Cell::new(Busy::Idle),
         next: Cell::new(None),
         thumbnail: RefCell::new(None),
-        thumbnail_generation: Cell::new(0),
+        thumbnails: RefCell::default(),
         recording: RefCell::new(None),
         streaming: RefCell::new(None),
         followed: RefCell::new(None),
         previous_take: RefCell::new(None),
-        undo_generation: Cell::new(0),
+        undo_windows: RefCell::default(),
         print_screen: RefCell::new(None),
     });
     watch_for_updates(&state, cx);
