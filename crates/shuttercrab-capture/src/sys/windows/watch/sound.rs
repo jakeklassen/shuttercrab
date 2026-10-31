@@ -6,10 +6,10 @@
 //! so the sound never falls further behind. Where it has got to playing is
 //! the player's clock.
 
-use super::{choose_output, drain, feed, lock};
+use super::{choose_output, drain, feed};
 use crate::live::{LiveFrame, SoundCodec};
 use crate::sys::imp::clock::{self, TICKS_PER_SECOND};
-use crate::sys::imp::com::ComApartment;
+use crate::sys::imp::{com::ComApartment, lock};
 use anyhow::{Context, Result};
 use std::{
     collections::VecDeque,
