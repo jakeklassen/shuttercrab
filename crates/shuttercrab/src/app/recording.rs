@@ -5,7 +5,7 @@
 use super::{
     State,
     failure::Failure,
-    screenshot::{exclude_from_capture, monitor_info, select},
+    screenshot::{Choosing, exclude_from_capture, monitor_info, select},
     windows::show_recording_in_main,
 };
 use crate::{
@@ -495,7 +495,7 @@ pub(super) async fn choose_area(
         _ => Mode::Area,
     };
     let first = state.capture.freeze_monitor(monitor, false).await?;
-    let (frozen, event) = select(state, first, false, mode, true, pressed, cx).await?;
+    let (frozen, event) = select(state, first, Choosing::Recording, mode, pressed, cx).await?;
     let (region, window) = match event {
         OverlayEvent::Selected(rect) => (Some(rect), None),
         OverlayEvent::Display => (None, None),
