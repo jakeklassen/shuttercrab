@@ -1,10 +1,16 @@
-//! What Shuttercrab's helper processes share. Recording and streaming each
-//! run in a short-lived copy of `shuttercrab.exe`, started with a flag of
-//! their own (see `recorder_process` and `stream_process`).
+//! Shuttercrab's helper processes, and what they share. Recording and
+//! streaming each run in a short-lived copy of `shuttercrab.exe`, started
+//! with a flag of their own: [`recorder`] (`--recorder`) and [`streamer`]
+//! (`--streamer`). The [`viewer`] (`--watch`) is one too, but does not
+//! talk to the app.
 //!
 //! The app and a helper talk in JSON lines: requests go to the helper's
 //! standard input and replies come back on its standard output. The
 //! helper's log lines come over standard error and go into the app's log.
+
+pub mod recorder;
+pub mod streamer;
+pub mod viewer;
 
 use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};

@@ -15,8 +15,8 @@ use super::{
 };
 use crate::{
     markup::Region,
-    palette::{border, coral, muted},
     shot_view::Xy,
+    ui::palette::{border, coral, muted},
 };
 use gpui_kit::{
     AnyElement, App, ClickEvent, Context, CursorStyle, InteractiveElement as _, IntoElement,
@@ -450,7 +450,7 @@ impl MainWindow {
             .justify_center()
             .size(px(40.))
             .rounded_md()
-            .hover(|s| s.bg(crate::palette::hover()))
+            .hover(|s| s.bg(crate::ui::palette::hover()))
             .cursor_pointer()
             .on_mouse_down(MouseButton::Left, |_, _, cx| cx.stop_propagation())
             .on_click(cx.listener(|this, _: &ClickEvent, window, cx| this.start_crop(window, cx)))

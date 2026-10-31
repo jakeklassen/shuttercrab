@@ -62,11 +62,11 @@ use crate::{
     generation::{Generation, Token},
     heap,
     hotkeys::{HotkeyKind, QUIT_HOTKEY, hotkeys, print_screen_hotkey},
-    main_window::{MainWindow, Page},
-    popup,
-    record_bar::Destructive,
     settings::{self, Settings},
-    settings_window::OnPrintScreen,
+    ui::main_window::{MainWindow, Page},
+    ui::popup,
+    ui::record_bar::Destructive,
+    ui::settings_window::OnPrintScreen,
     update::{self, UpdateBackend},
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};

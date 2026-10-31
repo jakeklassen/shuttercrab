@@ -9,8 +9,8 @@
 
 use crate::{
     hotkeys::HotkeyKind,
-    palette::{coral, muted},
     settings::{KeyPaste, Settings},
+    ui::palette::{coral, muted},
 };
 use futures::future::LocalBoxFuture;
 use gpui_kit::{
@@ -992,7 +992,7 @@ impl SettingsPage {
 }
 
 /// The Fluent Emoji licence, which asks to travel with the art.
-const FLUENT_EMOJI_LICENSE: &str = include_str!("../assets/emoji/LICENSE");
+const FLUENT_EMOJI_LICENSE: &str = include_str!("../../assets/emoji/LICENSE");
 
 /// The Notices page: what Shuttercrab includes of others' work, with the
 /// licences that ask to be shown.

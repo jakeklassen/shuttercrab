@@ -8,12 +8,12 @@ use super::{
 };
 use crate::{
     app::{State, screenshot::exclude_from_capture},
-    popup::{self, Activation},
-    record_bar::{
+    recording::{self, Clock},
+    ui::popup::{self, Activation},
+    ui::record_bar::{
         Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent, RecordKeys,
         STREAM_BAR_WIDTH, Sound,
     },
-    recording::{self, Clock},
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{AppContext as _, AsyncApp, Entity};

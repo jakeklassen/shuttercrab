@@ -36,13 +36,13 @@ pub(super) use window_changes::window_changed;
 use super::{State, failure::Failure, screenshot::exclude_from_capture};
 use crate::{
     capture_choice::CaptureTarget,
-    countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
     files,
     generation::Generation,
-    popup::{self, Activation},
-    record_bar::{BarMode, RecordBar, RecordBarEvent},
-    recorder_process::RecorderProcess,
+    helpers::recorder::RecorderProcess,
     recording::{self, Clock},
+    ui::countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
+    ui::popup::{self, Activation},
+    ui::record_bar::{BarMode, RecordBar, RecordBarEvent},
 };
 use border::BORDER_PAUSED;
 use chrono::{Local, NaiveDateTime};

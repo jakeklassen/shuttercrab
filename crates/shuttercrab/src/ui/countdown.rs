@@ -3,7 +3,7 @@
 //! at once, Escape cancels. It is excluded from capture and gone before the
 //! first frame.
 
-use crate::palette::{border, muted, surface};
+use crate::ui::palette::{border, muted, surface};
 use gpui_kit::{
     Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement, KeyDownEvent,
     ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,

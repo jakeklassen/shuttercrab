@@ -4,11 +4,10 @@
 
 use super::{State, failure::Failure, screenshot::exclude_from_capture, windows::show_in_main};
 use crate::{
-    files,
-    main_window::Shot,
-    pixels,
-    popup::{self, Activation},
-    thumbnail::{self, Thumbnail, ThumbnailEvent},
+    files, pixels,
+    ui::main_window::Shot,
+    ui::popup::{self, Activation},
+    ui::thumbnail::{self, Thumbnail, ThumbnailEvent},
 };
 use chrono::NaiveDateTime;
 use futures::StreamExt as _;

@@ -18,11 +18,11 @@ use super::{
     selection::Placing,
 };
 use crate::{
-    cursors,
     markup::{Mark, Redaction},
-    palette::{border, coral, hover, muted, tile},
     shot_view::Xy,
     text::{self, Finds, Rect, Span, Step, Text, WordAt},
+    ui::cursors,
+    ui::palette::{border, coral, hover, muted, tile},
 };
 use gpui_kit::{
     AnyElement, ClickEvent, Context, CursorStyle, Div, Hsla, InteractiveElement as _, IntoElement,

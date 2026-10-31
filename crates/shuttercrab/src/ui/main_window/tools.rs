@@ -10,7 +10,7 @@
 use super::MainWindow;
 use crate::{
     markup::{Brush, Rgb, Tool},
-    palette::{border, coral, hover, muted, tile},
+    ui::palette::{border, coral, hover, muted, tile},
 };
 use gpui_kit::{
     AppContext as _, ClickEvent, Context, Entity, Hsla, InteractiveElement as _, IntoElement,

@@ -12,10 +12,10 @@
 use super::{Cleared, FOOTER_HEIGHT, MainWindow, TOOLBAR_HEIGHT};
 use crate::{
     generation::{Generation, Token},
-    palette::{border, coral, hover, muted},
     pixels,
     playback::{Command, PlayerLink, Update},
     shot_view::{MARGIN, Xy},
+    ui::palette::{border, coral, hover, muted},
 };
 use futures::StreamExt as _;
 use gpui_kit::{

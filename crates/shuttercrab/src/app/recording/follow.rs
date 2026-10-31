@@ -2,7 +2,7 @@
 //! what waits before its recording starts is known, to cancel if it closes.
 
 use super::Border;
-use crate::{app::State, countdown::Countdown, record_bar::RecordBar, recording};
+use crate::{app::State, recording, ui::countdown::Countdown, ui::record_bar::RecordBar};
 use gpui_kit::Entity;
 use shuttercrab_capture::PhysicalRect;
 use shuttercrab_platform::{frame::NO_EDGE, window as platform_window};

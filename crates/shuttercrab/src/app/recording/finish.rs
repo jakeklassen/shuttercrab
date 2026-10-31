@@ -5,7 +5,7 @@ use super::{stop_following, takes::stop_asking};
 use crate::{
     app::{State, failure::Failure, windows::show_recording_in_main},
     files, heap,
-    recorder_process::RecorderProcess,
+    helpers::recorder::RecorderProcess,
     recording,
 };
 use gpui_kit::AsyncApp;

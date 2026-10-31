@@ -9,11 +9,11 @@ use gpui_kit::{
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
-    main_window::{HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, SHOT_MIN_WIDTH, Shot},
     playback::{Command, PlayerLink, Update},
     settings::Settings,
-    settings_window::{Diagnostics, SettingsHooks},
     text::{Line, Rect, Text, Word},
+    ui::main_window::{HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, SHOT_MIN_WIDTH, Shot},
+    ui::settings_window::{Diagnostics, SettingsHooks},
 };
 use shuttercrab_types::PhysicalRect;
 use std::{
@@ -362,7 +362,7 @@ fn stream_says_what_comes_next_and_where_the_host_key_goes(cx: &mut TestAppConte
 #[gpui_kit::test]
 fn paste_key_in_the_settings_says_what_it_did(cx: &mut TestAppContext) {
     // The test window keeps its size: the settings' own, to see the buttons.
-    let opened = open_sized(cx, shuttercrab::main_window::SETTINGS_SIZE);
+    let opened = open_sized(cx, shuttercrab::ui::main_window::SETTINGS_SIZE);
     press(cx, &opened, &["l"]);
     update(cx, &opened, |window, cx| {
         window.click("streaming-settings", cx)
@@ -1014,7 +1014,7 @@ fn drag_at(cx: &mut TestAppContext, opened: &Opened, dy: f32, x0: f32, x1: f32) 
 
 #[gpui_kit::test]
 fn the_eraser_takes_whole_marks_and_erase_all_takes_every_one(cx: &mut TestAppContext) {
-    use shuttercrab::main_window::Hand;
+    use shuttercrab::ui::main_window::Hand;
     let opened = open_sized(cx, shot_size());
     update(cx, &opened, |window, cx| {
         opened
@@ -1065,8 +1065,8 @@ fn the_eraser_takes_whole_marks_and_erase_all_takes_every_one(cx: &mut TestAppCo
 #[gpui_kit::test]
 fn the_shapes_tool_draws_a_shape_with_a_drag_and_nothing_with_a_click(cx: &mut TestAppContext) {
     use shuttercrab::{
-        main_window::Hand,
         markup::{Ink, ShapeKind, ShapeStyle},
+        ui::main_window::Hand,
     };
     let opened = open_sized(cx, shot_size());
     update(cx, &opened, |window, cx| {
@@ -1236,7 +1236,7 @@ fn a_new_shape_stays_picked_up_for_keys_to_move_resize_turn_and_delete(cx: &mut 
 
 #[gpui_kit::test]
 fn select_picks_up_a_shape_to_move_recolour_and_turn_from_its_menu(cx: &mut TestAppContext) {
-    use shuttercrab::{main_window::Hand, markup::SHAPE_COLORS};
+    use shuttercrab::{markup::SHAPE_COLORS, ui::main_window::Hand};
     let opened = open_sized(cx, shot_size());
     update(cx, &opened, |window, cx| {
         opened

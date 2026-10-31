@@ -9,9 +9,9 @@ use crate::{
     app::{State, failure::Failure},
     files,
     generation::Token,
-    record_bar::{BarMode, Destructive, RecordBar},
-    recorder_process::RecorderProcess,
+    helpers::recorder::RecorderProcess,
     recording::{self, Clock},
+    ui::record_bar::{BarMode, Destructive, RecordBar},
 };
 use chrono::Local;
 use gpui_kit::{AsyncApp, Entity};

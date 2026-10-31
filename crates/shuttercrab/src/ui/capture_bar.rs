@@ -6,7 +6,7 @@
 
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget, WATCH_KEY, WATCH_LABEL},
-    palette::{accent, border, hover, muted, recording, surface, tile},
+    ui::palette::{accent, border, hover, muted, recording, surface, tile},
 };
 use gpui_kit::{
     ClickEvent, Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,

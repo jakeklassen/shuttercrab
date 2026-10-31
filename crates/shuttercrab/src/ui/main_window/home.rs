@@ -5,8 +5,8 @@
 use super::{ButtonFace, Cleared, MainWindow, Page};
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget, WATCH_KEY},
-    palette::{border, coral, hover, muted, recording, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES},
+    ui::palette::{border, coral, hover, muted, recording, tile},
 };
 use gpui_kit::{
     ClickEvent, Context, Hsla, InteractiveElement as _, IntoElement, MouseButton, MouseDownEvent,

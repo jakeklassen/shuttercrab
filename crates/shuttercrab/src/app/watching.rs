@@ -8,8 +8,8 @@ use super::{
     screenshot::{exclude_from_capture, monitor_info},
 };
 use crate::{
-    popup::{self, Activation},
-    watch_box::{WATCH_BOX_HEIGHT, WATCH_BOX_WIDTH, WatchBox, WatchBoxEvent},
+    ui::popup::{self, Activation},
+    ui::watch_box::{WATCH_BOX_HEIGHT, WATCH_BOX_WIDTH, WatchBox, WatchBoxEvent},
 };
 use futures::StreamExt as _;
 use gpui_kit::{AppContext as _, AsyncApp};
@@ -28,7 +28,7 @@ pub(super) async fn open_watch_box(
     let on_clipboard = cx
         .update(|cx| cx.read_from_clipboard())
         .and_then(|item| item.text())
-        .filter(|text| crate::watch::is_link(text))
+        .filter(|text| crate::helpers::viewer::is_link(text))
         .map(|text| text.trim().to_string());
     let (b, scale) = (info.bounds, info.scale_factor);
     let (w, h) = (
@@ -54,7 +54,7 @@ pub(super) async fn open_watch_box(
     match event {
         WatchBoxEvent::Watch(link) => {
             log::info!("watching a stream");
-            crate::watch::open(&link)
+            crate::helpers::viewer::open(&link)
                 .map_err(|e| Failure::new("Could not open the viewer.", format!("{e:#}")))
         }
         WatchBoxEvent::Cancel => Ok(()),

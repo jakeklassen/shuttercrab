@@ -2,7 +2,7 @@
 //! into. Enter opens the viewer, Escape closes the box. A link already on
 //! the clipboard is filled in, so most often Enter is all it takes.
 
-use crate::palette::{border, muted, recording, surface};
+use crate::ui::palette::{border, muted, recording, surface};
 use gpui_kit::{
     AppContext as _, Context, Entity, EventEmitter, FocusHandle, InteractiveElement as _,
     IntoElement, KeyDownEvent, ParentElement as _, Render, Role, SharedString,
@@ -68,7 +68,7 @@ impl WatchBox {
 
     fn submit(&mut self, cx: &mut Context<Self>) {
         let text = self.input.read(cx).value();
-        if crate::watch::is_link(&text) {
+        if crate::helpers::viewer::is_link(&text) {
             cx.emit(WatchBoxEvent::Watch(text.trim().to_string()));
         } else {
             self.error = Some("That is not a stream link: they start shuttercrab://watch/".into());

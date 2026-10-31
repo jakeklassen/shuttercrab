@@ -11,10 +11,10 @@
 //! with the pointer highlights anything. A drag let go of over another
 //! monitor ends on its own monitor, at the point nearest the pointer.
 
-use crate::palette::accent;
 use crate::selection::{
     Drag, ScreenWindow, Snapping, Stuck, dimensions, snap, to_logical, window_at,
 };
+use crate::ui::palette::accent;
 use gpui_kit::{
     Bounds, Context, CursorStyle, DispatchPhase, EventEmitter, FocusHandle, Hsla,
     InteractiveElement as _, IntoElement, KeyDownEvent, MouseButton, MouseDownEvent,

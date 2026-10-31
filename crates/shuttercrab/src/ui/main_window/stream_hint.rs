@@ -6,8 +6,8 @@
 use super::{ButtonFace, MainWindow, Page};
 use crate::{
     capture_choice::CaptureMode,
-    palette::{border, coral, hover, muted, tile},
-    settings_window::HostKeyNote,
+    ui::palette::{border, coral, hover, muted, tile},
+    ui::settings_window::HostKeyNote,
 };
 use gpui_kit::{
     App, ClickEvent, Context, Div, InteractiveElement as _, IntoElement, ParentElement as _, Role,

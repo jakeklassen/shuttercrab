@@ -1,16 +1,16 @@
 //! Streaming in a helper process (issue #66), as recording is (see
-//! `recorder_process`): `shuttercrab.exe` started with [`FLAG`] opens a
+//! [`super::recorder`]): `shuttercrab.exe` started with [`FLAG`] opens a
 //! room on the meeting point, says the link to share, waits for a viewer,
 //! and streams to it until asked to stop or the viewer leaves. The
 //! hardware encoder's memory goes with the helper, and the app never waits
 //! on the network.
 //!
 //! The two talk in JSON lines, as the recording helper does (see
-//! `helper_process`): `Request`s in on standard input, `Reply`s out on
+//! [`super`]): `Request`s in on standard input, `Reply`s out on
 //! standard output, the log on standard error. If the app goes away, the
 //! helper's input ends and it stops.
 
-use crate::helper_process::{Helper, HelperProcess, Options};
+use crate::helpers::{Helper, HelperProcess, Options};
 use anyhow::{Result, anyhow};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde::{Deserialize, Serialize};
@@ -215,7 +215,7 @@ pub use helper::serve;
 #[cfg(windows)]
 mod helper {
     use super::{Reply, Request, Stats};
-    use crate::helper_process::{first_request, log_to_app, read_requests, send};
+    use crate::helpers::{first_request, log_to_app, read_requests, send};
     use shuttercrab_capture::{
         live::{SoundCodec, VideoCodec},
         record::{RecordOptions, Source},
