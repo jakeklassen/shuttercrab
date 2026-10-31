@@ -5,41 +5,7 @@
 use crate::shape;
 use std::{fmt, sync::Arc};
 
-/// A rectangle in physical pixels. Monitor bounds are in virtual-desktop
-/// coordinates; a screenshot region is relative to its monitor's top-left.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct PhysicalRect {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-impl PhysicalRect {
-    pub fn new(x: i32, y: i32, width: u32, height: u32) -> Self {
-        Self {
-            x,
-            y,
-            width,
-            height,
-        }
-    }
-
-    pub fn is_empty(&self) -> bool {
-        self.width == 0 || self.height == 0
-    }
-
-    /// The part of `self` inside `0..width` × `0..height`.
-    pub fn clamp_to(&self, width: u32, height: u32) -> PhysicalRect {
-        let x0 = self.x.clamp(0, width as i32);
-        let y0 = self.y.clamp(0, height as i32);
-        let x1 = (self.x + self.width as i32).clamp(0, width as i32);
-        let y1 = (self.y + self.height as i32).clamp(0, height as i32);
-        PhysicalRect::new(x0, y0, (x1 - x0) as u32, (y1 - y0) as u32)
-    }
-}
-
-pub use shuttercrab_types::{MonitorId, WindowId};
+pub use shuttercrab_types::{MonitorId, PhysicalRect, WindowId};
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct MonitorInfo {
