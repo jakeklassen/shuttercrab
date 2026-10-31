@@ -5,9 +5,9 @@
 
 use crate::icons::Icons;
 use gpui_kit::{AssetSource as _, assets::IconName};
+use resvg::tiny_skia::{Pixmap, Transform};
 use shuttercrab_platform::cursor::Cursor;
 use std::{cell::RefCell, collections::HashMap};
-use tiny_skia::{Pixmap, Transform};
 
 /// A hand, open over a screenshot that can move, closed while moving it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]

@@ -7,6 +7,9 @@
 
 use super::demultiply;
 use serde::{Deserialize, Serialize};
+// resvg draws on its own tiny-skia, which may not be the one the screenshot
+// is drawn with: emoji are drawn on resvg's and copied across.
+use resvg::tiny_skia as svg;
 use tiny_skia::{IntSize, Pixmap, PixmapPaint, Transform};
 
 /// One of the emoji, in the picker's order: Snipping Tool's.
@@ -115,9 +118,9 @@ impl Emoji {
 
 /// How an emoji `side` pixels square, turned `angle` degrees clockwise
 /// about its middle, maps from its art onto a square around (0, 0).
-fn placement(tree: &resvg::usvg::Tree, side: f32, angle: f32) -> Transform {
+fn placement(tree: &resvg::usvg::Tree, side: f32, angle: f32) -> svg::Transform {
     let size = tree.size();
-    Transform::from_rotate(angle)
+    svg::Transform::from_rotate(angle)
         .pre_translate(-side / 2., -side / 2.)
         .pre_scale(side / size.width(), side / size.height())
 }
@@ -147,16 +150,22 @@ pub(super) fn paint(
         (center.1 + shift.ty - reach).floor(),
     );
     let span = (2. * reach) as u32 + 2;
-    let Some(mut art) = Pixmap::new(span, span) else {
+    let Some(mut drawn) = svg::Pixmap::new(span, span) else {
         return;
     };
     let tree = emoji.tree();
-    let at = Transform::from_translate(center.0 + shift.tx - x, center.1 + shift.ty - y);
+    let at = svg::Transform::from_translate(center.0 + shift.tx - x, center.1 + shift.ty - y);
     resvg::render(
         &tree,
         at.pre_concat(placement(&tree, side, angle)),
-        &mut art.as_mut(),
+        &mut drawn.as_mut(),
     );
+    // Both keep premultiplied RGBA, row after row.
+    let Some(mut art) =
+        IntSize::from_wh(span, span).and_then(|size| Pixmap::from_vec(drawn.take(), size))
+    else {
+        return;
+    };
     if bgr {
         for px in art.data_mut().as_chunks_mut::<4>().0 {
             px.swap(0, 2);
@@ -177,10 +186,9 @@ pub(super) fn paint(
 /// that square's side.
 pub fn image(emoji: Emoji, side: f32, angle: f32) -> (Vec<u8>, u32) {
     let span = (2. * reach(side, angle)).ceil().max(1.) as u32;
-    let size = IntSize::from_wh(span, span).expect("an emoji has a size");
-    let mut art = Pixmap::new(size.width(), size.height()).expect("an emoji has a size");
+    let mut art = svg::Pixmap::new(span, span).expect("an emoji has a size");
     let tree = emoji.tree();
-    let at = Transform::from_translate(span as f32 / 2., span as f32 / 2.);
+    let at = svg::Transform::from_translate(span as f32 / 2., span as f32 / 2.);
     resvg::render(
         &tree,
         at.pre_concat(placement(&tree, side, angle)),
