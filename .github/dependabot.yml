@@ -1,6 +1,7 @@
-# Weekly dependency updates, grouped so each ecosystem opens at most a pull
-# request or two a week: one for the minor and patch updates together, one
-# for the major ones. Security updates still come as they are published.
+# Weekly dependency updates. Minor and patch updates come together in one
+# pull request; each major update comes on its own, so they are taken one at
+# a time and one that cannot go yet holds back no other. Security updates
+# still come as they are published.
 
 version: 2
 updates:
@@ -8,14 +9,16 @@ updates:
     directory: /
     schedule:
       interval: weekly
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 10
     commit-message:
       prefix: chore
       include: scope
     groups:
       cargo:
         update-types: [minor, patch]
-      cargo-major:
+      # windows-rs's crates only work at one version together.
+      windows-rs:
+        patterns: ["windows", "windows-*"]
         update-types: [major]
 
   # The meeting point's Worker.
@@ -23,15 +26,13 @@ updates:
     directory: /meet
     schedule:
       interval: weekly
-    open-pull-requests-limit: 2
+    open-pull-requests-limit: 10
     commit-message:
       prefix: chore
       include: scope
     groups:
       meet:
         update-types: [minor, patch]
-      meet-major:
-        update-types: [major]
 
   - package-ecosystem: github-actions
     directory: /
