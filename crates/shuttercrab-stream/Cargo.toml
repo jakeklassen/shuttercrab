@@ -9,6 +9,7 @@ license.workspace = true
 
 [dependencies]
 anyhow = "1"
+futures = "0.3"
 log = "0.4"
 serde = { version = "1", features = ["derive"] }
 shuttercrab-capture = { path = "../shuttercrab-capture" }

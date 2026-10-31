@@ -135,6 +135,9 @@ pub struct Stream {
     viewer: Viewer,
     quality: Quality,
     recorder: Option<Recorder>,
+    /// Set when the current recorder has ended by itself: the window
+    /// closed, the graphics driver reset, or it failed.
+    recorder_ended: Arc<AtomicBool>,
     gone: Arc<AtomicBool>,
     sent: Arc<Mutex<Sent>>,
     started: Instant,
@@ -187,12 +190,13 @@ impl Stream {
             viewer,
             quality,
             recorder: None,
+            recorder_ended: Arc::default(),
             gone: Arc::new(AtomicBool::new(false)),
             sent: Arc::new(Mutex::new(Sent::default())),
             started: now,
             last: (now, 0, 0),
         };
-        stream.recorder = Some(stream.record()?);
+        stream.record()?;
         Ok(stream)
     }
 
@@ -210,18 +214,24 @@ impl Stream {
         self.gone.load(Ordering::Relaxed)
     }
 
+    /// Whether the recording has ended by itself, with nothing more to
+    /// send: [`Stream::stop`] says why.
+    pub fn recorder_ended(&self) -> bool {
+        self.recorder_ended.load(Ordering::Relaxed)
+    }
+
     /// The viewer.
     pub fn viewer(&self) -> &Viewer {
         &self.viewer
     }
 
-    /// A recorder at the quality now. A new one's timeline starts again at
-    /// zero: its frames are moved to now on the stream's, so the viewer's
-    /// clock runs on.
-    fn record(&self) -> Result<Recorder> {
+    /// Start a recorder at the quality now. A new one's timeline starts
+    /// again at zero: its frames are moved to now on the stream's, so the
+    /// viewer's clock runs on.
+    fn record(&mut self) -> Result<()> {
         let size = self.quality.size(self.source.0, self.source.1);
         let offset = (self.started.elapsed().as_nanos() / 100) as i64;
-        Recorder::start_live(
+        let mut recorder = Recorder::start_live(
             self.options.clone(),
             Live {
                 sink: self.sink(offset),
@@ -230,7 +240,22 @@ impl Stream {
                 size: Some(size),
                 bitrate: Some(self.quality.bitrate()),
             },
-        )
+        )?;
+        // Each recorder has a flag of its own: one stopped to switch
+        // quality ends too, but not by itself.
+        let ended = Arc::new(AtomicBool::new(false));
+        if let Some(future) = recorder.ended() {
+            let flag = ended.clone();
+            std::thread::Builder::new()
+                .name("recorder ended".into())
+                .spawn(move || {
+                    futures::executor::block_on(future);
+                    flag.store(true, Ordering::Relaxed);
+                })?;
+        }
+        self.recorder = Some(recorder);
+        self.recorder_ended = ended;
+        Ok(())
     }
 
     /// Switch to `quality`: the recorder starts again at its size, and the
@@ -239,12 +264,13 @@ impl Stream {
         if quality == self.quality {
             return Ok(());
         }
+        // Forget the old flag first: the old recorder's stop sets it.
+        self.recorder_ended = Arc::default();
         if let Some(recorder) = self.recorder.take() {
             recorder.stop()?;
         }
         self.quality = quality;
-        self.recorder = Some(self.record()?);
-        Ok(())
+        self.record()
     }
 
     /// Switch a sound source on or off; see [`Recorder::set_sound`].

@@ -369,14 +369,15 @@ mod helper {
         }
     }
 
-    /// Stream until asked to stop or the viewer leaves, with a status a
-    /// second: why it ended.
+    /// Stream until asked to stop, the viewer leaves or the recording ends
+    /// by itself, with a status a second: why it ended.
     fn run(mut stream: Stream, rx: &mpsc::Receiver<Next>, out: &mut Stdout) -> String {
+        // None: the recording ended by itself, and stopping it says why.
         let why = loop {
             match rx.recv_timeout(Duration::from_secs(1)) {
                 Ok(Next::Asked(Request::Quality(q))) => {
                     if let Err(e) = stream.set_quality(q) {
-                        break format!("Could not switch to {}: {e:#}", q.name());
+                        break Some(format!("Could not switch to {}: {e:#}", q.name()));
                     }
                 }
                 Ok(Next::Asked(Request::SetSound { microphone, on })) => {
@@ -388,12 +389,15 @@ mod helper {
                     stream.set_sound(source, on);
                 }
                 Ok(Next::Asked(Request::Stop)) | Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    break "Stopped.".to_string();
+                    break Some("Stopped.".to_string());
                 }
                 Ok(Next::Asked(Request::Start(_)) | Next::Came(_)) => {}
                 Err(mpsc::RecvTimeoutError::Timeout) => {
                     if stream.gone() {
-                        break "The viewer left.".to_string();
+                        break Some("The viewer left.".to_string());
+                    }
+                    if stream.recorder_ended() {
+                        break None;
                     }
                     let s = stream.stats();
                     let stats = Stats {
@@ -404,18 +408,25 @@ mod helper {
                         lost_percent: s.lost,
                     };
                     if send(out, &Reply::Stats(stats)).is_err() {
-                        break "Stopped.".to_string();
+                        break Some("Stopped.".to_string());
                     }
                 }
             }
         };
-        log::info!(
-            "stream over after {:.0} s: {why}",
-            stream.elapsed().as_secs_f64()
-        );
-        if let Err(e) = stream.stop() {
+        let elapsed = stream.elapsed();
+        let stopped = stream.stop();
+        if let Err(e) = &stopped {
             log::warn!("the recorder did not stop cleanly: {e:#}");
         }
+        let why = why.unwrap_or_else(|| match stopped {
+            Ok(Some(summary)) => match summary.interrupted {
+                Some(why) => format!("The stream stopped: {}.", why.describe()),
+                None => "The stream stopped.".to_string(),
+            },
+            Ok(None) => "The stream stopped.".to_string(),
+            Err(e) => format!("The stream stopped: {e:#}"),
+        });
+        log::info!("stream over after {:.0} s: {why}", elapsed.as_secs_f64());
         why
     }
 }

@@ -6743,6 +6743,7 @@ name = "shuttercrab-stream"
 version = "0.1.32"
 dependencies = [
  "anyhow",
+ "futures",
  "log",
  "serde",
  "shuttercrab-capture",
