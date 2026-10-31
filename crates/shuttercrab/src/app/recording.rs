@@ -12,7 +12,9 @@ use crate::{
     capture_choice::CaptureTarget,
     choice_menu::{CHOICE_MENU_WIDTH, ChoiceMenu, ChoiceMenuEvent, choice_menu_height},
     countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
-    files, heap,
+    files,
+    generation::{Generation, Token},
+    heap,
     overlay::{Mode, OverlayEvent},
     popup::{self, Activation},
     record_bar::{
@@ -96,10 +98,10 @@ pub(super) struct Recording {
     border: Border,
     /// Minimising or hiding the recorded window paused the recording;
     /// showing it again resumes it.
-    paused_by_minimise: bool,
-    /// How often the window went out of sight, so a resume waiting for a
+    paused_out_of_sight: bool,
+    /// Each time the window goes out of sight, so a resume waiting for a
     /// restored window to settle knows if it went again.
-    minimises: u64,
+    hidings: Generation,
 }
 
 /// The dashed border, shared with what moves it after a recorded window.
@@ -449,8 +451,8 @@ pub(super) async fn record(
         discarded: None,
         border,
         app_process,
-        paused_by_minimise: false,
-        minimises: 0,
+        paused_out_of_sight: false,
+        hidings: Generation::default(),
     };
     begin(state, recording, requests, cx);
     if let Some(following) = following {
@@ -1055,7 +1057,7 @@ pub(super) fn toggle_pause(state: &State, cx: &mut AsyncApp) {
         let paused = !recording.clock.get().is_paused();
         recording.set_paused(paused);
         // Resumed by hand while minimised: restoring has nothing to do.
-        recording.paused_by_minimise = false;
+        recording.paused_out_of_sight = false;
         let clock = recording.clock.get();
         if paused {
             log::info!(
@@ -1093,9 +1095,9 @@ pub(super) fn window_changed(state: &Rc<State>, change: WindowChange, cx: &mut A
                 recorder.show_cursor(change == WindowChange::DragEnded);
             }
         }
-        WindowChange::Minimized => out_of_sight(state, Some("the window is minimised"), cx),
-        WindowChange::Hidden => out_of_sight(state, Some("the window is hidden"), cx),
-        WindowChange::Restored => out_of_sight(state, None, cx),
+        WindowChange::Minimized => out_of_sight(state, "the window is minimised", cx),
+        WindowChange::Hidden => out_of_sight(state, "the window is hidden", cx),
+        WindowChange::Restored => back_in_sight(state, cx),
         WindowChange::Closed => window_closed(state, cx),
     }
 }
@@ -1135,40 +1137,25 @@ fn window_closed(state: &State, cx: &mut AsyncApp) {
 const RESTORE_SETTLE: Duration = Duration::from_millis(300);
 
 /// Pause while the recorded window is out of sight (`why` says how):
-/// Windows draws nothing of it meanwhile. Showing it again (`None`)
-/// resumes once it has drawn itself again, unless the recording was paused
-/// by hand before.
-fn out_of_sight(state: &Rc<State>, why: Option<&'static str>, cx: &mut AsyncApp) {
-    let Some(why) = why else {
-        let minimises = match state.recording.borrow().as_ref() {
-            Some(r) if r.paused_by_minimise => r.minimises,
-            _ => return,
-        };
-        let state = state.clone();
-        cx.spawn(async move |cx| {
-            cx.background_executor().timer(RESTORE_SETTLE).await;
-            resume_restored(&state, minimises, cx);
-        })
-        .detach();
-        return;
-    };
+/// Windows draws nothing of it meanwhile.
+fn out_of_sight(state: &State, why: &'static str, cx: &mut AsyncApp) {
     let view = {
         let mut slot = state.recording.borrow_mut();
         let Some(recording) = slot.as_mut() else {
             return;
         };
         // A resume still waiting for an earlier restore does not happen.
-        recording.minimises += 1;
+        recording.hidings.start();
         // A question or a discard has paused it already.
         if recording.asking.is_some() || recording.discarded.is_some() {
             return;
         }
         // Minimised, then hidden, say: still paused, for the new reason.
-        if !recording.paused_by_minimise {
+        if !recording.paused_out_of_sight {
             if !recording.set_paused(true) {
                 return;
             }
-            recording.paused_by_minimise = true;
+            recording.paused_out_of_sight = true;
         }
         log::info!("{why}; recording paused");
         recording.view()
@@ -1177,18 +1164,33 @@ fn out_of_sight(state: &Rc<State>, why: Option<&'static str>, cx: &mut AsyncApp)
     state.refresh_tray_menu();
 }
 
-/// Resume after the window was restored, if it was not minimised again
-/// since (the `minimises` count says) and the minimise still has it paused.
-fn resume_restored(state: &State, minimises: u64, cx: &mut AsyncApp) {
+/// The recorded window is shown again: resume once it has drawn itself
+/// again, unless the recording was paused by hand before.
+fn back_in_sight(state: &Rc<State>, cx: &mut AsyncApp) {
+    let hiding = match state.recording.borrow().as_ref() {
+        Some(r) if r.paused_out_of_sight => r.hidings.current(),
+        _ => return,
+    };
+    let state = state.clone();
+    cx.spawn(async move |cx| {
+        cx.background_executor().timer(RESTORE_SETTLE).await;
+        resume_restored(&state, hiding, cx);
+    })
+    .detach();
+}
+
+/// Resume after the window was restored, if it did not go out of sight
+/// again since (`hiding` is still current) and that still has it paused.
+fn resume_restored(state: &State, hiding: Token, cx: &mut AsyncApp) {
     let view = {
         let mut slot = state.recording.borrow_mut();
         let Some(recording) = slot.as_mut() else {
             return;
         };
-        if recording.minimises != minimises
+        if !recording.hidings.is_current(hiding)
             || recording.asking.is_some()
             || recording.discarded.is_some()
-            || !std::mem::take(&mut recording.paused_by_minimise)
+            || !std::mem::take(&mut recording.paused_out_of_sight)
         {
             return;
         }
