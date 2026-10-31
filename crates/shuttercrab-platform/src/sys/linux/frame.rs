@@ -8,8 +8,9 @@
 //! inside the area (where it meets its monitor's edge) is not shown.
 
 use super::window::{X11, x11};
-use crate::frame::{FrameStyle, Rect, strips};
+use crate::frame::{FrameStyle, strips};
 use anyhow::{Context, Result, anyhow, ensure};
+use shuttercrab_types::PhysicalRect;
 use shuttercrab_types::WindowId;
 use x11rb::{
     COPY_DEPTH_FROM_PARENT, COPY_FROM_PARENT,
@@ -25,7 +26,7 @@ use x11rb::{
 
 /// The border on screen. Dropping it removes it.
 pub struct Frame {
-    strips: Vec<(Rect, Window)>,
+    strips: Vec<(PhysicalRect, Window)>,
     style: FrameStyle,
 }
 
@@ -33,8 +34,8 @@ impl Frame {
     /// Show a border of `color` (RGB) around `area` on a monitor with
     /// `bounds`. Returns it and how many sides could not be shown.
     pub fn show(
-        area: Rect,
-        bounds: Rect,
+        area: PhysicalRect,
+        bounds: PhysicalRect,
         style: FrameStyle,
         color: [u8; 3],
     ) -> Result<(Self, usize)> {
@@ -116,7 +117,7 @@ impl Frame {
     /// Move the border to `area` on a monitor with `bounds`. Fails if the
     /// sides would change where they go (inside or outside), so the caller
     /// shows a new border instead.
-    pub fn place(&mut self, area: Rect, bounds: Rect) -> Result<()> {
+    pub fn place(&mut self, area: PhysicalRect, bounds: PhysicalRect) -> Result<()> {
         let x = x11().ok_or_else(|| anyhow!("the recording border needs X11"))?;
         let placed = strips(area, bounds, self.style.thickness);
         ensure!(
@@ -154,7 +155,7 @@ impl Drop for Frame {
 }
 
 /// Cut `window`, which shows `strip`, to its dashes.
-fn shape_dashes(x: &X11, window: Window, strip: Rect, style: FrameStyle) -> Result<()> {
+fn shape_dashes(x: &X11, window: Window, strip: PhysicalRect, style: FrameStyle) -> Result<()> {
     x.conn.shape_rectangles(
         shape::SO::SET,
         shape::SK::BOUNDING,
@@ -170,7 +171,7 @@ fn shape_dashes(x: &X11, window: Window, strip: Rect, style: FrameStyle) -> Resu
 /// The dashes of `strip`, in its own coordinates. As in
 /// [`crate::frame::dashes`], the pattern follows desktop coordinates, so the
 /// strips' dashes line up at the corners.
-fn dash_rectangles(strip: Rect, style: FrameStyle) -> Vec<Rectangle> {
+fn dash_rectangles(strip: PhysicalRect, style: FrameStyle) -> Vec<Rectangle> {
     let period = (style.dash + style.gap).max(1) as i32;
     let horizontal = strip.width >= strip.height;
     let (start, length) = if horizontal {
@@ -240,13 +241,13 @@ mod tests {
     #[test]
     fn dashes_follow_the_desktop_like_the_windows_pattern() {
         // Starting mid-period (x = 4: one pixel into the gap before 5).
-        let got = dash_rectangles(Rect::new(4, 0, 10, 2), STYLE);
+        let got = dash_rectangles(PhysicalRect::new(4, 0, 10, 2), STYLE);
         let runs: Vec<(i16, u16)> = got.iter().map(|r| (r.x, r.width)).collect();
         // Dashes at 5..8, 10..13 (and 15.. is past the end at 14).
         assert_eq!(runs, [(1, 3), (6, 3)]);
         assert!(got.iter().all(|r| r.y == 0 && r.height == 2));
         // The same pixels the painted pattern colours.
-        let painted = crate::frame::dashes(Rect::new(4, 0, 10, 1), STYLE, [1, 2, 3]);
+        let painted = crate::frame::dashes(PhysicalRect::new(4, 0, 10, 1), STYLE, [1, 2, 3]);
         let on: Vec<i16> = painted
             .chunks(4)
             .enumerate()
@@ -258,7 +259,7 @@ mod tests {
 
     #[test]
     fn a_vertical_strip_is_cut_along_its_height() {
-        let got = dash_rectangles(Rect::new(0, 1, 2, 6), STYLE);
+        let got = dash_rectangles(PhysicalRect::new(0, 1, 2, 6), STYLE);
         let runs: Vec<(i16, u16)> = got.iter().map(|r| (r.y, r.height)).collect();
         // Dashes at 0..3 (from 1), 5..8 (to 7).
         assert_eq!(runs, [(0, 2), (4, 2)]);

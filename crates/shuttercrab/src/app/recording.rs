@@ -32,7 +32,7 @@ use shuttercrab_capture::{
 };
 use shuttercrab_platform::{
     WindowChange,
-    frame::{Frame, FrameStyle, NO_EDGE, Rect as FrameRect},
+    frame::{Frame, FrameStyle, NO_EDGE},
     window as platform_window,
 };
 use shuttercrab_stream::Quality;
@@ -142,7 +142,7 @@ struct FollowingBar {
 impl Followed {
     /// Put the border and the bar around the window at `bounds`: the bar
     /// below it, or above it, as when it was first shown.
-    fn follow(&self, bounds: FrameRect) {
+    fn follow(&self, bounds: PhysicalRect) {
         if let Some(frame) = self.border.borrow_mut().as_mut()
             && let Err(e) = frame.place(bounds, NO_EDGE)
         {
@@ -151,10 +151,9 @@ impl Followed {
         let Some(bar) = self.bar.get() else {
             return;
         };
-        let window = PhysicalRect::new(bounds.x, bounds.y, bounds.width, bounds.height);
         let work = platform_window::work_area(platform_window::monitor_of(self.window))
-            .map_or(window, |(x, y, w, h)| PhysicalRect::new(x, y, w, h));
-        let (rect, _) = recording::controls_rect(work, window, bar.size, bar.gap);
+            .map_or(bounds, |(x, y, w, h)| PhysicalRect::new(x, y, w, h));
+        let (rect, _) = recording::controls_rect(work, bounds, bar.size, bar.gap);
         if let Err(e) =
             platform_window::cover(bar.os_window, rect.x, rect.y, rect.width, rect.height)
         {
@@ -973,8 +972,8 @@ pub(super) fn show_frame(
         dash: px(FRAME_DASH),
         gap: px(FRAME_GAP),
     };
-    let area = FrameRect::new(b.x + area.x, b.y + area.y, area.width, area.height);
-    let bounds = FrameRect::new(b.x, b.y, b.width, b.height);
+    let area = PhysicalRect::new(b.x + area.x, b.y + area.y, area.width, area.height);
+    let bounds = b;
     // A window's own picture is recorded, never the border: it goes
     // outside the window wherever the window is.
     let (area, bounds) = match window {

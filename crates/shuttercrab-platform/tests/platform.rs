@@ -135,7 +135,8 @@ fn shuttercrabs_own_windows_are_targets_unless_excluded_from_capture() {
 
 #[test]
 fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
-    use shuttercrab_platform::frame::{Frame, FrameStyle, Rect};
+    use shuttercrab_platform::frame::{Frame, FrameStyle};
+    use shuttercrab_types::PhysicalRect;
     use windows::Win32::{
         Foundation::{HWND, RECT},
         UI::WindowsAndMessaging::{
@@ -144,8 +145,8 @@ fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
         },
     };
     // A pretend monitor far off-screen, so nothing flashes on the desktop.
-    let bounds = Rect::new(-30000, -30000, 1000, 800);
-    let area = Rect::new(-29900, -29900, 400, 300);
+    let bounds = PhysicalRect::new(-30000, -30000, 1000, 800);
+    let area = PhysicalRect::new(-29900, -29900, 400, 300);
     let style = FrameStyle {
         thickness: 3,
         dash: 12,
@@ -170,13 +171,13 @@ fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
     frame.recolor([0xF5, 0xA5, 0x24]).unwrap();
     // Moved and resized, as a recorded window is: each strip goes where a
     // new border's would.
-    let moved = Rect::new(-29800, -29850, 500, 250);
+    let moved = PhysicalRect::new(-29800, -29850, 500, 250);
     frame.place(moved, bounds).unwrap();
     let expected = shuttercrab_platform::frame::strips(moved, bounds, 3);
     for (handle, (want, _)) in frame.windows().into_iter().zip(expected) {
         let mut rect = RECT::default();
         unsafe { GetWindowRect(HWND(handle.raw() as _), &mut rect).unwrap() };
-        let got = Rect::new(
+        let got = PhysicalRect::new(
             rect.left,
             rect.top,
             (rect.right - rect.left) as u32,
