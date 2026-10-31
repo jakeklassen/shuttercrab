@@ -6,7 +6,10 @@
 //! white level. The two are joined through the GDI source name.
 
 use super::gpu::wide_to_string;
-use crate::color::{self, ColorMode};
+use crate::{
+    PhysicalRect,
+    color::{self, ColorMode},
+};
 use anyhow::{Context, Result, bail, ensure};
 use serde_json::{Value, json};
 use windows::{
@@ -30,15 +33,6 @@ use windows::{
     core::{HSTRING, Interface},
 };
 
-/// A rectangle in physical pixels, in virtual-desktop coordinates.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Rect {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
 pub struct Monitor {
     /// GDI device name, e.g. `\\.\DISPLAY1`. Stable across HDR toggles,
     /// unlike enumeration order.
@@ -47,7 +41,7 @@ pub struct Monitor {
     pub hmonitor: windows::Win32::Graphics::Gdi::HMONITOR,
     pub adapter: IDXGIAdapter1,
     pub adapter_name: String,
-    pub bounds: Rect,
+    pub bounds: PhysicalRect,
     pub primary: bool,
     pub dpi: u32,
     pub color_mode: ColorMode,
@@ -101,7 +95,7 @@ impl Monitor {
 
     /// The state a capture depends on. If it changes mid-capture, the frame
     /// and the metadata used to convert it may not belong together.
-    pub fn state(&self) -> (ColorMode, Option<u32>, Rect) {
+    pub fn state(&self) -> (ColorMode, Option<u32>, PhysicalRect) {
         (self.color_mode, self.sdr_white_level, self.bounds)
     }
 
@@ -609,7 +603,7 @@ fn describe_output(
         hmonitor,
         adapter: adapter.clone(),
         adapter_name: adapter_name.to_owned(),
-        bounds: Rect {
+        bounds: PhysicalRect {
             x: r.left,
             y: r.top,
             width: (r.right - r.left) as u32,
