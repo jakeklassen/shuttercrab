@@ -119,13 +119,12 @@ USAGE
   capture-spike stream-send [--monitor M] [--region X,Y,W,H] [--fps 30|60] [--quality Q] [--sound on]
                             [--sound-of PID] [--mic on] [--codec opus|pcm|aac] [--video av1|hevc|h264]
                             [--port N]
-                            [--online on] [--meet URL] [--direct]
+                            [--online on] [--meet URL]
       Live streaming, spikes S0 and S1 (issue #66): wait for a viewer on
       127.0.0.1 (port 47100 by default), or with --online on, open a room on
       the meeting point (shuttercrab.sandbox.gdn unless --meet), print a link
       to share and wait for a viewer with it, anywhere, connected through
-      Cloudflare's relay (or with --direct, straight between the two, where
-      both networks allow it); then record live and send each frame as it is
+      Cloudflare's relay; then record live and send each frame as it is
       encoded, until the viewer leaves. --online needs
       the host key: SHUTTERCRAB_HOST_KEY, or meet/.env in the repository. The
       region defaults to the whole monitor, scaled to Q: 1080p (10 Mbit/s),
@@ -136,11 +135,10 @@ USAGE
       Opus (0.13 Mbit/s, about 10 ms later than PCM), or with --codec as PCM
       (1.5 Mbit/s) or AAC.
 
-  capture-spike stream-watch [--from HOST:PORT | --link LINK] [--meet URL] [--direct] [--monitor M]
+  capture-spike stream-watch [--from HOST:PORT | --link LINK] [--meet URL] [--monitor M]
                              [--sound off]
       Open a window on monitor M and play a stream-send as it arrives: the one
-      on this PC, or with --link, the one the link is for, through the relay
-      (or with --direct, directly; both ends must choose the same).
+      on this PC, or with --link, the one the link is for, through the relay.
       Its title shows the frame rate, the bit rate, how far the picture and the
       sound are behind the newest picture and, online, the time there and back
       and the packets lost. Escape closes it, M mutes, [ and ] show the
@@ -735,15 +733,6 @@ impl Args {
         ensure!(i + 1 < self.0.len(), "{name} needs a value");
         self.0.remove(i);
         Ok(Some(self.0.remove(i)))
-    }
-
-    /// Whether `name` was given, on its own.
-    fn flag(&mut self, name: &str) -> bool {
-        let Some(i) = self.0.iter().position(|a| a == name) else {
-            return false;
-        };
-        self.0.remove(i);
-        true
     }
 
     fn positional(&mut self, what: &str) -> Result<String> {

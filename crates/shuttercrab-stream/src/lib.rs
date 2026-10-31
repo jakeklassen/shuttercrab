@@ -21,7 +21,7 @@ mod host;
 mod watch;
 
 pub use quality::Quality;
-pub use shuttercrab_connect::{Link, MEET, NOT_THE_HOST_KEY, Path};
+pub use shuttercrab_connect::{Link, MEET, NOT_THE_HOST_KEY};
 
 #[cfg(windows)]
 pub use host::{Room, Stats, Stream, Viewer, wait_locally};

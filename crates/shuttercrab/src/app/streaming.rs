@@ -287,15 +287,8 @@ fn handle_events(state: Rc<State>, mut events: UnboundedReceiver<StreamEvent>, c
     cx.spawn(async move |cx| {
         while let Some(event) = events.next().await {
             match event {
-                StreamEvent::Viewer { codec, relayed } => {
-                    log::info!(
-                        "a viewer is watching, {}, as {codec}",
-                        if relayed {
-                            "through the relay"
-                        } else {
-                            "directly"
-                        }
-                    );
+                StreamEvent::Viewer { codec } => {
+                    log::info!("a viewer is watching, as {codec}");
                     let view = {
                         let mut streaming = state.streaming.borrow_mut();
                         let Some(streaming) = streaming.as_mut() else {

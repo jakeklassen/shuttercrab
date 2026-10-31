@@ -94,7 +94,7 @@ enum Reply {
     /// Opening the room failed, and why.
     Failed(String),
     /// A viewer came, and the pictures go to it as `codec`.
-    Viewer { codec: String, relayed: bool },
+    Viewer { codec: String },
     /// The last second.
     Stats(Stats),
     /// The stream is over, and why.
@@ -116,7 +116,6 @@ pub struct Stats {
 pub enum StreamEvent {
     Viewer {
         codec: String,
-        relayed: bool,
     },
     Stats(Stats),
     /// Over, and why; nothing follows.
@@ -185,7 +184,7 @@ fn read_replies(
                 }
                 continue;
             }
-            Ok(Reply::Viewer { codec, relayed }) => StreamEvent::Viewer { codec, relayed },
+            Ok(Reply::Viewer { codec }) => StreamEvent::Viewer { codec },
             Ok(Reply::Stats(stats)) => StreamEvent::Stats(stats),
             Ok(Reply::Ended(why)) => {
                 ended = true;
@@ -220,7 +219,7 @@ mod helper {
         live::{SoundCodec, VideoCodec},
         record::{RecordOptions, Source},
     };
-    use shuttercrab_stream::{Path, Quality, Room, Stream, Viewer};
+    use shuttercrab_stream::{Quality, Room, Stream, Viewer};
     use std::{io::Stdout, sync::mpsc, thread, time::Duration};
 
     /// What happens next, for the helper's loop.
@@ -239,7 +238,7 @@ mod helper {
             log::error!("the streamer was not asked to start");
             return 2;
         };
-        let room = match Room::open(&start.meet, &start.host_key, Path::Relay) {
+        let room = match Room::open(&start.meet, &start.host_key) {
             Ok(room) => room,
             Err(e) => {
                 let _ = send(&mut out, &Reply::Failed(format!("{e:#}")));
@@ -265,7 +264,6 @@ mod helper {
                 return 0;
             }
         };
-        let relayed = viewer.connection().is_some_and(|c| c.relayed());
         let stream = match Stream::start(
             options,
             start.source,
@@ -281,7 +279,7 @@ mod helper {
         };
         let codec = shuttercrab_stream::describe(stream.video()).to_string();
         log::info!("streaming as {codec}");
-        if send(&mut out, &Reply::Viewer { codec, relayed }).is_err() {
+        if send(&mut out, &Reply::Viewer { codec }).is_err() {
             return 1;
         }
         let why = run(stream, &rx, &mut out);
@@ -406,12 +404,11 @@ mod tests {
         assert!(!format!("{start:?}").contains("key-123"));
         let reply = serde_json::to_string(&Reply::Viewer {
             codec: "AV1, 10 bits".into(),
-            relayed: true,
         })
         .unwrap();
         assert!(matches!(
             serde_json::from_str(&reply).unwrap(),
-            Reply::Viewer { relayed: true, .. }
+            Reply::Viewer { codec } if codec == "AV1, 10 bits"
         ));
     }
 }

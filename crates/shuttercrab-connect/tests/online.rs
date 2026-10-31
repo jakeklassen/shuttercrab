@@ -1,11 +1,11 @@
 //! Both ends of a connection in one process, meeting through the real
 //! meeting point: a room opened with the host key, joined by its link,
-//! then a few seconds of data straight across. Needs the internet and
+//! then a few seconds of data across the relay. Needs the internet and
 //! the host key, from `SHUTTERCRAB_HOST_KEY` or `meet/.env`; never printed.
 //!
 //!   cargo test -p shuttercrab-connect --test online -- --ignored --nocapture
 
-use shuttercrab_connect::{Link, MEET, Path, host, join};
+use shuttercrab_connect::{Link, MEET, host, join};
 use std::{
     io::{Read, Write},
     time::{Duration, Instant},
@@ -26,30 +26,21 @@ fn host_key() -> String {
 
 #[test]
 #[ignore = "meets through the real meeting point: run by hand"]
-fn two_apps_meet_and_connect_directly() {
+fn two_apps_meet_and_connect_through_the_relay() {
     let meet = std::env::var("SHUTTERCRAB_MEET").unwrap_or_else(|_| MEET.into());
-    let path = match std::env::var("SHUTTERCRAB_PATH").as_deref() {
-        Ok("direct") => Path::Direct,
-        _ => Path::Relay,
-    };
-    let hosting = host(&meet, &host_key(), path).unwrap_or_else(|e| panic!("{e:#}"));
+    let hosting = host(&meet, &host_key()).unwrap_or_else(|e| panic!("{e:#}"));
     let link = Link::parse(&hosting.link().to_string()).unwrap();
     println!("link {link:?}");
 
     let started = Instant::now();
     let viewer = std::thread::spawn({
         let meet = meet.clone();
-        move || join(&meet, &link, path)
+        move || join(&meet, &link)
     });
     let streaming = hosting.accept().unwrap_or_else(|e| panic!("{e:#}"));
     let viewer = viewer.join().unwrap().unwrap_or_else(|e| panic!("{e:#}"));
     println!(
-        "connected {} in {} ms to {}, {} ms there and back",
-        if streaming.relayed() {
-            "through the relay"
-        } else {
-            "directly"
-        },
+        "connected in {} ms to {}, {} ms there and back",
         started.elapsed().as_millis(),
         streaming.remote(),
         streaming.round_trip().as_millis()

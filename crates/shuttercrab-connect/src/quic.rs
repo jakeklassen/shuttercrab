@@ -1,7 +1,7 @@
-//! The direct connection: QUIC on the socket the routers were opened
-//! with. The streaming app shows a certificate made for this stream; the
-//! viewer accepts only the one whose fingerprint the link carries, so no
-//! one between, the meeting point included, can stand in for it.
+//! The connection: QUIC on this app's address on the relay. The streaming
+//! app shows a certificate made for this stream; the viewer accepts only
+//! the one whose fingerprint the link carries, so no one between, the
+//! meeting point included, can stand in for it.
 
 use anyhow::{Context, Result, bail};
 use quinn::{
@@ -202,10 +202,4 @@ pub async fn check_token(connection: &quinn::Connection, token: &[u8; 16]) -> Re
         bail!("a viewer without the link's token was turned away");
     }
     Ok(())
-}
-
-/// A plain UDP socket for QUIC, within the runtime.
-pub fn plain(socket: std::net::UdpSocket) -> Result<Arc<dyn AsyncUdpSocket>> {
-    use quinn::Runtime;
-    Ok(TokioRuntime.wrap_udp_socket(socket)?)
 }

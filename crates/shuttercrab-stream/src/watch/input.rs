@@ -2,7 +2,7 @@
 //! it plays, then waits for the stream's format.
 
 use crate::{
-    Path, describe,
+    describe,
     wire::{self, PICTURES, SOUND},
 };
 use anyhow::{Context, Result, ensure};
@@ -50,16 +50,11 @@ impl Input {
         })
     }
 
-    /// The stream `link` is for, through `meet`, reached by `path`.
-    pub fn online(link: &Link, meet: &str, path: Path) -> Result<Self> {
-        let connection = shuttercrab_connect::join(meet, link, path)?;
+    /// The stream `link` is for, through `meet`.
+    pub fn online(link: &Link, meet: &str) -> Result<Self> {
+        let connection = shuttercrab_connect::join(meet, link)?;
         log::info!(
-            "connected {} to {}, {} ms there and back",
-            if connection.relayed() {
-                "through the relay"
-            } else {
-                "directly"
-            },
+            "connected to {}, {} ms there and back",
             connection.remote(),
             connection.round_trip().as_millis()
         );

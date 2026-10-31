@@ -1,29 +1,25 @@
 //! Live streaming's connection (issue #66): a Shuttercrab that streams and
-//! one that watches meet in a room on Cloudflare (`meet/`), swap the
-//! addresses they can be reached at, and connect with QUIC, end to end
-//! encrypted. By default each goes through Cloudflare's TURN relay, which
-//! passes the packets on without reading them: neither learns where the
-//! other is, and networks that let nothing in, behind a VPN among them,
-//! still connect. Directly, they open a way through both routers instead.
+//! one that watches meet in a room on Cloudflare (`meet/`), swap their
+//! addresses on Cloudflare's TURN relay, and connect with QUIC through it,
+//! end to end encrypted. The relay passes the packets on without reading
+//! them: neither learns where the other is, and networks that let nothing
+//! in, behind a VPN among them, still connect.
 //!
 //! The streaming app [`host`]s and shares the [`Link`]; a viewer
 //! [`join`]s with it. Each side then has a [`Connection`] with blocking
 //! streams, for threads that are not async.
 
 mod link;
-mod punch;
 mod quic;
 mod room;
-mod stun;
 mod turn;
 
 pub use link::Link;
 
 use anyhow::{Context, Result, bail};
-use quinn::AsyncUdpSocket;
 use std::{
     io::{self, Read, Write},
-    net::{IpAddr, SocketAddr, UdpSocket},
+    net::SocketAddr,
     sync::Arc,
     time::Duration,
 };
@@ -46,71 +42,31 @@ const CONNECTING: Duration = Duration::from_secs(15);
 /// How long closing waits for the other app to be told.
 const CLOSING: Duration = Duration::from_millis(250);
 
-/// How the two apps reach each other.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Path {
-    /// Through Cloudflare's relay: always connects, and hides each one's
-    /// address from the other.
-    Relay,
-    /// Straight between them, where both networks allow it.
-    Direct,
-}
-
-/// This app's side of the way: its own socket, or its address on the relay.
-enum Way {
-    Direct(UdpSocket),
-    Relay(turn::Allocation),
-}
-
-impl Way {
-    /// Where to reach the other app at, from the addresses it gave: when
-    /// direct, the one a way through the routers opened to.
-    fn reach(&self, addresses: &[SocketAddr], room: &[u8; 16]) -> Result<SocketAddr> {
-        match self {
-            Self::Direct(socket) => punch::punch(socket, addresses, room),
-            Self::Relay(_) => addresses
-                .first()
-                .copied()
-                .context("the other app gave no relay address"),
-        }
-    }
-
-    /// The socket QUIC reaches `at` through. Within the runtime.
-    fn into_socket(self, at: SocketAddr) -> Result<Arc<dyn AsyncUdpSocket>> {
-        match self {
-            Self::Direct(socket) => quic::plain(socket),
-            Self::Relay(allocation) => Ok(allocation.connect(at)?),
-        }
-    }
-}
-
 /// Join room `name` at `meet`, as its host with `host_key` or a viewer,
-/// and say where this app can be reached by `path`.
-fn enter(meet: &str, name: &str, host_key: Option<&str>, path: Path) -> Result<(room::Room, Way)> {
-    match path {
-        Path::Direct => {
-            let (socket, addresses) = socket()?;
-            let room = room::Room::join(meet, name, host_key, &addresses)?;
-            log::info!("this app is at {addresses:?}");
-            Ok((room, Way::Direct(socket)))
+/// and say where this app is on the relay, from the login the room gives.
+fn enter(meet: &str, name: &str, host_key: Option<&str>) -> Result<(room::Room, turn::Allocation)> {
+    // Nowhere yet: the room answers with a relay login, or a refusal.
+    let room = room::Room::join(meet, name, host_key, &[])?;
+    let login = loop {
+        match room.next(ROOM_ANSWERS) {
+            Ok(room::Event::Relay(login)) => break login,
+            Ok(room::Event::Closed(why)) => bail!("{why}"),
+            Ok(_) => {}
+            Err(_) => bail!("the meeting point offers no relay"),
         }
-        Path::Relay => {
-            // Nowhere yet: the room answers with a relay login, or a refusal.
-            let room = room::Room::join(meet, name, host_key, &[])?;
-            let login = loop {
-                match room.next(ROOM_ANSWERS) {
-                    Ok(room::Event::Relay(login)) => break login,
-                    Ok(room::Event::Closed(why)) => bail!("{why}"),
-                    Ok(_) => {}
-                    Err(_) => bail!("the meeting point offers no relay; try a direct connection"),
-                }
-            };
-            let allocation = turn::Allocation::new(&login)?;
-            log::info!("this app is at {} on the relay", allocation.relayed());
-            room.hello(&[allocation.relayed()])?;
-            Ok((room, Way::Relay(allocation)))
-        }
-    }
+    };
+    let allocation = turn::Allocation::new(&login)?;
+    log::info!("this app is at {} on the relay", allocation.relayed());
+    room.hello(&[allocation.relayed()])?;
+    Ok((room, allocation))
+}
+
+/// Where the other app is on the relay, from the addresses it gave.
+fn relay_address(addresses: &[SocketAddr]) -> Result<SocketAddr> {
+    addresses
+        .first()
+        .copied()
+        .context("the other app gave no relay address")
 }
 
 /// A room opened to stream from, waiting for a viewer.
@@ -118,29 +74,23 @@ pub struct Hosting {
     link: Link,
     identity: quic::Identity,
     room: room::Room,
-    way: Way,
+    allocation: turn::Allocation,
 }
 
-/// Open a room at `meet` with `host_key` to stream from, reached by `path`.
-pub fn host(meet: &str, host_key: &str, path: Path) -> Result<Hosting> {
+/// Open a room at `meet` with `host_key` to stream from.
+pub fn host(meet: &str, host_key: &str) -> Result<Hosting> {
     let identity = quic::Identity::new()?;
     let link = Link {
         room: rand::random(),
         fingerprint: identity.fingerprint,
         token: rand::random(),
     };
-    let (room, way) = enter(meet, &link.room_name(), Some(host_key), path)?;
-    // A refusal comes as soon as the room reads this app's first hello.
-    if let Way::Direct(_) = way
-        && let Ok(room::Event::Closed(why)) = room.next(Duration::from_secs(2))
-    {
-        bail!("{why}");
-    }
+    let (room, allocation) = enter(meet, &link.room_name(), Some(host_key))?;
     Ok(Hosting {
         link,
         identity,
         room,
-        way,
+        allocation,
     })
 }
 
@@ -162,13 +112,12 @@ impl Hosting {
                 Err(e) => return Err(e),
             }
         };
-        let at = self.way.reach(&viewer.addresses, &self.link.room)?;
+        let at = relay_address(&viewer.addresses)?;
         log::info!("the viewer is at {at}");
-        let relayed = matches!(self.way, Way::Relay(_));
         let runtime = runtime()?;
         let token = self.link.token;
         let (endpoint, connection) = runtime.block_on(async {
-            let endpoint = quic::server(self.way.into_socket(at)?, &self.identity)?;
+            let endpoint = quic::server(self.allocation.connect(at)?, &self.identity)?;
             let incoming = tokio::time::timeout(CONNECTING, endpoint.accept())
                 .await
                 .context("the viewer did not connect")?
@@ -180,23 +129,21 @@ impl Hosting {
         Ok(Connection {
             runtime,
             connection,
-            relayed,
             endpoint,
             _room: self.room,
         })
     }
 }
 
-/// Join the stream `link` is for, through `meet`, reached by `path`.
-pub fn join(meet: &str, link: &Link, path: Path) -> Result<Connection> {
-    let (room, way) = enter(meet, &link.room_name(), None, path)?;
+/// Join the stream `link` is for, through `meet`.
+pub fn join(meet: &str, link: &Link) -> Result<Connection> {
+    let (room, allocation) = enter(meet, &link.room_name(), None)?;
     let host = room.wait_for_peer(true, WAIT_FOR_HOST)?;
-    let at = way.reach(&host.addresses, &link.room)?;
+    let at = relay_address(&host.addresses)?;
     log::info!("the stream is at {at}");
-    let relayed = matches!(way, Way::Relay(_));
     let runtime = runtime()?;
     let (endpoint, connection) = runtime.block_on(async {
-        let endpoint = quic::client(way.into_socket(at)?, link.fingerprint)?;
+        let endpoint = quic::client(allocation.connect(at)?, link.fingerprint)?;
         let connection = tokio::time::timeout(CONNECTING, quic::connect(&endpoint, at))
             .await
             .context("the stream did not answer")??;
@@ -206,37 +153,9 @@ pub fn join(meet: &str, link: &Link, path: Path) -> Result<Connection> {
     Ok(Connection {
         runtime,
         connection,
-        relayed,
         endpoint,
         _room: room,
     })
-}
-/// A UDP socket for the connection, and the addresses it can be reached
-/// at: on this network, and as the internet sees it.
-fn socket() -> Result<(UdpSocket, Vec<SocketAddr>)> {
-    let socket = UdpSocket::bind("0.0.0.0:0")?;
-    let port = socket.local_addr()?.port();
-    let mut addresses = Vec::new();
-    if let Some(ip) = local_ip() {
-        addresses.push(SocketAddr::new(ip, port));
-    }
-    match stun::public_address(&socket, stun::SERVER) {
-        Ok(public) if !addresses.contains(&public) => addresses.push(public),
-        Ok(_) => {}
-        Err(e) => log::warn!("{e:#}; only this network's address is known"),
-    }
-    if addresses.is_empty() {
-        bail!("this PC has no network address to be reached at");
-    }
-    Ok((socket, addresses))
-}
-
-/// This PC's address on its network: the one it would reach the internet
-/// from. Nothing is sent.
-fn local_ip() -> Option<IpAddr> {
-    let probe = UdpSocket::bind("0.0.0.0:0").ok()?;
-    probe.connect("1.1.1.1:80").ok()?;
-    Some(probe.local_addr().ok()?.ip())
 }
 
 fn runtime() -> Result<Arc<Runtime>> {
@@ -253,7 +172,6 @@ fn runtime() -> Result<Arc<Runtime>> {
 pub struct Connection {
     runtime: Arc<Runtime>,
     connection: quinn::Connection,
-    relayed: bool,
     endpoint: quinn::Endpoint,
     /// Kept open while connected: leaving the room ends this app's relay
     /// login, and for the streaming app, the stream.
@@ -261,12 +179,7 @@ pub struct Connection {
 }
 
 impl Connection {
-    /// Whether it goes through the relay.
-    pub fn relayed(&self) -> bool {
-        self.relayed
-    }
-
-    /// Where the other app is.
+    /// Where the other app is on the relay.
     pub fn remote(&self) -> SocketAddr {
         self.connection.remote_address()
     }
