@@ -15,8 +15,8 @@ use super::{
 use crate::{
     color::{ColorMode, Highlights, SCREENSHOT_ANCHOR},
     screen::{
-        CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Result,
-        Screenshot, WindowId, encode_png, premultiplied_bgra_to_rgba,
+        CaptureError, CaptureErrorCode, FrozenFrame, MonitorId, MonitorInfo, Result, Screenshot,
+        WindowId, encode_png, premultiplied_bgra_to_rgba,
     },
 };
 use futures::channel::oneshot;
@@ -511,12 +511,11 @@ fn classify(e: anyhow::Error, code: CaptureErrorCode, message: &str) -> CaptureE
 }
 
 fn describe(monitor: &display::Monitor) -> MonitorInfo {
-    let b = monitor.bounds;
     MonitorInfo {
         id: monitor_id(monitor.hmonitor),
         device_name: monitor.device_name.clone(),
         name: monitor.friendly_name.clone(),
-        bounds: PhysicalRect::new(b.x, b.y, b.width, b.height),
+        bounds: monitor.bounds,
         scale_factor: monitor.scale_factor(),
         advanced_color_enabled: monitor.advanced_color_enabled(),
         hdr_enabled: monitor.hdr_enabled(),
