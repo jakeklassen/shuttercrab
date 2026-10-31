@@ -327,7 +327,8 @@ pub fn watch(
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
         let mut message = MSG::default();
-        while GetMessageW(&mut message, None, 0, 0).as_bool() {
+        // 0 when quitting, -1 if it fails: either way, the loop is over.
+        while GetMessageW(&mut message, None, 0, 0).0 > 0 {
             if message.message == WM_JOINED {
                 if let Ok(joined) = joining.try_recv() {
                     match joined.and_then(|joined| play(joined, hwnd, options)) {

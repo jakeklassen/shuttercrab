@@ -4,7 +4,7 @@
 //! events arrive on the platform thread's message loop; nothing is
 //! polled).
 
-use super::platform::with_state;
+use super::platform::send_event;
 use super::window::{to_hwnd, to_window_id};
 use crate::{PlatformEvent, WindowChange, frame::Rect};
 use shuttercrab_types::WindowId;
@@ -207,6 +207,6 @@ unsafe extern "system" fn on_event(
         (watched.last.replace(bounds) != Some(bounds)).then_some(WindowChange::Moved(bounds))
     });
     if let Some(change) = change {
-        with_state(|s| s.events.unbounded_send(PlatformEvent::Window(change)));
+        send_event(PlatformEvent::Window(change));
     }
 }
