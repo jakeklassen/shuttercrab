@@ -394,15 +394,9 @@ fn refresh_all(popups: &[popup::Popup], cx: &mut AsyncApp) {
 /// Windows on the monitor at `bounds`, front to back, relative to it. The
 /// desktop is left out: over it, Window mode captures the whole display.
 fn screen_windows(bounds: PhysicalRect) -> Vec<ScreenWindow> {
-    let monitor = targets::Bounds {
-        x: bounds.x,
-        y: bounds.y,
-        width: bounds.width,
-        height: bounds.height,
-    };
     targets::visible_windows()
         .into_iter()
-        .filter(|w| !w.desktop && w.bounds.intersect(&monitor).is_some())
+        .filter(|w| !w.desktop && w.bounds.overlaps(&bounds))
         .map(|w| ScreenWindow {
             os_window: w.id,
             bounds: PhysicalRect::new(

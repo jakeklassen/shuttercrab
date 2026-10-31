@@ -2,8 +2,8 @@
 //! client list (EWMH), front to back, with what the user sees of each.
 
 use super::window::{X11, client_bounds, frame_extents, property32, sides, x11};
-use crate::targets::{Bounds, WindowTarget};
-use shuttercrab_types::WindowId;
+use crate::targets::WindowTarget;
+use shuttercrab_types::{PhysicalRect, WindowId};
 use x11rb::{
     properties::WmClass,
     protocol::xproto::{AtomEnum, ConnectionExt as _, MapState, Window},
@@ -60,13 +60,13 @@ fn target(x: &X11, window: Window, current: Option<u32>) -> Option<WindowTarget>
     // GTK window draws around itself.
     let [left, right, top, bottom] = frame_extents(x, window);
     let [s_left, s_right, s_top, s_bottom] = sides(x, window, atoms._GTK_FRAME_EXTENTS);
-    let bounds = Bounds {
-        x: client.x - left as i32 + s_left as i32,
-        y: client.y - top as i32 + s_top as i32,
-        width: (client.width + left + right).saturating_sub(s_left + s_right),
-        height: (client.height + top + bottom).saturating_sub(s_top + s_bottom),
-    };
-    if bounds.width == 0 || bounds.height == 0 {
+    let bounds = PhysicalRect::new(
+        client.x - left as i32 + s_left as i32,
+        client.y - top as i32 + s_top as i32,
+        (client.width + left + right).saturating_sub(s_left + s_right),
+        (client.height + top + bottom).saturating_sub(s_top + s_bottom),
+    );
+    if bounds.is_empty() {
         return None;
     }
     let types = property32(x, window, atoms._NET_WM_WINDOW_TYPE, AtomEnum::ATOM, 8);
