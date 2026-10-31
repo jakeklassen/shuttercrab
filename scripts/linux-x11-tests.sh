@@ -32,8 +32,11 @@ trap cleanup EXIT
 # Xvfb picks a free display number and writes it to its stdout.
 Xvfb -displayfd 1 -screen 0 1920x1080x24 -nolisten tcp >"$work/display" 2>"$work/xvfb.log" &
 xvfb=$!
-for _ in $(seq 100); do
+# Up to 30 s: on a busy CI runner it has taken over 5. One that exits is
+# not waited for.
+for _ in $(seq 600); do
   [ -s "$work/display" ] && break
+  kill -0 "$xvfb" 2>/dev/null || break
   sleep 0.05
 done
 if [ ! -s "$work/display" ]; then
