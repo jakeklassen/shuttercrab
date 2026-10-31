@@ -30,7 +30,7 @@ mod tools;
 mod video;
 
 use crate::{
-    capture_choice::{CaptureMode, CaptureTarget},
+    capture_choice::{CaptureMode, CaptureTarget, WATCH_KEY},
     markup::{Mark, Region, Tool},
     palette::{border, coral, hover, muted, recording, surface, tile},
     settings::{COUNTDOWN_CHOICES, DELAY_CHOICES, KeyPaste, Settings},
@@ -992,21 +992,19 @@ impl MainWindow {
             "[" => self.step_size(-1., window, cx),
             "]" => self.step_size(1., window, cx),
             "n" | "enter" => self.start(window, cx),
-            "s" => self.set_mode(CaptureMode::Screenshot, cx),
-            "r" => self.set_mode(CaptureMode::Record, cx),
-            "l" if CaptureMode::ALL.contains(&CaptureMode::Stream) => {
-                self.set_mode(CaptureMode::Stream, cx)
-            }
-            "j" if CaptureMode::ALL.contains(&CaptureMode::Stream) => {
-                (self.hooks.watch.clone())(cx)
-            }
             "t" => self.step_delay(cx),
             "," => self.choose_more(More::Settings, window, cx),
             "o" => self.choose_more(More::OpenFolder, window, cx),
             "e" if self.hooks.image_editor.is_some() => self.choose_more(More::EditIn, window, cx),
             "u" if (self.hooks.update_ready)().is_some() => (self.hooks.restart_to_update)(cx),
+            _ if key == WATCH_KEY && CaptureMode::offers_streaming() => {
+                (self.hooks.watch.clone())(cx)
+            }
             _ => {
-                if let Some(target) = CaptureTarget::ALL.into_iter().find(|t| t.key() == key) {
+                if let Some(&mode) = CaptureMode::ALL.iter().find(|m| m.key() == key) {
+                    self.set_mode(mode, cx);
+                } else if let Some(target) = CaptureTarget::ALL.into_iter().find(|t| t.key() == key)
+                {
                     self.set_target(target, cx);
                 }
             }
@@ -1152,51 +1150,25 @@ impl MainWindow {
     }
 
     fn modes(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let mode = self.mode();
-        let stream = CaptureMode::ALL.contains(&CaptureMode::Stream).then(|| {
-            Self::segment(
-                "mode-stream",
-                "Stream",
-                IconName::Radio,
-                self.shown_key("l"),
-                mode == CaptureMode::Stream,
-                true,
-                Some(recording()),
-                cx,
-                |this, cx| this.set_mode(CaptureMode::Stream, cx),
-            )
-            .into_any_element()
-        });
-        Self::segmented(
-            [
+        let chosen = self.mode();
+        let segments: Vec<_> = CaptureMode::ALL
+            .iter()
+            .map(|&mode| {
                 Self::segment(
-                    "mode-screenshot",
-                    "Screenshot",
-                    IconName::Camera,
-                    self.shown_key("s"),
-                    mode == CaptureMode::Screenshot,
+                    mode.id(),
+                    mode.label(),
+                    mode.icon(),
+                    self.shown_key(mode.key()),
+                    mode == chosen,
                     true,
-                    None,
+                    // Recording and streaming show in the recording red.
+                    mode.is_video().then(recording),
                     cx,
-                    |this, cx| this.set_mode(CaptureMode::Screenshot, cx),
+                    move |this, cx| this.set_mode(mode, cx),
                 )
-                .into_any_element(),
-                Self::segment(
-                    "mode-record",
-                    "Record",
-                    IconName::Video,
-                    self.shown_key("r"),
-                    mode == CaptureMode::Record,
-                    true,
-                    Some(recording()),
-                    cx,
-                    |this, cx| this.set_mode(CaptureMode::Record, cx),
-                )
-                .into_any_element(),
-            ]
-            .into_iter()
-            .chain(stream),
-        )
+            })
+            .collect();
+        Self::segmented(segments)
     }
 
     /// Watch someone's stream: opens the Watch box. On the home page only,
@@ -1206,7 +1178,7 @@ impl MainWindow {
             "watch",
             "Watch a stream",
             IconName::MonitorPlay,
-            self.shown_key("j"),
+            self.shown_key(WATCH_KEY),
             false,
             true,
             None,
@@ -1512,9 +1484,7 @@ impl MainWindow {
                 d.child(self.delay_button(cx))
             })
             .when(
-                self.shown.is_none()
-                    && self.video.is_none()
-                    && CaptureMode::ALL.contains(&CaptureMode::Stream),
+                self.shown.is_none() && self.video.is_none() && CaptureMode::offers_streaming(),
                 |d| d.child(self.watch_button(cx)),
             )
             // Crop mode has its own bar over the screenshot instead.

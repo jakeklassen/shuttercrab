@@ -118,7 +118,7 @@ impl CaptureBar {
             "tab" if event.keystroke.modifiers.shift => self.step(-1, cx),
             "tab" => self.step(1, cx),
             _ => {
-                if key == WATCH_KEY && CaptureMode::ALL.contains(&CaptureMode::Stream) {
+                if key == WATCH_KEY && CaptureMode::offers_streaming() {
                     self.finish(CaptureBarEvent::Watch, cx);
                 } else if let Some(&mode) = CaptureMode::ALL.iter().find(|m| m.key() == key) {
                     self.set_mode(mode);
@@ -275,7 +275,7 @@ impl Render for CaptureBar {
                     .items_center()
                     .gap_1()
                     .children(CaptureMode::ALL.iter().map(|&m| self.mode_tab(m, cx)))
-                    .when(CaptureMode::ALL.contains(&CaptureMode::Stream), |d| {
+                    .when(CaptureMode::offers_streaming(), |d| {
                         d.child(div().flex_1()).child(self.watch_tab(cx))
                     }),
             )

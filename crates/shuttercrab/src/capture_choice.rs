@@ -24,6 +24,11 @@ impl CaptureMode {
         &[Self::Screenshot, Self::Record]
     };
 
+    /// Whether this system offers Stream, and with it Watch.
+    pub fn offers_streaming() -> bool {
+        Self::ALL.contains(&Self::Stream)
+    }
+
     pub fn label(self) -> &'static str {
         match self {
             Self::Screenshot => "Screenshot",
