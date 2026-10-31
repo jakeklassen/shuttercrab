@@ -1294,7 +1294,7 @@ mod tests {
     use super::*;
 
     /// The hotkey pressing `keys` makes, written as GPUI writes key presses.
-    fn hotkey(keys: &str) -> Result<String, String> {
+    fn hotkey(keys: &'static str) -> Result<String, String> {
         hotkey_from_keystroke(&Keystroke::parse(keys).unwrap())
     }
 

@@ -1,6 +1,6 @@
 # Shuttercrab's copy of gpui-pre-windows
 
-This is `gpui-pre-windows` 0.3.7 as published on crates.io (GPUI's Windows
+This is `gpui-pre-windows` 0.3.10 as published on crates.io (GPUI's Windows
 platform layer, from [longbridge/gpui-kit](https://github.com/longbridge/gpui-kit),
 Apache-2.0, see `LICENSE-APACHE`), used through `[patch.crates-io]` in the
 workspace `Cargo.toml`, with three changes.

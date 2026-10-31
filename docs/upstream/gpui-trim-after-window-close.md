@@ -22,6 +22,7 @@ plus the driver's matching private (CPU-side) commitment.
 ## Environment
 
 - gpui-kit 0.6.6 / gpui-pre-windows 0.3.6, and unchanged in 0.7.0 / 0.3.7
+  and 0.8.1 / 0.3.10
   (`src/` contains no call to `Trim`).
 - Windows 11 (build 26300), NVIDIA GeForce RTX 4090, two 3840×2160 HDR
   monitors at 150%.
