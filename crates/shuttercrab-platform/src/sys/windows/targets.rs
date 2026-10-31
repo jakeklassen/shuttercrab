@@ -1,7 +1,7 @@
 //! Finding the windows a screenshot can target on Windows.
 
-use super::window::to_window_id;
-use crate::targets::{Bounds, WindowTarget};
+use super::window::{physical, to_window_id};
+use crate::targets::WindowTarget;
 use windows::{
     Win32::{
         Foundation::{HWND, LPARAM, RECT},
@@ -90,8 +90,8 @@ fn describe(hwnd: HWND) -> Option<WindowTarget> {
             size_of::<RECT>() as u32,
         )
         .ok()?;
-        let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
-        if width < 2 || height < 2 {
+        let bounds = physical(rect);
+        if bounds.width < 2 || bounds.height < 2 {
             return None;
         }
         let mut name = [0u16; 128];
@@ -99,12 +99,7 @@ fn describe(hwnd: HWND) -> Option<WindowTarget> {
         let class = String::from_utf16_lossy(&name[..length.max(0) as usize]);
         Some(WindowTarget {
             id: to_window_id(hwnd),
-            bounds: Bounds {
-                x: rect.left,
-                y: rect.top,
-                width: width as u32,
-                height: height as u32,
-            },
+            bounds,
             desktop: matches!(class.as_str(), "Progman" | "WorkerW"),
             class,
         })
