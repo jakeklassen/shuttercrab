@@ -7,6 +7,35 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.33](https://github.com/jakeklassen/shuttercrab/compare/v0.1.32...v0.1.33) - 2026-10-31
+
+### Fixed
+
+- the streaming helper's log lines are labelled as the streamer's
+- a stream ends, and says why, when its recording ends by itself
+- handles and Media Foundation are released when a recording or helper fails to start
+- a frame the encoder refuses frees its texture slot once, not twice
+- the viewer stops holding sound and pictures nothing will play
+- sound that arrives after the track is written past it no longer crashes a recording
+- an IPv6 address from the room is refused, not a crash
+- joining a meeting point that never answers gives up after 10 s
+- the tray never re-enters its own state, and message loops end if Windows fails
+- Start with Windows follows the switch in Task Manager's Startup apps
+
+### Other
+
+- the home page and Stream's hints have files of their own
+- one way to paste a host key, and one note for it
+- the settings are SettingsPage, with SettingsHooks
+- Clear and Undo share one vocabulary
+- one way to show something for a moment
+- the main window's buttons and menu rows name their parts
+- the main window's modes come from CaptureMode
+- the app starts and talks to both helpers with HelperProcess
+- both helpers read the app's requests with the same code
+- the recording options on the wire belong to both helpers
+- the helpers' JSON lines and log live in helper_process
+
 ## [0.1.32](https://github.com/jakeklassen/shuttercrab/compare/v0.1.31...v0.1.32) - 2026-10-30
 
 ### Added
