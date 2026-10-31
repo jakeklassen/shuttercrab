@@ -11,7 +11,7 @@ use anyhow::{Context, Result, anyhow};
 use futures::channel::{mpsc, oneshot};
 use shuttercrab_types::WindowId;
 use std::{
-    cell::RefCell,
+    cell::{OnceCell, RefCell},
     path::PathBuf,
     sync::{
         Arc,
@@ -220,9 +220,11 @@ impl Drop for Platform {
 }
 
 /// What the window procedure needs; it lives on the platform thread only.
-pub(super) struct State {
+/// No call into Windows is made while it is borrowed: Windows delivers
+/// messages to the window procedure during some calls (Shell_NotifyIconW
+/// among them), and a second borrow there would panic.
+struct State {
     window: HWND,
-    pub(super) events: mpsc::UnboundedSender<PlatformEvent>,
     tray: Option<Tray>,
     icon: Option<HICON>,
     taskbar_created: u32,
@@ -230,10 +232,27 @@ pub(super) struct State {
 
 thread_local! {
     static STATE: RefCell<Option<State>> = const { RefCell::new(None) };
+    /// Where events go, apart from [`STATE`], so any message can send one.
+    static EVENTS: OnceCell<mpsc::UnboundedSender<PlatformEvent>> = const { OnceCell::new() };
 }
 
-pub(super) fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
-    STATE.with(|s| s.borrow_mut().as_mut().map(f))
+fn with_state<R>(f: impl FnOnce(&mut State) -> R) -> Option<R> {
+    STATE.with(|s| match s.try_borrow_mut() {
+        Ok(mut state) => state.as_mut().map(f),
+        Err(_) => {
+            log::warn!("the platform's state was in use: a message came during a call");
+            None
+        }
+    })
+}
+
+/// Send `event` to the app, from the platform thread.
+pub(super) fn send_event(event: PlatformEvent) {
+    EVENTS.with(|events| {
+        if let Some(events) = events.get() {
+            let _ = events.unbounded_send(event);
+        }
+    });
 }
 
 extern "system" fn window_proc(
@@ -246,13 +265,9 @@ extern "system" fn window_proc(
         // NOTIFYICON_VERSION_4: the event is in the low word of lparam.
         let event = (lparam.0 & 0xFFFF) as u32;
         match event {
-            NIN_SELECT | NIN_KEYSELECT => {
-                with_state(|s| s.events.unbounded_send(PlatformEvent::TrayActivated));
-            }
+            NIN_SELECT | NIN_KEYSELECT => send_event(PlatformEvent::TrayActivated),
             WM_CONTEXTMENU => show_menu(hwnd),
-            NIN_BALLOONUSERCLICK => {
-                with_state(|s| s.events.unbounded_send(PlatformEvent::NotificationClicked));
-            }
+            NIN_BALLOONUSERCLICK => send_event(PlatformEvent::NotificationClicked),
             _ => {}
         }
         return LRESULT(0);
@@ -260,11 +275,11 @@ extern "system" fn window_proc(
     // Sent to every top-level window, this hidden one included; Windows
     // still needs its default handling.
     if message == WM_DISPLAYCHANGE {
-        with_state(|s| s.events.unbounded_send(PlatformEvent::DisplaysChanged));
+        send_event(PlatformEvent::DisplaysChanged);
     }
     // Explorer restarted: the tray icon is gone and must be added again.
     if with_state(|s| s.taskbar_created != 0 && message == s.taskbar_created) == Some(true) {
-        with_state(add_tray_icon);
+        add_tray_icon();
         return LRESULT(0);
     }
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
@@ -314,10 +329,7 @@ fn show_menu(hwnd: HWND) {
         let _ = PostMessageW(Some(hwnd), WM_NULL, WPARAM(0), LPARAM(0));
         let _ = DestroyMenu(menu);
         if chosen.0 != 0 {
-            with_state(|s| {
-                s.events
-                    .unbounded_send(PlatformEvent::TrayCommand(chosen.0 as u32))
-            });
+            send_event(PlatformEvent::TrayCommand(chosen.0 as u32));
         }
     }
 }
@@ -344,15 +356,16 @@ fn tray_data(s: &State, flags: NOTIFY_ICON_DATA_FLAGS) -> NOTIFYICONDATAW {
     data
 }
 
-fn add_tray_icon(s: &mut State) {
-    if s.tray.is_none() {
-        return;
-    }
-    if s.icon.is_none() {
-        let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
-        s.icon = icon::hicon(size).ok();
-    }
-    let mut data = tray_data(s, NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP);
+fn add_tray_icon() {
+    let data = with_state(|s| {
+        s.tray.as_ref()?;
+        if s.icon.is_none() {
+            let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
+            s.icon = icon::hicon(size).ok();
+        }
+        Some(tray_data(s, NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP))
+    });
+    let Some(Some(mut data)) = data else { return };
     unsafe {
         if Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
             data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
@@ -364,11 +377,9 @@ fn add_tray_icon(s: &mut State) {
     }
 }
 
-fn notify(s: &State, title: &str, message: &str) {
-    if s.tray.is_none() {
-        return;
-    }
-    let mut data = tray_data(s, NIF_INFO);
+fn notify(title: &str, message: &str) {
+    let data = with_state(|s| s.tray.is_some().then(|| tray_data(s, NIF_INFO)));
+    let Some(Some(mut data)) = data else { return };
     copy_utf16(&mut data.szInfoTitle, title);
     copy_utf16(&mut data.szInfo, message);
     data.dwInfoFlags = NIIF_NOSOUND;
@@ -423,20 +434,21 @@ fn run(
     let mut hotkeys = hotkeys;
     let conflicts = register_hotkeys(window, &hotkeys);
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
+    EVENTS.with(|e| e.set(events.clone()).ok());
     STATE.with(|s| {
         *s.borrow_mut() = Some(State {
             window,
-            events: events.clone(),
             tray,
             icon: None,
             taskbar_created,
         })
     });
-    with_state(add_tray_icon);
+    add_tray_icon();
     let _ = ready.send(Ok((window.0 as isize, conflicts)));
 
     let mut msg = MSG::default();
-    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.as_bool() {
+    // 0 when quitting, -1 if it fails: either way, the loop is over.
+    while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         match msg.message {
             WM_HOTKEY => {
                 let _ = events.unbounded_send(PlatformEvent::Hotkey(msg.wParam.0 as u32));
@@ -469,9 +481,7 @@ fn run(
                                 }
                             });
                         }
-                        Command::Notify { title, message } => {
-                            with_state(|s| notify(s, &title, &message));
-                        }
+                        Command::Notify { title, message } => notify(&title, &message),
                         Command::Watch(window) => watch::watch(window),
                     }
                 }
@@ -488,20 +498,20 @@ fn run(
         }
     }
     unregister_hotkeys(window, &hotkeys);
-    with_state(|s| {
-        if s.tray.is_some() {
-            let data = tray_data(s, NOTIFY_ICON_DATA_FLAGS(0));
+    let state = STATE.with(|s| s.borrow_mut().take());
+    if let Some(state) = state {
+        if state.tray.is_some() {
+            let data = tray_data(&state, NOTIFY_ICON_DATA_FLAGS(0));
             unsafe {
                 let _ = Shell_NotifyIconW(NIM_DELETE, &data);
             }
         }
-        if let Some(icon) = s.icon.take() {
+        if let Some(icon) = state.icon {
             unsafe {
                 let _ = DestroyIcon(icon);
             }
         }
-    });
-    STATE.with(|s| s.borrow_mut().take());
+    }
     let _ = unsafe { DestroyWindow(window) };
 }
 
