@@ -123,7 +123,7 @@ pub(in crate::app) async fn ready(
     }
     // A recorded window takes the bar along when it moves.
     if let Some(followed) = state.followed.borrow().as_ref() {
-        let gap = (CONTROLS_GAP * info.scale_factor).round() as u32;
+        let gap = crate::selection::to_physical(CONTROLS_GAP, info.scale_factor);
         let size = (controls.rect.width, controls.rect.height);
         followed
             .bar
@@ -195,7 +195,7 @@ async fn choose_microphone(
         (choices, chosen, bar.list_button())
     });
     let scale = info.scale_factor;
-    let to_physical = |logical: f32| (logical * scale).round() as i32;
+    let to_physical = |logical: f32| crate::selection::to_physical(logical, scale) as i32;
     let (w, h) = (
         to_physical(CHOICE_MENU_WIDTH),
         to_physical(choice_menu_height(choices.len())),

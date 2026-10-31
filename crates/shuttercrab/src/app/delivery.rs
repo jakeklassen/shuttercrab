@@ -5,6 +5,7 @@
 use super::{State, failure::Failure, screenshot::exclude_from_capture, windows::show_in_main};
 use crate::{
     files, pixels,
+    selection::to_physical,
     ui::main_window::Shot,
     ui::popup::{self, Activation},
     ui::thumbnail::{self, Thumbnail, ThumbnailEvent},
@@ -341,9 +342,9 @@ struct PendingThumbnail {
 /// work area (above the taskbar), physical pixels.
 pub fn thumbnail_rect(work: PhysicalRect, scale: f32, size: (u32, u32)) -> PhysicalRect {
     let (w, h) = thumbnail::image_size(size.0, size.1);
-    let card = |side: f32| ((side + 2.0 * thumbnail::PADDING) * scale).round() as u32;
+    let card = |side: f32| to_physical(side + 2.0 * thumbnail::PADDING, scale);
     let (width, height) = (card(w), card(h));
-    let margin = (THUMBNAIL_MARGIN * scale).round() as i32;
+    let margin = to_physical(THUMBNAIL_MARGIN, scale) as i32;
     PhysicalRect::new(
         work.x + work.width as i32 - width as i32 - margin,
         work.y + work.height as i32 - height as i32 - margin,

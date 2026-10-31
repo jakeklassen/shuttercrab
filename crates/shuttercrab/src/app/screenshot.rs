@@ -5,7 +5,7 @@
 use super::{Busy, State, delivery::deliver, failure::Failure, recording::record};
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
-    selection::ScreenWindow,
+    selection::{ScreenWindow, to_physical},
     ui::capture_bar::{BAR_HEIGHT, BAR_WIDTH, CaptureBar, CaptureBarEvent},
     ui::overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     ui::popup::{self, Activation},
@@ -28,11 +28,11 @@ const BAR_TOP: f32 = 24.0;
 /// Where the Capture Bar goes: centred near the top of `monitor`.
 pub fn bar_rect(monitor: &MonitorInfo) -> PhysicalRect {
     let (b, scale) = (monitor.bounds, monitor.scale_factor);
-    let width = (BAR_WIDTH * scale).round() as u32;
-    let height = (BAR_HEIGHT * scale).round() as u32;
+    let width = to_physical(BAR_WIDTH, scale);
+    let height = to_physical(BAR_HEIGHT, scale);
     PhysicalRect::new(
         b.x + (b.width.saturating_sub(width) / 2) as i32,
-        b.y + (BAR_TOP * scale).round() as i32,
+        b.y + to_physical(BAR_TOP, scale) as i32,
         width,
         height,
     )
