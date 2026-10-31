@@ -93,7 +93,7 @@ pub(super) struct Recording {
     /// A discard that can still be undone, if any.
     pub(super) discarded: Option<Discarded>,
     /// The dashed border around what is recorded, if it is shown.
-    frame: Border,
+    border: Border,
     /// Minimising or hiding the recorded window paused the recording;
     /// showing it again resumes it.
     paused_by_minimise: bool,
@@ -202,16 +202,16 @@ pub(super) fn stop_following(state: &State) {
 }
 
 /// The border's colours (RGB): recording, paused, and discarded.
-pub(super) const FRAME_RECORDING: [u8; 3] = [0xE5, 0x48, 0x4D];
-const FRAME_PAUSED: [u8; 3] = [0xF5, 0xA5, 0x24];
-const FRAME_DISCARDED: [u8; 3] = [0x9D, 0x9D, 0x9D];
+pub(super) const BORDER_RECORDING: [u8; 3] = [0xE5, 0x48, 0x4D];
+const BORDER_PAUSED: [u8; 3] = [0xF5, 0xA5, 0x24];
+const BORDER_DISCARDED: [u8; 3] = [0x9D, 0x9D, 0x9D];
 /// Before recording starts, during a countdown.
-pub(super) const FRAME_WAITING: [u8; 3] = FRAME_DISCARDED;
+pub(super) const BORDER_WAITING: [u8; 3] = BORDER_DISCARDED;
 
 /// The border's look, logical pixels.
-const FRAME_THICKNESS: f32 = 2.0;
-const FRAME_DASH: f32 = 8.0;
-const FRAME_GAP: f32 = 5.0;
+const BORDER_THICKNESS: f32 = 2.0;
+const BORDER_DASH: f32 = 8.0;
+const BORDER_GAP: f32 = 5.0;
 
 /// The recording controls' window and view.
 pub(super) struct Controls {
@@ -231,7 +231,7 @@ impl Recording {
 
     /// Close the controls and remove the border.
     fn close_controls(&mut self, cx: &mut AsyncApp) {
-        self.frame.borrow_mut().take();
+        self.border.borrow_mut().take();
         if let Some(controls) = self.controls.take() {
             controls.popup.close(cx);
         }
@@ -260,7 +260,7 @@ impl Recording {
             clock.resume(now);
         }
         self.clock.set(clock);
-        self.color_frame_for_clock();
+        self.color_border_for_clock();
         true
     }
 
@@ -305,8 +305,8 @@ impl Recording {
     }
 
     /// Draw the border in `color`.
-    fn color_frame(&self, color: [u8; 3]) {
-        if let Some(frame) = self.frame.borrow_mut().as_mut()
+    fn color_border(&self, color: [u8; 3]) {
+        if let Some(frame) = self.border.borrow_mut().as_mut()
             && let Err(e) = frame.recolor(color)
         {
             log::warn!("could not redraw the recording border: {e:#}");
@@ -314,12 +314,12 @@ impl Recording {
     }
 
     /// Draw the border red while recording, amber while paused.
-    fn color_frame_for_clock(&self) {
+    fn color_border_for_clock(&self) {
         let paused = self.clock.get().is_paused();
-        self.color_frame(if paused {
-            FRAME_PAUSED
+        self.color_border(if paused {
+            BORDER_PAUSED
         } else {
-            FRAME_RECORDING
+            BORDER_RECORDING
         });
     }
 }
@@ -359,13 +359,13 @@ pub(super) async fn record(
     let (region, info, window) = (chosen.region, chosen.info, chosen.window);
     // The border shows what will be recorded: grey until recording starts.
     // Around a window, it follows the window from now on.
-    let frame: Border = Rc::new(RefCell::new(show_frame(
+    let border: Border = Rc::new(RefCell::new(show_border(
         &info,
         region,
         window,
-        FRAME_WAITING,
+        BORDER_WAITING,
     )));
-    let following = window.map(|w| Following::start(state, w, frame.clone()));
+    let following = window.map(|w| Following::start(state, w, border.clone()));
     let settings = state.settings.borrow().clone();
     let clock = Rc::new(Cell::new(Clock::new(Instant::now())));
     let ControlFlow::Continue(opened) =
@@ -447,7 +447,7 @@ pub(super) async fn record(
         controls,
         asking: None,
         discarded: None,
-        frame,
+        border,
         app_process,
         paused_by_minimise: false,
         minimises: 0,
@@ -493,7 +493,7 @@ pub(super) async fn choose_area(
         _ => Mode::Area,
     };
     let first = state.capture.freeze_monitor(monitor, false).await?;
-    let (frame, event) = select(state, first, false, mode, true, pressed, cx).await?;
+    let (frozen, event) = select(state, first, false, mode, true, pressed, cx).await?;
     let (region, window) = match event {
         OverlayEvent::Selected(rect) => (Some(rect), None),
         OverlayEvent::Display => (None, None),
@@ -508,7 +508,7 @@ pub(super) async fn choose_area(
     };
     Ok(Some(Chosen {
         region,
-        info: frame.info,
+        info: frozen.info,
         window,
     }))
 }
@@ -747,7 +747,7 @@ fn begin(
     let ended = recording.recorder.as_mut().and_then(RecorderProcess::ended);
     let watched = recording.path.clone();
     recording.refresh_controls(cx);
-    recording.color_frame_for_clock();
+    recording.color_border_for_clock();
     state.recording.replace(Some(recording));
     state.recording_changed(cx);
     if let Some(requests) = requests {
@@ -953,7 +953,7 @@ async fn count_down(
 /// Show the dashed border around `region` (physical pixels relative to the
 /// monitor; `None` for all of it), or around `window`, in `color`, before
 /// recording starts, so it is excluded from the first frame.
-pub(super) fn show_frame(
+pub(super) fn show_border(
     info: &MonitorInfo,
     region: Option<PhysicalRect>,
     window: Option<WindowId>,
@@ -963,9 +963,9 @@ pub(super) fn show_frame(
     let area = shuttercrab_capture::record::recordable(region, b.width, b.height);
     let px = |logical: f32| ((logical * scale).round() as u32).max(1);
     let style = FrameStyle {
-        thickness: px(FRAME_THICKNESS),
-        dash: px(FRAME_DASH),
-        gap: px(FRAME_GAP),
+        thickness: px(BORDER_THICKNESS),
+        dash: px(BORDER_DASH),
+        gap: px(BORDER_GAP),
     };
     let area = PhysicalRect::new(b.x + area.x, b.y + area.y, area.width, area.height);
     let bounds = b;
@@ -1342,7 +1342,7 @@ fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
             return;
         }
         let resume = recording.set_paused(true);
-        recording.color_frame(FRAME_DISCARDED);
+        recording.color_border(BORDER_DISCARDED);
         let os_window = recording
             .controls
             .as_ref()
@@ -1394,7 +1394,7 @@ pub(super) fn undo(state: &Rc<State>, cx: &mut AsyncApp) {
             if discarded.resume {
                 recording.set_paused(false);
             }
-            recording.color_frame_for_clock();
+            recording.color_border_for_clock();
         }
         if let Some(window) = discarded.give_back {
             platform_window::bring_to_front(window);
