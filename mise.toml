@@ -2,6 +2,8 @@
 rust = { version = "1.98.1", components = "clippy,rustfmt" }
 # Builds libopus, for a live stream's sound, on Windows.
 cmake = "4.4.0"
+# Checks the dependencies against deny.toml.
+cargo-deny = "0.20.2"
 
 # Formatting, Clippy, the docs and the tests, as CI runs them, after
 # trimming target/. Skips the one test that would signal the Shuttercrab
@@ -21,6 +23,13 @@ run = [
 description = "The docs, failing on any warning"
 env = { RUSTDOCFLAGS = "-D warnings" }
 run = "cargo doc --workspace --no-deps --document-private-items --locked"
+
+# The dependencies' advisories, licences and sources, as deny.toml allows
+# them. Not part of check: an advisory published today would fail it
+# without any change here.
+[tasks.deny]
+description = "Advisories, licences and sources of the dependencies"
+run = "cargo deny check"
 
 [tasks.trim]
 description = "Empty target/ once it is past 30 GiB"

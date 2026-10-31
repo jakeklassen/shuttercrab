@@ -1,0 +1,53 @@
+# cargo-deny (deny.toml): the dependencies' licences and sources, and the
+# RustSec advisories against them. For pull requests and pushes to main
+# that change the dependencies, and weekly, for advisories published since.
+# Apart from CI, which the Release workflow runs before tagging, so a new
+# advisory shows here without stopping a release.
+
+name: Deny
+
+on:
+  pull_request:
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/*/Cargo.toml'
+      - 'vendor/*/Cargo.toml'
+      - 'deny.toml'
+      - '.github/workflows/deny.yml'
+  push:
+    branches: [main]
+    paths:
+      - 'Cargo.toml'
+      - 'Cargo.lock'
+      - 'crates/*/Cargo.toml'
+      - 'vendor/*/Cargo.toml'
+      - 'deny.toml'
+      - '.github/workflows/deny.yml'
+  schedule:
+    # Mondays, 06:00 UTC.
+    - cron: '0 6 * * 1'
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  deny:
+    name: ${{ matrix.checks }}
+    strategy:
+      fail-fast: false
+      matrix:
+        # Apart, so an advisory against a dependency doesn't hide whether
+        # the licences and sources pass.
+        checks: [advisories, licenses bans sources]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - uses: jdx/mise-action@v5
+
+      - name: cargo deny check ${{ matrix.checks }}
+        run: cargo deny check ${{ matrix.checks }}

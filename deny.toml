@@ -1,0 +1,63 @@
+# cargo-deny: known advisories against the dependencies, their licences and
+# where they come from. `mise run deny` runs it here; the Deny workflow runs
+# it on pull requests and pushes to main that change the dependencies, and
+# every week for advisories published since.
+
+[graph]
+# Every platform's dependencies: Shuttercrab ships for Windows, and builds
+# on Linux and macOS.
+targets = [
+  "x86_64-pc-windows-msvc",
+  "aarch64-pc-windows-msvc",
+  "x86_64-unknown-linux-gnu",
+  "aarch64-apple-darwin",
+  "x86_64-apple-darwin",
+]
+all-features = true
+
+[advisories]
+# Vulnerabilities, unsound code and unmaintained crates, anywhere in the
+# tree. An advisory the app cannot act on yet is listed here, with why,
+# rather than turned off.
+ignore = []
+
+[licenses]
+# The workspace's own MIT OR Apache-2.0, and the other permissive licences
+# the dependency tree uses. A crate offered under a choice of licences
+# passes if one of them is here.
+allow = [
+  "MIT",
+  "Apache-2.0",
+  "Apache-2.0 WITH LLVM-exception",
+  "BSD-2-Clause",
+  "BSD-3-Clause",
+  "BSL-1.0",
+  "ISC",
+  "Zlib",
+  "0BSD",
+  "CC0-1.0",
+  "Unicode-3.0",
+  "Unlicense",
+  # libbz2-rs-sys: bzip2's own licence, BSD-like.
+  "bzip2-1.0.6",
+  # webpki-roots: the Mozilla root certificates, as data.
+  "CDLA-Permissive-2.0",
+  # dwrote, option-ext and cbindgen: changes to their own files stay
+  # under MPL-2.0; nothing else is affected.
+  "MPL-2.0",
+]
+confidence-threshold = 0.8
+
+[bans]
+# GPUI's tree has dozens of crates at two or more versions (windows-sys,
+# syn, hashbrown...), none of which the app can merge: listing them all
+# would bury what matters.
+multiple-versions = "allow"
+wildcards = "allow"
+
+[sources]
+# crates.io only: no git dependencies, and no other registries.
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
