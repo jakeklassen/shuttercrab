@@ -5,27 +5,32 @@
 //! hardware encoder's memory goes with the helper, and the app never waits
 //! on the network.
 //!
-//! The two talk in JSON lines, as the recording helper does: [`Request`]s
-//! in on standard input, [`Reply`]s out on standard output, the log on
-//! standard error. If the app goes away, the helper's input ends and it
-//! stops.
+//! The two talk in JSON lines, as the recording helper does (see
+//! `helper_process`): [`Request`]s in on standard input, [`Reply`]s out on
+//! standard output, the log on standard error. If the app goes away, the
+//! helper's input ends and it stops.
 
-use crate::helper_process::{Options, forward_logs, send};
-use anyhow::{Context, Result, anyhow};
+use crate::helper_process::{Helper, HelperProcess, Options};
+use anyhow::{Result, anyhow};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde::{Deserialize, Serialize};
 use shuttercrab_capture::record::{RecordOptions, Source};
-use shuttercrab_platform::process::{Process, Spawned, spawn_quiet};
 use shuttercrab_stream::Quality;
 use std::{
     fs::File,
     io::{BufRead, BufReader},
-    sync::{Mutex, MutexGuard, PoisonError, mpsc},
-    thread,
+    sync::mpsc,
 };
 
 /// The command-line flag that makes `shuttercrab.exe` the streaming helper.
 pub const FLAG: &str = "--streamer";
+
+/// The streamer, for [`HelperProcess`].
+static HELPER: Helper = Helper {
+    flag: FLAG,
+    name: "streamer",
+    process: "streaming process",
+};
 
 /// What to stream, and how to reach the meeting point.
 #[derive(Clone, PartialEq, Serialize, Deserialize)]
@@ -120,69 +125,28 @@ pub enum StreamEvent {
 
 /// A stream in the helper process.
 pub struct StreamProcess {
-    child: Process,
-    input: Mutex<Option<File>>,
+    helper: HelperProcess,
 }
 
 impl StreamProcess {
     /// Start the helper and open the room. Returns once the room is open,
     /// with the link to share and what happens next. Blocks meanwhile.
     pub fn start(start: StreamStart) -> Result<(Self, String, UnboundedReceiver<StreamEvent>)> {
-        let exe = std::env::current_exe().context("could not find shuttercrab.exe")?;
-        let Spawned {
-            process: child,
-            stdin: mut input,
-            stdout: output,
-            stderr: errors,
-        } = spawn_quiet(&exe, &[FLAG]).context("could not start the streaming process")?;
-        thread::Builder::new()
-            .name("shuttercrab-streamer-log".into())
-            .spawn(move || forward_logs(errors, "shuttercrab::streamer"))?;
-        send(&mut input, &Request::Start(start))?;
-        let (opened_tx, opened_rx) = mpsc::channel();
         let (events_tx, events_rx) = unbounded();
-        thread::Builder::new()
-            .name("shuttercrab-streamer-replies".into())
-            .spawn(move || read_replies(output, opened_tx, events_tx))?;
-        let opened = opened_rx
-            .recv()
-            .unwrap_or_else(|_| Err(anyhow!("the streaming process stopped")));
-        match opened {
-            Ok(link) => Ok((
-                Self {
-                    child,
-                    input: Mutex::new(Some(input)),
-                },
-                link,
-                events_rx,
-            )),
-            Err(e) => {
-                drop(input);
-                let _ = child.wait();
-                Err(e)
-            }
-        }
-    }
-
-    fn input(&self) -> MutexGuard<'_, Option<File>> {
-        self.input.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn request(&self, request: &Request) {
-        if let Some(input) = self.input().as_mut()
-            && let Err(e) = send(input, request)
-        {
-            log::debug!("could not reach the streamer: {e:#}");
-        }
+        let (helper, link) =
+            HelperProcess::start(&HELPER, &Request::Start(start), move |output, opened| {
+                read_replies(output, opened, events_tx);
+            })?;
+        Ok((Self { helper }, link, events_rx))
     }
 
     pub fn set_quality(&self, quality: Quality) {
-        self.request(&Request::Quality(quality));
+        self.helper.request(&Request::Quality(quality));
     }
 
     pub fn set_sound(&self, source: Source, on: bool) {
         let microphone = source == Source::Microphone;
-        self.request(&Request::SetSound { microphone, on });
+        self.helper.request(&Request::SetSound { microphone, on });
     }
 
     /// Stop streaming; the helper exits. Blocks until it has.
@@ -193,10 +157,8 @@ impl StreamProcess {
 
 impl Drop for StreamProcess {
     fn drop(&mut self) {
-        if let Some(mut input) = self.input().take() {
-            let _ = send(&mut input, &Request::Stop);
-        }
-        let _ = self.child.wait();
+        self.helper.close(&Request::Stop);
+        self.helper.wait();
     }
 }
 
