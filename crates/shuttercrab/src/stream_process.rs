@@ -252,7 +252,8 @@ pub use helper::serve;
 /// The helper's side, which streams.
 #[cfg(windows)]
 mod helper {
-    use super::{Reply, Request, Stats, send};
+    use super::{Reply, Request, Stats};
+    use crate::helper_process::{first_request, log_to_app, read_requests, send};
     use shuttercrab_capture::{
         live::{SoundCodec, VideoCodec},
         record::{RecordOptions, Source},
@@ -270,11 +271,9 @@ mod helper {
     /// stream, and write [`Reply`]s to standard output. Returns the exit
     /// code.
     pub fn serve() -> i32 {
-        crate::helper_process::log_to_app(log::LevelFilter::Info);
+        log_to_app(log::LevelFilter::Info);
         let mut out = std::io::stdout();
-        let mut first = String::new();
-        let read = std::io::stdin().read_line(&mut first);
-        let Ok(Ok(Request::Start(start))) = read.map(|_| serde_json::from_str(first.trim())) else {
+        let Some(Request::Start(start)) = first_request() else {
             log::error!("the streamer was not asked to start");
             return 2;
         };
@@ -290,21 +289,7 @@ mod helper {
         }
 
         let (tx, rx) = mpsc::channel();
-        let asked = tx.clone();
-        thread::spawn(move || {
-            for line in std::io::stdin().lines().map_while(Result::ok) {
-                match serde_json::from_str(&line) {
-                    Ok(request) => {
-                        if asked.send(Next::Asked(request)).is_err() {
-                            return;
-                        }
-                    }
-                    Err(e) => log::warn!("unreadable request: {e}"),
-                }
-            }
-            // The app closed our input, or went away: stop.
-            let _ = asked.send(Next::Asked(Request::Stop));
-        });
+        read_requests(tx.clone(), Next::Asked, Request::Stop);
         thread::spawn(move || {
             let _ = tx.send(Next::Came(room.accept()));
         });
