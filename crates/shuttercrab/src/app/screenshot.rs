@@ -162,7 +162,8 @@ pub(super) async fn capture(
         CaptureTarget::Window => Mode::Window,
         CaptureTarget::Freeform => Mode::Freeform,
     };
-    let (frozen, event) = select(state, frame, include_cursor, mode, false, pressed, cx).await?;
+    let choosing = Choosing::Screenshot { include_cursor };
+    let (frozen, event) = select(state, frame, choosing, mode, pressed, cx).await?;
     let released = Instant::now();
     // The overlay is gone: a new request can wait for this one.
     state.busy.set(Busy::Finishing);
@@ -234,27 +235,40 @@ impl Frozen {
     }
 }
 
-/// Show the selection overlay on every monitor, in `mode` or, with
-/// `recording`, to choose an area to record, and wait for the choice.
-/// `first` is the monitor under the pointer, frozen: its overlay comes up
-/// first and takes the keyboard, then the other monitors are frozen (with
-/// the pointer as `include_cursor` says) and covered. Returns the monitor
-/// the choice was made on, and the choice; the other frozen screens are
-/// released.
+/// What the selection overlay is choosing for.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(super) enum Choosing {
+    /// A screenshot, of screens frozen with the pointer or without.
+    Screenshot { include_cursor: bool },
+    /// An area to record or stream: the screens are frozen without the
+    /// pointer.
+    Recording,
+}
+
+/// Show the selection overlay on every monitor, in `mode`, and wait for
+/// the choice. `first` is the monitor under the pointer, frozen: its
+/// overlay comes up first and takes the keyboard, then the other monitors
+/// are frozen and covered. Returns the monitor the choice was made on, and
+/// the choice; the other frozen screens are released.
 pub(super) async fn select(
     state: &State,
     first: FrozenFrame,
-    include_cursor: bool,
+    choosing: Choosing,
     mode: Mode,
-    recording: bool,
     pressed: Instant,
     cx: &mut AsyncApp,
 ) -> Result<(Frozen, OverlayEvent), Failure> {
+    let include_cursor = matches!(
+        choosing,
+        Choosing::Screenshot {
+            include_cursor: true
+        }
+    );
     let frozen = pressed.elapsed();
     let mode = Rc::new(Cell::new(mode));
     let snap = state.settings.borrow().snap_to_windows;
     let open = |frame: &Frozen, activation, cx: &mut AsyncApp| {
-        open_overlay(frame, mode.clone(), recording, snap, activation, cx)
+        open_overlay(frame, mode.clone(), choosing, snap, activation, cx)
     };
     let first = Frozen::new(first);
     let (popup, outcome) = open(&first, Activation::Take, cx)?;
@@ -328,7 +342,7 @@ pub(super) async fn select(
 fn open_overlay(
     frozen: &Frozen,
     mode: Rc<Cell<Mode>>,
-    recording: bool,
+    choosing: Choosing,
     snap: bool,
     activation: Activation,
     cx: &mut AsyncApp,
@@ -342,7 +356,7 @@ fn open_overlay(
             let overlay = SelectionOverlay::new(overlay_frame, window, cx)
                 .with_windows(windows, snap)
                 .sharing_mode(mode);
-            if recording {
+            if choosing == Choosing::Recording {
                 overlay.for_recording()
             } else {
                 overlay
