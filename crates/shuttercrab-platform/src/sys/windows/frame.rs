@@ -2,14 +2,15 @@
 //! from capture.
 
 use super::{layered::LayeredWindow, window::exclude_from_capture};
-use crate::frame::{FrameStyle, Rect, dashes, strips};
+use crate::frame::{FrameStyle, dashes, strips};
 use anyhow::Result;
+use shuttercrab_types::PhysicalRect;
 use shuttercrab_types::WindowId;
 
 /// The border on screen. Dropping it removes it; drop it on the thread
 /// that showed it.
 pub struct Frame {
-    strips: Vec<(Rect, LayeredWindow)>,
+    strips: Vec<(PhysicalRect, LayeredWindow)>,
     style: FrameStyle,
     color: [u8; 3],
 }
@@ -18,8 +19,8 @@ impl Frame {
     /// Show a border of `color` (RGB) around `area` on a monitor with
     /// `bounds`. Returns it and how many sides could not be shown.
     pub fn show(
-        area: Rect,
-        bounds: Rect,
+        area: PhysicalRect,
+        bounds: PhysicalRect,
         style: FrameStyle,
         color: [u8; 3],
     ) -> Result<(Self, usize)> {
@@ -75,7 +76,7 @@ impl Frame {
     /// Move the border to `area` on a monitor with `bounds`. Fails if the
     /// sides would change where they go (inside or outside), so the caller
     /// shows a new border instead.
-    pub fn place(&mut self, area: Rect, bounds: Rect) -> Result<()> {
+    pub fn place(&mut self, area: PhysicalRect, bounds: PhysicalRect) -> Result<()> {
         let color = self.color;
         let placed = strips(area, bounds, self.style.thickness);
         anyhow::ensure!(

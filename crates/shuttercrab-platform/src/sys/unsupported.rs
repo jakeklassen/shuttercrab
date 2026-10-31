@@ -14,7 +14,7 @@ pub mod platform {
     use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray};
     use anyhow::Result;
     use futures::channel::mpsc;
-    use shuttercrab_types::WindowId;
+    use shuttercrab_types::{PhysicalRect, WindowId};
     use std::{future::Future, path::PathBuf, sync::Arc};
 
     /// The platform thread, with nothing to do: no tray, no hotkeys.
@@ -88,10 +88,9 @@ pub mod instance {
 }
 
 pub mod watch {
-    use crate::frame::Rect;
-    use shuttercrab_types::WindowId;
+    use shuttercrab_types::{PhysicalRect, WindowId};
 
-    pub fn visible_bounds(_window: WindowId) -> Option<Rect> {
+    pub fn visible_bounds(_window: WindowId) -> Option<PhysicalRect> {
         None
     }
 }
@@ -182,7 +181,7 @@ pub mod cursor {
     use super::unsupported;
     use crate::cursor::CursorOver;
     use anyhow::Result;
-    use shuttercrab_types::WindowId;
+    use shuttercrab_types::{PhysicalRect, WindowId};
 
     /// A cursor the OS cannot show yet.
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -205,7 +204,7 @@ pub mod drag {
     use super::unsupported;
     use crate::drag::DragImage;
     use anyhow::Result;
-    use shuttercrab_types::WindowId;
+    use shuttercrab_types::{PhysicalRect, WindowId};
     use std::path::Path;
 
     pub fn drag_file(_path: &Path, _image: Option<DragImage>) -> Result<bool> {
@@ -220,17 +219,18 @@ pub mod drag {
 #[cfg(not(target_os = "linux"))]
 pub mod frame {
     use super::unsupported;
-    use crate::frame::{FrameStyle, Rect};
+    use crate::frame::FrameStyle;
     use anyhow::Result;
-    use shuttercrab_types::WindowId;
+    use shuttercrab_types::PhysicalRect;
+    use shuttercrab_types::{PhysicalRect, WindowId};
 
     /// A recording border the OS cannot show yet.
     pub struct Frame;
 
     impl Frame {
         pub fn show(
-            _area: Rect,
-            _bounds: Rect,
+            _area: PhysicalRect,
+            _bounds: PhysicalRect,
             _style: FrameStyle,
             _color: [u8; 3],
         ) -> Result<(Self, usize)> {
@@ -245,7 +245,7 @@ pub mod frame {
             Ok(())
         }
 
-        pub fn place(&mut self, _area: Rect, _bounds: Rect) -> Result<()> {
+        pub fn place(&mut self, _area: PhysicalRect, _bounds: PhysicalRect) -> Result<()> {
             Ok(())
         }
     }

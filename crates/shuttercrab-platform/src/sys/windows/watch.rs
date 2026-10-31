@@ -6,8 +6,8 @@
 
 use super::platform::send_event;
 use super::window::{to_hwnd, to_window_id};
-use crate::{PlatformEvent, WindowChange, frame::Rect};
-use shuttercrab_types::WindowId;
+use crate::{PlatformEvent, WindowChange};
+use shuttercrab_types::{PhysicalRect, WindowId};
 use std::cell::RefCell;
 use windows::Win32::{
     Foundation::{HWND, RECT},
@@ -73,7 +73,7 @@ struct Watched {
     hwnd: HWND,
     hooks: Vec<HWINEVENTHOOK>,
     /// Its bounds as last reported, so a repeat is not sent again.
-    last: Option<Rect>,
+    last: Option<PhysicalRect>,
     /// Whether it could be seen when last checked.
     seen: Seen,
 }
@@ -140,7 +140,7 @@ pub(crate) fn watch(window: Option<WindowId>) {
 
 /// `window`'s visible bounds, without the invisible resize border and the
 /// shadow.
-pub fn visible_bounds(window: WindowId) -> Option<Rect> {
+pub fn visible_bounds(window: WindowId) -> Option<PhysicalRect> {
     let mut rect = RECT::default();
     unsafe {
         DwmGetWindowAttribute(
@@ -152,7 +152,8 @@ pub fn visible_bounds(window: WindowId) -> Option<Rect> {
     }
     .ok()?;
     let (width, height) = (rect.right - rect.left, rect.bottom - rect.top);
-    (width > 0 && height > 0).then(|| Rect::new(rect.left, rect.top, width as u32, height as u32))
+    (width > 0 && height > 0)
+        .then(|| PhysicalRect::new(rect.left, rect.top, width as u32, height as u32))
 }
 
 unsafe extern "system" fn on_event(

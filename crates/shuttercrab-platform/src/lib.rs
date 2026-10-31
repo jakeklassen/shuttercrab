@@ -26,6 +26,7 @@ pub mod targets;
 pub mod window;
 
 pub use hotkey::{Hotkey, Key, print_screen_taken};
+use shuttercrab_types::PhysicalRect;
 #[cfg(windows)]
 pub use sys::imp::clipboard::dibv5;
 pub use sys::imp::{
@@ -106,7 +107,7 @@ impl Request {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowChange {
     /// It moved or changed size: its visible bounds now, physical pixels.
-    Moved(frame::Rect),
+    Moved(PhysicalRect),
     /// Dragging it to move or resize it began.
     DragStarted,
     /// The drag ended.

@@ -101,7 +101,10 @@ mod tests {
     fn rectangles_overlap_only_when_they_share_a_pixel() {
         let a = PhysicalRect::new(0, 0, 10, 10);
         assert!(a.overlaps(&PhysicalRect::new(9, 9, 5, 5)));
-        assert!(!a.overlaps(&PhysicalRect::new(10, 0, 5, 5)), "touching is not overlapping");
+        assert!(
+            !a.overlaps(&PhysicalRect::new(10, 0, 5, 5)),
+            "touching is not overlapping"
+        );
         assert_eq!(
             PhysicalRect::new(-5, 8, 10, 10).clamp_to(10, 10),
             PhysicalRect::new(0, 8, 5, 2)
