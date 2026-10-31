@@ -388,8 +388,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             exclude_from_capture(os_window, "thumbnail");
         }
         log::debug!("thumbnail up for {seconds} s");
-        let generation = state.thumbnail_generation.get() + 1;
-        state.thumbnail_generation.set(generation);
+        let showing = state.thumbnails.borrow_mut().start();
         if let Some(previous) = state.thumbnail.replace(Some(card)) {
             previous.close(cx);
         }
@@ -432,7 +431,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             }
         }
         // Close it unless a newer thumbnail has replaced it.
-        if state.thumbnail_generation.get() == generation
+        if state.thumbnails.borrow().is_current(showing)
             && let Some(card) = state.thumbnail.take()
         {
             card.close(cx);

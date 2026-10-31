@@ -8,6 +8,7 @@ use super::{
 use crate::{
     app::{State, failure::Failure},
     files,
+    generation::Token,
     record_bar::{BarMode, Destructive, RecordBar},
     recorder_process::RecorderProcess,
     recording::{self, Clock},
@@ -28,7 +29,7 @@ use std::{
 pub(in crate::app) struct PreviousTake {
     /// Its final name; until kept it stays at [`files::partial_path`].
     path: PathBuf,
-    generation: u64,
+    undo_window: Token,
 }
 
 /// The controls are asking before a take is thrown away.
@@ -46,7 +47,7 @@ pub(super) struct Asking {
 pub(in crate::app) struct Discarded {
     /// The recording was running, and resumes if the discard is undone.
     resume: bool,
-    generation: u64,
+    undo_window: Token,
     /// The window that had the keyboard before the controls took it.
     pub(super) give_back: Option<WindowId>,
 }
@@ -182,7 +183,7 @@ pub(super) fn keep_take(state: &State, cx: &mut AsyncApp) {
 /// The controls take the keyboard meanwhile, so Enter can discard at once;
 /// it goes back afterwards.
 fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
-    let generation = state.next_generation();
+    let undo_window = state.new_undo_window();
     let window = state.settings.borrow().undo_window();
     let until = Instant::now() + window;
     let (view, os_window) = {
@@ -202,7 +203,7 @@ fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
         let give_back = platform_window::foreground_window().filter(|w| Some(*w) != os_window);
         recording.discarded = Some(Discarded {
             resume,
-            generation,
+            undo_window,
             give_back,
         });
         (recording.view(), os_window)
@@ -226,7 +227,7 @@ fn discard_with_undo(state: &Rc<State>, cx: &mut AsyncApp) {
             .borrow()
             .as_ref()
             .and_then(|r| r.discarded)
-            .is_some_and(|d| d.generation == generation);
+            .is_some_and(|d| d.undo_window == undo_window);
         if due {
             discard_recording(&state, cx);
         }
@@ -400,14 +401,14 @@ fn offer_replaced_take(
 ) {
     let until = Instant::now() + state.settings.borrow().undo_window();
     if kept {
-        let generation = state.next_generation();
+        let undo_window = state.new_undo_window();
         state.previous_take.replace(Some(PreviousTake {
             path: previous,
-            generation,
+            undo_window,
         }));
         forget_previous_take_later(
             state,
-            generation,
+            undo_window,
             until.saturating_duration_since(Instant::now()),
             cx,
         );
@@ -422,7 +423,7 @@ fn offer_replaced_take(
 /// Undo kept it or a newer window replaced it.
 fn forget_previous_take_later(
     state: &Rc<State>,
-    generation: u64,
+    undo_window: Token,
     window: Duration,
     cx: &mut AsyncApp,
 ) {
@@ -433,7 +434,7 @@ fn forget_previous_take_later(
             .previous_take
             .borrow()
             .as_ref()
-            .is_some_and(|p| p.generation == generation);
+            .is_some_and(|p| p.undo_window == undo_window);
         if !due {
             return;
         }
