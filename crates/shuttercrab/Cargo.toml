@@ -10,7 +10,7 @@ license.workspace = true
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
-dirs = "6"
+dirs = "7"
 shuttercrab-capture = { path = "../shuttercrab-capture" }
 shuttercrab-platform = { path = "../shuttercrab-platform" }
 shuttercrab-stream = { path = "../shuttercrab-stream" }
