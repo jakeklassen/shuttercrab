@@ -330,7 +330,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         undo_windows: RefCell::default(),
         print_screen: RefCell::new(None),
     });
-    watch_for_updates(&state, cx);
+    check_for_updates(&state, cx);
     let first = shuttercrab.start;
     cx.spawn(async move |cx| {
         // Shuttercrab's window, on the taskbar like any app's, until closed;
@@ -437,7 +437,7 @@ fn notification_clicked(state: &Rc<State>, cx: &mut AsyncApp) {
 /// Look for a newer release now and every few hours, in the background,
 /// until one is downloaded; then offer it in the tray menu and the main
 /// window.
-fn watch_for_updates(state: &Rc<State>, cx: &mut App) {
+fn check_for_updates(state: &Rc<State>, cx: &mut App) {
     let Some(backend) = state.updates.clone() else {
         return;
     };
