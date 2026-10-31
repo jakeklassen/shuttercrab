@@ -1,5 +1,5 @@
-//! The settings (PRD §26): General, Screenshot, Recording and Diagnostics
-//! pages, shown as a page of the main window. Every change applies at once;
+//! The settings (PRD §26): General, Screenshot, Recording, Streaming,
+//! Diagnostics and Notices pages, shown as a page of the main window. Every change applies at once;
 //! there is no Save button. It all works from the keyboard: Tab between
 //! controls, Space or Enter to use them, Escape to go back.
 //!

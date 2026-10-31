@@ -1,32 +1,21 @@
 //! Shuttercrab's window, after Snipping Tool's: a toolbar to start a capture
-//! (New, Screenshot or Record, the target, the delay) and a ⋯ menu with
-//! Settings, the folder and Quit. Settings open as a page of the same
-//! window, so Shuttercrab only ever has one window on the taskbar.
+//! (New; Screenshot, Record or Stream; the target; the delay), Watch, and a
+//! ⋯ menu with Settings, the folder and Quit. Settings open as a page of
+//! the same window, so Shuttercrab only ever has one window on the taskbar.
 //!
 //! Like Snipping Tool, it shows a screenshot after it is taken: one started
 //! from the window, or one whose thumbnail was clicked. The window sizes
 //! itself to show it at full size where the screen allows, the toolbar
 //! gains the zoom, Copy and Save as, and the ⋯ menu Edit in Paint (E) and
-//! Open with; its folder item shows a saved screenshot's file.
+//! Open with; its folder item shows a saved screenshot's file. A screenshot
+//! can be marked up with the pen, highlighter, eraser and shapes (see
+//! `tools`, `shapes` and `selection`), and its text copied or redacted (see
+//! `text`).
 //!
-//! Everything has a key: N or Enter starts a capture, S and R pick the
-//! mode, A, W, D and F the target, T steps through the delays, comma opens
-//! Settings, O the folder, Ctrl+Q quits; with a screenshot shown, Ctrl+C
-//! copies it, Ctrl+S saves it as, Ctrl+plus and Ctrl+minus zoom (so does
-//! Ctrl with the scroll wheel, around the pointer), Ctrl+0 fits it to the
-//! window and Ctrl+1 shows it at full size. The wheel, or a drag, moves a
-//! screenshot bigger than the window. P and H pick up the pen and the
-//! highlighter, and pressed again open its colours and size; X picks up
-//! the eraser, which takes off whole marks, and pressed again offers to
-//! take off every one. G picks up the shapes, whose bar has keys of its own
-//! (see `shapes`), and V picks up Select, to change a shape drawn before
-//! (see `selection`). I opens Text actions, to copy and redact the
-//! screenshot's text (see `text`). Escape puts the tool down. Dragging then draws (Shift
-//! for a straight line, a square or a circle), and
-//! Space+drag or Ctrl+drag moves the screenshot. [ and ] change the size,
-//! Ctrl+Z and Ctrl+Y undo and redo. Escape closes a menu, or goes back
-//! from Settings. At the bottom, quietly, the version running; once a newer
-//! release is downloaded, Restart to update (U) in its place.
+//! Everything has a key, shown beside it; `MainWindow::on_key_down` has
+//! them all, with the tools' own bars adding theirs. At the bottom,
+//! quietly, the version running; once a newer release is downloaded,
+//! Restart to update (U) in its place.
 //!
 //! The window reaches the rest of Shuttercrab only through [`MainHooks`],
 //! so it can be tested on its own.
@@ -757,8 +746,9 @@ impl MainWindow {
         self.mode() == CaptureMode::Stream && self.settings().stream_host_key.is_empty()
     }
 
-    /// Keep the host key on the clipboard, encrypted, and say what came of
-    /// it. The key itself is never shown or logged.
+    /// Keep the host key that is on the clipboard, encrypted in the
+    /// settings, and say what came of it. The key itself is never shown or
+    /// logged.
     fn paste_host_key(&mut self, cx: &mut Context<Self>) {
         let text = cx
             .read_from_clipboard()
@@ -1906,7 +1896,8 @@ impl MainWindow {
             .children(Self::key_hint(self.shown_key("u")))
     }
 
-    /// Which build is running, quietly, so an update is easy to confirm; in    /// its place, once a newer release is downloaded, a way to restart into
+    /// Which build is running, quietly, so an update is easy to confirm; in
+    /// its place, once a newer release is downloaded, a way to restart into
     /// it.
     fn footer(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
         let footer = div()

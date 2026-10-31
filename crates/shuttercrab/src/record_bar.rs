@@ -140,7 +140,7 @@ pub enum BarMode {
     Starting,
     /// The time and the four actions.
     Controls,
-    /// Asking before `Destructive` throws away a take `length` long.
+    /// Asking before the action throws away the take, whose length it says.
     Confirm(Destructive, Duration),
     /// The take is discarded, and deleted at `until` unless undone.
     Discarded { until: Instant },
