@@ -7,11 +7,11 @@ mod clock;
 mod com;
 pub mod display;
 pub mod gpu;
+pub mod live_player;
 mod opus;
 pub mod play;
 pub mod record;
 pub mod service;
-pub mod watch;
 
 use std::sync::{Mutex, MutexGuard, PoisonError};
 

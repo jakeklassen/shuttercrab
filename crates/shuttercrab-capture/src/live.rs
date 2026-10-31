@@ -8,7 +8,7 @@
 
 /// Playing a live recording as it arrives.
 #[cfg(windows)]
-pub use crate::sys::imp::watch::LivePlayer;
+pub use crate::sys::imp::live_player::LivePlayer;
 
 /// Whether this PC can encode pictures as a codec, live.
 #[cfg(windows)]
