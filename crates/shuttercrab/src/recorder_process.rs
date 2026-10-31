@@ -14,16 +14,14 @@
 //! [`RecorderProcess`] has the same methods as the in-process
 //! [`Recorder`], which [`serve`] runs inside the helper.
 
-use crate::helper_process::{forward_logs, log_to_app, send};
+use crate::helper_process::{Options, forward_logs, log_to_app, send};
 use anyhow::{Context, Result, anyhow};
 use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
-use shuttercrab_capture::{
-    MonitorId, PhysicalRect,
-    record::{Interruption, RecordOptions, Recorder, RecordingSummary, Source},
+use shuttercrab_capture::record::{
+    Interruption, RecordOptions, Recorder, RecordingSummary, Source,
 };
 use shuttercrab_platform::process::{Process, Spawned, spawn_quiet};
-use shuttercrab_types::WindowId;
 use std::{
     fs::File,
     io::{BufRead, BufReader},
@@ -54,22 +52,6 @@ enum Request {
     ShowCursor(bool),
     SoundProcess(Option<u32>),
     Stop,
-}
-
-/// [`RecordOptions`] on the wire.
-#[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
-pub(crate) struct Options {
-    monitor: u64,
-    region: Option<(i32, i32, u32, u32)>,
-    window: Option<u64>,
-    fps: u32,
-    include_cursor: bool,
-    system_sound: bool,
-    sound_process: Option<u32>,
-    microphone: bool,
-    microphone_device: Option<String>,
-    sound_track: bool,
-    path: PathBuf,
 }
 
 /// What the helper says: that recording started (or could not), and how
@@ -105,42 +87,6 @@ enum Why {
     DeviceLost,
     DiskFull,
     Failed(String),
-}
-
-impl From<RecordOptions> for Options {
-    fn from(o: RecordOptions) -> Self {
-        Self {
-            monitor: o.monitor.raw(),
-            region: o.region.map(|r| (r.x, r.y, r.width, r.height)),
-            window: o.window.map(WindowId::raw),
-            fps: o.fps,
-            include_cursor: o.include_cursor,
-            system_sound: o.system_sound,
-            sound_process: o.sound_process,
-            microphone: o.microphone,
-            microphone_device: o.microphone_device,
-            sound_track: o.sound_track,
-            path: o.path,
-        }
-    }
-}
-
-impl From<Options> for RecordOptions {
-    fn from(o: Options) -> Self {
-        Self {
-            monitor: MonitorId::from_raw(o.monitor),
-            region: o.region.map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h)),
-            window: o.window.map(WindowId::from_raw),
-            fps: o.fps,
-            include_cursor: o.include_cursor,
-            system_sound: o.system_sound,
-            sound_process: o.sound_process,
-            microphone: o.microphone,
-            microphone_device: o.microphone_device,
-            sound_track: o.sound_track,
-            path: o.path,
-        }
-    }
 }
 
 impl From<RecordingSummary> for Summary {
@@ -468,6 +414,8 @@ pub fn serve() -> i32 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use shuttercrab_capture::{MonitorId, PhysicalRect};
+    use shuttercrab_types::WindowId;
 
     #[test]
     fn requests_and_replies_round_trip_as_json_lines() {
