@@ -18,7 +18,7 @@ shuttercrab-types = { path = "../shuttercrab-types" }
 
 [target.'cfg(windows)'.dependencies]
 # The COM `implement` macro refers to windows-core by name.
-windows-core = "0.62"
+windows-core = "0.100"
 # A live stream's sound: the reference libopus, built from source.
 opus-head-sys = { version = "0.3.3", default-features = false }
 
