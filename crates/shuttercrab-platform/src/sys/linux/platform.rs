@@ -115,7 +115,7 @@ impl Platform {
         }
     }
 
-    pub fn watch_window(&self, _window: Option<WindowId>) {}
+    pub fn follow_window(&self, _window: Option<WindowId>) {}
 
     /// A desktop notification, through the freedesktop notification
     /// service. Sent from a thread of their own, started with the first:

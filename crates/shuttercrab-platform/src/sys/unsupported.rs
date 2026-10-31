@@ -59,7 +59,7 @@ pub mod platform {
 
         pub fn set_tray_menu(&self, _menu: Vec<MenuItem>) {}
 
-        pub fn watch_window(&self, _window: Option<WindowId>) {}
+        pub fn follow_window(&self, _window: Option<WindowId>) {}
 
         pub fn notify(&self, title: impl Into<String>, message: impl Into<String>) {
             log::info!("{}: {}", title.into(), message.into());
@@ -87,7 +87,7 @@ pub mod instance {
     }
 }
 
-pub mod watch {
+pub mod follow {
     use shuttercrab_types::{PhysicalRect, WindowId};
 
     pub fn visible_bounds(_window: WindowId) -> Option<PhysicalRect> {

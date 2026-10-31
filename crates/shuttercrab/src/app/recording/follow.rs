@@ -80,7 +80,7 @@ impl<'a> Following<'a> {
             bar: Cell::new(None),
             waiting: RefCell::new(None),
         }));
-        state.platform.watch_window(Some(window));
+        state.platform.follow_window(Some(window));
         Self { state, kept: false }
     }
 
@@ -101,6 +101,6 @@ impl Drop for Following<'_> {
 /// Stop following the recorded window, if one is followed.
 pub(in crate::app) fn stop_following(state: &State) {
     if state.followed.take().is_some() {
-        state.platform.watch_window(None);
+        state.platform.follow_window(None);
     }
 }
