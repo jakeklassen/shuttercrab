@@ -12,6 +12,7 @@ pub mod choice_menu;
 pub mod countdown;
 pub mod cursors;
 pub mod files;
+pub mod generation;
 pub mod heap;
 mod helper_process;
 pub mod icons;

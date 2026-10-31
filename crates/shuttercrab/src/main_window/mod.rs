@@ -23,6 +23,7 @@
 mod canvas;
 mod crop;
 mod emoji;
+mod moment;
 mod selection;
 mod shapes;
 mod text;
@@ -50,6 +51,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     px, rgb,
 };
+use moment::Momentary;
 use std::{
     path::{Path, PathBuf},
     rc::Rc,
@@ -425,11 +427,8 @@ pub struct MainWindow {
     /// The screenshot Clear took away, with its marks, and where the window
     /// was then: Undo brings both back until the next capture.
     cleared: Option<(Shown, Option<Place>)>,
-    /// Copy shows its check mark: the screenshot was just copied.
-    copied: bool,
-    /// Counts copies, so the check mark's timer knows whether a later copy
-    /// has started its own.
-    copies: u64,
+    /// Copy's check mark, shown for a moment after each copy.
+    copied: Momentary<()>,
     /// The tool in hand, if any: dragging on the screenshot draws or erases
     /// with it rather than moving the screenshot.
     hand: Option<Hand>,
@@ -446,19 +445,15 @@ pub struct MainWindow {
     emoji_menu: Option<usize>,
     /// The emoji's art for the picker, drawn the first time it opens.
     emoji_art: std::cell::OnceCell<Vec<Arc<RenderImage>>>,
-    /// A short message over the screenshot, such as that every mark was
-    /// taken off, and a count for its timer, as for the size label.
-    notice: Option<SharedString>,
-    notices: u64,
+    /// A short message over the screenshot for a moment, such as that
+    /// every mark was taken off.
+    notice: Momentary<SharedString>,
     /// Where the pointer is over the canvas, if it is, as of the last
     /// render: the tool's tip is outlined there.
     pointer: Option<Xy>,
     /// The tool's size just changed from the keyboard: the tip shows it,
     /// labelled, for a moment.
-    size_note: bool,
-    /// Counts size changes, so the label's timer knows whether a later one
-    /// has started its own.
-    size_notes: u64,
+    size_note: Momentary<()>,
     /// Space is held: dragging moves the screenshot, whatever the tool.
     space_held: bool,
     /// The pointer is over the screenshot itself, not a bar or a menu on
@@ -491,8 +486,7 @@ impl MainWindow {
             tools_below: false,
             folded: false,
             cleared: None,
-            copied: false,
-            copies: 0,
+            copied: Momentary::default(),
             hand: None,
             flyout: None,
             eraser_menu: false,
@@ -500,11 +494,9 @@ impl MainWindow {
             shape_context: None,
             emoji_menu: None,
             emoji_art: std::cell::OnceCell::new(),
-            notice: None,
-            notices: 0,
+            notice: Momentary::default(),
             pointer: None,
-            size_note: false,
-            size_notes: 0,
+            size_note: Momentary::default(),
             space_held: false,
             canvas_hovered: false,
             focus,
@@ -806,25 +798,11 @@ impl MainWindow {
             (None, None) => return,
         };
         cx.spawn(async move |this, cx| {
-            if !done.await {
-                return;
+            if done.await {
+                let _ = this.update(cx, |this, cx| {
+                    this.show_for_a_moment(|this| &mut this.copied, (), COPIED_FOR, cx)
+                });
             }
-            let Ok(copy) = this.update(cx, |this, cx| {
-                this.copies += 1;
-                this.copied = true;
-                cx.notify();
-                this.copies
-            }) else {
-                return;
-            };
-            cx.background_executor().timer(COPIED_FOR).await;
-            // Unless a later copy is showing its own.
-            let _ = this.update(cx, |this, cx| {
-                if this.copies == copy {
-                    this.copied = false;
-                    cx.notify();
-                }
-            });
         })
         .detach();
     }
@@ -1258,7 +1236,8 @@ impl MainWindow {
     /// Copy, which turns into a check mark and "Copied", fading in, for a
     /// moment after each copy.
     fn copy_button(&self, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let (label, icon, key) = if self.copied {
+        let copied = self.copied.showing();
+        let (label, icon, key) = if copied.is_some() {
             ("Copied", IconName::Check, "Copied")
         } else {
             ("Copy", IconName::Copy, "Ctrl+C")
@@ -1282,18 +1261,16 @@ impl MainWindow {
             .hover(|s| s.bg(hover()))
             .cursor_pointer()
             .on_click(cx.listener(|this, _: &ClickEvent, _, cx| this.copy(cx)))
-            .map(|d| {
-                if self.copied {
-                    // A new id per copy, so each one fades in afresh.
-                    d.child(content.with_animation(
-                        SharedString::from(format!("copied-{}", self.copies)),
+            .map(|d| match copied {
+                // A new id per copy, so each one fades in afresh.
+                Some(copy) => d
+                    .child(content.with_animation(
+                        SharedString::from(format!("copied-{copy}")),
                         Animation::new(Duration::from_millis(200)),
                         |content, delta| content.opacity(delta),
                     ))
-                    .into_any_element()
-                } else {
-                    d.child(content).into_any_element()
-                }
+                    .into_any_element(),
+                None => d.child(content).into_any_element(),
             })
     }
 
