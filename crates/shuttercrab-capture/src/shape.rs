@@ -3,7 +3,7 @@
 //!
 //! The outline is filled by the nonzero winding rule, so a loop that crosses
 //! itself still fills solid. Each pixel's coverage is sampled on
-//! [`SUBROWS`] rows per pixel, with exact horizontal coverage on each.
+//! `SUBROWS` rows per pixel, with exact horizontal coverage on each.
 
 /// Sample rows per pixel row.
 const SUBROWS: usize = 4;

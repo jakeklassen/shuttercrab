@@ -481,7 +481,7 @@ fn retry_once<S, T>(
 /// DXGI_ERROR_DEVICE_REMOVED, _HUNG, _RESET and DXGI_ERROR_DRIVER_INTERNAL_ERROR.
 pub(crate) const DEVICE_LOST: [u32; 4] = [0x887A_0005, 0x887A_0006, 0x887A_0007, 0x887A_0020];
 
-/// Whether `e` means the Direct3D device is gone ([`DEVICE_LOST`]), as a
+/// Whether `e` means the Direct3D device is gone (`DEVICE_LOST`), as a
 /// Windows error anywhere in its chain or as a code in its text.
 pub fn is_device_lost(e: &anyhow::Error) -> bool {
     e.chain().any(|cause| {

@@ -4,7 +4,7 @@
 //!
 //! Clicking the tool in hand, or pressing its key again, opens its flyout:
 //! its colours and a size slider over a preview stroke. Arrow keys move
-//! through the colours and Enter picks one; [ and ] make the tool in hand
+//! through the colours and Enter picks one; \[ and \] make the tool in hand
 //! smaller and bigger, flyout or not. Choices are kept in the settings.
 
 use super::MainWindow;
@@ -66,7 +66,7 @@ const ERASE_ALL: &str = "Erase all mark-ups";
 /// How long a notice stays at the foot of the screenshot.
 const NOTICE_FOR: Duration = Duration::from_millis(2000);
 
-/// How long the size label stays after [ or ].
+/// How long the size label stays after \[ or \].
 const SIZE_NOTE_FOR: Duration = Duration::from_millis(1200);
 
 impl MainWindow {
@@ -169,7 +169,7 @@ impl MainWindow {
         self.set_brush(tool, brush, cx);
     }
 
-    /// [ and ]: the tool in hand a size smaller or bigger, by a step its
+    /// \[ and \]: the tool in hand a size smaller or bigger, by a step its
     /// range suits.
     pub(super) fn step_size(&mut self, steps: f32, window: &mut Window, cx: &mut Context<Self>) {
         if self.shapes_bar_shown() {

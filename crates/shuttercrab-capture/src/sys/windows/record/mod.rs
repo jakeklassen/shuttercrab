@@ -16,7 +16,7 @@
 //! written beside the picture as an AAC track, on the same clock.
 //!
 //! The pieces: [`session`] runs one recording (capture, conversion, the
-//! frame loop), [`encoder`] turns frames into NV12 and an MP4, [`exposure`]
+//! frame loop), [`encoder`] turns frames into NV12 and an MP4, [`exposure`](crate::record::exposure)
 //! keeps HDR exposure steady, [`sound`] captures the sound, and [`timing`]
 //! measures each stage's cost.
 

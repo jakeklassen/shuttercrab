@@ -23,7 +23,7 @@
 //! (see `selection`). I opens Text actions, to copy and redact the
 //! screenshot's text (see `text`). Escape puts the tool down. Dragging then draws (Shift
 //! for a straight line, a square or a circle), and
-//! Space+drag or Ctrl+drag moves the screenshot. [ and ] change the size,
+//! Space+drag or Ctrl+drag moves the screenshot. \[ and \] change the size,
 //! Ctrl+Z and Ctrl+Y undo and redo. Escape closes a menu, or goes back
 //! from Settings. At the bottom, quietly, the version running; once a newer
 //! release is downloaded, Restart to update (U) in its place.

@@ -1154,7 +1154,7 @@ impl MainWindow {
     /// over the canvas: at the size it draws, round for the pen, the slanted
     /// chisel for the highlighter; the eraser's reach. A light line in a
     /// dark one, to show on any screenshot. The shapes have none, only the
-    /// crosshair. Labelled with its size for a moment after [ or ].
+    /// crosshair. Labelled with its size for a moment after \[ or \].
     fn tip(&self, shown: &Shown, per_pixel: f32) -> Vec<AnyElement> {
         let (Some(hand), Some(at)) = (self.hand, self.pointer) else {
             return Vec::new();

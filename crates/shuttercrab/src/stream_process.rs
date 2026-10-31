@@ -5,8 +5,8 @@
 //! hardware encoder's memory goes with the helper, and the app never waits
 //! on the network.
 //!
-//! The two talk in JSON lines, as the recording helper does: [`Request`]s
-//! in on standard input, [`Reply`]s out on standard output, the log on
+//! The two talk in JSON lines, as the recording helper does: `Request`s
+//! in on standard input, `Reply`s out on standard output, the log on
 //! standard error. If the app goes away, the helper's input ends and it
 //! stops.
 
@@ -266,8 +266,8 @@ mod helper {
         Came(anyhow::Result<Viewer>),
     }
 
-    /// Run as the streaming helper: read [`Request`]s from standard input,
-    /// stream, and write [`Reply`]s to standard output. Returns the exit
+    /// Run as the streaming helper: read `Request`s from standard input,
+    /// stream, and write `Reply`s to standard output. Returns the exit
     /// code.
     pub fn serve() -> i32 {
         if log::set_boxed_logger(Box::new(crate::recorder_process::HelperLogger)).is_ok() {
