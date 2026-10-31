@@ -909,7 +909,7 @@ mod tests {
             .fold(0, |n, bit| n | 1 << bit)
     }
 
-    /// What [`watch_numbers`] saw: for each picture drawn, which of the
+    /// What [`read_numbers`] saw: for each picture drawn, which of the
     /// pictures written it was, how long after it went in it was drawn,
     /// and when; and how far the sound was behind the newest picture.
     #[derive(Default)]
@@ -920,7 +920,7 @@ mod tests {
 
     /// Each picture `player` draws, read back and its number read, until
     /// `done`. A test polls; a viewer draws once a refresh.
-    fn watch_numbers(
+    fn read_numbers(
         player: &LivePlayer,
         written: &Mutex<Vec<Instant>>,
         done: &AtomicBool,
@@ -1024,9 +1024,9 @@ mod tests {
         let written = Arc::new(Mutex::new(Vec::new()));
 
         let done = Arc::new(AtomicBool::new(false));
-        let watcher = {
+        let reader = {
             let (player, written, done) = (player.clone(), written.clone(), done.clone());
-            std::thread::spawn(move || watch_numbers(&player, &written, &done, (w, h)))
+            std::thread::spawn(move || read_numbers(&player, &written, &done, (w, h)))
         };
 
         let count = fps * 5;
@@ -1034,7 +1034,7 @@ mod tests {
         pictures.feed(&mut writer, count, &written, |n, x| numbered(n, x, w));
         std::thread::sleep(Duration::from_millis(500));
         done.store(true, Ordering::Relaxed);
-        let seen = watcher.join().unwrap();
+        let seen = reader.join().unwrap();
         writer.finish().unwrap();
 
         let (n, _, at) = seen.pictures.first().expect("the player showed nothing");

@@ -1,4 +1,4 @@
-//! Watching a live recording (issue #66, spike S0): its coded frames
+//! Playing a live recording (issue #66, spike S0): its coded frames
 //! decoded as they arrive, with no media player's buffering in the way.
 //!
 //! Pictures go through Windows' H.264 decoder on the graphics card and are
