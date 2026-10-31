@@ -1,46 +1,8 @@
-//! The global hotkeys and the tray icon's menu: their ids, which hotkeys
-//! apply when, and what the menu offers.
+//! The tray icon's menu: its items' ids and what it offers.
 
 use crate::settings::Settings;
-use shuttercrab_platform::{Hotkey, Key, MenuItem};
+use shuttercrab_platform::MenuItem;
 use std::time::Duration;
-
-/// Ids for the hotkeys the platform thread registers.
-pub const SCREENSHOT_HOTKEY: u32 = 1;
-pub const QUIT_HOTKEY: u32 = 2;
-pub const CAPTURE_BAR_HOTKEY: u32 = 3;
-pub const RECORD_HOTKEY: u32 = 4;
-pub const PAUSE_HOTKEY: u32 = 5;
-pub const RESTART_HOTKEY: u32 = 6;
-pub const DISCARD_HOTKEY: u32 = 7;
-pub const UNDO_HOTKEY: u32 = 8;
-pub const SCREENSHOT_WITH_WINDOW_HOTKEY: u32 = 9;
-
-/// While a hotkey field records, Print Screen with each mix of Ctrl, Alt
-/// and Shift is registered under these ids, as windows never see that key
-/// go down. The id's low bits say which: 1 Ctrl, 2 Alt, 4 Shift.
-const PRINT_SCREEN_HOTKEYS: std::ops::Range<u32> = 16..24;
-
-/// Print Screen, with every mix of Ctrl, Alt and Shift.
-pub fn print_screen_hotkeys() -> Vec<(u32, Hotkey)> {
-    PRINT_SCREEN_HOTKEYS
-        .filter_map(|id| Some((id, print_screen_hotkey(id)?)))
-        .collect()
-}
-
-/// The Print Screen hotkey registered under `id`, if it is one of those.
-pub fn print_screen_hotkey(id: u32) -> Option<Hotkey> {
-    PRINT_SCREEN_HOTKEYS.contains(&id).then(|| {
-        let mix = id - PRINT_SCREEN_HOTKEYS.start;
-        Hotkey {
-            ctrl: mix & 1 != 0,
-            alt: mix & 2 != 0,
-            shift: mix & 4 != 0,
-            win: false,
-            key: Key::PrintScreen,
-        }
-    })
-}
 
 /// Ids for the tray menu's items.
 pub const MENU_SCREENSHOT: u32 = 1;
@@ -55,40 +17,6 @@ pub const MENU_UPDATE: u32 = 9;
 pub const MENU_OPEN: u32 = 10;
 pub const MENU_STREAM: u32 = 11;
 pub const MENU_WATCH: u32 = 12;
-
-/// Quits without the tray menu; kept for development.
-pub const QUIT_KEYS: &str = "Ctrl+Alt+Shift+Q";
-
-/// The global hotkeys for `settings`: the Capture Bar, area screenshots
-/// (without Shuttercrab's window and with it), recording, and quit; pause,
-/// restart and discard while `recording`; and undo while there is
-/// something to `undo`. Other apps keep those chords
-/// the rest of the time. A hotkey the settings spell wrongly is left out
-/// (main checks them at startup; the settings window only stores valid
-/// ones).
-pub fn hotkeys(settings: &Settings, recording: bool, undo: bool) -> Vec<(u32, Hotkey)> {
-    let while_recording = [
-        (PAUSE_HOTKEY, settings.pause_hotkey.as_str()),
-        (RESTART_HOTKEY, settings.restart_hotkey.as_str()),
-        (DISCARD_HOTKEY, settings.discard_hotkey.as_str()),
-    ];
-    let undoing = [(UNDO_HOTKEY, settings.undo_hotkey.as_str())];
-    [
-        (CAPTURE_BAR_HOTKEY, settings.capture_bar_hotkey.as_str()),
-        (SCREENSHOT_HOTKEY, settings.screenshot_hotkey.as_str()),
-        (
-            SCREENSHOT_WITH_WINDOW_HOTKEY,
-            settings.screenshot_with_window_hotkey.as_str(),
-        ),
-        (RECORD_HOTKEY, settings.record_hotkey.as_str()),
-        (QUIT_HOTKEY, QUIT_KEYS),
-    ]
-    .into_iter()
-    .chain(while_recording.into_iter().filter(|_| recording))
-    .chain(undoing.into_iter().filter(|_| undo))
-    .filter_map(|(id, text)| Some((id, Hotkey::parse(text).ok()?)))
-    .collect()
-}
 
 /// A recording, or a live stream, as the tray menu shows it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -266,29 +194,5 @@ mod tests {
         ] {
             assert!(!tray_menu(&settings, recording, Some("0.2.0")).contains(&offer));
         }
-    }
-
-    #[test]
-    fn recording_chords_are_taken_only_while_they_mean_something() {
-        let settings = Settings::default();
-        let ids = |recording, undo| {
-            hotkeys(&settings, recording, undo)
-                .into_iter()
-                .map(|(id, _)| id)
-                .collect::<Vec<_>>()
-        };
-        let during = [PAUSE_HOTKEY, RESTART_HOTKEY, DISCARD_HOTKEY];
-        let idle = ids(false, false);
-        assert!(idle.contains(&RECORD_HOTKEY));
-        assert!(idle.contains(&SCREENSHOT_WITH_WINDOW_HOTKEY));
-        assert!(during.iter().all(|id| !idle.contains(id)));
-        assert!(!idle.contains(&UNDO_HOTKEY));
-        let recording = ids(true, false);
-        assert!(during.iter().all(|id| recording.contains(id)));
-        assert!(!recording.contains(&UNDO_HOTKEY));
-        // Undo also outlives the recording: a restart's previous take can
-        // be kept after Stop.
-        assert!(ids(true, true).contains(&UNDO_HOTKEY));
-        assert!(ids(false, true).contains(&UNDO_HOTKEY));
     }
 }

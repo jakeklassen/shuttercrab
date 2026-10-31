@@ -52,16 +52,15 @@ pub use delivery::thumbnail_rect;
 pub use failure::Failure;
 pub use screenshot::bar_rect;
 pub use tray::{
-    CAPTURE_BAR_HOTKEY, DISCARD_HOTKEY, MENU_AUTO_SAVE, MENU_CAPTURE_BAR, MENU_OPEN,
-    MENU_OPEN_FOLDER, MENU_PAUSE, MENU_QUIT, MENU_RECORD, MENU_SCREENSHOT, MENU_SETTINGS,
-    MENU_STREAM, MENU_UPDATE, MENU_WATCH, PAUSE_HOTKEY, QUIT_HOTKEY, QUIT_KEYS, RECORD_HOTKEY,
-    RESTART_HOTKEY, SCREENSHOT_HOTKEY, SCREENSHOT_WITH_WINDOW_HOTKEY, TrayRecording, UNDO_HOTKEY,
-    hotkeys, tray_menu,
+    MENU_AUTO_SAVE, MENU_CAPTURE_BAR, MENU_OPEN, MENU_OPEN_FOLDER, MENU_PAUSE, MENU_QUIT,
+    MENU_RECORD, MENU_SCREENSHOT, MENU_SETTINGS, MENU_STREAM, MENU_UPDATE, MENU_WATCH,
+    TrayRecording, tray_menu,
 };
 
 use crate::{
     capture_choice::CaptureTarget,
     heap,
+    hotkeys::{HotkeyKind, QUIT_HOTKEY, hotkeys, print_screen_hotkey},
     main_window::{MainWindow, Page},
     popup,
     record_bar::Destructive,
@@ -90,7 +89,7 @@ use std::{
     sync::Arc,
     time::{Duration, Instant},
 };
-use tray::{FADE_OUT, TRAY_DELAY, print_screen_hotkey};
+use tray::{FADE_OUT, TRAY_DELAY};
 use windows::{open_folder, open_main};
 
 /// Everything the running app shares between its tasks.
@@ -344,14 +343,12 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
         let mut events = events;
         while let Some(event) = events.next().await {
             match event {
-                PlatformEvent::Hotkey(SCREENSHOT_HOTKEY) => {
-                    start(&state, Start::Screenshot(CaptureTarget::Area), None, cx)
-                }
-                PlatformEvent::Hotkey(SCREENSHOT_WITH_WINDOW_HOTKEY) => {
-                    start(&state, Start::ScreenshotWithWindow, None, cx)
-                }
-                PlatformEvent::Hotkey(CAPTURE_BAR_HOTKEY)
-                | PlatformEvent::TrayCommand(MENU_CAPTURE_BAR) => {
+                PlatformEvent::Hotkey(id) => match HotkeyKind::from_hotkey_id(id) {
+                    Some(kind) => hotkey_pressed(&state, kind, cx).await,
+                    None if id == QUIT_HOTKEY => quit(&state, cx).await,
+                    None => print_screen_pressed(&state, id, cx),
+                },
+                PlatformEvent::TrayCommand(MENU_CAPTURE_BAR) => {
                     start(&state, Start::CaptureBar, None, cx)
                 }
                 PlatformEvent::TrayCommand(MENU_SCREENSHOT) => start(
@@ -360,17 +357,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     Some(TRAY_DELAY),
                     cx,
                 ),
-                PlatformEvent::Hotkey(PAUSE_HOTKEY) | PlatformEvent::TrayCommand(MENU_PAUSE) => {
-                    toggle_pause(&state, cx)
-                }
-                PlatformEvent::Hotkey(RESTART_HOTKEY) => {
-                    request(&state, Destructive::Restart, cx).await
-                }
-                PlatformEvent::Hotkey(DISCARD_HOTKEY) => {
-                    request(&state, Destructive::Discard, cx).await
-                }
-                PlatformEvent::Hotkey(UNDO_HOTKEY) => undo(&state, cx),
-                PlatformEvent::Hotkey(RECORD_HOTKEY) => toggle_recording(&state, None, cx),
+                PlatformEvent::TrayCommand(MENU_PAUSE) => toggle_pause(&state, cx),
                 PlatformEvent::TrayCommand(MENU_RECORD) => {
                     toggle_recording(&state, Some(TRAY_DELAY), cx)
                 }
@@ -392,9 +379,7 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                     );
                     state.refresh_tray_menu();
                 }
-                PlatformEvent::Hotkey(QUIT_HOTKEY) | PlatformEvent::TrayCommand(MENU_QUIT) => {
-                    quit(&state, cx).await
-                }
+                PlatformEvent::TrayCommand(MENU_QUIT) => quit(&state, cx).await,
                 PlatformEvent::TrayCommand(MENU_UPDATE) => restart_to_update(&state, cx).await,
                 PlatformEvent::AnotherInstance(request) => {
                     log::info!("Shuttercrab was started again, for {}", request.name());
@@ -405,12 +390,25 @@ pub fn run(shuttercrab: Shuttercrab, events: UnboundedReceiver<PlatformEvent>, c
                 PlatformEvent::Window(WindowChange::Closed)
                     if streaming::window_closed(&state, cx).is_break() => {}
                 PlatformEvent::Window(change) => window_changed(&state, change, cx),
-                PlatformEvent::Hotkey(id) => print_screen_pressed(&state, id, cx),
                 PlatformEvent::TrayCommand(_) => {}
             }
         }
     })
     .detach();
+}
+
+/// Do what the hotkey `kind` is for.
+async fn hotkey_pressed(state: &Rc<State>, kind: HotkeyKind, cx: &mut AsyncApp) {
+    match kind {
+        HotkeyKind::CaptureBar => start(state, Start::CaptureBar, None, cx),
+        HotkeyKind::Screenshot => start(state, Start::Screenshot(CaptureTarget::Area), None, cx),
+        HotkeyKind::ScreenshotWithWindow => start(state, Start::ScreenshotWithWindow, None, cx),
+        HotkeyKind::Record => toggle_recording(state, None, cx),
+        HotkeyKind::Pause => toggle_pause(state, cx),
+        HotkeyKind::Restart => request(state, Destructive::Restart, cx).await,
+        HotkeyKind::Discard => request(state, Destructive::Discard, cx).await,
+        HotkeyKind::Undo => undo(state, cx),
+    }
 }
 
 /// Print Screen, pressed while a hotkey field records: tell the field.
