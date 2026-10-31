@@ -1,7 +1,10 @@
 //! Where a stream comes from, and joining it: the viewer says which codecs
 //! it plays, then waits for the stream's format.
 
-use crate::{PICTURES, Path, SOUND, describe};
+use crate::{
+    Path, describe,
+    wire::{self, PICTURES, SOUND},
+};
 use anyhow::{Context, Result, ensure};
 use shuttercrab_capture::live::{LiveFormat, LivePlayer, SoundCodec, VideoCodec};
 use shuttercrab_connect::{Connection, Link};
@@ -105,7 +108,7 @@ impl Joined {
             socket,
         } = input;
         let mut pictures = BufReader::new(pictures);
-        let format = LiveFormat::read_from(&mut pictures)?;
+        let format = wire::read_format(&mut pictures)?;
         log::info!(
             "{}x{} at {} fps, {}, {}",
             format.width,
