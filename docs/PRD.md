@@ -1,3 +1,10 @@
+> **Frozen.** This is Shuttercrab's original specification, written for
+> Milestones 0 to 4, and it is no longer updated. The app has grown past
+> it: the main window, markup, text actions and live streaming are not
+> here. Code comments cite its sections ("PRD §"), so its sections and
+> their numbers stay as they are. For the app as it is, see the
+> [README](../README.md) and [ARCHITECTURE.md](ARCHITECTURE.md).
+
 # Windows 11 HDR-Aware Snipping Utility
 ## Product Requirements Document
 
