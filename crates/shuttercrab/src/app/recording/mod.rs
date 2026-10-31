@@ -374,7 +374,7 @@ fn begin(
     cx: &mut AsyncApp,
 ) {
     let ended = recording.recorder.as_mut().and_then(RecorderProcess::ended);
-    let watched = recording.path.clone();
+    let path = recording.path.clone();
     recording.refresh_controls(cx);
     recording.color_border_for_clock();
     state.recording.replace(Some(recording));
@@ -382,7 +382,7 @@ fn begin(
     if let Some(requests) = requests {
         handle_controls(state.clone(), requests, cx);
     }
-    watch_recording(state, ended, watched, cx);
+    finish_if_it_ends(state, ended, path, cx);
 }
 
 /// Notice when the take written to `path` ends by itself (the display went
@@ -391,7 +391,7 @@ fn begin(
 /// `ended` is the recorder's [`RecorderProcess::ended`]; it also resolves when the
 /// take is stopped, discarded or restarted, and then the take is no longer
 /// the one recording.
-fn watch_recording(
+fn finish_if_it_ends(
     state: &Rc<State>,
     ended: Option<impl std::future::Future<Output = ()> + 'static>,
     path: PathBuf,

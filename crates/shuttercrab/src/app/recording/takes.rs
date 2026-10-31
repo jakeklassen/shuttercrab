@@ -2,8 +2,8 @@
 //! Discard and Undo, and the take a restart replaced.
 
 use super::{
-    Recording, border::BORDER_DISCARDED, finish::discard_recording, show, start_take,
-    stop_following, watch_recording,
+    Recording, border::BORDER_DISCARDED, finish::discard_recording, finish_if_it_ends, show,
+    start_take, stop_following,
 };
 use crate::{
     app::{State, failure::Failure},
@@ -329,7 +329,7 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
     match (restarted, slot.as_mut()) {
         (Ok((mut take, kept)), Some(recording)) => {
             let ended = take.recorder.ended();
-            let watched = take.path.clone();
+            let path = take.path.clone();
             let previous = std::mem::replace(&mut recording.path, take.path);
             let switched = (recording.options.system_sound, recording.options.microphone);
             recording.options = take.options;
@@ -343,7 +343,7 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
             log::info!("recording restarted");
             offer_replaced_take(state, previous, kept, view, cx);
             state.recording_changed(cx);
-            watch_recording(state, ended, watched, cx);
+            finish_if_it_ends(state, ended, path, cx);
         }
         // Shuttercrab quit while restarting: the new recording is not wanted.
         (Ok((take, _)), None) => {
