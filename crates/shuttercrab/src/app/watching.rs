@@ -8,6 +8,7 @@ use super::{
     screenshot::{exclude_from_capture, monitor_info},
 };
 use crate::{
+    selection::to_physical,
     ui::popup::{self, Activation},
     ui::watch_box::{WATCH_BOX_HEIGHT, WATCH_BOX_WIDTH, WatchBox, WatchBoxEvent},
 };
@@ -32,8 +33,8 @@ pub(super) async fn open_watch_box(
         .map(|text| text.trim().to_string());
     let (b, scale) = (info.bounds, info.scale_factor);
     let (w, h) = (
-        (WATCH_BOX_WIDTH * scale).round() as u32,
-        (WATCH_BOX_HEIGHT * scale).round() as u32,
+        to_physical(WATCH_BOX_WIDTH, scale),
+        to_physical(WATCH_BOX_HEIGHT, scale),
     );
     let rect = PhysicalRect::new(
         b.x + (b.width as i32 - w as i32) / 2,

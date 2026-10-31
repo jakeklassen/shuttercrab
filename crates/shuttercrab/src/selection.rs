@@ -48,6 +48,12 @@ impl Drag {
     }
 }
 
+/// A length in logical pixels as physical pixels on a screen of `scale`,
+/// rounded: where a window of a set logical size goes on a monitor.
+pub fn to_physical(logical: f32, scale: f32) -> u32 {
+    (logical * scale).round() as u32
+}
+
 /// The logical rectangle a physical rectangle covers, for drawing it.
 pub fn to_logical(rect: PhysicalRect, scale: f32) -> Bounds<Pixels> {
     Bounds {
@@ -259,6 +265,14 @@ mod tests {
             (f32::from(b.size.width), f32::from(b.size.height)),
             (100.0, 50.0)
         );
+    }
+
+    #[test]
+    fn logical_lengths_round_to_physical_pixels() {
+        assert_eq!(to_physical(480., 1.0), 480);
+        assert_eq!(to_physical(25., 1.5), 38);
+        assert_eq!(to_physical(10., 1.25), 13);
+        assert_eq!(to_physical(0.3, 1.5), 0);
     }
 
     fn win(id: u64, x: i32, y: i32, width: u32, height: u32) -> ScreenWindow {

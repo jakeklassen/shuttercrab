@@ -40,6 +40,7 @@ use crate::{
     generation::Generation,
     helpers::recorder::RecorderProcess,
     recording::{self, Clock},
+    selection::to_physical,
     ui::countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent},
     ui::popup::{self, Activation},
     ui::record_bar::{BarMode, RecordBar, RecordBarEvent},
@@ -453,8 +454,8 @@ async fn count_down(
     let (b, scale) = (info.bounds, info.scale_factor);
     let area = shuttercrab_capture::record::recordable(region, b.width, b.height);
     let (w, h) = (
-        (COUNTDOWN_WIDTH * scale).round() as i32,
-        (COUNTDOWN_HEIGHT * scale).round() as i32,
+        to_physical(COUNTDOWN_WIDTH, scale) as i32,
+        to_physical(COUNTDOWN_HEIGHT, scale) as i32,
     );
     let centre = |start: i32, side: u32, size: i32, limit: u32| {
         (start + (side as i32 - size) / 2).clamp(0, (limit as i32 - size).max(0))

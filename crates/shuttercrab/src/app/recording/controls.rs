@@ -9,6 +9,7 @@ use super::{
 use crate::{
     app::{State, screenshot::exclude_from_capture},
     recording::{self, Clock},
+    selection::to_physical,
     ui::popup::{self, Activation},
     ui::record_bar::{
         Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent, RecordKeys,
@@ -75,10 +76,10 @@ pub(super) fn open_controls(
         RECORD_BAR_WIDTH
     };
     let size = (
-        (width * scale).round() as u32,
-        (RECORD_BAR_HEIGHT * scale).round() as u32,
+        to_physical(width, scale),
+        to_physical(RECORD_BAR_HEIGHT, scale),
     );
-    let gap = (CONTROLS_GAP * scale).round() as u32;
+    let gap = to_physical(CONTROLS_GAP, scale);
     let (rect, covers) = recording::controls_rect(work, recorded, size, gap);
 
     let view = Rc::new(RefCell::new(None));

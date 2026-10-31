@@ -1,6 +1,7 @@
 //! The dashed border around what is recorded: its colours and look, and
 //! showing it.
 
+use crate::selection::to_physical;
 use shuttercrab_capture::{MonitorInfo, PhysicalRect};
 use shuttercrab_platform::frame::{Frame, FrameStyle, NO_EDGE};
 use shuttercrab_types::WindowId;
@@ -32,7 +33,7 @@ pub(in crate::app) fn show_border(
 ) -> Option<Frame> {
     let (b, scale) = (info.bounds, info.scale_factor);
     let area = shuttercrab_capture::record::recordable(region, b.width, b.height);
-    let px = |logical: f32| ((logical * scale).round() as u32).max(1);
+    let px = |logical: f32| to_physical(logical, scale).max(1);
     let style = FrameStyle {
         thickness: px(BORDER_THICKNESS),
         dash: px(BORDER_DASH),
