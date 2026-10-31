@@ -180,7 +180,7 @@ is barely touched.
   255 while brighter content beside it was compressed below it: a visible
   inversion. v4 finds each HDR area and maps all of it with one curve.
 - **Why this curve.** Capture tools disagree (see the research summary in
-  [TEST_MATRIX.md](TEST_MATRIX.md#hdr-content-benchmark)): Snipping Tool's
+  [TEST_MATRIX.md](history/TEST_MATRIX.md#hdr-content-benchmark)): Snipping Tool's
   corrector greys all white UI to 224, OBS to ≈ 191, NVIDIA and ShareX do not
   tone map. Broadcast practice (ITU-R BT.2446) puts HDR reference white at
   86–96% of SDR; browsers (Chromium/Skia) at half brightness, leaving room for
