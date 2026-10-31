@@ -197,21 +197,7 @@ impl MainWindow {
 
     /// Show `text` at the foot of the screenshot for a moment.
     pub(super) fn show_notice(&mut self, text: impl Into<SharedString>, cx: &mut Context<Self>) {
-        self.notices += 1;
-        self.notice = Some(text.into());
-        let shown = self.notices;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(NOTICE_FOR).await;
-            // Unless a later notice is showing.
-            let _ = this.update(cx, |this, cx| {
-                if this.notices == shown {
-                    this.notice = None;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        cx.notify();
+        self.show_for_a_moment(|this| &mut this.notice, text.into(), NOTICE_FOR, cx);
     }
 
     /// "Pen 5", "Highlighter 16" or "Outline 4": the tool in hand's size,
@@ -229,21 +215,7 @@ impl MainWindow {
 
     /// Show the tip, labelled with its size, for a moment.
     pub(super) fn note_size(&mut self, cx: &mut Context<Self>) {
-        self.size_notes += 1;
-        self.size_note = true;
-        let note = self.size_notes;
-        cx.spawn(async move |this, cx| {
-            cx.background_executor().timer(SIZE_NOTE_FOR).await;
-            // Unless a later change is showing its own.
-            let _ = this.update(cx, |this, cx| {
-                if this.size_notes == note {
-                    this.size_note = false;
-                    cx.notify();
-                }
-            });
-        })
-        .detach();
-        cx.notify();
+        self.show_for_a_moment(|this| &mut this.size_note, (), SIZE_NOTE_FOR, cx);
     }
 
     /// A key while a flyout is open: arrows move through the colours, Enter
@@ -419,7 +391,7 @@ impl MainWindow {
             // would show it: the size, under the button, for a moment.
             .when_some(self.size_label().filter(|_| in_hand), |d, label| {
                 d.when(
-                    flyout.is_none() && self.size_note && self.pointer.is_none(),
+                    flyout.is_none() && self.size_note.is_shown() && self.pointer.is_none(),
                     |d| d.child(size_note(label, self.tools_below)),
                 )
             })
