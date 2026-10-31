@@ -7,8 +7,8 @@ use super::{
     State,
     failure::Failure,
     recording::{
-        Border, Chosen, FRAME_RECORDING, FRAME_WAITING, Following, choose_area, ready, show,
-        show_frame, sound, stop_following,
+        BORDER_RECORDING, BORDER_WAITING, Border, Chosen, Following, choose_area, ready, show,
+        show_border, sound, stop_following,
     },
     windows::open_main,
 };
@@ -41,7 +41,7 @@ pub(super) struct Streaming {
     /// What to share: whoever has it can watch.
     link: String,
     controls: Option<super::recording::Controls>,
-    frame: Border,
+    border: Border,
     /// From when the viewer came.
     clock: Rc<Cell<Clock>>,
     codec: Option<String>,
@@ -90,13 +90,13 @@ pub(super) async fn stream(
         log::info!("stream cancelled");
         return Ok(());
     };
-    let frame: Border = Rc::new(RefCell::new(show_frame(
+    let border: Border = Rc::new(RefCell::new(show_border(
         &info,
         region,
         window,
-        FRAME_WAITING,
+        BORDER_WAITING,
     )));
-    let following = window.map(|w| Following::start(state, w, frame.clone()));
+    let following = window.map(|w| Following::start(state, w, border.clone()));
     let settings = state.settings.borrow().clone();
     let clock = Rc::new(Cell::new(Clock::new(Instant::now())));
     let ControlFlow::Continue(opened) = ready(
@@ -163,7 +163,7 @@ pub(super) async fn stream(
         process: Some(process),
         link,
         controls,
-        frame,
+        border,
         clock,
         codec: None,
     };
@@ -302,8 +302,8 @@ fn handle_events(state: Rc<State>, mut events: UnboundedReceiver<StreamEvent>, c
                             break;
                         };
                         streaming.clock.set(Clock::new(Instant::now()));
-                        if let Some(frame) = streaming.frame.borrow_mut().as_mut()
-                            && let Err(e) = frame.recolor(FRAME_RECORDING)
+                        if let Some(frame) = streaming.border.borrow_mut().as_mut()
+                            && let Err(e) = frame.recolor(BORDER_RECORDING)
                         {
                             log::warn!("could not redraw the stream's border: {e:#}");
                         }
@@ -347,7 +347,7 @@ pub(super) fn stop_streaming(state: &State, why: String, cx: &mut AsyncApp) {
         return;
     };
     log::info!("stream ended: {why}");
-    streaming.frame.borrow_mut().take();
+    streaming.border.borrow_mut().take();
     if let Some(controls) = streaming.controls.take() {
         controls.popup.close(cx);
     }
