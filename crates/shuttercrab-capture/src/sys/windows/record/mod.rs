@@ -43,7 +43,6 @@ use std::{
 };
 use windows::Win32::{
     Media::MediaFoundation::*,
-    System::Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
     System::WinRT::{RO_INIT_MULTITHREADED, RoInitialize},
     UI::HiDpi::{DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2, SetThreadDpiAwarenessContext},
 };
@@ -251,17 +250,6 @@ const ANALYSE_EVERY: u32 = 4;
 
 /// How long a still screen goes without a repeated frame.
 const HEARTBEAT: i64 = TICKS_PER_SECOND;
-
-/// Now, in the clock Windows.Graphics.Capture stamps frames with:
-/// QueryPerformanceCounter in 100-nanosecond units.
-fn qpc_ticks() -> i64 {
-    let (mut counter, mut frequency) = (0i64, 0i64);
-    unsafe {
-        let _ = QueryPerformanceCounter(&mut counter);
-        let _ = QueryPerformanceFrequency(&mut frequency);
-    }
-    (counter as i128 * TICKS_PER_SECOND as i128 / frequency.max(1) as i128) as i64
-}
 
 fn record(
     options: RecordOptions,

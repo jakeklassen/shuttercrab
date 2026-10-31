@@ -11,8 +11,9 @@
 //! picture. A microphone switched off is not opened at all, so Windows does
 //! not show it as in use.
 
-use super::{Event, qpc_ticks};
+use super::Event;
 use crate::record::{Microphone, Source, TICKS_PER_SECOND};
+use crate::sys::imp::clock;
 use anyhow::{Context, Result, bail};
 use std::{
     sync::{
@@ -324,7 +325,7 @@ impl Stream {
             // loopback stamps it a fifth of a second ahead (when it will be
             // heard, it seems), and a sync test recorded it that much behind
             // the picture; a process's sound may come with no time at all.
-            let arrived = qpc_ticks() - frames_to_ticks(u64::from(frames));
+            let arrived = clock::now() - frames_to_ticks(u64::from(frames));
             let timed = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0 && qpc != 0;
             let captured = if timed {
                 (qpc as i64).min(arrived)

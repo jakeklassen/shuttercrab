@@ -3,6 +3,7 @@
 //! playback, and WASAPI for sound.
 
 pub mod capture;
+mod clock;
 pub mod display;
 pub mod gpu;
 mod opus;

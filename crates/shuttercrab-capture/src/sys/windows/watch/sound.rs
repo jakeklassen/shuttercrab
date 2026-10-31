@@ -8,6 +8,7 @@
 
 use super::{choose_output, drain, feed, lock};
 use crate::live::{LiveFrame, SoundCodec};
+use crate::sys::imp::clock::{self, TICKS_PER_SECOND};
 use anyhow::{Context, Result};
 use std::{
     collections::VecDeque,
@@ -26,7 +27,6 @@ use windows::Win32::{
             CLSCTX_ALL, CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance,
             CoInitializeEx, CoUninitialize,
         },
-        Performance::{QueryPerformanceCounter, QueryPerformanceFrequency},
         Threading::{CreateEventW, WaitForSingleObject},
     },
 };
@@ -35,9 +35,6 @@ use windows::Win32::{
 /// encodes it.
 const RATE: u32 = 48_000;
 const CHANNELS: u16 = 2;
-
-/// 100 ns ticks a second.
-const TICKS: i64 = 10_000_000;
 
 /// How much more than the spare is queued before it plays, frames: so the
 /// first is a little over one AAC frame (1024), as they arrive one at a
@@ -78,7 +75,7 @@ const WAKE_MS: u32 = 100;
 const REOPEN_AFTER: Duration = Duration::from_secs(1);
 
 fn frames_to_ticks(frames: usize) -> i64 {
-    frames as i64 * TICKS / i64::from(RATE)
+    frames as i64 * TICKS_PER_SECOND / i64::from(RATE)
 }
 
 /// The sound as it arrives, to samples: AAC through Windows' decoder,
@@ -399,7 +396,7 @@ impl Queue {
             self.position += self.pace;
         }
         self.consume();
-        Some(self.front + (self.position * TICKS as f64 / f64::from(RATE)) as i64)
+        Some(self.front + (self.position * TICKS_PER_SECOND as f64 / f64::from(RATE)) as i64)
     }
 
     /// Drop the frames played.
@@ -582,13 +579,7 @@ impl Drop for Output {
 /// The moment a performance counter reading (100 ns ticks, as the
 /// speakers' clock gives it) stands for.
 fn instant_at(qpc: u64) -> Instant {
-    let (mut count, mut frequency) = (0, 1);
-    unsafe {
-        let _ = QueryPerformanceCounter(&mut count);
-        let _ = QueryPerformanceFrequency(&mut frequency);
-    }
-    let now = (count as u128 * 10_000_000 / frequency.max(1) as u128) as u64;
-    let ago = Duration::from_nanos(now.saturating_sub(qpc) * 100);
+    let ago = clock::duration(clock::now() - qpc as i64);
     Instant::now().checked_sub(ago).unwrap_or_else(Instant::now)
 }
 
@@ -796,7 +787,7 @@ mod tests {
         // Its sound comes back half a second on, after what was queued is
         // gone.
         queue.frames.clear();
-        let later = queue.next.unwrap() + TICKS / 2;
+        let later = queue.next.unwrap() + TICKS_PER_SECOND / 2;
         queue.push(later, &[0; 4 * 2]);
         assert_eq!(queue.front, later);
         assert_eq!(queue.frames.len(), 4);

@@ -11,7 +11,7 @@
 mod sound;
 mod video;
 
-use super::{gpu::Gpu, play::Started};
+use super::{clock, gpu::Gpu, play::Started};
 use crate::live::{LiveFormat, LiveFrame, Track, VideoCodec};
 use anyhow::{Context, Result};
 use std::{
@@ -192,18 +192,18 @@ impl LivePlayer {
 
     /// How far the picture drawn last is behind the newest one received.
     pub fn behind(&self) -> Duration {
-        ticks(self.newest.load(Ordering::Relaxed) - self.drawn.load(Ordering::Relaxed))
+        clock::duration(self.newest.load(Ordering::Relaxed) - self.drawn.load(Ordering::Relaxed))
     }
 
     /// How far the sound playing is behind the newest picture received.
     pub fn sound_behind(&self) -> Option<Duration> {
         self.clock()
-            .map(|now| ticks(self.newest.load(Ordering::Relaxed) - now))
+            .map(|now| clock::duration(self.newest.load(Ordering::Relaxed) - now))
     }
 
     /// How far ahead of the sound pictures are shown.
     pub fn lead(&self) -> Duration {
-        ticks(self.lead.load(Ordering::Relaxed))
+        clock::duration(self.lead.load(Ordering::Relaxed))
     }
 
     pub fn set_lead(&self, lead: Duration) {
@@ -228,11 +228,6 @@ impl LivePlayer {
 
 fn lock<T>(mutex: &Mutex<T>) -> MutexGuard<'_, T> {
     mutex.lock().unwrap_or_else(|e| e.into_inner())
-}
-
-/// 100 ns ticks as a `Duration`, none if negative.
-fn ticks(ticks: i64) -> Duration {
-    Duration::from_nanos(ticks.max(0) as u64 * 100)
 }
 
 /// A frame as a Media Foundation sample, for a decoder.
