@@ -5,36 +5,42 @@
 //! runs the recorder and exits when the recording ends, taking that memory
 //! with it.
 //!
-//! The two talk in JSON lines: the app writes [`Request`]s to the helper's
-//! standard input and reads [`Reply`]s from its standard output. The
-//! helper's log lines come over standard error and go into the app's log.
-//! If the app goes away, the helper's input ends, and it stops and finishes
-//! the file as if asked.
+//! The two talk in JSON lines (see `helper_process`): the app writes
+//! [`Request`]s to the helper's standard input and reads [`Reply`]s from
+//! its standard output. The helper's log lines come over standard error and
+//! go into the app's log. If the app goes away, the helper's input ends,
+//! and it stops and finishes the file as if asked.
 //!
 //! [`RecorderProcess`] has the same methods as the in-process
 //! [`Recorder`], which [`serve`] runs inside the helper.
 
 use crate::helper_process::{
-    Options, first_request, forward_logs, log_to_app, read_requests, send,
+    Helper, HelperProcess, Options, first_request, log_to_app, read_requests, send,
 };
-use anyhow::{Context, Result, anyhow};
+use anyhow::{Result, anyhow};
 use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
 use shuttercrab_capture::record::{
     Interruption, RecordOptions, Recorder, RecordingSummary, Source,
 };
-use shuttercrab_platform::process::{Process, Spawned, spawn_quiet};
 use std::{
     fs::File,
     io::{BufRead, BufReader},
     path::PathBuf,
-    sync::{Mutex, MutexGuard, PoisonError, mpsc},
+    sync::mpsc,
     thread,
     time::Duration,
 };
 
 /// The command-line flag that makes `shuttercrab.exe` the recording helper.
 pub const FLAG: &str = "--recorder";
+
+/// The recorder, for [`HelperProcess`].
+static HELPER: Helper = Helper {
+    flag: FLAG,
+    name: "recorder",
+    process: "recording process",
+};
 
 /// What the app asks of the helper. The first request is always `Start`.
 #[derive(Clone, Debug, PartialEq, Serialize, Deserialize)]
@@ -142,9 +148,7 @@ impl From<Summary> for RecordingSummary {
 
 /// A recording in progress in the helper process.
 pub struct RecorderProcess {
-    child: Process,
-    /// The helper's input; closing it stops the recording.
-    input: Mutex<Option<File>>,
+    helper: HelperProcess,
     /// How the recording ended, once it has.
     outcome: mpsc::Receiver<Result<RecordingSummary>>,
     /// Resolves when the helper has said how the recording ended, or died.
@@ -155,102 +159,62 @@ impl RecorderProcess {
     /// Start the helper and recording in it. Returns once the capture and
     /// the encoder are running.
     pub fn start(options: RecordOptions) -> Result<Self> {
-        let exe = std::env::current_exe().context("could not find shuttercrab.exe")?;
-        // Without a console window, and without the busy pointer Windows
-        // would otherwise show over the recording's first seconds.
-        let Spawned {
-            process: child,
-            stdin: mut input,
-            stdout: output,
-            stderr: errors,
-        } = spawn_quiet(&exe, &[FLAG]).context("could not start the recording process")?;
-        thread::Builder::new()
-            .name("shuttercrab-recorder-log".into())
-            .spawn(move || forward_logs(errors, "shuttercrab::recorder"))?;
-        send(&mut input, &Request::Start(options.into()))?;
-
-        let (started_tx, started_rx) = mpsc::channel();
         let (outcome_tx, outcome_rx) = mpsc::channel();
         let (ending, ended) = oneshot::channel::<()>();
-        thread::Builder::new()
-            .name("shuttercrab-recorder-replies".into())
-            .spawn(move || {
+        let (helper, ()) = HelperProcess::start(
+            &HELPER,
+            &Request::Start(options.into()),
+            move |output, started| {
                 // Dropped when this thread ends, which resolves `ended`.
                 let _ending = ending;
-                read_replies(output, started_tx, outcome_tx);
-            })?;
-
-        let started = started_rx
-            .recv()
-            .unwrap_or_else(|_| Err(anyhow!("the recording process stopped")));
-        if let Err(e) = started {
-            // Closing its input makes a helper that is still running exit.
-            drop(input);
-            let _ = child.wait();
-            return Err(e);
-        }
+                read_replies(output, started, outcome_tx);
+            },
+        )?;
         Ok(Self {
-            child,
-            input: Mutex::new(Some(input)),
+            helper,
             outcome: outcome_rx,
             ended: Some(ended),
         })
     }
 
-    /// The helper's input. A panic while it was locked left at worst a
-    /// partial line, which the helper logs and skips, so a poisoned lock is
-    /// used anyway: giving up on the pipe would leave the helper recording.
-    fn input(&self) -> MutexGuard<'_, Option<File>> {
-        self.input.lock().unwrap_or_else(PoisonError::into_inner)
-    }
-
-    fn request(&self, request: Request) {
-        if let Some(input) = self.input().as_mut()
-            && let Err(e) = send(input, &request)
-        {
-            // The helper has gone; `ended` says so.
-            log::debug!("could not reach the recorder: {e:#}");
-        }
-    }
-
     pub fn pause(&self) {
-        self.request(Request::Pause);
+        self.helper.request(&Request::Pause);
     }
 
     pub fn resume(&self) {
-        self.request(Request::Resume);
+        self.helper.request(&Request::Resume);
     }
 
     /// Switch `source` on or off; see [`Recorder::set_sound`].
     pub fn set_sound(&self, source: Source, on: bool) {
         let microphone = source == Source::Microphone;
-        self.request(Request::SetSound { microphone, on });
+        self.helper.request(&Request::SetSound { microphone, on });
     }
 
     /// Only this process's share of the speakers' sound, or all of it; see
     /// [`Recorder::set_sound_process`].
     pub fn set_sound_process(&self, process: Option<u32>) {
-        self.request(Request::SoundProcess(process));
+        self.helper.request(&Request::SoundProcess(process));
     }
 
     /// The recorded window was closed; see [`Recorder::window_closed`].
     pub fn window_closed(&self) {
-        self.request(Request::WindowClosed);
+        self.helper.request(&Request::WindowClosed);
     }
 
     /// Leave the pointer out or put it back; see [`Recorder::show_cursor`].
     pub fn show_cursor(&self, show: bool) {
-        self.request(Request::ShowCursor(show));
+        self.helper.request(&Request::ShowCursor(show));
     }
 
     /// The recorded display is gone; see [`Recorder::display_gone`].
     pub fn display_gone(&self) {
-        self.request(Request::DisplayGone);
+        self.helper.request(&Request::DisplayGone);
     }
 
     /// The displays changed; see [`Recorder::display_changed`].
     pub fn display_changed(&self) {
-        self.request(Request::DisplayChanged);
+        self.helper.request(&Request::DisplayChanged);
     }
 
     /// A future that resolves when the recording ends, by
@@ -265,30 +229,22 @@ impl RecorderProcess {
 
     /// Stop, finish the file, and report what was recorded. The helper
     /// exits.
-    pub fn stop(mut self) -> Result<RecordingSummary> {
-        self.close();
+    pub fn stop(self) -> Result<RecordingSummary> {
+        self.helper.close(&Request::Stop);
         let outcome = self
             .outcome
             .recv()
             .unwrap_or_else(|_| Err(anyhow!("the recording process ended unexpectedly")));
-        let _ = self.child.wait();
+        self.helper.wait();
         outcome
-    }
-
-    /// Ask the helper to stop and close its input, once.
-    fn close(&mut self) {
-        let input = self.input().take();
-        if let Some(mut input) = input {
-            let _ = send(&mut input, &Request::Stop);
-        }
     }
 }
 
 impl Drop for RecorderProcess {
     /// Like dropping a [`Recorder`]: stop, and wait for the file.
     fn drop(&mut self) {
-        self.close();
-        let _ = self.child.wait();
+        self.helper.close(&Request::Stop);
+        self.helper.wait();
     }
 }
 
