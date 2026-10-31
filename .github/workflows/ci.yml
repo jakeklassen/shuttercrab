@@ -33,6 +33,12 @@ jobs:
       - name: Clippy
         run: cargo clippy --all-targets --locked -- -D warnings
 
+      # Private items too, so a broken link anywhere fails.
+      - name: Docs
+        run: cargo doc --workspace --no-deps --document-private-items --locked
+        env:
+          RUSTDOCFLAGS: -D warnings
+
       - name: Tests
         run: cargo test --locked
 

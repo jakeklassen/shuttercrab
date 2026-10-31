@@ -79,7 +79,7 @@ const CLOSE_AFTER_ENDED: Duration = Duration::from_secs(10);
 /// The stream was joined, or could not be: posted by the joining thread.
 const WM_JOINED: u32 = WM_APP + 1;
 
-/// How much [ and ] change how far ahead of the sound pictures are shown.
+/// How much \[ and \] change how far ahead of the sound pictures are shown.
 const LEAD_STEP: Duration = Duration::from_millis(20);
 
 /// Where frames come from.
@@ -208,7 +208,7 @@ pub struct WatchOptions {
     pub monitor: Option<HMONITOR>,
     pub muted: bool,
     /// The sound's volume to start at, as a percentage of its level as
-    /// sent, up to [`MAX_VOLUME`]: 100 if none.
+    /// sent, up to `MAX_VOLUME`: 100 if none.
     pub volume: Option<u32>,
     /// Told each volume chosen, to keep for next time.
     pub remember_volume: Option<fn(u32)>,
@@ -285,7 +285,7 @@ thread_local! {
 }
 
 /// Play the stream `join` opens in a window until it is closed: Escape
-/// closes it, M mutes, [ and ] show the pictures 20 ms earlier or later
+/// closes it, M mutes, \[ and \] show the pictures 20 ms earlier or later
 /// against the sound.
 ///
 /// The window opens at once and says it is joining while `join` runs on a
