@@ -13,8 +13,9 @@ use crate::{
 use futures::future::LocalBoxFuture;
 use gpui_kit::{
     App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    KeyDownEvent, MouseButton, MouseUpEvent, ParentElement as _, PathPromptOptions, Render, Role,
-    SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
+    KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseUpEvent, ParentElement as _,
+    PathPromptOptions, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
+    TestSupportExt as _, Window,
     component::{
         ActiveTheme as _, Disableable as _,
         button::Button,
@@ -180,14 +181,15 @@ impl HotkeyKind {
 }
 
 /// The hotkey a key press makes, as Shuttercrab writes it, or why it cannot
-/// be one. `key` is GPUI's key name (`s`, `f5`, `space`).
-pub fn hotkey_from_keys(
-    ctrl: bool,
-    alt: bool,
-    shift: bool,
-    win: bool,
-    key: &str,
-) -> Result<String, String> {
+/// be one.
+pub fn hotkey_from_keystroke(keystroke: &Keystroke) -> Result<String, String> {
+    let Modifiers {
+        control: ctrl,
+        alt,
+        shift,
+        platform: win,
+        ..
+    } = keystroke.modifiers;
     if !(ctrl || alt || win) {
         return Err(
             "Include Ctrl, Alt or Win, so the shortcut does not get in the way of typing, or use Print Screen."
@@ -205,7 +207,8 @@ pub fn hotkey_from_keys(
             text.push_str(name);
         }
     }
-    text.push_str(key);
+    // GPUI's key name: `s`, `f5`, `space`.
+    text.push_str(&keystroke.key);
     Hotkey::parse(&text)
         .map(|hotkey| hotkey.to_string())
         .map_err(|_| "Use a letter, a digit, an F key, Space or Print Screen.".into())
@@ -304,8 +307,7 @@ impl HotkeyField {
             self.stop(cx);
             return;
         }
-        let m = &keystroke.modifiers;
-        match hotkey_from_keys(m.control, m.alt, m.shift, m.platform, &keystroke.key) {
+        match hotkey_from_keystroke(keystroke) {
             Ok(hotkey) => self.record(hotkey, cx),
             Err(message) => {
                 self.message = Some(message.into());
@@ -1321,23 +1323,19 @@ impl Render for SettingsWindow {
 mod tests {
     use super::*;
 
+    /// The hotkey pressing `keys` makes, written as GPUI writes key presses.
+    fn hotkey(keys: &str) -> Result<String, String> {
+        hotkey_from_keystroke(&Keystroke::parse(keys).unwrap())
+    }
+
     #[test]
     fn key_presses_become_hotkeys() {
-        assert_eq!(
-            hotkey_from_keys(true, true, false, false, "c").as_deref(),
-            Ok("Ctrl+Alt+C")
-        );
-        assert_eq!(
-            hotkey_from_keys(false, true, true, false, "f5").as_deref(),
-            Ok("Alt+Shift+F5")
-        );
-        assert_eq!(
-            hotkey_from_keys(true, false, false, true, "space").as_deref(),
-            Ok("Ctrl+Win+Space")
-        );
+        assert_eq!(hotkey("ctrl-alt-c").as_deref(), Ok("Ctrl+Alt+C"));
+        assert_eq!(hotkey("alt-shift-f5").as_deref(), Ok("Alt+Shift+F5"));
+        assert_eq!(hotkey("ctrl-win-space").as_deref(), Ok("Ctrl+Win+Space"));
         // Shift alone would swallow typing.
-        assert!(hotkey_from_keys(false, false, true, false, "s").is_err());
+        assert!(hotkey("shift-s").is_err());
         // Keys the hotkey parser does not know.
-        assert!(hotkey_from_keys(true, true, false, false, "tab").is_err());
+        assert!(hotkey("ctrl-alt-tab").is_err());
     }
 }
