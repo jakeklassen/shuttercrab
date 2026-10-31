@@ -11,6 +11,7 @@
 
 use super::{Cleared, FOOTER_HEIGHT, MainWindow, TOOLBAR_HEIGHT};
 use crate::{
+    generation::{Generation, Token},
     palette::{border, coral, hover, muted},
     pixels,
     playback::{Command, PlayerLink, Update},
@@ -56,7 +57,7 @@ const BAR_FADE: Duration = Duration::from_millis(300);
 /// A recording the window shows.
 pub(super) struct Video {
     /// Tells this video's updates from those of one shown before.
-    id: u64,
+    id: Token,
     pub(super) path: PathBuf,
     link: PlayerLink,
     /// Its pictures' size, physical pixels: from the recorder, then from
@@ -81,11 +82,11 @@ pub(super) struct Video {
     scrubbing: bool,
     /// Where to go once the file is open: where a reopened recording was.
     start_at: Option<Duration>,
-    /// The play bar has faded: playing, with the pointer still. A count of
-    /// wakes, so each fade is its own animation, and the pointer is over
-    /// the bar, which keeps it.
+    /// The play bar has faded: playing, with the pointer still. Its wakes,
+    /// so each fade is its own animation, and the pointer is over the bar,
+    /// which keeps it.
     idle: bool,
-    wakes: u64,
+    wakes: Generation,
     bar_hovered: bool,
     _idle_timer: Option<Task<()>>,
     _updates: Task<()>,
@@ -183,8 +184,7 @@ impl MainWindow {
         }
         self.hand = None;
         self.flyout = None;
-        self.recordings_shown += 1;
-        let id = self.recordings_shown;
+        let id = self.recordings_shown.start();
         let mut link = (self.hooks.open_recording)(&path);
         let updates = link.updates.take();
         let (volume, muted) = {
@@ -246,7 +246,7 @@ impl MainWindow {
             scrubbing: false,
             start_at: None,
             idle: false,
-            wakes: 0,
+            wakes: Generation::default(),
             bar_hovered: false,
             _idle_timer: None,
             _updates: task,
@@ -309,7 +309,7 @@ impl MainWindow {
 
     fn on_playback(
         &mut self,
-        id: u64,
+        id: Token,
         update: Update,
         window: &mut Window,
         cx: &mut Context<Self>,
@@ -508,8 +508,7 @@ impl MainWindow {
             video.idle = false;
             cx.notify();
         }
-        video.wakes += 1;
-        let wake = video.wakes;
+        let wake = video.wakes.start();
         video._idle_timer = video.playing.then(|| {
             cx.spawn(async move |this, cx| {
                 cx.background_executor().timer(BAR_IDLE).await;
@@ -521,11 +520,11 @@ impl MainWindow {
     /// Fade the play bar, unless something since `wake` keeps it: the
     /// pointer moving or over it, a key, a drag, the volume's slider, or a
     /// pause.
-    fn idle_bar(&mut self, wake: u64, cx: &mut Context<Self>) {
+    fn idle_bar(&mut self, wake: Token, cx: &mut Context<Self>) {
         let Some(video) = self.recording.as_mut() else {
             return;
         };
-        let kept = video.wakes != wake
+        let kept = !video.wakes.is_current(wake)
             || !video.playing
             || video.bar_hovered
             || video.volume_open
@@ -595,7 +594,7 @@ impl MainWindow {
                 .child("This recording can't be played.")
                 .child(div().text_xs().text_color(muted()).child(why))
         });
-        let (idle, wakes) = (video.idle, video.wakes);
+        let (idle, wake) = (video.idle, video.wakes.current());
         let bar = video.failed.is_none().then(|| {
             let bar = div()
                 .absolute()
@@ -608,7 +607,7 @@ impl MainWindow {
             if idle {
                 // A new id per fade, so each one runs afresh.
                 bar.with_animation(
-                    SharedString::from(format!("bar-fade-{wakes}")),
+                    SharedString::from(format!("bar-fade-{wake}")),
                     Animation::new(BAR_FADE),
                     |bar, delta| bar.opacity(1. - delta),
                 )

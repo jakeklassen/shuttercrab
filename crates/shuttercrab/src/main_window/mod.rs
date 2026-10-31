@@ -35,6 +35,7 @@ mod video;
 
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget, WATCH_KEY},
+    generation::Generation,
     markup::{Mark, Region, Tool},
     palette::{border, coral, hover, muted, surface, tile},
     settings::Settings,
@@ -336,7 +337,7 @@ pub struct MainWindow {
     /// The recording shown on the home page instead, if any, and a count
     /// of those shown, which tells their players' updates apart.
     recording: Option<video::Video>,
-    recordings_shown: u64,
+    recordings_shown: Generation,
     /// What Clear took away, which Undo brings back until the next capture.
     cleared: Option<Cleared>,
     /// The drawing tools are in the bar at the bottom: the window is too
@@ -400,7 +401,7 @@ impl MainWindow {
             highlighted: 0,
             shown: None,
             recording: None,
-            recordings_shown: 0,
+            recordings_shown: Generation::default(),
             cleared: None,
             tools_below: false,
             folded: false,
