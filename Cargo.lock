@@ -6734,6 +6734,7 @@ dependencies = [
  "shuttercrab-types",
  "windows 0.62.2",
  "windows-core 0.62.2",
+ "windows-registry 0.6.1",
  "x11rb",
  "zbus",
 ]
