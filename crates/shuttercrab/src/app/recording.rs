@@ -267,7 +267,6 @@ impl Recording {
         true
     }
 
-    /// Switch `source` on or off, for this take and any restart of it.
     /// Record only the window's app's share of the system sound, or all
     /// of it, for this take and any restart of it.
     fn set_app_only(&mut self, on: bool) {
@@ -285,6 +284,7 @@ impl Recording {
         );
     }
 
+    /// Switch `source` on or off, for this take and any restart of it.
     fn set_sound(&mut self, source: Source, on: bool) {
         let options = &mut self.options;
         let was = match source {

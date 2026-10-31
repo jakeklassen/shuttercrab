@@ -1,19 +1,23 @@
-//! The screenshot flows (PRD §7.2–7.5). The Capture Bar hotkey opens the
-//! Capture Bar, which asks for Area, Window, Display or Freeform; the main
-//! window asks the same, and clicking the tray icon opens that window. The
+//! The running app: screenshots, recording, streaming and watching, started
+//! from the main window, the Capture Bar, the tray and the hotkeys.
+//!
+//! Screenshots (PRD §7.2–7.5): the Capture Bar hotkey opens the Capture
+//! Bar, which asks for Area, Window, Display or Freeform; the main window
+//! asks the same, and clicking the tray icon opens that window. The
 //! screenshot hotkey goes straight to Area. Area, Window and Freeform freeze
 //! every monitor and show the overlay on each, the one under the pointer
 //! first; Display captures the monitor under the pointer at once. The PNG
 //! goes to the clipboard and, with auto-save on, the output folder.
 //!
-//! Recording (PRD §7.7) starts from the Capture Bar's Record mode or the
-//! recording hotkey: the same overlay chooses the area, then the recorder
-//! runs on its own thread until the hotkey is pressed again, and the MP4
-//! goes to the recordings folder.
+//! Recording (PRD §7.7) starts from Record mode or the recording hotkey:
+//! the same overlay chooses the area, then the recorder runs in a helper
+//! process until stopped, and the MP4 goes to the recordings folder.
+//! Streaming chooses the same way and sends from a helper of its own;
+//! watching opens the viewer in another (docs/STREAMING.md).
 //!
 //! Capture, clipboard and file work happen on the capture thread, the
-//! platform thread and GPUI's background executor; this code only awaits
-//! them, so the GPUI main thread never blocks (§17).
+//! platform thread, the helpers and GPUI's background executor; this code
+//! only awaits them, so the GPUI main thread never blocks (§17).
 //!
 //! This module holds the state the running app shares and the loop that
 //! turns platform events into requests. The rest is split by
@@ -27,6 +31,8 @@
 //!   selection overlay.
 //! - `recording`: recording, its countdown, border and controls, and
 //!   Restart, Discard and Undo.
+//! - `streaming`: streaming, with its bar, from the streaming helper.
+//! - `watching`: the Watch box, and the viewer it starts.
 //! - `delivery`: copying and saving a screenshot, then showing it in the
 //!   window or as a thumbnail.
 //! - `failure`: what a failure tells the user and the log.
