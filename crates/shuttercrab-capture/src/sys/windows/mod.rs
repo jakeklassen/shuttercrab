@@ -4,6 +4,7 @@
 
 pub mod capture;
 mod clock;
+mod com;
 pub mod display;
 pub mod gpu;
 mod opus;
