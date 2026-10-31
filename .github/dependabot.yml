@@ -1,0 +1,45 @@
+# Weekly dependency updates, grouped so each ecosystem opens at most a pull
+# request or two a week: one for the minor and patch updates together, one
+# for the major ones. Security updates still come as they are published.
+
+version: 2
+updates:
+  - package-ecosystem: cargo
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      cargo:
+        update-types: [minor, patch]
+      cargo-major:
+        update-types: [major]
+
+  # The meeting point's Worker.
+  - package-ecosystem: npm
+    directory: /meet
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: chore
+      include: scope
+    groups:
+      meet:
+        update-types: [minor, patch]
+      meet-major:
+        update-types: [major]
+
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+    open-pull-requests-limit: 2
+    commit-message:
+      prefix: ci
+    groups:
+      actions:
+        patterns: ['*']
