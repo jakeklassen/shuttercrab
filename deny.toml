@@ -16,10 +16,23 @@ targets = [
 all-features = true
 
 [advisories]
-# Vulnerabilities, unsound code and unmaintained crates, anywhere in the
-# tree. An advisory the app cannot act on yet is listed here, with why,
-# rather than turned off.
-ignore = []
+# Vulnerabilities and unsound code anywhere in the tree. An advisory the app
+# cannot act on yet is listed here, with why, rather than turned off.
+ignore = [
+  # zip 8, through velopack 1.2.161: reading a malformed archive. The only
+  # archives read are Shuttercrab's own update packages, from its GitHub
+  # releases. velopack 1.3 moves to zip 9 but is only a pre-release so far;
+  # update both velopack and the vpk tool in release.yml once it is stable.
+  { id = "RUSTSEC-2026-0367", reason = "zip via velopack; fixed in velopack 1.3, not yet stable" },
+  { id = "RUSTSEC-2026-0368", reason = "zip via velopack; fixed in velopack 1.3, not yet stable" },
+  { id = "RUSTSEC-2026-0369", reason = "zip via velopack; fixed in velopack 1.3, not yet stable" },
+]
+# Unmaintained crates are flagged only among the workspace's own
+# dependencies: deep in GPUI's tree there are several with no maintained
+# replacement, which the app cannot change.
+unmaintained = "workspace"
+# A yanked crate is worth knowing about, not worth failing the check for.
+yanked = "warn"
 
 [licenses]
 # The workspace's own MIT OR Apache-2.0, and the other permissive licences
