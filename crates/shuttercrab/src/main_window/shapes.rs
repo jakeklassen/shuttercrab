@@ -3,7 +3,7 @@
 //! Line (L) and Arrow (A), then Fill (F) and Outline (T). Emoji opens its
 //! 18, and the one picked lands in the middle of the view, picked up. Fill and Outline each open
 //! their colours, Transparent first, and an opacity; Outline its size too.
-//! Arrows and Enter pick a colour, - and + change the opacity, [ and ] the
+//! Arrows and Enter pick a colour, - and + change the opacity, \[ and \] the
 //! size. Choices are kept in the settings.
 
 use super::{MainWindow, tools::Hand};
@@ -247,7 +247,7 @@ impl MainWindow {
         });
     }
 
-    /// [ and ] with the Shapes tool: the outline a size smaller or bigger.
+    /// \[ and \] with the Shapes tool: the outline a size smaller or bigger.
     pub(super) fn step_shape_size(
         &mut self,
         steps: f32,

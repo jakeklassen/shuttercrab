@@ -4,7 +4,7 @@
 //! The streaming app opens a room on the meeting point and shares its
 //! link ([`Room`]), or waits for a viewer on this PC; either way it gets a
 //! [`Viewer`], and a [`Stream`] records into it. The viewer opens the link
-//! ([`Input`]) and [`watch`]es it in a window of its own.
+//! ([`Input`]) and [`watch`](fn@watch)es it in a window of its own.
 //!
 //! Online, the pictures and the sound go on separate QUIC streams, each
 //! starting with a byte that says which it is, so a large picture cannot

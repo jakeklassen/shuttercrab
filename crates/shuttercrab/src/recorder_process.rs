@@ -6,7 +6,7 @@
 //! with it.
 //!
 //! The two talk in JSON lines (see `helper_process`): the app writes
-//! [`Request`]s to the helper's standard input and reads [`Reply`]s from
+//! `Request`s to the helper's standard input and reads `Reply`s from
 //! its standard output. The helper's log lines come over standard error and
 //! go into the app's log. If the app goes away, the helper's input ends,
 //! and it stops and finishes the file as if asked.
@@ -248,7 +248,7 @@ impl Drop for RecorderProcess {
     }
 }
 
-/// Read the helper's [`Reply`]s until its output ends. The first says
+/// Read the helper's `Reply`s until its output ends. The first says
 /// whether the recording started, sent on `started`; the last says how it
 /// ended, sent on `outcome`. A helper that goes away first is a failure.
 ///
@@ -286,8 +286,8 @@ fn read_replies(
     let _ = outcome.send(ended.unwrap_or_else(|| Err(gone())));
 }
 
-/// Run as the recording helper: read [`Request`]s from standard input,
-/// record, and write [`Reply`]s to standard output. Returns the exit code.
+/// Run as the recording helper: read `Request`s from standard input,
+/// record, and write `Reply`s to standard output. Returns the exit code.
 pub fn serve() -> i32 {
     log_to_app(log::LevelFilter::Debug);
     let mut out = std::io::stdout();
