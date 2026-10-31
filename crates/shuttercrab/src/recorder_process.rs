@@ -14,6 +14,7 @@
 //! [`RecorderProcess`] has the same methods as the in-process
 //! [`Recorder`], which [`serve`] runs inside the helper.
 
+use crate::helper_process::{forward_logs, log_to_app, send};
 use anyhow::{Context, Result, anyhow};
 use futures::channel::oneshot;
 use serde::{Deserialize, Serialize};
@@ -25,7 +26,7 @@ use shuttercrab_platform::process::{Process, Spawned, spawn_quiet};
 use shuttercrab_types::WindowId;
 use std::{
     fs::File,
-    io::{BufRead, BufReader, Write},
+    io::{BufRead, BufReader},
     path::PathBuf,
     sync::{Mutex, MutexGuard, PoisonError, mpsc},
     thread,
@@ -189,15 +190,6 @@ impl From<Summary> for RecordingSummary {
             timing: None,
         }
     }
-}
-
-/// Write one message as a JSON line.
-pub(crate) fn send(to: &mut impl Write, message: &impl Serialize) -> Result<()> {
-    let mut line = serde_json::to_string(message)?;
-    line.push('\n');
-    to.write_all(line.as_bytes())?;
-    to.flush()?;
-    Ok(())
 }
 
 /// A recording in progress in the helper process.
@@ -390,53 +382,10 @@ fn read_replies(
     let _ = outcome.send(ended.unwrap_or_else(|| Err(gone())));
 }
 
-/// The helper's log, from its standard error, into the app's log under
-/// `target` until the helper exits. A read error ends it too: the log is
-/// only for diagnosis.
-pub(crate) fn forward_logs(errors: File, target: &'static str) {
-    for line in BufReader::new(errors).lines().map_while(Result::ok) {
-        forward_log(&line, target);
-    }
-}
-
-/// One of the helper's log lines, `LEVEL\tsource\tmessage`, into the app's
-/// log under `target`.
-fn forward_log(line: &str, target: &'static str) {
-    let mut parts = line.splitn(3, '\t');
-    let (level, source, message) = match (parts.next(), parts.next(), parts.next()) {
-        (Some(level), Some(source), Some(message)) => {
-            (level.parse().unwrap_or(log::Level::Info), source, message)
-        }
-        _ => (log::Level::Info, "", line),
-    };
-    log::log!(target: target, level, "{source}: {message}");
-}
-
-/// The helper's logger: one tab-separated line per message on standard
-/// error, for [`forward_log`].
-pub(crate) struct HelperLogger;
-
-impl log::Log for HelperLogger {
-    fn enabled(&self, metadata: &log::Metadata) -> bool {
-        metadata.level() <= log::Level::Info || metadata.target().starts_with("shuttercrab")
-    }
-
-    fn log(&self, record: &log::Record) {
-        if self.enabled(record.metadata()) {
-            let message = record.args().to_string().replace(['\n', '\r'], " ");
-            eprintln!("{}\t{}\t{message}", record.level(), record.target());
-        }
-    }
-
-    fn flush(&self) {}
-}
-
 /// Run as the recording helper: read [`Request`]s from standard input,
 /// record, and write [`Reply`]s to standard output. Returns the exit code.
 pub fn serve() -> i32 {
-    if log::set_boxed_logger(Box::new(HelperLogger)).is_ok() {
-        log::set_max_level(log::LevelFilter::Debug);
-    }
+    log_to_app(log::LevelFilter::Debug);
     let mut out = std::io::stdout();
     let mut first = String::new();
     let read = std::io::stdin().read_line(&mut first);
@@ -577,18 +526,5 @@ mod tests {
         assert_eq!(back.duration, summary.duration);
         assert_eq!(back.interrupted, summary.interrupted);
         assert_eq!(back.frames, 1800);
-    }
-
-    #[test]
-    fn helper_log_lines_keep_their_level_and_source() {
-        // A line that is not in the helper's format is still kept.
-        forward_log(
-            "WARN\tshuttercrab_capture::record\trecording interrupted",
-            "shuttercrab::recorder",
-        );
-        forward_log("not tab separated", "shuttercrab::recorder");
-        let mut parts = "ERROR\tsrc\ta\tb".splitn(3, '\t');
-        assert_eq!(parts.next(), Some("ERROR"));
-        assert_eq!(parts.nth(1), Some("a\tb"));
     }
 }
