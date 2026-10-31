@@ -90,7 +90,8 @@ the Worker, uploaded with `void secret put`.
 | `HOST_KEYS` | One key per person who streams, as `name:key`, separated by commas or one a line. The name is only for the owner's own bookkeeping |
 | `TURN_KEY_ID`, `TURN_KEY_API_TOKEN` | Cloudflare's Realtime TURN key, from the dashboard. Without them the room offers no relay |
 
-Every key is accepted, from either list. Run these from PowerShell.
+Every key is accepted, from either list. Run these from PowerShell, in the
+repository root.
 
 **Make a key.** This puts a new one on the clipboard without showing it:
 
@@ -109,7 +110,7 @@ Then upload the whole line, which replaces the list the Worker has, and send
 them their key privately:
 
 ```powershell
-(Get-Content D:\code\framecut-gpui-kit\meet\.env | Where-Object { $_ -match '^HOST_KEYS=' }) -replace '^HOST_KEYS=', '' | pnpm -C D:\code\framecut-gpui-kit\meet exec void secret put HOST_KEYS
+(Get-Content meet\.env | Where-Object { $_ -match '^HOST_KEYS=' }) -replace '^HOST_KEYS=', '' | pnpm -C meet exec void secret put HOST_KEYS
 ```
 
 **Take a key back.** Delete that person's `name:key` from the line and
@@ -119,14 +120,14 @@ upload it again. Nobody else's key changes.
 `meet/.env`, upload it, and paste it into Shuttercrab:
 
 ```powershell
-(Get-Content D:\code\framecut-gpui-kit\meet\.env | Where-Object { $_ -match '^HOST_KEY=' }) -replace '^HOST_KEY=', '' | pnpm -C D:\code\framecut-gpui-kit\meet exec void secret put HOST_KEY
+(Get-Content meet\.env | Where-Object { $_ -match '^HOST_KEY=' }) -replace '^HOST_KEY=', '' | pnpm -C meet exec void secret put HOST_KEY
 ```
 
 **Deploy a change to the Worker's code:**
 
 ```powershell
-pnpm -C D:\code\framecut-gpui-kit\meet run check
-pnpm -C D:\code\framecut-gpui-kit\meet exec void deploy
+pnpm -C meet run check
+pnpm -C meet exec void deploy
 ```
 
 The Worker refuses a wrong key with exactly the words "Not the host key";
