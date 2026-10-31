@@ -18,6 +18,8 @@ use windows::{
     },
     core::BOOL,
 };
+
+/// Visible top-level windows, front to back. Minimised, cloaked (other
 /// virtual desktops, suspended apps) and click-through windows (overlays
 /// that draw over everything) are left out, and so is Shuttercrab's own
 /// capture UI (excluded from capture).

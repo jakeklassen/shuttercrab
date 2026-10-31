@@ -122,6 +122,7 @@ impl MainWindow {
 
     /// Close any tool's flyout. Returns whether one was open.
     pub(super) fn close_flyouts(&mut self) -> bool {
+        // `|`, not `||`: every one closes, not just the first found open.
         self.flyout.take().is_some()
             | std::mem::take(&mut self.eraser_menu)
             | self.shape_menu.take().is_some()

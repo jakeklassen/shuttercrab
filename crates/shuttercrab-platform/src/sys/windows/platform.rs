@@ -204,6 +204,9 @@ impl Platform {
 /// Tell the running Shuttercrab that another copy was started, and what it
 /// asks for. Returns whether one was found.
 pub fn signal_running_instance(request: Request) -> bool {
+    // The request goes as its place in `Request::ALL`, which the running
+    // instance reads back: that order is what passes between versions, so
+    // new requests go at its end.
     let code = Request::ALL.iter().position(|r| *r == request).unwrap_or(0);
     unsafe {
         FindWindowW(w!("ShuttercrabPlatform"), w!("Shuttercrab")).is_ok_and(|window| {

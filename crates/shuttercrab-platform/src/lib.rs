@@ -4,8 +4,8 @@
 //! code calls this crate; it never touches the OS itself.
 //!
 //! Each public module is the same on every OS. What only an OS can do lives
-//! in `sys`, one backend per OS; Windows is the only one so far, and other
-//! OSes get one that says they are not supported yet.
+//! in `sys`, one backend per OS: Windows and Linux (X11), and for other
+//! OSes one that says they are not supported yet.
 
 pub mod cursor;
 pub mod drag;
@@ -68,6 +68,8 @@ pub enum Request {
 }
 
 impl Request {
+    /// Every request. On Windows, a request passes to the running instance
+    /// as its place here, so new ones go at the end.
     pub(crate) const ALL: [Request; 4] = [
         Request::Show,
         Request::CaptureBar,
@@ -76,7 +78,7 @@ impl Request {
     ];
 
     /// Its name on the command line, without the `--`, and between the two
-    /// processes.
+    /// processes on Linux.
     pub fn name(self) -> &'static str {
         match self {
             Request::Show => "show",
