@@ -7,6 +7,42 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.34](https://github.com/jakeklassen/shuttercrab/compare/v0.1.33...v0.1.34) - 2026-10-31
+
+### Other
+
+- *(connect)* streams always go through the relay
+- *(app)* to_physical turns a logical length into physical pixels
+- *(app)* the windows go in ui/, the helper processes in helpers/
+- *(app)* finish_if_it_ends and check_for_updates, not watch_*
+- *(platform)* following the recorded window is follow_window, not watch_window
+- the video player's wakes and recordings shown are Generations
+- the thumbnail's showings and the undo windows are Generations
+- the recording's border and controls get files of their own
+- app/recording becomes a folder of smaller files
+- app/recording.rs moves to app/recording/mod.rs
+- one HotkeyKind table for the app's hotkeys
+- select says what it is choosing for, not two bare booleans
+- the record bar's Cancel event is KeepRecording, as its button says
+- a window going out of sight and coming back are two functions
+- the recording border's names say border, not frame
+- a freeform outline's bounds and a cursor's area are PhysicalRects
+- a target window's bounds are a PhysicalRect
+- window bounds and work areas are PhysicalRects, not tuples
+- the recording border uses PhysicalRect
+- *(capture)* the live player's module is live_player, not watch
+- *(stream)* the live wire format moves to stream's wire module
+- the FP16 frame file and PNG helpers move to capture-spike
+- capture's Windows code shares one lock helper
+- the sound threads join COM with a ComApartment guard
+- one clock module for capture's 100 ns ticks
+- a display's bounds are a PhysicalRect
+- PhysicalRect lives in shuttercrab-types, for every crate
+- *(connect)* the room is served as its messages come, not polled
+- the link scheme and the Print Screen check use windows-registry
+- the viewer's watch.rs becomes a folder of smaller files
+- the viewer's watch.rs moves to watch/mod.rs
+
 ## [0.1.33](https://github.com/jakeklassen/shuttercrab/compare/v0.1.32...v0.1.33) - 2026-10-31
 
 ### Fixed
