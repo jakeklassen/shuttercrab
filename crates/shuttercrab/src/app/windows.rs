@@ -8,7 +8,7 @@ use super::{
 use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
     files,
-    main_window::{self, MainHooks, MainWindow, Page, Place, Shot},
+    main_window::{self, MainHooks, MainWindow, Page, Shot},
     markup, pixels, playback, popup,
     settings_window::{Diagnostics, SettingsHooks},
 };
@@ -274,15 +274,9 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
         }),
         window_place: Rc::new(|window| {
             let os_window = popup::os_window(window)?;
-            let (x, y, width, height) = platform_window::outer_bounds(os_window)
+            platform_window::outer_bounds(os_window)
                 .inspect_err(|e| log::warn!("could not read where the window is: {e:#}"))
-                .ok()?;
-            Some(Place {
-                x,
-                y,
-                width,
-                height,
-            })
+                .ok()
         }),
         restore_place: Rc::new(|window, cx, place| {
             let Some(os_window) = popup::os_window(window) else {
@@ -291,8 +285,7 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
             // After this update, as for fitting.
             cx.foreground_executor()
                 .spawn(async move {
-                    let bounds = (place.x, place.y, place.width, place.height);
-                    if let Err(e) = platform_window::place(os_window, bounds) {
+                    if let Err(e) = platform_window::place(os_window, place) {
                         log::warn!("could not put the window back: {e:#}");
                     }
                 })

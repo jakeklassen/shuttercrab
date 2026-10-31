@@ -56,6 +56,7 @@ use gpui_kit::{
 };
 use home::{Menu, More};
 use moment::Momentary;
+use shuttercrab_types::PhysicalRect;
 use std::{
     path::{Path, PathBuf},
     rc::Rc,
@@ -240,20 +241,11 @@ pub struct MainHooks {
     pub copy_text: TextHook,
 }
 
-/// Where a window is: its outer bounds, physical virtual-desktop pixels.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct Place {
-    pub x: i32,
-    pub y: i32,
-    pub width: u32,
-    pub height: u32,
-}
-
-/// Says where the window is.
-pub type PlaceHook = Rc<dyn Fn(&Window) -> Option<Place>>;
+/// Says where the window is: its outer bounds.
+pub type PlaceHook = Rc<dyn Fn(&Window) -> Option<PhysicalRect>>;
 
 /// Puts the window back where it was.
-pub type RestoreHook = Rc<dyn Fn(&mut Window, &mut App, Place)>;
+pub type RestoreHook = Rc<dyn Fn(&mut Window, &mut App, PhysicalRect)>;
 
 /// Sizes the window's client area.
 pub type FitHook = Rc<dyn Fn(&mut Window, &mut App, Fit)>;
@@ -275,7 +267,7 @@ enum Cleared {
     Shot {
         // Boxed: a screenshot shown holds far more than a closed recording.
         shown: Box<Shown>,
-        place: Option<Place>,
+        place: Option<PhysicalRect>,
     },
     /// A recording, which is saved in its folder already, so only closed.
     Recording(video::ClearedRecording),

@@ -365,9 +365,7 @@ fn show_thumbnail(state: Rc<State>, pending: PendingThumbnail, cx: &mut AsyncApp
             monitor,
             seconds,
         } = pending;
-        let work = platform_window::work_area(monitor.id)
-            .map(|(x, y, w, h)| PhysicalRect::new(x, y, w, h))
-            .unwrap_or(monitor.bounds);
+        let work = platform_window::work_area(monitor.id).unwrap_or(monitor.bounds);
         let rect = thumbnail_rect(work, monitor.scale_factor, size);
         let image = thumbnail::render_image(&picture);
         let drag_picture = thumbnail::soften(&picture, thumbnail::DRAG_LOOK);

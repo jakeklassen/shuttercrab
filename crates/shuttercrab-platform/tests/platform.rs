@@ -7,7 +7,7 @@
 
 use futures::executor::block_on;
 use shuttercrab_platform::{Hotkey, Platform};
-use shuttercrab_types::WindowId;
+use shuttercrab_types::{PhysicalRect, WindowId};
 
 #[test]
 fn registers_hotkeys_and_reports_conflicts() {
@@ -84,12 +84,13 @@ fn cover_makes_the_client_area_the_whole_rectangle() {
         let before = client_bounds(handle).unwrap();
         assert_ne!(
             before,
-            (0, 0, 800, 600),
+            PhysicalRect::new(0, 0, 800, 600),
             "a captioned window starts with a caption and borders"
         );
         // Far off-screen, so nothing flashes on the desktop.
-        cover(handle, -30000, -30000, 640, 360).unwrap();
-        assert_eq!(client_bounds(handle).unwrap(), (-30000, -30000, 640, 360));
+        let area = PhysicalRect::new(-30000, -30000, 640, 360);
+        cover(handle, area).unwrap();
+        assert_eq!(client_bounds(handle).unwrap(), area);
         DestroyWindow(hwnd).unwrap();
     }
 }
@@ -124,7 +125,7 @@ fn shuttercrabs_own_windows_are_targets_unless_excluded_from_capture() {
         .unwrap();
         let handle = WindowId::from_raw(hwnd.0 as u64);
         // Shown far off-screen, so nothing flashes on the desktop.
-        cover(handle, -30000, -30000, 320, 200).unwrap();
+        cover(handle, PhysicalRect::new(-30000, -30000, 320, 200)).unwrap();
         let listed = || visible_windows().iter().any(|w| w.id == handle);
         assert!(listed(), "an ordinary window of this process is a target");
         exclude_from_capture(handle).unwrap();
@@ -136,7 +137,6 @@ fn shuttercrabs_own_windows_are_targets_unless_excluded_from_capture() {
 #[test]
 fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
     use shuttercrab_platform::frame::{Frame, FrameStyle};
-    use shuttercrab_types::PhysicalRect;
     use windows::Win32::{
         Foundation::{HWND, RECT},
         UI::WindowsAndMessaging::{

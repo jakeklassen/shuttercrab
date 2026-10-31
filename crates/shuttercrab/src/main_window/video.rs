@@ -31,6 +31,7 @@ use gpui_kit::{
     prelude::FluentBuilder as _,
     px, rgb,
 };
+use shuttercrab_types::PhysicalRect;
 use std::{path::PathBuf, sync::Arc, time::Duration};
 
 /// How far Left and Right move, and Up and Down change the volume.
@@ -96,7 +97,7 @@ pub(super) struct Video {
 pub(super) struct ClearedRecording {
     path: PathBuf,
     size: Option<(u32, u32)>,
-    place: Option<super::Place>,
+    place: Option<PhysicalRect>,
     at: Duration,
 }
 

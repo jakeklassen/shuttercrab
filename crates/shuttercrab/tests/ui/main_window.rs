@@ -9,12 +9,13 @@ use gpui_kit::{
 };
 use shuttercrab::{
     capture_choice::{CaptureMode, CaptureTarget},
-    main_window::{HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, Place, SHOT_MIN_WIDTH, Shot},
+    main_window::{HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, SHOT_MIN_WIDTH, Shot},
     playback::{Command, PlayerLink, Update},
     settings::Settings,
     settings_window::{Diagnostics, SettingsHooks},
     text::{Line, Rect, Text, Word},
 };
+use shuttercrab_types::PhysicalRect;
 use std::{
     cell::{Cell, RefCell},
     path::PathBuf,
@@ -39,7 +40,7 @@ struct Seen {
     /// The client sizes the window was fitted to, physical pixels.
     fits: RefCell<Vec<(u32, u32)>>,
     /// Where the window was put back to.
-    places: RefCell<Vec<Place>>,
+    places: RefCell<Vec<PhysicalRect>>,
     /// The version the fake updater has ready, if any.
     update: RefCell<Option<String>>,
     /// The fake players of the recordings opened, latest last.
@@ -64,7 +65,7 @@ struct FakePlayer {
 }
 
 /// Where the fake window says it is.
-const WHERE_IT_WAS: Place = Place {
+const WHERE_IT_WAS: PhysicalRect = PhysicalRect {
     x: 120,
     y: 80,
     width: 1400,

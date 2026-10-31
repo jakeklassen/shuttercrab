@@ -5,7 +5,7 @@
 
 use anyhow::{Context, Result, anyhow, bail};
 use raw_window_handle::{HasWindowHandle, RawWindowHandle};
-use shuttercrab_types::{MonitorId, WindowId};
+use shuttercrab_types::{MonitorId, PhysicalRect, WindowId};
 use std::sync::OnceLock;
 use x11rb::{
     CURRENT_TIME,
@@ -76,14 +76,13 @@ pub fn of(window: &impl HasWindowHandle) -> Option<WindowId> {
     }
 }
 
-/// The window's drawable area, physical root-window pixels:
-/// `(x, y, width, height)`.
-pub fn client_bounds(window: WindowId) -> Result<(i32, i32, u32, u32)> {
+/// The window's drawable area, physical root-window pixels.
+pub fn client_bounds(window: WindowId) -> Result<PhysicalRect> {
     let x = x11_or_err()?;
     let w = xid(window);
     let geometry = x.conn.get_geometry(w)?.reply()?;
     let at = x.conn.translate_coordinates(w, x.root, 0, 0)?.reply()?;
-    Ok((
+    Ok(PhysicalRect::new(
         i32::from(at.dst_x),
         i32::from(at.dst_y),
         u32::from(geometry.width),
@@ -119,43 +118,43 @@ pub(super) fn frame_extents(x: &X11, window: Window) -> [u32; 4] {
     sides(x, window, x.atoms._NET_FRAME_EXTENTS)
 }
 
-/// The window's outer bounds, frame included, physical root-window pixels:
-/// `(x, y, width, height)`, as [`place`] takes them.
-pub fn outer_bounds(window: WindowId) -> Result<(i32, i32, u32, u32)> {
+/// The window's outer bounds, frame included, physical root-window pixels,
+/// as [`place`] takes them.
+pub fn outer_bounds(window: WindowId) -> Result<PhysicalRect> {
     let x = x11_or_err()?;
-    let (cx, cy, cw, ch) = client_bounds(window)?;
+    let client = client_bounds(window)?;
     let [left, right, top, bottom] = frame_extents(x, xid(window));
-    Ok((
-        cx - left as i32,
-        cy - top as i32,
-        cw + left + right,
-        ch + top + bottom,
+    Ok(PhysicalRect::new(
+        client.x - left as i32,
+        client.y - top as i32,
+        client.width + left + right,
+        client.height + top + bottom,
     ))
 }
 
 /// Put the window's outer bounds at `bounds`, as [`outer_bounds`] gave them.
-pub fn place(window: WindowId, (bx, by, width, height): (i32, i32, u32, u32)) -> Result<()> {
+pub fn place(window: WindowId, bounds: PhysicalRect) -> Result<()> {
     let x = x11_or_err()?;
     let [left, right, top, bottom] = frame_extents(x, xid(window));
     let aux = ConfigureWindowAux::new()
-        .x(bx)
-        .y(by)
-        .width(width.saturating_sub(left + right).max(1))
-        .height(height.saturating_sub(top + bottom).max(1));
+        .x(bounds.x)
+        .y(bounds.y)
+        .width(bounds.width.saturating_sub(left + right).max(1))
+        .height(bounds.height.saturating_sub(top + bottom).max(1));
     x.conn.configure_window(xid(window), &aux)?;
     x.conn.flush()?;
     Ok(())
 }
 
-/// Cover exactly `width` × `height` physical pixels at `(x, y)`, above
-/// other windows: the selection overlay over its monitor.
-pub fn cover(window: WindowId, bx: i32, by: i32, width: u32, height: u32) -> Result<()> {
+/// Cover exactly `area`, physical pixels, above other windows: the
+/// selection overlay over its monitor.
+pub fn cover(window: WindowId, area: PhysicalRect) -> Result<()> {
     let x = x11_or_err()?;
     let aux = ConfigureWindowAux::new()
-        .x(bx)
-        .y(by)
-        .width(width)
-        .height(height)
+        .x(area.x)
+        .y(area.y)
+        .width(area.width)
+        .height(area.height)
         .stack_mode(StackMode::ABOVE);
     x.conn.configure_window(xid(window), &aux)?;
     x.conn.map_window(xid(window))?;
@@ -241,7 +240,7 @@ pub fn sound_process(_window: WindowId) -> Option<u32> {
 }
 
 /// The monitors' bounds, by their RandR name atom (the raw [`MonitorId`]).
-fn monitors(x: &X11) -> Vec<(MonitorId, (i32, i32, u32, u32))> {
+fn monitors(x: &X11) -> Vec<(MonitorId, PhysicalRect)> {
     let Some(reply) = x
         .conn
         .randr_get_monitors(x.root, true)
@@ -254,7 +253,7 @@ fn monitors(x: &X11) -> Vec<(MonitorId, (i32, i32, u32, u32))> {
         .monitors
         .iter()
         .map(|m| {
-            let bounds = (
+            let bounds = PhysicalRect::new(
                 i32::from(m.x),
                 i32::from(m.y),
                 u32::from(m.width),
@@ -270,38 +269,44 @@ pub fn monitor_of(window: WindowId) -> MonitorId {
     let Some(x) = x11() else {
         return MonitorId::from_raw(0);
     };
-    let Ok((wx, wy, ww, wh)) = client_bounds(window) else {
+    let Ok(client) = client_bounds(window) else {
         return MonitorId::from_raw(0);
     };
-    let (cx, cy) = (wx + ww as i32 / 2, wy + wh as i32 / 2);
+    let (cx, cy) = (
+        client.x + client.width as i32 / 2,
+        client.y + client.height as i32 / 2,
+    );
     let all = monitors(x);
     all.iter()
-        .find(|(_, (mx, my, mw, mh))| {
-            cx >= *mx && cy >= *my && cx < mx + *mw as i32 && cy < my + *mh as i32
-        })
+        .find(|(_, m)| cx >= m.x && cy >= m.y && cx < m.right() && cy < m.bottom())
         .or(all.first())
         .map_or(MonitorId::from_raw(0), |(id, _)| *id)
 }
 
 /// The part of `monitor` not covered by panels (physical pixels, root
-/// coordinates): x, y, width, height. EWMH gives one work area for the
-/// whole desktop; its part on the monitor is close enough.
-pub fn work_area(monitor: MonitorId) -> Option<(i32, i32, u32, u32)> {
+/// coordinates). EWMH gives one work area for the whole desktop; its part
+/// on the monitor is close enough.
+pub fn work_area(monitor: MonitorId) -> Option<PhysicalRect> {
     let x = x11()?;
-    let (mx, my, mw, mh) = monitors(x).into_iter().find(|(id, _)| *id == monitor)?.1;
+    let m = monitors(x).into_iter().find(|(id, _)| *id == monitor)?.1;
     let area = property32(x, x.root, x.atoms._NET_WORKAREA, AtomEnum::CARDINAL, 4);
     let Ok([ax, ay, aw, ah]) = <[u32; 4]>::try_from(area) else {
-        return Some((mx, my, mw, mh));
+        return Some(m);
     };
-    let (ax, ay) = (ax as i32, ay as i32);
-    let left = mx.max(ax);
-    let top = my.max(ay);
-    let right = (mx + mw as i32).min(ax + aw as i32);
-    let bottom = (my + mh as i32).min(ay + ah as i32);
+    let a = PhysicalRect::new(ax as i32, ay as i32, aw, ah);
+    let left = m.x.max(a.x);
+    let top = m.y.max(a.y);
+    let right = m.right().min(a.right());
+    let bottom = m.bottom().min(a.bottom());
     if right <= left || bottom <= top {
-        return Some((mx, my, mw, mh));
+        return Some(m);
     }
-    Some((left, top, (right - left) as u32, (bottom - top) as u32))
+    Some(PhysicalRect::new(
+        left,
+        top,
+        (right - left) as u32,
+        (bottom - top) as u32,
+    ))
 }
 
 /// Size the window's drawable area to `width` × `height` physical pixels,
@@ -316,23 +321,26 @@ pub fn fit_client_area(
     least: (u32, u32),
 ) -> Result<()> {
     let x = x11_or_err()?;
-    let (cx, cy, cw, ch) = client_bounds(window)?;
-    let (ax, ay, aw, ah) = work_area(monitor_of(window)).context("no work area")?;
+    let client = client_bounds(window)?;
+    let work = work_area(monitor_of(window)).context("no work area")?;
     let [left, right, top, bottom] = frame_extents(x, xid(window));
     let (frame_w, frame_h) = (left + right, top + bottom);
     let most = |side: u32, frame: u32| ((side as f32 * share) as u32).saturating_sub(frame);
     let fit = |want: u32, least: u32, most: u32| want.min(most).max(least.min(most)).max(1);
-    let w = fit(width, least.0, most(aw, frame_w));
-    let h = fit(height, least.1, most(ah, frame_h));
+    let w = fit(width, least.0, most(work.width, frame_w));
+    let h = fit(height, least.1, most(work.height, frame_h));
     // Keep the centre, but stay inside the work area.
-    let centre = (cx + cw as i32 / 2, cy + ch as i32 / 2);
+    let centre = (
+        client.x + client.width as i32 / 2,
+        client.y + client.height as i32 / 2,
+    );
     let keep = |centre: i32, side: u32, start: i32, room: u32, before: u32, after: u32| {
         let lowest = start + before as i32;
         let highest = start + room as i32 - side as i32 - after as i32;
         (centre - side as i32 / 2).clamp(lowest, highest.max(lowest))
     };
-    let nx = keep(centre.0, w, ax, aw, left, right);
-    let ny = keep(centre.1, h, ay, ah, top, bottom);
+    let nx = keep(centre.0, w, work.x, work.width, left, right);
+    let ny = keep(centre.1, h, work.y, work.height, top, bottom);
     let aux = ConfigureWindowAux::new().x(nx).y(ny).width(w).height(h);
     x.conn.configure_window(xid(window), &aux)?;
     x.conn.flush()?;
