@@ -237,14 +237,16 @@ impl RecordBar {
             cx.notify();
         })
         .detach();
-        let first = next_redraw(clock.get(), Instant::now());
+        // The time from GPUI's clock, which is the system's (tests move it
+        // on themselves).
+        let first = next_redraw(clock.get(), cx.background_executor().now());
         cx.spawn(async move |this, cx| {
             let mut wait = first;
             loop {
                 cx.background_executor().timer(wait).await;
                 let redrawn = this.update(cx, |this, cx| {
                     cx.notify();
-                    next_redraw(this.clock.get(), Instant::now())
+                    next_redraw(this.clock.get(), cx.background_executor().now())
                 });
                 match redrawn {
                     Ok(next) => wait = next,
@@ -384,7 +386,7 @@ impl RecordBar {
         length: Duration,
         cx: &mut Context<Self>,
     ) {
-        self.notice = Some((text.into(), Instant::now() + length));
+        self.notice = Some((text.into(), cx.background_executor().now() + length));
         cx.notify();
     }
 
@@ -395,9 +397,9 @@ impl RecordBar {
         cx.notify();
     }
 
-    /// The elapsed time as shown.
-    pub fn time(&self) -> String {
-        clock(self.clock.get().elapsed(Instant::now()))
+    /// The elapsed time as shown at `now`.
+    pub fn time(&self, now: Instant) -> String {
+        clock(self.clock.get().elapsed(now))
     }
 
     fn ask(&mut self, event: RecordBarEvent, cx: &mut Context<Self>) {
@@ -445,6 +447,7 @@ impl RecordBar {
             }
             return;
         }
+        let now = cx.background_executor().now();
         let request = match (self.mode, key) {
             (_, "m") if self.switches_shown() => Some(self.flip(Source::Microphone)),
             (_, "a") if self.switches_shown() => Some(self.flip(Source::System)),
@@ -456,11 +459,9 @@ impl RecordBar {
             (BarMode::Ready, "down") => Some(RecordBarEvent::ChooseMicrophone),
             (BarMode::Controls, "p" | "space") => Some(RecordBarEvent::TogglePause),
             (BarMode::Controls, "s") => Some(RecordBarEvent::Stop),
-            (BarMode::Controls, "n") if !self.offering(Instant::now()) => {
-                Some(RecordBarEvent::Restart)
-            }
+            (BarMode::Controls, "n") if !self.offering(now) => Some(RecordBarEvent::Restart),
             (BarMode::Controls, "d") => Some(RecordBarEvent::Discard),
-            (BarMode::Controls, "z") if self.offering(Instant::now()) => Some(RecordBarEvent::Undo),
+            (BarMode::Controls, "z") if self.offering(now) => Some(RecordBarEvent::Undo),
             (BarMode::Confirm(..), "enter") => Some(RecordBarEvent::Confirm),
             (BarMode::Confirm(Destructive::Discard, _), "d") => Some(RecordBarEvent::Confirm),
             (BarMode::Confirm(Destructive::Restart, _), "n") => Some(RecordBarEvent::Confirm),
@@ -750,7 +751,7 @@ impl RecordBar {
                 BarMode::Ready => ("Ready to stream".into(), gpui_kit::white()),
                 BarMode::Starting => ("Opening the stream…".into(), muted()),
                 _ if stream.live => (
-                    format!("Live {} · {}", self.time(), stream.detail).into(),
+                    format!("Live {} · {}", self.time(now), stream.detail).into(),
                     gpui_kit::white(),
                 ),
                 _ => (stream.detail.clone(), gpui_kit::white()),
@@ -761,10 +762,13 @@ impl RecordBar {
             BarMode::Ready => ("Ready to record".into(), gpui_kit::white()),
             BarMode::Starting => ("Starting…".into(), muted()),
             BarMode::Controls if is_paused => match &self.pause_reason {
-                Some(why) => (format!("{} · Paused: {why}", self.time()).into(), paused()),
-                None => (self.time().into(), paused()),
+                Some(why) => (
+                    format!("{} · Paused: {why}", self.time(now)).into(),
+                    paused(),
+                ),
+                None => (self.time(now).into(), paused()),
             },
-            BarMode::Controls => (self.time().into(), gpui_kit::white()),
+            BarMode::Controls => (self.time(now).into(), gpui_kit::white()),
             BarMode::Confirm(Destructive::Discard, length) => (
                 format!("Discard this {} recording?", clock(length)).into(),
                 gpui_kit::white(),
@@ -1069,7 +1073,7 @@ impl RecordBar {
 
 impl Render for RecordBar {
     fn render(&mut self, _: &mut Window, cx: &mut Context<Self>) -> impl IntoElement {
-        let now = Instant::now();
+        let now = cx.background_executor().now();
         let waiting = self.stream.as_ref().is_some_and(|s| !s.live);
         let dot = match self.mode {
             BarMode::Ready | BarMode::Starting | BarMode::Discarded { .. } => muted(),

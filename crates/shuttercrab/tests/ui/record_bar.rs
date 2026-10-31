@@ -22,6 +22,12 @@ use std::{
     time::{Duration, Instant},
 };
 
+/// The time on GPUI's test clock, which the bar reads: it stands still
+/// until `advance_clock` moves it.
+fn now(cx: &TestAppContext) -> Instant {
+    cx.executor().now()
+}
+
 struct Opened {
     handle: WindowHandle<RecordBar>,
     clock: Rc<Cell<Clock>>,
@@ -56,7 +62,7 @@ fn open_bar(
     ready: Option<(Sound, Vec<Microphone>)>,
 ) -> Opened {
     cx.update(gpui_kit::init);
-    let clock = Rc::new(Cell::new(Clock::new(Instant::now() - running)));
+    let clock = Rc::new(Cell::new(Clock::new(now(cx) - running)));
     let events = Rc::new(RefCell::new(Vec::new()));
     let (sink, shared) = (events.clone(), clock.clone());
     let handle = cx.open_window(
@@ -138,13 +144,19 @@ fn shows_the_time_and_all_four_actions(cx: &mut TestAppContext) {
             assert!(window.try_find(id).is_some(), "{id}");
         }
     });
+    // A second later, the next second.
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    update(cx, &opened, |window, _| {
+        assert_eq!(label(window, "record-time").unwrap(), "1:25");
+    });
 }
 
 #[gpui_kit::test]
 fn a_paused_recording_offers_resume(cx: &mut TestAppContext) {
     let opened = open(cx, Duration::from_secs(5));
     let mut clock = opened.clock.get();
-    clock.pause(Instant::now());
+    clock.pause(now(cx));
     opened.clock.set(clock);
     update(cx, &opened, |window, _| {
         assert_eq!(label(window, "record-time").unwrap(), "0:05");
@@ -156,7 +168,7 @@ fn a_paused_recording_offers_resume(cx: &mut TestAppContext) {
 fn a_recording_paused_by_itself_says_why(cx: &mut TestAppContext) {
     let opened = open(cx, Duration::from_secs(12));
     let mut clock = opened.clock.get();
-    clock.pause(Instant::now());
+    clock.pause(now(cx));
     opened.clock.set(clock);
     let why = |cx: &mut TestAppContext, why: Option<&'static str>| {
         cx.update(|cx| {
@@ -346,13 +358,22 @@ fn asking_before_a_restart(cx: &mut TestAppContext) {
 #[gpui_kit::test]
 fn a_discard_counts_down_and_offers_undo(cx: &mut TestAppContext) {
     let opened = open(cx, Duration::from_secs(30));
-    let until = Instant::now() + Duration::from_millis(9_500);
+    let until = now(cx) + Duration::from_millis(9_500);
     set_mode(cx, &opened, BarMode::Discarded { until });
     activate(cx, &opened);
-    update(cx, &opened, |window, cx| {
+    update(cx, &opened, |window, _| {
         assert_eq!(
             label(window, "record-time").unwrap(),
             "Discarded · deleted in 10 s"
+        );
+    });
+    // It counts down each second.
+    cx.executor().advance_clock(Duration::from_secs(1));
+    cx.run_until_parked();
+    update(cx, &opened, |window, cx| {
+        assert_eq!(
+            label(window, "record-time").unwrap(),
+            "Discarded · deleted in 9 s"
         );
         assert_eq!(label(window, "record-undo-key").unwrap(), "Z");
         assert_eq!(label(window, "record-discard-now-key").unwrap(), "Enter");
@@ -390,7 +411,10 @@ fn after_a_restart_the_previous_take_can_be_kept(cx: &mut TestAppContext) {
         opened
             .handle
             .update(cx, |bar, _, cx| {
-                bar.offer_previous(Some(Instant::now() + Duration::from_secs(10)), cx)
+                bar.offer_previous(
+                    Some(cx.background_executor().now() + Duration::from_secs(10)),
+                    cx,
+                )
             })
             .unwrap()
     });
@@ -707,7 +731,7 @@ fn a_window_recording_offers_its_app_sound_alone(cx: &mut TestAppContext) {
 /// A stream's ready bar, starting at 1080p, as wide as the app makes it.
 fn open_stream(cx: &mut TestAppContext) -> Opened {
     cx.update(gpui_kit::init);
-    let clock = Rc::new(Cell::new(Clock::new(Instant::now())));
+    let clock = Rc::new(Cell::new(Clock::new(now(cx))));
     let events = Rc::new(RefCell::new(Vec::new()));
     let (sink, shared) = (events.clone(), clock.clone());
     let handle = cx.open_window(
