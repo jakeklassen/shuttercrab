@@ -9,9 +9,9 @@ use gpui_kit::{
 };
 use shuttercrab::{
     hotkeys::HotkeyKind,
-    popup,
     settings::Settings,
-    settings_window::{Diagnostics, HotkeyField, OnPrintScreen, SettingsHooks, SettingsPage},
+    ui::popup,
+    ui::settings_window::{Diagnostics, HotkeyField, OnPrintScreen, SettingsHooks, SettingsPage},
 };
 use shuttercrab_capture::{MonitorId, MonitorInfo, PhysicalRect};
 use shuttercrab_platform::{Hotkey, os::Os};

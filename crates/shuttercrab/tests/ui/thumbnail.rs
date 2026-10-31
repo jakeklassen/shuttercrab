@@ -8,7 +8,7 @@ use gpui_kit::{
     MouseUpEvent, Pixels, Point, TestAppContext, Window, WindowHandle, point, px, size,
     test::TestWindowExt as _,
 };
-use shuttercrab::thumbnail::{Thumbnail, ThumbnailEvent, render_image, scale_down};
+use shuttercrab::ui::thumbnail::{Thumbnail, ThumbnailEvent, render_image, scale_down};
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 struct Opened {

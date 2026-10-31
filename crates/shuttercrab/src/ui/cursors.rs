@@ -3,7 +3,7 @@
 //! drawn here from the toolbar's icon set (Lucide's hand and hand-grab),
 //! white lines over a dark edge to show on any screenshot.
 
-use crate::icons::Icons;
+use crate::ui::icons::Icons;
 use gpui_kit::{AssetSource as _, assets::IconName};
 use shuttercrab_platform::cursor::Cursor;
 use std::{cell::RefCell, collections::HashMap};

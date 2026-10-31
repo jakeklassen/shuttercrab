@@ -5,7 +5,7 @@
 //! It takes the keyboard: Up and Down move, Enter or Space chooses, Escape
 //! closes. Clicking an item chooses it; clicking elsewhere closes the list.
 
-use crate::palette::{border, coral};
+use crate::ui::palette::{border, coral};
 use gpui_kit::{
     ClickEvent, Context, EventEmitter, FocusHandle, InteractiveElement as _, IntoElement,
     KeyDownEvent, ParentElement as _, Render, Role, SharedString, StatefulInteractiveElement as _,

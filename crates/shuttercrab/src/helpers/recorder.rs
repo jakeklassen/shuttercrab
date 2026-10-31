@@ -5,7 +5,7 @@
 //! runs the recorder and exits when the recording ends, taking that memory
 //! with it.
 //!
-//! The two talk in JSON lines (see `helper_process`): the app writes
+//! The two talk in JSON lines (see [`super`]): the app writes
 //! `Request`s to the helper's standard input and reads `Reply`s from
 //! its standard output. The helper's log lines come over standard error and
 //! go into the app's log. If the app goes away, the helper's input ends,
@@ -14,7 +14,7 @@
 //! [`RecorderProcess`] has the same methods as the in-process
 //! [`Recorder`], which [`serve`] runs inside the helper.
 
-use crate::helper_process::{
+use crate::helpers::{
     Helper, HelperProcess, Options, first_request, log_to_app, read_requests, send,
 };
 use anyhow::{Result, anyhow};

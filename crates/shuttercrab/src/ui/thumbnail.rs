@@ -6,7 +6,7 @@
 //! It never takes the keyboard, so Ctrl+V straight after a capture still
 //! pastes into the application the user was in.
 
-use crate::palette::{border, surface};
+use crate::ui::palette::{border, surface};
 use gpui_kit::{
     ClickEvent, Context, EventEmitter, InteractiveElement as _, IntoElement, MouseButton,
     MouseDownEvent, MouseMoveEvent, MouseUpEvent, ObjectFit, ParentElement as _, Pixels, Point,

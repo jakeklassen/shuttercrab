@@ -7,9 +7,9 @@
 use super::{MainWindow, canvas::canvas_size};
 use crate::{
     markup::{self, Emoji, Ink, Mark, Shape, ShapeKind},
-    palette::{border, coral, hover, muted, tile},
     pixels,
     shot_view::Xy,
+    ui::palette::{border, coral, hover, muted, tile},
 };
 use gpui_kit::{
     ClickEvent, Context, InteractiveElement as _, IntoElement, MouseButton, ParentElement as _,

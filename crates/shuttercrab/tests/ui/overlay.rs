@@ -10,8 +10,8 @@ use gpui_kit::{
     test::TestWindowExt as _,
 };
 use shuttercrab::{
-    overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     selection::ScreenWindow,
+    ui::overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
 };
 use shuttercrab_capture::PhysicalRect;
 use shuttercrab_types::WindowId;

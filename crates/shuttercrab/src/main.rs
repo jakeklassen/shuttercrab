@@ -94,7 +94,7 @@ fn main() {
     release_terminal(log_file.as_deref());
 
     gpui_kit::application()
-        .with_assets(shuttercrab::icons::Icons)
+        .with_assets(shuttercrab::ui::icons::Icons)
         .run(move |cx| {
             gpui_kit::init(cx);
             app::run(
@@ -117,16 +117,18 @@ fn main() {
 /// update or uninstall hook, and exit, if this start is one.
 fn run_helper_or_installer() {
     // The recording helper: no tray, no UI, no single-instance check.
-    if std::env::args().nth(1).as_deref() == Some(shuttercrab::recorder_process::FLAG) {
-        std::process::exit(shuttercrab::recorder_process::serve());
+    if std::env::args().nth(1).as_deref() == Some(shuttercrab::helpers::recorder::FLAG) {
+        std::process::exit(shuttercrab::helpers::recorder::serve());
     }
     // The streaming helper and the viewer window, likewise.
     #[cfg(windows)]
     match std::env::args().nth(1).as_deref() {
-        Some(shuttercrab::stream_process::FLAG) => {
-            std::process::exit(shuttercrab::stream_process::serve());
+        Some(shuttercrab::helpers::streamer::FLAG) => {
+            std::process::exit(shuttercrab::helpers::streamer::serve());
         }
-        Some(shuttercrab::watch::FLAG) => std::process::exit(shuttercrab::watch::serve()),
+        Some(shuttercrab::helpers::viewer::FLAG) => {
+            std::process::exit(shuttercrab::helpers::viewer::serve())
+        }
         _ => {}
     }
     // Next, before anything else: Velopack may run an install or uninstall
@@ -140,8 +142,8 @@ fn run_helper_or_installer() {
         // Stream links open the viewer, once installed (issue #66).
         let register = |_| {
             let _ = shuttercrab_platform::links::register(
-                shuttercrab::watch::SCHEME,
-                shuttercrab::watch::FLAG,
+                shuttercrab::helpers::viewer::SCHEME,
+                shuttercrab::helpers::viewer::FLAG,
                 "Shuttercrab stream",
             );
         };
@@ -152,7 +154,8 @@ fn run_helper_or_installer() {
                 // Don't leave a startup entry pointing at a deleted program,
                 // or links that start it.
                 let _ = startup::set_launch_at_startup(false);
-                let _ = shuttercrab_platform::links::unregister(shuttercrab::watch::SCHEME);
+                let _ =
+                    shuttercrab_platform::links::unregister(shuttercrab::helpers::viewer::SCHEME);
             });
     }
     velopack.run();

@@ -37,10 +37,10 @@ use crate::{
     capture_choice::{CaptureMode, CaptureTarget, WATCH_KEY},
     generation::Generation,
     markup::{Mark, Region, Tool},
-    palette::{border, coral, hover, muted, surface, tile},
     settings::Settings,
-    settings_window::{HostKeyNote, SettingsHooks, SettingsPage},
     shot_view::{self, Xy},
+    ui::palette::{border, coral, hover, muted, surface, tile},
+    ui::settings_window::{HostKeyNote, SettingsHooks, SettingsPage},
 };
 use canvas::{Shown, canvas_size, pointer_in_canvas};
 use chrono::NaiveDateTime;

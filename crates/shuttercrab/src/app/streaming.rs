@@ -14,11 +14,11 @@ use super::{
 };
 use crate::{
     capture_choice::CaptureTarget,
-    main_window::Page,
-    record_bar::{BarMode, RecordBarEvent, Sound},
+    helpers::streamer::{StreamEvent, StreamProcess, StreamStart},
     recording::Clock,
     settings::Settings,
-    stream_process::{StreamEvent, StreamProcess, StreamStart},
+    ui::main_window::Page,
+    ui::record_bar::{BarMode, RecordBarEvent, Sound},
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{AsyncApp, ClipboardItem};
@@ -48,7 +48,7 @@ pub(super) struct Streaming {
 }
 
 impl Streaming {
-    fn view(&self) -> Option<gpui_kit::Entity<crate::record_bar::RecordBar>> {
+    fn view(&self) -> Option<gpui_kit::Entity<crate::ui::record_bar::RecordBar>> {
         self.controls.as_ref().map(|c| c.view.clone())
     }
 }

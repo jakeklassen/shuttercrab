@@ -8,11 +8,11 @@ use gpui_kit::{
     test::TestWindowExt as _,
 };
 use shuttercrab::{
-    record_bar::{
+    recording::Clock,
+    ui::record_bar::{
         BarMode, Destructive, RECORD_BAR_HEIGHT, RECORD_BAR_WIDTH, RecordBar, RecordBarEvent,
         RecordKeys, STREAM_BAR_WIDTH, Sound, default_microphone,
     },
-    recording::Clock,
 };
 use shuttercrab_capture::record::{Microphone, Source};
 use shuttercrab_stream::Quality;

@@ -17,8 +17,8 @@ use super::{
 };
 use crate::{
     markup::{Edit, Mark, Shape, ShapeKind, ShapeStyle},
-    palette::border,
     shot_view::Xy,
+    ui::palette::border,
 };
 use gpui_kit::{
     AnyElement, Bounds, ClickEvent, Context, InteractiveElement as _, IntoElement, Keystroke,
@@ -603,7 +603,7 @@ impl MainWindow {
                     d.child(
                         div()
                             .text_xs()
-                            .text_color(crate::palette::muted())
+                            .text_color(crate::ui::palette::muted())
                             .child("Del"),
                     )
                 })

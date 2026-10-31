@@ -9,7 +9,7 @@
 use super::{MainWindow, tools::Hand};
 use crate::{
     markup::{Ink, Rgb, SHAPE_COLORS, ShapeKind, ShapeStyle},
-    palette::{border, coral, hover, muted, tile},
+    ui::palette::{border, coral, hover, muted, tile},
 };
 use gpui_kit::{
     AppContext as _, ClickEvent, Context, Entity, InteractiveElement as _, IntoElement,

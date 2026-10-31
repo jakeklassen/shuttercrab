@@ -4,7 +4,7 @@
 //!   cargo test -p shuttercrab --test ui countdown::
 
 use gpui_kit::{AppContext as _, TestAppContext, WindowHandle, px, size, test::TestWindowExt as _};
-use shuttercrab::countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent};
+use shuttercrab::ui::countdown::{COUNTDOWN_HEIGHT, COUNTDOWN_WIDTH, Countdown, CountdownEvent};
 use std::{cell::RefCell, rc::Rc, time::Duration};
 
 struct Opened {

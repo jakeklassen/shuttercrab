@@ -17,13 +17,14 @@ use super::{
     text::{Reading, TextActions},
 };
 use crate::{
-    cursors,
     markup::{
         self, Drawing, Emoji, Figure, Ink, Mark, Marks, Region, Shape, ShapeKind, Stroke, Tool,
     },
-    palette::border,
-    pixels, popup,
+    pixels,
     shot_view::{ShotView, Xy},
+    ui::cursors,
+    ui::palette::border,
+    ui::popup,
 };
 use gpui_kit::{
     AnyElement, Bounds, ContentMask, Context, Corners, CursorStyle, InteractiveElement as _,

@@ -6,7 +6,7 @@
 use gpui_kit::{
     AppContext as _, SharedString, TestAppContext, WindowHandle, px, size, test::TestWindowExt as _,
 };
-use shuttercrab::choice_menu::{
+use shuttercrab::ui::choice_menu::{
     CHOICE_MENU_WIDTH, ChoiceMenu, ChoiceMenuEvent, choice_menu_height,
 };
 use std::{cell::RefCell, rc::Rc};

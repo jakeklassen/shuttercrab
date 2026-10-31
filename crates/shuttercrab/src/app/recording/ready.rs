@@ -13,12 +13,12 @@ use crate::{
         screenshot::{Choosing, exclude_from_capture, monitor_info, select},
     },
     capture_choice::CaptureTarget,
-    choice_menu::{CHOICE_MENU_WIDTH, ChoiceMenu, ChoiceMenuEvent, choice_menu_height},
-    overlay::{Mode, OverlayEvent},
-    popup::{self, Activation},
-    record_bar::{RecordBarEvent, RecordKeys, Sound},
     recording::Clock,
     settings::Settings,
+    ui::choice_menu::{CHOICE_MENU_WIDTH, ChoiceMenu, ChoiceMenuEvent, choice_menu_height},
+    ui::overlay::{Mode, OverlayEvent},
+    ui::popup::{self, Activation},
+    ui::record_bar::{RecordBarEvent, RecordKeys, Sound},
 };
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{AppContext as _, AsyncApp};

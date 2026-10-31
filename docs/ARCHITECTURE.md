@@ -17,6 +17,9 @@ point and its keys are described in [STREAMING.md](STREAMING.md).
 | [`shuttercrab-stream`](../crates/shuttercrab-stream) | Live streaming: a recording sent to a viewer as it is made, the window that plays it, the stream's quality and codec choice, and its wire format | — |
 | [`capture-spike`](../crates/capture-spike) | Milestone 0's measurement tools and the HDR-off / HDR-on gate, and command-line tools for recording, playback, text recognition and streaming | — |
 
+In `shuttercrab`, `app/` runs the flow, `ui/` holds the windows and bars it
+shows, and `helpers/` the helper processes (below).
+
 PRD §30 allows simpler boundaries. `capture-core`, `color` and `screenshot`
 share one Direct3D device and one thread, so they are one crate; the
 clipboard sits with the other OS integration in `shuttercrab-platform`.
@@ -30,9 +33,9 @@ helper, so an update cannot end a recording or a stream.
 
 | Flag | Module | What it does | Why it is a process of its own |
 |---|---|---|---|
-| `--recorder` | [`recorder_process.rs`](../crates/shuttercrab/src/recorder_process.rs) | Makes one recording, then exits | The hardware encoder's driver keeps hundreds of megabytes of system memory for as long as the process that used it lives (about 265 MB after a 4K recording). The helper exits when the recording ends and takes that memory with it |
-| `--streamer` | [`stream_process.rs`](../crates/shuttercrab/src/stream_process.rs) | Opens a room on the meeting point, says the link to share, waits for a viewer and streams to it until asked to stop or the viewer leaves. Windows only | As for recording, the encoder's memory goes with the helper; and the app never waits on the network |
-| `--watch LINK` | [`watch.rs`](../crates/shuttercrab/src/watch.rs) | The viewer: a window that plays the stream the link is for. Windows only | It runs beside the app or without it. The app's Watch box starts one, and so does Windows for a `shuttercrab://` link clicked anywhere, once the installer has registered the scheme |
+| `--recorder` | [`helpers/recorder.rs`](../crates/shuttercrab/src/helpers/recorder.rs) | Makes one recording, then exits | The hardware encoder's driver keeps hundreds of megabytes of system memory for as long as the process that used it lives (about 265 MB after a 4K recording). The helper exits when the recording ends and takes that memory with it |
+| `--streamer` | [`helpers/streamer.rs`](../crates/shuttercrab/src/helpers/streamer.rs) | Opens a room on the meeting point, says the link to share, waits for a viewer and streams to it until asked to stop or the viewer leaves. Windows only | As for recording, the encoder's memory goes with the helper; and the app never waits on the network |
+| `--watch LINK` | [`helpers/viewer.rs`](../crates/shuttercrab/src/helpers/viewer.rs) | The viewer: a window that plays the stream the link is for. Windows only | It runs beside the app or without it. The app's Watch box starts one, and so does Windows for a `shuttercrab://` link clicked anywhere, once the installer has registered the scheme |
 
 The app starts the recorder and the streamer with their standard input,
 output and error as pipes (`shuttercrab_platform::process`; on Windows it

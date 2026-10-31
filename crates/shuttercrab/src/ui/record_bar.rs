@@ -29,8 +29,8 @@
 //! Stop (S). Its status says whether a viewer is watching.
 
 use crate::{
-    palette::{border, hover, muted, paused, recording, surface, tile},
     recording::{Clock, clock},
+    ui::palette::{border, hover, muted, paused, recording, surface, tile},
 };
 use gpui_kit::{
     AnyElement, Bounds, ClickEvent, Context, EventEmitter, FocusHandle, Hsla,

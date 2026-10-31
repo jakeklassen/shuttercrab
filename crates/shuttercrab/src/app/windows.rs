@@ -6,9 +6,10 @@ use crate::{
     capture_choice::{CaptureMode, CaptureTarget},
     files,
     hotkeys::{hotkeys, print_screen_hotkeys},
-    main_window::{self, MainHooks, MainWindow, Page, Shot},
-    markup, pixels, playback, popup,
-    settings_window::{Diagnostics, SettingsHooks},
+    markup, pixels, playback,
+    ui::main_window::{self, MainHooks, MainWindow, Page, Shot},
+    ui::popup,
+    ui::settings_window::{Diagnostics, SettingsHooks},
 };
 use gpui_kit::{
     App, AppContext as _, AsyncApp, Bounds, Context, Task, TitlebarOptions, Window, WindowBounds,
@@ -457,7 +458,7 @@ fn save_recording_as(state: &Rc<State>, path: &Path, cx: &mut App) {
 /// there, one written to the temporary folder for it. `open` may answer
 /// with a message for the user.
 /// Open the screenshot shown in `editor`, the OS's image editor.
-fn edit_in_editor(state: &Rc<State>, editor: &'static str) -> crate::main_window::ShotHook {
+fn edit_in_editor(state: &Rc<State>, editor: &'static str) -> crate::ui::main_window::ShotHook {
     let state = state.clone();
     Rc::new(move |shot, cx| {
         open_shot_file(&state, shot, cx, move |path| {
