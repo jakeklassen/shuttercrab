@@ -1,10 +1,10 @@
 //! The platform thread on Windows: a hidden window whose message loop
-//! owns the tray icon, the hotkeys, the clipboard and the window watching.
+//! owns the tray icon, the hotkeys, the clipboard and following the recorded window.
 
 use super::{
-    clipboard,
+    clipboard, follow,
     hotkey::{modifiers, virtual_key},
-    icon, watch,
+    icon,
 };
 use crate::{Hotkey, HotkeyConflict, MenuItem, PlatformEvent, Request, Tray};
 use anyhow::{Context, Result, anyhow};
@@ -61,7 +61,7 @@ enum Command {
         title: String,
         message: String,
     },
-    Watch(Option<WindowId>),
+    Follow(Option<WindowId>),
 }
 
 /// Posted to the platform window to make its thread drain `commands`.
@@ -187,9 +187,9 @@ impl Platform {
 
     /// Report when `window` moves, changes size, or is minimised
     /// or restored, as [`PlatformEvent::Window`], in place of the window
-    /// watched before; `None` stops watching.
-    pub fn watch_window(&self, window: Option<WindowId>) {
-        self.send(Command::Watch(window));
+    /// followed before; `None` stops following.
+    pub fn follow_window(&self, window: Option<WindowId>) {
+        self.send(Command::Follow(window));
     }
 
     /// Show a notification from the tray icon (a toast on Windows 11).
@@ -485,7 +485,7 @@ fn run(
                             });
                         }
                         Command::Notify { title, message } => notify(&title, &message),
-                        Command::Watch(window) => watch::watch(window),
+                        Command::Follow(window) => follow::follow(window),
                     }
                 }
             }

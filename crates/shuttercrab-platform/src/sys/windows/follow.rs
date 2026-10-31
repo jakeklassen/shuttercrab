@@ -1,4 +1,4 @@
-//! Watching one window while it is recorded: Windows says when it moves or
+//! Following one window while it is recorded: Windows says when it moves or
 //! changes size, when it is dragged, when it is minimised, hidden or shown
 //! again, and when it is closed (`SetWinEventHook`, out of context, so the
 //! events arrive on the platform thread's message loop; nothing is
@@ -68,8 +68,8 @@ fn cloaked(hwnd: HWND) -> bool {
         && cloaked != 0
 }
 
-/// The window watched, and its hooks.
-struct Watched {
+/// The window followed, and its hooks.
+struct Followed {
     hwnd: HWND,
     hooks: Vec<HWINEVENTHOOK>,
     /// Its bounds as last reported, so a repeat is not sent again.
@@ -79,14 +79,14 @@ struct Watched {
 }
 
 thread_local! {
-    static WATCHED: RefCell<Option<Watched>> = const { RefCell::new(None) };
+    static FOLLOWED: RefCell<Option<Followed>> = const { RefCell::new(None) };
 }
 
-/// Watch `window` (an `HWND`) in place of the one watched before, or stop
-/// watching with `None`. Runs on the platform thread.
-pub(crate) fn watch(window: Option<WindowId>) {
-    WATCHED.with(|watched| {
-        if let Some(old) = watched.borrow_mut().take() {
+/// Follow `window` (an `HWND`) in place of the one followed before, or stop
+/// following with `None`. Runs on the platform thread.
+pub(crate) fn follow(window: Option<WindowId>) {
+    FOLLOWED.with(|followed| {
+        if let Some(old) = followed.borrow_mut().take() {
             for hook in old.hooks {
                 let _ = unsafe { UnhookWinEvent(hook) };
             }
@@ -97,7 +97,7 @@ pub(crate) fn watch(window: Option<WindowId>) {
         let hwnd = to_hwnd(window);
         let mut process = 0;
         if unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) } == 0 {
-            log::warn!("the window to watch is gone");
+            log::warn!("the window to follow is gone");
             return;
         }
         // Only its process's events, so the rest of the desktop's moving
@@ -127,9 +127,9 @@ pub(crate) fn watch(window: Option<WindowId>) {
             })
             .collect::<Vec<_>>();
         if hooks.len() < ranges.len() {
-            log::warn!("could not watch the recorded window fully; the border may not follow it");
+            log::warn!("could not follow the recorded window fully; the border may not follow it");
         }
-        *watched.borrow_mut() = Some(Watched {
+        *followed.borrow_mut() = Some(Followed {
             hwnd,
             hooks,
             last: None,
@@ -167,9 +167,9 @@ unsafe extern "system" fn on_event(
     if object != OBJID_WINDOW.0 || child != CHILDID_SELF as i32 {
         return;
     }
-    let change = WATCHED.with(|watched| {
-        let mut watched = watched.borrow_mut();
-        let watched = watched.as_mut().filter(|w| w.hwnd == hwnd)?;
+    let change = FOLLOWED.with(|followed| {
+        let mut followed = followed.borrow_mut();
+        let followed = followed.as_mut().filter(|w| w.hwnd == hwnd)?;
         match event {
             EVENT_SYSTEM_MOVESIZESTART => return Some(WindowChange::DragStarted),
             EVENT_SYSTEM_MOVESIZEEND => return Some(WindowChange::DragEnded),
@@ -185,12 +185,12 @@ unsafe extern "system" fn on_event(
         if event != EVENT_OBJECT_LOCATIONCHANGE {
             log::debug!("recorded window: event {event:#x}, now {seen:?}");
         }
-        if seen != watched.seen {
+        if seen != followed.seen {
             // Closed is final: nothing follows it.
-            if watched.seen == Seen::Closed {
+            if followed.seen == Seen::Closed {
                 return None;
             }
-            watched.seen = seen;
+            followed.seen = seen;
             return Some(match seen {
                 Seen::Shown => WindowChange::Restored,
                 Seen::Minimized => WindowChange::Minimized,
@@ -204,7 +204,7 @@ unsafe extern "system" fn on_event(
             return None;
         }
         let bounds = visible_bounds(to_window_id(hwnd))?;
-        (watched.last.replace(bounds) != Some(bounds)).then_some(WindowChange::Moved(bounds))
+        (followed.last.replace(bounds) != Some(bounds)).then_some(WindowChange::Moved(bounds))
     });
     if let Some(change) = change {
         send_event(PlatformEvent::Window(change));

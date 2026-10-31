@@ -31,9 +31,9 @@ use shuttercrab_types::PhysicalRect;
 pub use sys::imp::clipboard::dibv5;
 pub use sys::imp::{
     console::{attach_to_parent_terminal, detach_from_terminal},
+    follow::visible_bounds,
     instance::{SingleInstance, single_instance},
     platform::{Platform, signal_running_instance},
-    watch::visible_bounds,
 };
 
 /// Something the platform thread observed.
@@ -52,7 +52,7 @@ pub enum PlatformEvent {
     NotificationClicked,
     /// A display was attached, detached or changed.
     DisplaysChanged,
-    /// The window being watched ([`Platform::watch_window`]) changed.
+    /// The window being followed ([`Platform::follow_window`]) changed.
     Window(WindowChange),
 }
 
@@ -103,7 +103,7 @@ impl Request {
     }
 }
 
-/// What happened to the watched window.
+/// What happened to the followed window.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum WindowChange {
     /// It moved or changed size: its visible bounds now, physical pixels.
