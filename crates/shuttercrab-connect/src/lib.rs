@@ -33,7 +33,7 @@ use tokio::runtime::Runtime;
 pub const MEET: &str = "https://shuttercrab.sandbox.gdn";
 
 /// Why the meeting point turns away a host whose key it does not know, as
-/// `meet/routes/rooms/[room].ws.ts` says it: the error opening a room ends
+/// `meet/access.ts` says it: the error opening a room ends
 /// with it.
 pub const NOT_THE_HOST_KEY: &str = "Not the host key";
 

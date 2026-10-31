@@ -12,5 +12,5 @@
       "void/routes": ["./.void/routes.d.ts"]
     }
   },
-  "include": ["routes", "env.ts", ".void/env.d.ts", ".void/routes.d.ts"]
+  "include": ["routes", "env.ts", "access.ts", "access.test.ts", "test-setup.ts", ".void/env.d.ts", ".void/routes.d.ts"]
 }
