@@ -11,6 +11,7 @@
 import * as v from 'valibot';
 import { defineRoom } from 'void/ws';
 import { env } from 'void/env';
+import { hostKeys, refusal } from '../../access';
 
 /** An address as `ip:port`, `[ipv6]:port` included. */
 const Address = v.pipe(v.string(), v.maxLength(64));
@@ -59,34 +60,6 @@ const RELAY_TTL = 12 * 60 * 60;
 
 const TURN_API = 'https://rtc.live.cloudflare.com/v1/turn/keys';
 
-/**
- * The host keys: each line or comma-separated entry of `HOST_KEYS`, as
- * `name:key` or a bare key, and `HOST_KEY`. Blank entries are skipped, and
- * the stored text may end in the newline it was piped in with.
- */
-function hostKeys(): string[] {
-  const entries = (env.HOST_KEYS ?? '').split(/[\n,]/).map((entry) => {
-    const colon = entry.indexOf(':');
-    return (colon >= 0 ? entry.slice(colon + 1) : entry).trim();
-  });
-  return [...entries, env.HOST_KEY?.trim() ?? ''].filter((key) => key.length > 0);
-}
-
-/**
- * Whether `given` is one of the host keys, comparing it with every one, so
- * it takes the same time whichever matches.
- */
-async function isHostKey(given: string): Promise<boolean> {
-  const digest = async (text: string) =>
-    crypto.subtle.digest('SHA-256', new TextEncoder().encode(text));
-  const theirs = await digest(given);
-  let found = false;
-  for (const key of hostKeys()) {
-    found = crypto.subtle.timingSafeEqual(theirs, await digest(key)) || found;
-  }
-  return found;
-}
-
 /** The TURN key's ID and token, if the room has them. */
 function turnKey(): { id: string; token: string } | null {
   const id = env.TURN_KEY_ID?.trim();
@@ -129,25 +102,6 @@ async function revoke(username: string) {
   }
 }
 
-/**
- * Why a connection may not join, if it may not: as a close code and a
- * reason, which the apps show. It is closed in answer to its first
- * message. (Refusing the upgrade itself would be plainer, but the local
- * Workers runtime crashes on a refused upgrade, and loses a close sent
- * while connecting.)
- */
-async function refusal(auth: string | null, open: boolean): Promise<[number, string] | null> {
-  if (auth !== null) {
-    if (!auth.startsWith('Bearer ') || !(await isHostKey(auth.slice(7)))) {
-      // The app knows this reason by its words (shuttercrab-connect's
-      // NOT_THE_HOST_KEY): keep them as they are.
-      return [4401, 'Not the host key'];
-    }
-    return open ? [4409, 'Someone is already streaming here'] : null;
-  }
-  return open ? null : [4404, 'No one is streaming here'];
-}
-
 export default defineRoom({
   name: 'rooms',
   messages: { client: ClientMessage, server: ServerMessage },
@@ -157,7 +111,7 @@ export default defineRoom({
     const open = [...ctx.room.getConnections()].some(
       (c) => c.id !== ctx.connection.id && (c.state as State | undefined)?.host,
     );
-    const refused = (await refusal(auth, open)) ?? undefined;
+    const refused = (await refusal(auth, open, hostKeys(env))) ?? undefined;
     const state: State = { host: auth !== null && !refused, addresses: [], refused };
     ctx.connection.setState(state);
   },
