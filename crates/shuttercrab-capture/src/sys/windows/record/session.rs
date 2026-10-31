@@ -5,7 +5,6 @@ use super::{
     ANALYSE_EVERY, Event, HEARTBEAT,
     encoder::{Mp4Writer, Nv12},
     fit::Fitter,
-    qpc_ticks,
     sound::{self, Capture, Device, Mixer, Packet},
     timing::Timer,
 };
@@ -18,7 +17,7 @@ use crate::{
     },
     screen::PhysicalRect,
     sys::imp::{
-        display,
+        clock, display,
         gpu::{Gpu, VideoConverter},
         service::{hmonitor, hwnd},
     },
@@ -365,7 +364,7 @@ impl Session {
         if !timeline.is_paused() {
             let time = timeline.sound_time(packet.captured);
             let arrivals = &mut self.arrivals[packet.source as usize];
-            let delay = qpc_ticks() - packet.captured;
+            let delay = clock::now() - packet.captured;
             arrivals.first.get_or_insert((time, delay));
             arrivals.slowest = arrivals.slowest.max(delay);
             self.mixer.add(packet.source, time, &packet.samples);
@@ -572,7 +571,7 @@ impl Session {
                 } else {
                     end
                 };
-                ticks_to_duration(end)
+                clock::duration(end)
             }
             None => return Err(why(anyhow::anyhow!("no frame was captured"))),
         };
@@ -581,8 +580,7 @@ impl Session {
         self.captures = [None, None];
         self.log_arrivals();
         if interrupted.is_none() && self.writer.has_sound() {
-            self.write_mix_until(duration_ticks(duration))
-                .map_err(why)?;
+            self.write_mix_until(clock::ticks(duration)).map_err(why)?;
         }
         let timing = timer.map(|t| t.finish(&self.gpu.context));
         let hardware_encoder = self.writer.finish().map_err(why)?;
@@ -595,7 +593,7 @@ impl Session {
             dropped_busy: counts.dropped_busy,
             skipped_rate: counts.skipped_rate,
             duration,
-            paused: ticks_to_duration(timeline.paused_ticks),
+            paused: clock::duration(timeline.paused_ticks),
             hardware_encoder,
             sound: self.writer.has_sound(),
             interrupted,
@@ -871,7 +869,7 @@ struct Timeline {
 impl Timeline {
     fn start(fps: u32) -> Self {
         Self {
-            origin: qpc_ticks(),
+            origin: clock::now(),
             period: TICKS_PER_SECOND / fps as i64,
             paused_since: None,
             paused_ticks: 0,
@@ -884,18 +882,18 @@ impl Timeline {
     }
 
     fn pause(&mut self) {
-        self.paused_since.get_or_insert_with(qpc_ticks);
+        self.paused_since.get_or_insert_with(clock::now);
     }
 
     fn resume(&mut self) {
         if let Some(since) = self.paused_since.take() {
-            self.paused_ticks += qpc_ticks() - since;
+            self.paused_ticks += clock::now() - since;
         }
     }
 
     /// Now, on this clock.
     fn now(&self) -> i64 {
-        qpc_ticks() - self.origin - self.paused_ticks
+        clock::now() - self.origin - self.paused_ticks
     }
 
     /// When sound captured at `captured` (QPC ticks) falls on this clock:
@@ -924,7 +922,7 @@ impl Timeline {
         match (self.paused_since, self.last_written) {
             (None, Some((previous, _))) => {
                 let due = previous + HEARTBEAT - self.now();
-                Some(ticks_to_duration(due.max(10_000)))
+                Some(clock::duration(due.max(10_000)))
             }
             _ => None,
         }
@@ -951,13 +949,3 @@ const SOUND_LAG: i64 = TICKS_PER_SECOND / 5;
 /// arrived up to 33 ms after capture and a microphone's up to 19 ms,
 /// but at 20 ms a fifth of the microphone's came too late to mix.
 const LIVE_SOUND_LAG: i64 = TICKS_PER_SECOND / 20;
-
-/// A `Duration` as 100 ns ticks.
-fn duration_ticks(duration: Duration) -> i64 {
-    (duration.as_nanos() / 100) as i64
-}
-
-/// 100 ns ticks as a `Duration` (none if negative).
-fn ticks_to_duration(ticks: i64) -> Duration {
-    Duration::from_nanos(ticks.max(0) as u64 * 100)
-}
