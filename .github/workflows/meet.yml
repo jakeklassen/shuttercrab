@@ -1,0 +1,39 @@
+# The meeting point's Worker (meet/): its type check and its tests, for
+# pull requests and pushes to main that change it. Deploying it stays by
+# hand (docs/STREAMING.md).
+
+name: Meet
+
+on:
+  pull_request:
+    paths: ['meet/**', '.github/workflows/meet.yml']
+  push:
+    branches: [main]
+    paths: ['meet/**', '.github/workflows/meet.yml']
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Type check and tests
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      # Node and pnpm as meet/mise.toml pins them.
+      - uses: jdx/mise-action@v5
+        with:
+          working_directory: meet
+
+      - name: Install
+        run: pnpm -C meet install --frozen-lockfile
+
+      - name: Type check
+        run: pnpm -C meet run check
+
+      - name: Tests
+        run: pnpm -C meet test
