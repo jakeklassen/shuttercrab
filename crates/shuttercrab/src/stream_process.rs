@@ -10,10 +10,7 @@
 //! standard error. If the app goes away, the helper's input ends and it
 //! stops.
 
-use crate::{
-    helper_process::{forward_logs, send},
-    recorder_process::Options,
-};
+use crate::helper_process::{Options, forward_logs, send};
 use anyhow::{Context, Result, anyhow};
 use futures::channel::mpsc::{UnboundedReceiver, UnboundedSender, unbounded};
 use serde::{Deserialize, Serialize};
