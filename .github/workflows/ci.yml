@@ -85,9 +85,11 @@ jobs:
 
   # A Linux build of each pull request, to download and try on a desktop
   # (Ubuntu 24.04 first) while the Linux backend is built up. Not a release.
+  # It builds on pushes to main too, without the download, so main saves
+  # the build cache every pull request starts from: a pull request's own
+  # cache only serves that pull request.
   linux-build:
     name: Linux build to try
-    if: github.event_name == 'pull_request'
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v7
@@ -111,9 +113,11 @@ jobs:
 
       # A tarball keeps the program executable through the artifact's zip.
       - name: Pack
+        if: github.event_name == 'pull_request'
         run: tar -czf shuttercrab-linux-x86_64.tar.gz -C target/release shuttercrab
 
       - uses: actions/upload-artifact@v7
+        if: github.event_name == 'pull_request'
         with:
           name: shuttercrab-linux-x86_64
           path: shuttercrab-linux-x86_64.tar.gz
