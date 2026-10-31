@@ -40,8 +40,8 @@ Documentation:
   boundary, coordinates and DPI, and other decisions.
 - [docs/COLOR_PIPELINE.md](docs/COLOR_PIPELINE.md): the color transform, its
   equations, and the measurements behind it.
-- [docs/TEST_MATRIX.md](docs/TEST_MATRIX.md): automated checks, the
-  Milestone 0 gate, and the Milestone 1 acceptance test.
+- [docs/TESTING.md](docs/TESTING.md): running the tests, where they live,
+  what CI runs, and what still needs a person.
 - [docs/STREAMING.md](docs/STREAMING.md): live streaming, watching, host
   keys and running the meeting point.
 
@@ -133,6 +133,9 @@ tests, or one test, use Cargo through mise:
 mise exec -- cargo test -p shuttercrab-capture
 mise exec -- cargo test -p shuttercrab --test ui overlay::
 ```
+
+[docs/TESTING.md](docs/TESTING.md) has the rest: the tests left out by
+default and how to run them, and the checks that still need a person.
 
 The measurement and diagnostic tools remain: `mise exec -- cargo run
 --release -p capture-spike -- help`.
