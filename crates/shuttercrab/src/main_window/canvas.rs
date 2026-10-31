@@ -28,7 +28,7 @@ use crate::{
 use gpui_kit::{
     AnyElement, Bounds, ContentMask, Context, Corners, CursorStyle, InteractiveElement as _,
     IntoElement, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollWheelEvent,
+    ParentElement as _, PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollEvent,
     SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
     canvas, div, img, point, px, rgb, size,
 };
@@ -612,7 +612,7 @@ impl MainWindow {
     /// The scroll wheel over the screenshot: with Ctrl, zoom around the
     /// pointer; otherwise move a screenshot bigger than the window (sideways
     /// with Shift).
-    fn on_wheel(&mut self, event: &ScrollWheelEvent, window: &mut Window, cx: &mut Context<Self>) {
+    fn on_wheel(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let delta = event.delta.pixel_delta(px(WHEEL_LINE));
         let (x, y) = (f32::from(delta.x), f32::from(delta.y));
         let at = canvas_point(event.position);
@@ -1114,7 +1114,7 @@ impl MainWindow {
                 // Shown by the window itself, over the arrow.
                 Pointer::Hand(_) | Pointer::Move => CursorStyle::Arrow,
             })
-            .on_scroll_wheel(cx.listener(Self::on_wheel))
+            .on_scroll(cx.listener(Self::on_wheel))
             // Bars and menus on it block the pointer: not over the canvas.
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
                 this.canvas_hovered = *hovered;

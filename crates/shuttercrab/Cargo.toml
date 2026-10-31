@@ -16,7 +16,7 @@ shuttercrab-platform = { path = "../shuttercrab-platform" }
 shuttercrab-stream = { path = "../shuttercrab-stream" }
 shuttercrab-types = { path = "../shuttercrab-types" }
 futures = "0.3"
-gpui-kit = "0.7.0"
+gpui-kit = "0.8.1"
 # The version GPUI uses, so its RenderImage takes our frames.
 image = { version = "0.25", default-features = false }
 log = "0.4"
@@ -34,7 +34,7 @@ velopack = "1.2.161"
 embed-resource = "3"
 
 [dev-dependencies]
-gpui-kit = { version = "0.7.0", features = ["test-support"] }
+gpui-kit = { version = "0.8.1", features = ["test-support"] }
 
 [lints]
 workspace = true
