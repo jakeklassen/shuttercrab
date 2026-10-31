@@ -24,7 +24,7 @@ rcgen = { version = "0.14", default-features = false, features = ["ring"] }
 # The room, a WebSocket on Cloudflare.
 tungstenite = { version = "0.30", features = ["rustls-tls-webpki-roots"] }
 # The relay's login: MD5 for its key, ring's HMAC-SHA1 to sign with.
-md-5 = "0.10"
+md-5 = "0.11"
 ring = "0.17"
 
 [lints]
