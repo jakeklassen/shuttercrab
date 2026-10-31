@@ -6,15 +6,16 @@
 //! standard input and replies come back on its standard output. The
 //! helper's log lines come over standard error and go into the app's log.
 
-use anyhow::Result;
+use anyhow::{Context, Result, anyhow};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use shuttercrab_capture::{MonitorId, PhysicalRect, record::RecordOptions};
+use shuttercrab_platform::process::{Process, Spawned, spawn_quiet};
 use shuttercrab_types::WindowId;
 use std::{
     fs::File,
     io::{BufRead, BufReader, Write},
     path::PathBuf,
-    sync::mpsc,
+    sync::{Mutex, MutexGuard, PoisonError, mpsc},
     thread,
 };
 
@@ -68,6 +69,109 @@ impl From<Options> for RecordOptions {
             sound_track: o.sound_track,
             path: o.path,
         }
+    }
+}
+
+/// Which helper, and the words its messages use for it.
+pub(crate) struct Helper {
+    /// The command-line flag that starts it.
+    pub flag: &'static str,
+    /// What it is called, as in "could not reach the recorder". Also names
+    /// its threads, and its log in the app's.
+    pub name: &'static str,
+    /// What its process is called, as in "the recording process stopped".
+    pub process: &'static str,
+}
+
+/// A helper process, seen from the app.
+pub(crate) struct HelperProcess {
+    helper: &'static Helper,
+    child: Process,
+    /// The helper's input; closing it stops the helper.
+    input: Mutex<Option<File>>,
+}
+
+impl HelperProcess {
+    /// Start `helper`, send it `first`, and wait for its first reply.
+    ///
+    /// Its replies are read on a thread of their own by `read_replies`,
+    /// which says on its second argument whether the helper started, and
+    /// with what. The rest of what the helper says is up to it.
+    pub(crate) fn start<T: Send + 'static>(
+        helper: &'static Helper,
+        first: &impl Serialize,
+        read_replies: impl FnOnce(File, mpsc::Sender<Result<T>>) + Send + 'static,
+    ) -> Result<(Self, T)> {
+        let exe = std::env::current_exe().context("could not find shuttercrab.exe")?;
+        // Without a console window, and without the busy pointer Windows
+        // would otherwise show over a recording's first seconds.
+        let Spawned {
+            process: child,
+            stdin: mut input,
+            stdout: output,
+            stderr: errors,
+        } = spawn_quiet(&exe, &[helper.flag])
+            .with_context(|| format!("could not start the {}", helper.process))?;
+        let target = format!("shuttercrab::{}", helper.name);
+        thread::Builder::new()
+            .name(format!("shuttercrab-{}-log", helper.name))
+            .spawn(move || forward_logs(errors, &target))?;
+        send(&mut input, first)?;
+
+        let (started_tx, started_rx) = mpsc::channel();
+        thread::Builder::new()
+            .name(format!("shuttercrab-{}-replies", helper.name))
+            .spawn(move || read_replies(output, started_tx))?;
+        let started = started_rx
+            .recv()
+            .unwrap_or_else(|_| Err(anyhow!("the {} stopped", helper.process)));
+        match started {
+            Ok(started) => {
+                let process = Self {
+                    helper,
+                    child,
+                    input: Mutex::new(Some(input)),
+                };
+                Ok((process, started))
+            }
+            Err(e) => {
+                // Closing its input makes a helper that is still running exit.
+                drop(input);
+                let _ = child.wait();
+                Err(e)
+            }
+        }
+    }
+
+    /// The helper's input. A panic while it was locked left at worst a
+    /// partial line, which the helper logs and skips, so a poisoned lock is
+    /// used anyway: giving up on the pipe would leave the helper running.
+    fn input(&self) -> MutexGuard<'_, Option<File>> {
+        self.input.lock().unwrap_or_else(PoisonError::into_inner)
+    }
+
+    /// Send the helper a request, unless its input is closed.
+    pub(crate) fn request(&self, request: &impl Serialize) {
+        if let Some(input) = self.input().as_mut()
+            && let Err(e) = send(input, request)
+        {
+            // The helper has gone; its replies say so.
+            log::debug!("could not reach the {}: {e:#}", self.helper.name);
+        }
+    }
+
+    /// Send the helper its last request, `stop`, and close its input. Only
+    /// the first call does anything.
+    pub(crate) fn close(&self, stop: &impl Serialize) {
+        let input = self.input().take();
+        if let Some(mut input) = input {
+            let _ = send(&mut input, stop);
+        }
+    }
+
+    /// Wait for the helper to exit.
+    pub(crate) fn wait(&self) {
+        let _ = self.child.wait();
     }
 }
 
