@@ -9,7 +9,7 @@
 //! seconds, Home and End go to the start and the end, Up and Down change
 //! the volume, M mutes. Escape closes the volume's slider.
 
-use super::{FOOTER_HEIGHT, MainWindow, TOOLBAR_HEIGHT};
+use super::{Cleared, FOOTER_HEIGHT, MainWindow, TOOLBAR_HEIGHT};
 use crate::{
     palette::{border, coral, hover, muted},
     pixels,
@@ -93,7 +93,7 @@ pub(super) struct Video {
 
 /// A recording Clear closed, which Undo opens again: where the window was,
 /// and where playing was.
-pub(super) struct Closed {
+pub(super) struct ClearedRecording {
     path: PathBuf,
     size: Option<(u32, u32)>,
     place: Option<super::Place>,
@@ -176,18 +176,14 @@ impl MainWindow {
         if let Some(shown) = self.shown.take() {
             shown.release(window);
         }
-        // A new capture: the cleared one can no longer come back.
-        if let Some((cleared, _)) = self.cleared.take() {
-            cleared.release(window);
-        }
-        self.closed = None;
-        if let Some(video) = self.video.take() {
+        self.forget_cleared(window);
+        if let Some(video) = self.recording.take() {
             video.release(window);
         }
         self.hand = None;
         self.flyout = None;
-        self.videos += 1;
-        let id = self.videos;
+        self.recordings_shown += 1;
+        let id = self.recordings_shown;
         let mut link = (self.hooks.open_recording)(&path);
         let updates = link.updates.take();
         let (volume, muted) = {
@@ -231,7 +227,7 @@ impl MainWindow {
                 }
             }
         });
-        self.video = Some(Video {
+        self.recording = Some(Video {
             id,
             path,
             link,
@@ -265,27 +261,28 @@ impl MainWindow {
 
     /// The recording shown, if any.
     pub fn recording(&self) -> Option<&std::path::Path> {
-        self.video.as_ref().map(|video| video.path.as_path())
+        self.recording.as_ref().map(|video| video.path.as_path())
     }
 
     /// Whether the recording shown is playing.
     pub fn is_playing(&self) -> bool {
-        self.video.as_ref().is_some_and(Video::is_playing)
+        self.recording.as_ref().is_some_and(Video::is_playing)
     }
 
-    /// Close the recording shown, back to the start view.
-    /// Close the recording shown, back to the start view. Undo opens it
-    /// again, where it was, until the next capture.
-    pub(super) fn close_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(video) = self.video.take() else {
+    /// Clear the recording shown, back to the start view: it closes, and
+    /// Undo opens it again, where it was, until the next capture. Returns
+    /// whether one was shown.
+    pub(super) fn clear_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
+        let Some(video) = self.recording.take() else {
             return false;
         };
-        self.closed = Some(Closed {
+        let cleared = ClearedRecording {
             path: video.path.clone(),
             size: video.size,
             place: (self.hooks.window_place)(window),
             at: video.position,
-        });
+        };
+        self.keep_cleared(Cleared::Recording(cleared), window);
         video.release(window);
         self.fit_home(window, cx);
         cx.notify();
@@ -293,24 +290,20 @@ impl MainWindow {
     }
 
     /// Open the recording Clear closed again, paused where it was, with the
-    /// window where it was. Returns whether there was one.
-    pub(super) fn reopen_recording(&mut self, window: &mut Window, cx: &mut Context<Self>) -> bool {
-        let Some(closed) = self.closed.take() else {
-            return false;
-        };
-        self.show_recording(closed.path, closed.size, window, cx);
-        if let Some(video) = &mut self.video {
-            video.start_at = Some(closed.at).filter(|at| !at.is_zero());
+    /// window where it was.
+    pub(super) fn undo_clear_recording(
+        &mut self,
+        cleared: ClearedRecording,
+        window: &mut Window,
+        cx: &mut Context<Self>,
+    ) {
+        self.show_recording(cleared.path, cleared.size, window, cx);
+        if let Some(video) = &mut self.recording {
+            video.start_at = Some(cleared.at).filter(|at| !at.is_zero());
         }
-        if let Some(place) = closed.place {
+        if let Some(place) = cleared.place {
             (self.hooks.restore_place)(window, cx, place);
         }
-        true
-    }
-
-    /// Whether Undo can open a closed recording again.
-    pub(super) fn can_reopen(&self) -> bool {
-        self.closed.is_some()
     }
 
     fn on_playback(
@@ -320,7 +313,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let Some(video) = self.video.as_mut().filter(|video| video.id == id) else {
+        let Some(video) = self.recording.as_mut().filter(|video| video.id == id) else {
             return;
         };
         match update {
@@ -370,7 +363,7 @@ impl MainWindow {
     }
 
     fn on_seek_slider(&mut self, event: &SliderEvent, cx: &mut Context<Self>) {
-        let Some(video) = self.video.as_mut() else {
+        let Some(video) = self.recording.as_mut() else {
             return;
         };
         let (value, done) = match event {
@@ -396,7 +389,7 @@ impl MainWindow {
         if done {
             // Saved once the drag ends, not at each step of it.
             self.set_volume(volume, None, cx);
-        } else if let Some(video) = &self.video {
+        } else if let Some(video) = &self.recording {
             video.link.send(Command::Volume(f64::from(volume) / 100.));
             // Turning it up unmutes, as Windows' own slider does.
             if self.settings().playback_muted {
@@ -418,14 +411,14 @@ impl MainWindow {
             s.playback_volume = volume;
             s.playback_muted = muted;
         });
-        if let Some(video) = &self.video {
+        if let Some(video) = &self.recording {
             video.link.send(Command::Volume(f64::from(volume) / 100.));
             video.link.send(Command::Mute(muted));
         }
     }
 
     fn toggle_play(&mut self, cx: &mut Context<Self>) {
-        let Some(video) = &self.video else {
+        let Some(video) = &self.recording else {
             return;
         };
         video.link.send(if video.playing {
@@ -438,7 +431,7 @@ impl MainWindow {
 
     /// Go to `at`, clamped to the recording.
     fn seek_to(&mut self, at: Duration, window: &mut Window, cx: &mut Context<Self>) {
-        let Some(video) = self.video.as_mut() else {
+        let Some(video) = self.recording.as_mut() else {
             return;
         };
         let at = at.min(video.duration);
@@ -452,7 +445,7 @@ impl MainWindow {
     }
 
     fn toggle_volume(&mut self, cx: &mut Context<Self>) {
-        if let Some(video) = &mut self.video {
+        if let Some(video) = &mut self.recording {
             video.volume_open = !video.volume_open;
             cx.notify();
         }
@@ -461,7 +454,7 @@ impl MainWindow {
 
     /// Close the volume's slider. Returns whether it was open.
     pub(super) fn close_volume(&mut self) -> bool {
-        self.video
+        self.recording
             .as_mut()
             .is_some_and(|video| std::mem::take(&mut video.volume_open))
     }
@@ -473,7 +466,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> bool {
-        let Some(video) = &self.video else {
+        let Some(video) = &self.recording else {
             return false;
         };
         let (position, duration) = (video.position, video.duration);
@@ -507,7 +500,7 @@ impl MainWindow {
     /// Show the play bar, and while playing, fade it again once the pointer
     /// and the keys have been still for a moment, as Snipping Tool does.
     fn wake_bar(&mut self, cx: &mut Context<Self>) {
-        let Some(video) = self.video.as_mut() else {
+        let Some(video) = self.recording.as_mut() else {
             return;
         };
         if video.idle {
@@ -528,7 +521,7 @@ impl MainWindow {
     /// pointer moving or over it, a key, a drag, the volume's slider, or a
     /// pause.
     fn idle_bar(&mut self, wake: u64, cx: &mut Context<Self>) {
-        let Some(video) = self.video.as_mut() else {
+        let Some(video) = self.recording.as_mut() else {
             return;
         };
         let kept = video.wakes != wake
@@ -544,12 +537,12 @@ impl MainWindow {
 
     /// The play bar has faded.
     pub fn is_bar_hidden(&self) -> bool {
-        self.video.as_ref().is_some_and(|video| video.idle)
+        self.recording.as_ref().is_some_and(|video| video.idle)
     }
 
     /// Move the volume's slider to the volume set.
     fn sync_volume_slider(&self, window: &mut Window, cx: &mut Context<Self>) {
-        if let Some(video) = &self.video {
+        if let Some(video) = &self.recording {
             let volume = self.settings().playback_volume as f32;
             video
                 .volume
@@ -566,7 +559,7 @@ impl MainWindow {
     ) -> impl IntoElement + use<> {
         let area = video_area(window);
         let scale = window.scale_factor();
-        let Some(video) = self.video.as_mut() else {
+        let Some(video) = self.recording.as_mut() else {
             return div().into_any_element();
         };
         let shown = video.size.map(|size| fitted(size, area, scale));
@@ -640,7 +633,7 @@ impl MainWindow {
     }
 
     fn play_bar(&self, width: f32, cx: &mut Context<Self>) -> impl IntoElement + use<> {
-        let Some(video) = &self.video else {
+        let Some(video) = &self.recording else {
             return div().into_any_element();
         };
         let time = |text: String| {
@@ -657,7 +650,7 @@ impl MainWindow {
             .aria_label("Playback")
             .test_support()
             .on_hover(cx.listener(|this, hovered: &bool, _, cx| {
-                if let Some(video) = &mut this.video {
+                if let Some(video) = &mut this.recording {
                     video.bar_hovered = *hovered;
                 }
                 this.wake_bar(cx);
@@ -701,7 +694,10 @@ impl MainWindow {
             let settings = self.settings();
             (settings.playback_volume, settings.playback_muted)
         };
-        let open = self.video.as_ref().is_some_and(|video| video.volume_open);
+        let open = self
+            .recording
+            .as_ref()
+            .is_some_and(|video| video.volume_open);
         div()
             .relative()
             .child(bar_button(
@@ -729,7 +725,7 @@ impl MainWindow {
     /// The volume's slider, above its button: a button to mute, the slider
     /// and the volume, as in Snipping Tool.
     fn volume_flyout(&self, volume: u32, silent: bool, cx: &mut Context<Self>) -> impl IntoElement {
-        let Some(video) = &self.video else {
+        let Some(video) = &self.recording else {
             return div().into_any_element();
         };
         div()
