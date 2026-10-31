@@ -12,7 +12,7 @@ use shuttercrab::{
     main_window::{HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, Place, SHOT_MIN_WIDTH, Shot},
     playback::{Command, PlayerLink, Update},
     settings::Settings,
-    settings_window::{Diagnostics, Hooks},
+    settings_window::{Diagnostics, SettingsHooks},
     text::{Line, Rect, Text, Word},
 };
 use std::{
@@ -99,7 +99,7 @@ fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -
     let (s14, s15, s16) = (seen.clone(), seen.clone(), seen.clone());
     let (s17, s18) = (seen.clone(), seen.clone());
     let hooks = Rc::new(MainHooks {
-        settings: Rc::new(Hooks {
+        settings: Rc::new(SettingsHooks {
             settings: settings.clone(),
             changed: Rc::new(|_| {}),
             pause_hotkeys: Rc::new(|_| {}),
