@@ -17,7 +17,7 @@ use quinn::{
 use std::{
     fmt,
     io::{self, IoSliceMut},
-    net::{IpAddr, Ipv4Addr, SocketAddr, ToSocketAddrs, UdpSocket},
+    net::{Ipv4Addr, SocketAddr, SocketAddrV4, ToSocketAddrs, UdpSocket},
     pin::Pin,
     sync::{Arc, Mutex},
     task::{Context as TaskContext, Poll, ready},
@@ -31,6 +31,7 @@ const MAGIC: u32 = 0x2112_A442;
 const ALLOCATE: u16 = 0x0003;
 const REFRESH: u16 = 0x0004;
 const CHANNEL_BIND: u16 = 0x0009;
+#[cfg(test)]
 const SUCCESS: u16 = 0x0100;
 const ERROR: u16 = 0x0110;
 
@@ -151,6 +152,10 @@ impl Allocation {
     /// Let `peer`, the other app's relay address, through, on a channel,
     /// and become the socket QUIC uses to reach it. Within the runtime.
     pub fn connect(mut self, peer: SocketAddr) -> Result<Arc<Relay>> {
+        // The relay has an IPv4 address, and relays to the same kind.
+        let SocketAddr::V4(peer) = peer else {
+            bail!("the relay reaches IPv4 addresses only, not {peer}");
+        };
         bind(&self.socket, self.server, peer, &mut self.auth)?;
         self.socket.set_read_timeout(None)?;
         self.socket.set_nonblocking(true)?;
@@ -169,7 +174,7 @@ impl Allocation {
 pub struct Relay {
     io: Arc<tokio::net::UdpSocket>,
     server: SocketAddr,
-    peer: SocketAddr,
+    peer: SocketAddrV4,
     auth: Mutex<Auth>,
 }
 
@@ -243,7 +248,7 @@ impl AsyncUdpSocket for Relay {
     /// Each of QUIC's packets to the other app goes to the relay as
     /// channel data: the channel, the length, the packet.
     fn try_send(&self, transmit: &Transmit) -> io::Result<()> {
-        if transmit.destination != self.peer {
+        if transmit.destination != SocketAddr::V4(self.peer) {
             return Ok(());
         }
         let length = u16::try_from(transmit.contents.len()).map_err(io::Error::other)?;
@@ -281,7 +286,7 @@ impl AsyncUdpSocket for Relay {
                 }
                 data.copy_within(4..4 + length, 0);
                 meta[0] = RecvMeta {
-                    addr: self.peer,
+                    addr: self.peer.into(),
                     len: length,
                     stride: length,
                     ..RecvMeta::default()
@@ -313,7 +318,7 @@ impl UdpPoller for Writable {
 }
 
 /// The channel and the address it is for, as a channel bind carries them.
-fn channel_attributes(peer: SocketAddr) -> [(u16, Vec<u8>); 2] {
+fn channel_attributes(peer: SocketAddrV4) -> [(u16, Vec<u8>); 2] {
     let mut channel = CHANNEL.to_be_bytes().to_vec();
     channel.extend([0, 0]);
     [
@@ -327,7 +332,7 @@ fn borrowed(attributes: &[(u16, Vec<u8>)]) -> Vec<(u16, &[u8])> {
 }
 
 /// Bind `peer` to the channel, which also lets its packets through.
-fn bind(socket: &UdpSocket, server: SocketAddr, peer: SocketAddr, auth: &mut Auth) -> Result<()> {
+fn bind(socket: &UdpSocket, server: SocketAddr, peer: SocketAddrV4, auth: &mut Auth) -> Result<()> {
     let attributes = channel_attributes(peer);
     transact_with(socket, server, CHANNEL_BIND, &borrowed(&attributes), auth)?;
     Ok(())
@@ -426,10 +431,8 @@ fn encode(method: u16, id: &[u8; 12], attributes: &[(u16, &[u8])], auth: Option<
 }
 
 /// An IPv4 address as an XOR-…-ADDRESS attribute carries it.
-fn xor_address(address: SocketAddr) -> Vec<u8> {
-    let IpAddr::V4(ip) = address.ip() else {
-        unreachable!("the relay is reached over IPv4");
-    };
+fn xor_address(address: SocketAddrV4) -> Vec<u8> {
+    let ip = *address.ip();
     let mut value = vec![0, 1];
     value.extend((address.port() ^ (MAGIC >> 16) as u16).to_be_bytes());
     value.extend((u32::from(ip) ^ MAGIC).to_be_bytes());
@@ -478,7 +481,6 @@ impl Message {
     /// The error code, if this is an error response.
     fn error(&self) -> Option<u16> {
         if self.kind & ERROR != ERROR {
-            debug_assert!(self.kind & SUCCESS == SUCCESS);
             return None;
         }
         let value = self.get(ERROR_CODE)?;
@@ -531,7 +533,7 @@ mod tests {
 
     #[test]
     fn an_address_reads_back_as_it_was_written() {
-        let address: SocketAddr = "203.0.113.7:41000".parse().unwrap();
+        let address: SocketAddrV4 = "203.0.113.7:41000".parse().unwrap();
         let mut packet = encode(
             SUCCESS | ALLOCATE,
             &[1; 12],
@@ -543,7 +545,7 @@ mod tests {
             Message::parse(&packet)
                 .unwrap()
                 .xor_address(XOR_RELAYED_ADDRESS),
-            Some(address)
+            Some(address.into())
         );
     }
 }
