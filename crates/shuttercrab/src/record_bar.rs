@@ -55,8 +55,8 @@ pub enum RecordBarEvent {
     Discard,
     /// Yes to the question the bar is asking.
     Confirm,
-    /// No to it: keep the take.
-    Cancel,
+    /// No to it: keep recording, and the take.
+    KeepRecording,
     Undo,
     /// Start recording, from the ready bar.
     Start,
@@ -465,7 +465,7 @@ impl RecordBar {
             (BarMode::Confirm(..), "enter") => Some(RecordBarEvent::Confirm),
             (BarMode::Confirm(Destructive::Discard, _), "d") => Some(RecordBarEvent::Confirm),
             (BarMode::Confirm(Destructive::Restart, _), "n") => Some(RecordBarEvent::Confirm),
-            (BarMode::Confirm(..), "escape") => Some(RecordBarEvent::Cancel),
+            (BarMode::Confirm(..), "escape") => Some(RecordBarEvent::KeepRecording),
             (BarMode::Discarded { .. }, "z") => Some(RecordBarEvent::Undo),
             (BarMode::Discarded { .. }, "enter" | "d") => Some(RecordBarEvent::Confirm),
             _ => None,
@@ -1031,7 +1031,7 @@ impl RecordBar {
                 self.hint("Esc", &keys.pause),
                 gpui_kit::white(),
                 cx,
-                RecordBarEvent::Cancel,
+                RecordBarEvent::KeepRecording,
             ),
             self.button(
                 "record-confirm",

@@ -1007,7 +1007,7 @@ fn handle_controls(
                 RecordBarEvent::Restart => request(&state, Destructive::Restart, cx).await,
                 RecordBarEvent::Discard => request(&state, Destructive::Discard, cx).await,
                 RecordBarEvent::Confirm => confirm(&state, cx).await,
-                RecordBarEvent::Cancel => keep_take(&state, cx),
+                RecordBarEvent::KeepRecording => keep_take(&state, cx),
                 RecordBarEvent::Undo => undo(&state, cx),
                 RecordBarEvent::SetAppOnly(on) => {
                     if let Some(recording) = state.recording.borrow_mut().as_mut() {

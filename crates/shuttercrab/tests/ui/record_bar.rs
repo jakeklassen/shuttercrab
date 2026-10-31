@@ -322,7 +322,7 @@ fn asking_before_a_discard(cx: &mut TestAppContext) {
     assert_eq!(
         events(&opened),
         [
-            RecordBarEvent::Cancel,
+            RecordBarEvent::KeepRecording,
             RecordBarEvent::Confirm,
             RecordBarEvent::Confirm
         ]
