@@ -432,6 +432,12 @@ impl Mp4Writer {
                     attributes.SetUINT32(&MF_LOW_LATENCY, 1)?;
                     let media_sink = live_sink::create(&video, aac.as_ref(), live.sink)?;
                     MFCreateSinkWriterFromMediaSink(&media_sink, &attributes)
+                        .inspect_err(|_| {
+                            // The sink and its streams hold each other until
+                            // it is shut down: without a writer to, it would
+                            // never be.
+                            let _ = media_sink.Shutdown();
+                        })
                         .context("cannot stream the recording")?
                 }
             };
@@ -538,15 +544,17 @@ impl Mp4Writer {
             buffer.SetCurrentLength(length)?;
             let sample = MFCreateTrackedSample()?;
             sample.SetAllocator(&slot.release, None)?;
+            // Busy until the sample's last reference goes, which calls the
+            // release: the encoder's when done, or ours if anything below
+            // fails.
+            slot.busy.fetch_add(1, Ordering::AcqRel);
             let sample: IMFSample = sample.cast()?;
             sample.AddBuffer(&buffer)?;
             sample.SetSampleTime(time)?;
             sample.SetSampleDuration(duration)?;
-            slot.busy.fetch_add(1, Ordering::AcqRel);
-            if let Err(e) = self.writer.WriteSample(self.stream, &sample) {
-                slot.busy.fetch_sub(1, Ordering::AcqRel);
-                return Err(e).context("WriteSample failed");
-            }
+            self.writer
+                .WriteSample(self.stream, &sample)
+                .context("WriteSample failed")?;
         }
         Ok(())
     }
