@@ -19,6 +19,12 @@ impl Generation {
         Token(self.0)
     }
 
+    /// The latest start's token, for something that begins later but must
+    /// not outlive the next start.
+    pub fn current(&self) -> Token {
+        Token(self.0)
+    }
+
     /// Whether `token` is from the latest start.
     pub fn is_current(&self, token: Token) -> bool {
         self.0 == token.0
@@ -45,6 +51,7 @@ mod tests {
         let second = generation.start();
         assert!(!generation.is_current(first));
         assert!(generation.is_current(second));
+        assert_eq!(generation.current(), second);
         assert_ne!(first.to_string(), second.to_string());
     }
 }
