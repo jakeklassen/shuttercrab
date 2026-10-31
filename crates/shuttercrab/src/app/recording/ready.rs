@@ -2,9 +2,9 @@
 //! microphone list.
 
 use super::{
-    CONTROLS_GAP, Controls,
+    Controls,
+    controls::{CONTROLS_GAP, open_controls},
     follow::{FollowingBar, Waiting, waiting_on},
-    open_controls,
 };
 use crate::{
     app::{

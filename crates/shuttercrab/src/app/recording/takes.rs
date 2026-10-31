@@ -2,8 +2,8 @@
 //! Discard and Undo, and the take a restart replaced.
 
 use super::{
-    BORDER_DISCARDED, Recording, finish::discard_recording, show, start_take, stop_following,
-    watch_recording,
+    Recording, border::BORDER_DISCARDED, finish::discard_recording, show, start_take,
+    stop_following, watch_recording,
 };
 use crate::{
     app::{State, failure::Failure},
