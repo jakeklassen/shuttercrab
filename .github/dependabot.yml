@@ -17,6 +17,10 @@ updates:
         update-types: [minor, patch]
       cargo-major:
         update-types: [major]
+    # tiny-skia follows resvg (crates/shuttercrab/Cargo.toml).
+    ignore:
+      - dependency-name: tiny-skia
+        update-types: ["version-update:semver-major", "version-update:semver-minor"]
 
   # The meeting point's Worker.
   - package-ecosystem: npm
