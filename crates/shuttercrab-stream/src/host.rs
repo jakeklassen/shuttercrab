@@ -1,6 +1,9 @@
 //! The streaming side: a viewer to send to, and the recording sent.
 
-use crate::{PICTURES, Path, Quality, SOUND, playable};
+use crate::{
+    Path, Quality, playable,
+    wire::{self, PICTURES, SOUND},
+};
 use anyhow::Result;
 use shuttercrab_capture::{
     live::{self, LiveFormat, LiveFrame, SoundCodec, Track, VideoCodec},
@@ -171,14 +174,14 @@ impl Stream {
         let (width, height) = quality.size(source.0, source.1);
         {
             let mut out = viewer.pictures.lock().unwrap_or_else(|e| e.into_inner());
-            LiveFormat {
+            let format = LiveFormat {
                 width,
                 height,
                 fps: options.fps,
                 video,
                 sound: options.sound_track.then_some(sound),
-            }
-            .write_to(&mut *out)?;
+            };
+            wire::write_format(&format, &mut *out)?;
             out.flush()?;
         }
         let now = Instant::now();
@@ -337,7 +340,7 @@ impl Stream {
                     _ => &out,
                 };
                 let mut out = out.lock().unwrap_or_else(|e| e.into_inner());
-                frame.write_to(&mut *out).and_then(|()| Ok(out.flush()?))
+                wire::write_frame(&frame, &mut *out).and_then(|()| Ok(out.flush()?))
             };
             if written.is_err() {
                 gone.store(true, Ordering::Relaxed);

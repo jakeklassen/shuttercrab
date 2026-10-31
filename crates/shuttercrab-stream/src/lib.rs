@@ -12,6 +12,8 @@
 //! bit each, and the stream takes the best one both ends can.
 
 mod quality;
+#[cfg_attr(not(windows), allow(dead_code, reason = "only Windows streams yet"))]
+mod wire;
 
 #[cfg(windows)]
 mod host;
@@ -27,13 +29,6 @@ pub use host::{Room, Stats, Stream, Viewer, wait_locally};
 pub use watch::{Input, WatchOptions, tell, watch};
 
 use shuttercrab_capture::live::VideoCodec;
-
-/// The first byte of each stream online, so the viewer can tell them
-/// apart: the format and the pictures, and the sound.
-#[cfg(windows)]
-const PICTURES: u8 = b'P';
-#[cfg(windows)]
-const SOUND: u8 = b'S';
 
 /// The best codec from `best` down that this PC encodes, by `encodes`, and
 /// the viewer `plays` (a bit each); H.264 if none.

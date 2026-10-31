@@ -12,10 +12,11 @@ mod window;
 pub use input::Input;
 pub use notice::tell;
 
+use crate::wire;
 use anyhow::Result;
 use input::Joined;
 use notice::{NOTICE, Notices, Over, Overlay, show_notice};
-use shuttercrab_capture::live::{LiveFrame, LivePlayer};
+use shuttercrab_capture::live::LivePlayer;
 use std::{
     io::{BufReader, Read},
     net::{Shutdown, TcpStream},
@@ -261,7 +262,7 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
 /// Hand each frame from `reader` to `player` until the stream ends.
 fn read_frames(mut reader: impl Read, player: &LivePlayer, bytes: &AtomicU64) {
     loop {
-        match LiveFrame::read_from(&mut reader) {
+        match wire::read_frame(&mut reader) {
             Ok(Some(frame)) => {
                 bytes.fetch_add(frame.data.len() as u64 + 22, Ordering::Relaxed);
                 if let Err(e) = player.push(frame) {
