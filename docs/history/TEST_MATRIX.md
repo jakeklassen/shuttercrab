@@ -1,5 +1,7 @@
 # Test matrix
 
+> The test matrix as of 2026-10-17, kept for history and no longer updated. For how Shuttercrab is tested now, see [TESTING.md](../TESTING.md).
+
 Milestone 5 (hardening) is in progress, memory first. Milestone 4 (area
 recording MVP) is **complete** (2026-10-01): step 1
 passed on 2026-09-29, steps 2 and 3 on 2026-09-30, step 4 on 2026-10-01.
@@ -11,7 +13,7 @@ steps by 2026-09-28 (sleep and wake left for the owner to try later); see [Miles
 2026-09-27; see [Milestone 1](#milestone-1-area-screenshot). The Milestone 0 gate (PRD §31, §32.1, §32.2, §34.2) **passed** on 2026-09-27
 (session `gate-20260927-112049`, after the retakes described in [Retaking
 captures](#retaking-captures)). The project owner confirmed the
-pass the same day, and Milestone 1 began. [COLOR_PIPELINE.md](COLOR_PIPELINE.md) describes
+pass the same day, and Milestone 1 began. [COLOR_PIPELINE.md](../COLOR_PIPELINE.md) describes
 what is being tested.
 
 ## Automated checks
@@ -1352,7 +1354,7 @@ distinct (region peak: 143 … 235, as in Milestone 0).
 
 Still open: a darker video scene, HDR photos, several HDR windows, and
 subtitles or controls over video (see
-[COLOR_PIPELINE.md](COLOR_PIPELINE.md#known-limits-and-expected-differences)).
+[COLOR_PIPELINE.md](../COLOR_PIPELINE.md#known-limits-and-expected-differences)).
 
 ## Recording games (issue #11)
 
