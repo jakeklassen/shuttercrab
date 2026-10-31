@@ -1,7 +1,7 @@
 [package]
 name = "capture-spike"
 version = "0.1.0"
-description = "Milestone 0: prove Shuttercrab's HDR/WCG to SDR capture path"
+description = "Shuttercrab's developer tools: the colour measurements and HDR gate, and command-line recording, playback, text recognition and streaming"
 edition.workspace = true
 rust-version.workspace = true
 publish.workspace = true
