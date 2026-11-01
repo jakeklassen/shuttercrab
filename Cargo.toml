@@ -25,6 +25,8 @@ unsafe_op_in_unsafe_fn = "deny"
 too_many_lines = "warn"
 # Every lint exception says why.
 allow_attributes_without_reason = "warn"
+# Every unsafe block says why it is sound (M-UNSAFE), in a SAFETY comment.
+undocumented_unsafe_blocks = "warn"
 
 # Debug builds of GPUI and the text stack render slowly. Optimize them while
 # the workspace's own crates stay quick, debuggable debug builds.
