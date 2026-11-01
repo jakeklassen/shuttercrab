@@ -29,6 +29,8 @@ extern "system" fn layered_proc(
     wparam: WPARAM,
     lparam: LPARAM,
 ) -> LRESULT {
+    // SAFETY: passes on, unchanged, the message Windows gave this window
+    // procedure, on the same thread.
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
@@ -46,6 +48,10 @@ impl LayeredWindow {
     }
 
     pub(crate) fn new() -> Result<Self> {
+        // SAFETY: the class and window names are static wide strings from
+        // `w!`, `layered_proc` is a static function with the window
+        // procedure's signature, and `class` lives through RegisterClassW,
+        // which copies it. No creation data is passed.
         unsafe {
             let instance = GetModuleHandleW(None)?;
             let class = WNDCLASSW {
@@ -92,9 +98,18 @@ impl LayeredWindow {
         bgra: &[u8],
     ) -> Result<()> {
         ensure!(
-            width > 0 && height > 0 && bgra.len() == (width * height * 4) as usize,
+            i32::try_from(width).is_ok_and(|w| w > 0)
+                && i32::try_from(height).is_ok_and(|h| h > 0)
+                && bgra.len() as u64 == u64::from(width) * u64::from(height) * 4,
             "layered picture does not match {width}x{height}"
         );
+        // SAFETY: on success CreateDIBSection points `bits` at the section's
+        // `height` rows of `width` 32-bit pixels with no row padding:
+        // `width * height * 4` bytes, which is `bgra.len()` (checked above,
+        // without overflow, with both sides positive as i32). Nothing else
+        // has the new section. The bitmap is selected out of the DC before
+        // either is deleted, and every pointer passed to
+        // UpdateLayeredWindow is to a local that outlives the call.
         unsafe {
             let info = BITMAPINFO {
                 bmiHeader: BITMAPINFOHEADER {
@@ -144,6 +159,8 @@ impl LayeredWindow {
     }
 
     pub(crate) fn show(&self) {
+        // SAFETY: takes the window handle and a flag by value; the window
+        // is this value's, alive until it drops.
         unsafe {
             let _ = ShowWindow(HWND(self.hwnd as _), SW_SHOWNOACTIVATE);
         }
@@ -152,6 +169,9 @@ impl LayeredWindow {
 
 impl Drop for LayeredWindow {
     fn drop(&mut self) {
+        // SAFETY: the window is this value's and is destroyed only here.
+        // Dropped on another thread than the one that made it, the call
+        // fails and the window is left, which is a leak, not unsafety.
         let _ = unsafe { DestroyWindow(HWND(self.hwnd as _)) };
     }
 }

@@ -33,18 +33,27 @@ pub fn attach_to_parent_terminal() {
     let redirected = |handle: Result<HANDLE, _>| {
         handle
             .map(|h| {
+                // SAFETY: `h` is the process's own standard handle, only
+                // queried; an unusable one makes the call report unknown.
                 let kind = unsafe { GetFileType(h) };
                 kind == FILE_TYPE_DISK || kind == FILE_TYPE_PIPE
             })
             .unwrap_or(false)
     };
+    // SAFETY: takes a constant and only reads the process's handle table.
     let stdout_redirected = redirected(unsafe { GetStdHandle(STD_OUTPUT_HANDLE) });
+    // SAFETY: as above.
     let stderr_redirected = redirected(unsafe { GetStdHandle(STD_ERROR_HANDLE) });
     if (stdout_redirected && stderr_redirected)
+        // SAFETY: takes a constant; it fails if the process has a console
+        // or the parent has none.
         || unsafe { AttachConsole(ATTACH_PARENT_PROCESS) }.is_err()
     {
         return;
     }
+    // SAFETY: `w!` gives a static null-terminated wide string, and the
+    // other arguments are plain flags with no security attributes or
+    // template.
     let Ok(console) = (unsafe {
         CreateFileW(
             w!("CONOUT$"),
@@ -58,6 +67,8 @@ pub fn attach_to_parent_terminal() {
     }) else {
         return;
     };
+    // SAFETY: `console` was just opened and is never closed, so the
+    // standard handles stay valid for as long as they name it.
     unsafe {
         if !stdout_redirected {
             let _ = SetStdHandle(STD_OUTPUT_HANDLE, console);
@@ -82,6 +93,9 @@ pub fn detach_from_terminal() {
     if !out && !err {
         return;
     }
+    // SAFETY: a null standard handle is allowed. The console was attached by
+    // `attach_to_parent_terminal`, and the handles that named it are cleared
+    // before it is freed.
     unsafe {
         // Writes to an absent handle are dropped quietly.
         if out {

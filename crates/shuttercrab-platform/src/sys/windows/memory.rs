@@ -33,6 +33,9 @@ fn private() -> u64 {
         cb: size_of::<PROCESS_MEMORY_COUNTERS_EX>() as u32,
         ..Default::default()
     };
+    // SAFETY: `counters` is a live PROCESS_MEMORY_COUNTERS_EX, which starts
+    // with the plain struct, and `cb` gives its full size, so the call
+    // writes within it. The current-process pseudo handle needs no closing.
     let read = unsafe {
         GetProcessMemoryInfo(
             GetCurrentProcess(),
@@ -46,15 +49,21 @@ fn private() -> u64 {
 /// The sum over adapters of this process's use of their local memory, and of
 /// their non-local (system) memory.
 fn graphics() -> (u64, u64) {
+    // SAFETY: takes no arguments; windows-rs asks for the interface it
+    // returns and reference-counts it.
     let Ok(factory) = (unsafe { CreateDXGIFactory1::<IDXGIFactory1>() }) else {
         return (0, 0);
     };
     let (mut local, mut shared) = (0, 0);
     let mut index = 0;
+    // SAFETY: `factory` is live, and an index past the last adapter is an
+    // error, which ends the loop.
     while let Ok(adapter) = unsafe { factory.EnumAdapters1(index) } {
         if let Ok(adapter) = adapter.cast::<IDXGIAdapter3>() {
             let usage = |group| {
                 let mut info = DXGI_QUERY_VIDEO_MEMORY_INFO::default();
+                // SAFETY: `adapter` is live, node 0 always exists, and
+                // `info` is a live struct of the type the call writes.
                 unsafe { adapter.QueryVideoMemoryInfo(0, group, &mut info) }
                     .map_or(0, |()| info.CurrentUsage)
             };

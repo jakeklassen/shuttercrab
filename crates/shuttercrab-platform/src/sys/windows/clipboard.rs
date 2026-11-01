@@ -54,7 +54,10 @@ pub fn dibv5(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
         ..Default::default()
     };
     let mut out = Vec::with_capacity(size_of::<BITMAPV5HEADER>() + rgba.len());
-    // SAFETY: BITMAPV5HEADER is a plain repr(C) struct of integers.
+    // SAFETY: BITMAPV5HEADER is a plain repr(C) struct of integers whose
+    // fields add up to its 124 bytes (the test below checks the size), so
+    // it has no padding and every byte is initialised. The slice borrows
+    // `header`, which outlives it.
     out.extend_from_slice(unsafe {
         std::slice::from_raw_parts(
             (&header as *const BITMAPV5HEADER).cast::<u8>(),
@@ -74,6 +77,10 @@ pub fn dibv5(rgba: &[u8], width: u32, height: u32) -> Result<Vec<u8>> {
 
 /// Copy `bytes` into a movable global block the clipboard can own.
 fn global(bytes: &[u8]) -> Result<HGLOBAL> {
+    // SAFETY: the block is allocated with `bytes.len()` bytes, and the copy
+    // goes only through the non-null pointer GlobalLock gives for it, before
+    // it is unlocked. `bytes` is a live slice of that length. Nothing else
+    // has the new block, so the lock cannot clash with another user.
     unsafe {
         let block = GlobalAlloc(GMEM_MOVEABLE, bytes.len()).context("GlobalAlloc failed")?;
         let target = GlobalLock(block);
@@ -100,16 +107,23 @@ fn holder() -> String {
         },
         core::PWSTR,
     };
+    // SAFETY: takes no arguments; it only reads the clipboard's owner.
     let Ok(window) = (unsafe { GetOpenClipboardWindow() }) else {
         return "held without a window, so the program is unknown".into();
     };
     let mut pid = 0;
+    // SAFETY: `pid` is a live u32 for the call to write. A window that has
+    // gone since makes the call fail, not misbehave.
     unsafe { GetWindowThreadProcessId(window, Some(&mut pid)) };
+    // SAFETY: takes plain values; the handle it returns is closed below.
     let name = unsafe { OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, false, pid) }
         .ok()
         .and_then(|process| {
             let mut buffer = [0u16; 260];
             let mut len = buffer.len() as u32;
+            // SAFETY: `process` is open. `len` tells the call the buffer's
+            // length in characters, and on success it sets `len` to the
+            // characters written, which is no more.
             let found = unsafe {
                 QueryFullProcessImageNameW(
                     process,
@@ -119,6 +133,8 @@ fn holder() -> String {
                 )
             }
             .is_ok();
+            // SAFETY: `process` came from OpenProcess above and is closed
+            // only here.
             let _ = unsafe { windows::Win32::Foundation::CloseHandle(process) };
             found.then(|| String::from_utf16_lossy(&buffer[..len as usize]))
         });
@@ -135,6 +151,7 @@ fn holder() -> String {
 /// on the calling thread: with no owner, Windows refuses the data.
 pub(crate) fn write(owner: HWND, png: &[u8], rgba: &[u8], width: u32, height: u32) -> Result<()> {
     let dib = dibv5(rgba, width, height)?;
+    // SAFETY: `w!` gives a static null-terminated wide string.
     let png_format = unsafe { RegisterClipboardFormatW(w!("PNG")) };
     if png_format == 0 {
         bail!("could not register the PNG clipboard format");
@@ -148,6 +165,7 @@ pub(crate) fn write(owner: HWND, png: &[u8], rgba: &[u8], width: u32, height: u3
 /// Replace the clipboard contents with files, as Explorer's Copy does:
 /// they paste into Explorer as copies, and into chat apps as attachments.
 pub(crate) fn write_files(owner: HWND, paths: &[PathBuf]) -> Result<()> {
+    // SAFETY: `w!` gives a static null-terminated wide string.
     let effect_format = unsafe { RegisterClipboardFormatW(w!("Preferred DropEffect")) };
     if effect_format == 0 {
         bail!("could not register the drop effect clipboard format");
@@ -188,6 +206,8 @@ fn drop_files(paths: &[PathBuf]) -> Vec<u8> {
 fn replace(owner: HWND, data: &[(u32, &[u8])]) -> Result<()> {
     let mut opened = false;
     for _ in 0..ATTEMPTS {
+        // SAFETY: takes a window handle by value; Windows checks it, and a
+        // stale one makes the call fail. It is closed below once opened.
         if unsafe { OpenClipboard(Some(owner)) }.is_ok() {
             opened = true;
             break;
@@ -201,17 +221,23 @@ fn replace(owner: HWND, data: &[(u32, &[u8])]) -> Result<()> {
         );
     }
     let result = (|| -> Result<()> {
+        // SAFETY: this thread has the clipboard open, as the call requires.
         unsafe { EmptyClipboard() }.context("EmptyClipboard failed")?;
         for &(format, bytes) in data {
             let block = global(bytes)?;
             // On success the clipboard owns the block; on failure we still do.
+            // SAFETY: the clipboard is open on this thread and `block` is an
+            // unlocked GMEM_MOVEABLE block, as SetClipboardData requires.
             if let Err(e) = unsafe { SetClipboardData(format, Some(HANDLE(block.0))) } {
+                // SAFETY: SetClipboardData failed, so the block is still ours
+                // and nothing else frees it.
                 let _ = unsafe { GlobalFree(Some(block)) };
                 return Err(e).context("SetClipboardData failed");
             }
         }
         Ok(())
     })();
+    // SAFETY: this thread opened the clipboard above and closes it once.
     let _ = unsafe { CloseClipboard() };
     result
 }

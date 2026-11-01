@@ -30,6 +30,8 @@ pub(crate) fn physical(r: RECT) -> PhysicalRect {
 /// [`place`] takes them.
 pub fn outer_bounds(hwnd: WindowId) -> Result<PhysicalRect> {
     let mut rect = RECT::default();
+    // SAFETY: `rect` is a live RECT for the call to write. Windows checks
+    // the handle; a window that is gone makes the call fail.
     unsafe { windows::Win32::UI::WindowsAndMessaging::GetWindowRect(to_hwnd(hwnd), &mut rect) }
         .context("GetWindowRect failed")?;
     Ok(physical(rect))
@@ -39,6 +41,7 @@ pub fn outer_bounds(hwnd: WindowId) -> Result<PhysicalRect> {
 /// taking the keyboard or changing which windows are in front.
 pub fn place(hwnd: WindowId, bounds: PhysicalRect) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::SWP_NOZORDER;
+    // SAFETY: takes plain values; Windows checks the handle.
     unsafe {
         SetWindowPos(
             to_hwnd(hwnd),
@@ -64,13 +67,19 @@ pub fn sound_process(window: WindowId) -> Option<u32> {
     let hwnd = to_hwnd(window);
     let process_of = |hwnd: HWND| {
         let mut process = 0;
+        // SAFETY: `process` is a live u32 for the call to write; Windows
+        // checks the handle.
         (unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) } != 0 && process != 0)
             .then_some(process)
     };
     let mut name = [0u16; 64];
+    // SAFETY: windows-rs passes `name`'s length with it, so the call writes
+    // within it and returns at most that many characters.
     let length = unsafe { GetClassNameW(hwnd, &mut name) };
     let class = String::from_utf16_lossy(&name[..length.max(0) as usize]);
     if class == "ApplicationFrameWindow"
+        // SAFETY: the class name is a static wide string from `w!`, the
+        // window name is null (any), and Windows checks `hwnd`.
         && let Ok(app) = unsafe {
             FindWindowExW(
                 Some(hwnd),
@@ -89,6 +98,7 @@ pub fn sound_process(window: WindowId) -> Option<u32> {
 pub fn monitor_of(hwnd: WindowId) -> MonitorId {
     use windows::Win32::Graphics::Gdi::{MONITOR_DEFAULTTONEAREST, MonitorFromWindow};
     MonitorId::from_raw(
+        // SAFETY: takes plain values; Windows checks the handle.
         unsafe { MonitorFromWindow(to_hwnd(hwnd), MONITOR_DEFAULTTONEAREST) }.0 as u64,
     )
 }
@@ -104,6 +114,9 @@ pub fn monitor_of(hwnd: WindowId) -> MonitorId {
 /// the one-pixel gaps logical bounds can leave at fractional scale factors.
 pub fn cover(hwnd: WindowId, area: PhysicalRect) -> Result<()> {
     let hwnd = to_hwnd(hwnd);
+    // SAFETY: GWL_STYLE holds plain style bits, not a pointer, so setting
+    // it changes no memory Windows reads through. The rest are plain
+    // values, and Windows checks the handle.
     unsafe {
         let frame =
             (WS_CAPTION | WS_THICKFRAME | WS_SYSMENU | WS_MINIMIZEBOX | WS_MAXIMIZEBOX).0 as isize;
@@ -128,6 +141,8 @@ pub fn client_bounds(hwnd: WindowId) -> Result<PhysicalRect> {
     let hwnd = to_hwnd(hwnd);
     let mut rect = RECT::default();
     let mut origin = POINT::default();
+    // SAFETY: `rect` and `origin` are live locals for the calls to write;
+    // Windows checks the handle.
     unsafe {
         GetClientRect(hwnd, &mut rect).context("GetClientRect failed")?;
         ClientToScreen(hwnd, &mut origin)
@@ -148,6 +163,8 @@ pub fn client_bounds(hwnd: WindowId) -> Result<PhysicalRect> {
 /// current foreground thread's input for the call.
 pub fn bring_to_front(hwnd: WindowId) {
     let hwnd = to_hwnd(hwnd);
+    // SAFETY: plain values only; Windows checks the handles. Input is
+    // attached only to another thread's, and detached before returning.
     unsafe {
         if SetForegroundWindow(hwnd).as_bool() && GetForegroundWindow() == hwnd {
             return;
@@ -168,6 +185,7 @@ pub fn bring_to_front(hwnd: WindowId) {
 /// The window that has the keyboard, to give it back later with
 /// [`bring_to_front`].
 pub fn foreground_window() -> Option<WindowId> {
+    // SAFETY: takes no arguments.
     let hwnd = unsafe { GetForegroundWindow() };
     (!hwnd.is_invalid()).then_some(to_window_id(hwnd))
 }
@@ -177,6 +195,7 @@ pub fn foreground_window() -> Option<WindowId> {
 /// window; otherwise the deactivation arrives during destruction and GPUI
 /// logs "window not found".
 pub fn hide(hwnd: WindowId) {
+    // SAFETY: takes plain values; Windows checks the handle.
     let _ = unsafe { ShowWindow(to_hwnd(hwnd), SW_HIDE) };
 }
 
@@ -186,11 +205,14 @@ pub fn exclude_from_capture(hwnd: WindowId) -> Result<()> {
     use windows::Win32::UI::WindowsAndMessaging::{
         GetWindowDisplayAffinity, SetWindowDisplayAffinity, WDA_EXCLUDEFROMCAPTURE,
     };
+    // SAFETY: takes plain values; Windows checks the handle, and refuses a
+    // window of another process.
     unsafe { SetWindowDisplayAffinity(to_hwnd(hwnd), WDA_EXCLUDEFROMCAPTURE) }
         .context("SetWindowDisplayAffinity failed")?;
     // PRD §13.6: check what Windows applied. Before Windows 10 2004 the
     // call succeeds with WDA_MONITOR instead, which shows a black box.
     let mut applied = 0;
+    // SAFETY: `applied` is a live u32 for the call to write.
     unsafe { GetWindowDisplayAffinity(to_hwnd(hwnd), &mut applied) }
         .context("GetWindowDisplayAffinity failed")?;
     anyhow::ensure!(
@@ -204,6 +226,7 @@ pub fn exclude_from_capture(hwnd: WindowId) -> Result<()> {
 /// [`exclude_from_capture`].
 pub fn include_in_capture(hwnd: WindowId) {
     use windows::Win32::UI::WindowsAndMessaging::{SetWindowDisplayAffinity, WDA_NONE};
+    // SAFETY: takes plain values; Windows checks the handle.
     let _ = unsafe { SetWindowDisplayAffinity(to_hwnd(hwnd), WDA_NONE) };
 }
 
@@ -211,6 +234,7 @@ pub fn include_in_capture(hwnd: WindowId) {
 pub fn is_on_screen(hwnd: WindowId) -> bool {
     use windows::Win32::UI::WindowsAndMessaging::{IsIconic, IsWindowVisible};
     let hwnd = to_hwnd(hwnd);
+    // SAFETY: queries on a handle Windows checks; a closed window is "no".
     unsafe { IsWindowVisible(hwnd).as_bool() && !IsIconic(hwnd).as_bool() }
 }
 
@@ -220,6 +244,8 @@ pub fn round_corners(hwnd: WindowId) {
         DWMWA_WINDOW_CORNER_PREFERENCE, DWMWCP_ROUND, DwmSetWindowAttribute,
     };
     let preference = DWMWCP_ROUND;
+    // SAFETY: the corner preference attribute is a 4-byte enum, and the call
+    // is given `preference`, a live one, with its size, to read.
     let _ = unsafe {
         DwmSetWindowAttribute(
             to_hwnd(hwnd),
@@ -235,6 +261,8 @@ pub fn round_corners(hwnd: WindowId) {
 pub fn never_activate(hwnd: WindowId) {
     use windows::Win32::UI::WindowsAndMessaging::{GWL_EXSTYLE, WS_EX_NOACTIVATE};
     let hwnd = to_hwnd(hwnd);
+    // SAFETY: GWL_EXSTYLE holds plain style bits, not a pointer, so setting
+    // it changes no memory Windows reads through. Windows checks the handle.
     unsafe {
         let style = windows::Win32::UI::WindowsAndMessaging::GetWindowLongPtrW(hwnd, GWL_EXSTYLE);
         SetWindowLongPtrW(hwnd, GWL_EXSTYLE, style | WS_EX_NOACTIVATE.0 as isize);
@@ -250,12 +278,16 @@ pub fn work_area(monitor: MonitorId) -> Option<PhysicalRect> {
         ..Default::default()
     };
     // Physical coordinates, whatever the calling thread's DPI awareness.
+    // SAFETY: changes only this thread's awareness, restored below.
     let previous = unsafe {
         windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(
             windows::Win32::UI::HiDpi::DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2,
         )
     };
+    // SAFETY: `info` is a live MONITORINFO whose `cbSize` says so, so the
+    // call writes within it. Windows checks the monitor handle.
     let found = unsafe { GetMonitorInfoW(HMONITOR(monitor.raw() as _), &mut info) }.as_bool();
+    // SAFETY: `previous` is the context this thread had.
     unsafe { windows::Win32::UI::HiDpi::SetThreadDpiAwarenessContext(previous) };
     let work = physical(info.rcWork);
     (found && !work.is_empty()).then_some(work)
@@ -285,6 +317,9 @@ pub fn fit_client_area(
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
+    // SAFETY: `window`, `client` and `monitor` are live locals for the calls
+    // to write, and `monitor.cbSize` gives its size. Windows checks the
+    // window handle, and MonitorFromWindow always gives a monitor.
     unsafe {
         GetWindowRect(hwnd, &mut window).context("GetWindowRect failed")?;
         GetClientRect(hwnd, &mut client).context("GetClientRect failed")?;
@@ -311,6 +346,7 @@ pub fn fit_client_area(
     let h = (height as i32 + frame_height).min(most(work_height, least.1 as i32 + frame_height));
     let x = ((window.left + window.right) / 2 - w / 2).clamp(work.left, work.right - w);
     let y = ((window.top + window.bottom) / 2 - h / 2).clamp(work.top, work.bottom - h);
+    // SAFETY: takes plain values; Windows checks the handle.
     unsafe { SetWindowPos(hwnd, None, x, y, w, h, SWP_NOZORDER | SWP_NOACTIVATE) }
         .context("SetWindowPos failed")
 }
@@ -320,6 +356,7 @@ pub fn fit_client_area(
 /// the usual way; this overrides it.
 pub fn show_normal(hwnd: WindowId) {
     use windows::Win32::UI::WindowsAndMessaging::SW_SHOWNORMAL;
+    // SAFETY: takes plain values; Windows checks the handle.
     let _ = unsafe { ShowWindow(to_hwnd(hwnd), SW_SHOWNORMAL) };
     bring_to_front(hwnd);
 }

@@ -13,6 +13,8 @@ pub struct SingleInstance(HANDLE);
 
 impl Drop for SingleInstance {
     fn drop(&mut self) {
+        // SAFETY: the mutex handle is owned by this value alone (the field
+        // is private) and closed only here.
         let _ = unsafe { CloseHandle(self.0) };
     }
 }
@@ -21,8 +23,12 @@ impl Drop for SingleInstance {
 /// it. The name is per session (`Local\`), so other users are unaffected.
 pub fn single_instance(name: &str) -> Option<SingleInstance> {
     let name = HSTRING::from(format!("Local\\{name}"));
+    // SAFETY: `name` is a null-terminated HSTRING that lives through the
+    // call; no security attributes are passed.
     let handle = unsafe { CreateMutexW(None, false, &name) }.ok()?;
+    // SAFETY: takes no arguments; it reads this thread's last error.
     if unsafe { GetLastError() } == ERROR_ALREADY_EXISTS {
+        // SAFETY: `handle` was just opened and is not used after this.
         let _ = unsafe { CloseHandle(handle) };
         return None;
     }

@@ -18,6 +18,8 @@ pub fn edit_in_paint(path: &Path) -> Result<()> {
     use windows::Win32::UI::{Shell::ShellExecuteW, WindowsAndMessaging::SW_SHOWNORMAL};
     let file = HSTRING::from("mspaint");
     let quoted = HSTRING::from(format!("\"{}\"", path.display()));
+    // SAFETY: `file` and `quoted` are null-terminated HSTRINGs that live
+    // through the call; the rest are null or plain values.
     let started = unsafe { ShellExecuteW(None, None, &file, &quoted, None, SW_SHOWNORMAL) };
     // ShellExecuteW reports success as a value above 32.
     anyhow::ensure!(
@@ -35,6 +37,8 @@ pub fn open_with(path: &Path) {
     let path = HSTRING::from(path);
     std::thread::spawn(move || {
         // The shell's dialogs need COM on the thread that shows them.
+        // SAFETY: this new thread has no apartment yet; the reserved
+        // argument is null.
         let com = unsafe { CoInitializeEx(None, COINIT_APARTMENTTHREADED) }.is_ok();
         let info = OPENASINFO {
             pcszFile: PCWSTR(path.as_ptr()),
@@ -42,10 +46,14 @@ pub fn open_with(path: &Path) {
             oaifInFlags: OAIF_ALLOW_REGISTRATION | OAIF_EXEC,
         };
         // Cancelling is an error too; there is nothing to report either way.
+        // SAFETY: `info` points at `path`, a null-terminated HSTRING this
+        // thread owns until it ends, after the dialog closes.
         if let Err(e) = unsafe { SHOpenWithDialog(None, &info) } {
             log::debug!("open with: {e}");
         }
         if com {
+            // SAFETY: balances the successful CoInitializeEx above, on the
+            // same thread, with no COM object of ours still alive.
             unsafe { CoUninitialize() };
         }
     });

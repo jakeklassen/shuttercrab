@@ -26,8 +26,12 @@ use windows::{
 pub fn visible_windows() -> Vec<WindowTarget> {
     let mut found: Vec<WindowTarget> = Vec::new();
     // Physical coordinates, whatever the calling thread's DPI awareness.
+    // SAFETY: changes only this thread's awareness, restored below.
     let previous =
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
+    // SAFETY: `found` outlives EnumWindows, which calls `visit` on this
+    // thread only, before it returns, and nothing else touches `found`
+    // meanwhile. `previous` is the context this thread had.
     unsafe {
         let _ = EnumWindows(
             Some(visit),
@@ -49,6 +53,10 @@ extern "system" fn visit(hwnd: HWND, found: LPARAM) -> BOOL {
 }
 
 fn describe(hwnd: HWND) -> Option<WindowTarget> {
+    // SAFETY: queries on a window handle Windows checks. Each out-parameter
+    // is a live local of the type the call writes: DwmGetWindowAttribute
+    // is given the size of `cloaked` (u32) and `rect` (RECT), as those
+    // attributes are, and GetClassNameW the length of `name`.
     unsafe {
         if !IsWindowVisible(hwnd).as_bool() || IsIconic(hwnd).as_bool() {
             return None;
