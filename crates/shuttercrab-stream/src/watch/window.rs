@@ -353,7 +353,13 @@ enum After {
     Close,
 }
 
-extern "system" fn window_proc(
+/// The viewer's window procedure.
+///
+/// # Safety
+///
+/// Only Windows calls it, with a message for the viewer's window and that
+/// message's own arguments.
+unsafe extern "system" fn window_proc(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
