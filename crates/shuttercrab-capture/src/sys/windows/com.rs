@@ -16,6 +16,10 @@ pub(crate) struct ComApartment {
 impl ComApartment {
     pub(crate) fn multithreaded() -> Self {
         Self {
+            // SAFETY: the reserved argument is `None`, as required. A
+            // success, `S_FALSE` included, is matched by one
+            // `CoUninitialize` in `drop`, on this same thread: the
+            // `PhantomData` keeps the value from moving to another.
             joined: unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok(),
             _thread: PhantomData,
         }
@@ -25,6 +29,9 @@ impl ComApartment {
 impl Drop for ComApartment {
     fn drop(&mut self) {
         if self.joined {
+            // SAFETY: this balances the successful `CoInitializeEx` in
+            // `multithreaded`, once, on the thread that made it, since a
+            // `ComApartment` cannot be sent.
             unsafe { CoUninitialize() };
         }
     }

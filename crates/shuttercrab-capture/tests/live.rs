@@ -87,6 +87,9 @@ fn options(width: u32, height: u32, fps: u32) -> RecordOptions {
 /// many were drawn. A viewer draws once a refresh; this polls.
 fn draw_until(player: &LivePlayer, (width, height): (u32, u32), done: &AtomicBool) -> u32 {
     let device = player.device();
+    // SAFETY: `device` is the player's live device, and the call takes no
+    // arguments. Its immediate context is multithread protected, so this
+    // thread may share it with the player's.
     let context = unsafe { device.GetImmediateContext() }.unwrap();
     let gpu = Gpu::from_device(device, context).unwrap();
     let texture = gpu
@@ -217,6 +220,7 @@ fn a_live_recording_plays_as_it_is_recorded() {
 /// until `done`: how many pictures were drawn at each size.
 fn draw_following(player: &LivePlayer, done: &AtomicBool) -> Vec<((u32, u32), u32)> {
     let device = player.device();
+    // SAFETY: as in `draw_until`.
     let context = unsafe { device.GetImmediateContext() }.unwrap();
     let gpu = Gpu::from_device(device, context).unwrap();
     let mut drawn: Vec<((u32, u32), u32)> = Vec::new();
@@ -412,6 +416,7 @@ impl Drawn {
     fn save(self, path: &std::path::Path) -> (u32, usize) {
         let (player, size) = (self.player, self.size);
         let device = player.device();
+        // SAFETY: as in `draw_until`.
         let context = unsafe { device.GetImmediateContext() }.unwrap();
         let gpu = Gpu::from_device(device, context).unwrap();
         let texture = gpu

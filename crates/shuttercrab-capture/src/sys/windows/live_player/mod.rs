@@ -228,12 +228,17 @@ impl LivePlayer {
 
 /// A frame as a Media Foundation sample, for a decoder.
 fn media_sample(frame: &LiveFrame) -> Result<IMFSample> {
+    // SAFETY: Media Foundation calls on a buffer and a sample this function
+    // makes and alone holds; `data` and the frame's attributes live across
+    // the calls that read them. The copy is sound as said below.
     unsafe {
-        let len = frame.data.len() as u32;
+        let len = u32::try_from(frame.data.len()).context("a frame of over 4 GiB")?;
         let buffer = MFCreateMemoryBuffer(len)?;
         let mut data = std::ptr::null_mut();
         buffer.Lock(&mut data, None, None)?;
-        // SAFETY: Lock gives a buffer of at least `len` bytes until Unlock.
+        // SAFETY: the buffer was made `len` bytes long, which is exactly
+        // `frame.data.len()`, and Lock gives it to write until Unlock. It is
+        // new memory, so it cannot overlap the frame's.
         std::ptr::copy_nonoverlapping(frame.data.as_ptr(), data, frame.data.len());
         buffer.Unlock()?;
         buffer.SetCurrentLength(len)?;
@@ -263,6 +268,12 @@ fn drain(
             ..Default::default()
         }];
         let mut status = 0;
+        // SAFETY: `transform` is a live decoder whose caller holds it alone
+        // (behind the player's mutex), so calls to it never overlap, as
+        // Media Foundation's decoders require. `output` and `status` live
+        // across the call. Whatever sample and events it leaves in `output`
+        // carry one reference each, which are taken back out of the
+        // `ManuallyDrop`s just below and so released once.
         let result = unsafe { transform.ProcessOutput(0, &mut output, &mut status) };
         let [output] = output;
         let sample = std::mem::ManuallyDrop::into_inner(output.pSample);
@@ -288,6 +299,9 @@ fn feed(
 ) -> Result<()> {
     let sample = media_sample(frame)?;
     loop {
+        // SAFETY: `transform` is a live decoder held by one caller at a
+        // time (as in `drain`); `sample` lives across the call, and the
+        // decoder takes its own reference if it keeps it.
         match unsafe { transform.ProcessInput(0, &sample, 0) } {
             Ok(()) => return Ok(()),
             Err(e) if e.code() == MF_E_NOTACCEPTING => empty()?,
@@ -299,9 +313,13 @@ fn feed(
 /// A decoder's output type: the first it offers that `wanted` accepts.
 fn choose_output(transform: &IMFTransform, wanted: impl Fn(&IMFMediaType) -> bool) -> Result<()> {
     for index in 0.. {
+        // SAFETY: `transform` is a live decoder held by one caller at a
+        // time; the call takes only numbers and returns a new media type.
         let offered = unsafe { transform.GetOutputAvailableType(0, index) }
             .map_err(|e| anyhow::Error::from(e).context("no output type the player can use"))?;
         if wanted(&offered) {
+            // SAFETY: as above; `offered` is a type this decoder made, and
+            // lives across the call.
             unsafe { transform.SetOutputType(0, &offered, 0) }?;
             return Ok(());
         }

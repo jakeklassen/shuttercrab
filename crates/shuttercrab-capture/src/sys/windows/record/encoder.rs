@@ -66,6 +66,9 @@ impl Slot {
             None,
         )?;
         let mut view = None;
+        // SAFETY: `device` is the video side of `gpu.device`, which made
+        // `texture` and `enumerator`. The view description and `view` live
+        // across the call, which writes only `view`.
         unsafe {
             device.CreateVideoProcessorOutputView(
                 &texture,
@@ -121,6 +124,12 @@ impl Nv12 {
             OutputHeight: h,
             Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
         };
+        // SAFETY: `device` and `video` are the video sides of `gpu.device`
+        // and its immediate context, and every object passed back in (the
+        // enumerator, the processor, `rgba`, the slots' textures) was made
+        // on that device; the caller makes `rgba` with `gpu`. The
+        // descriptions and out-parameters are locals that live across each
+        // call.
         unsafe {
             let enumerator = device.CreateVideoProcessorEnumerator(&content)?;
             let support = enumerator.CheckVideoProcessorFormat(DXGI_FORMAT_R8G8B8A8_UNORM)?;
@@ -190,12 +199,19 @@ impl Nv12 {
             ..Default::default()
         };
         let streams = [stream];
+        // SAFETY: the processor, the input view and the slot's output view
+        // were all made on this device in `new`; `slot` comes from
+        // `free_slot`, so it indexes `slots` (and a bad one panics before
+        // the call). `streams` lives across the call, which only reads it.
         let result = unsafe {
             self.video
                 .VideoProcessorBlt(&self.processor, &self.slots[slot].view, 0, &streams)
         };
         // Release the reference the stream took.
         let [mut stream] = streams;
+        // SAFETY: `pInputSurface` holds the clone of `self.input` made
+        // above, which the Blt only borrowed. It is dropped exactly once,
+        // here, and `stream` is not used after.
         unsafe { std::mem::ManuallyDrop::drop(&mut stream.pInputSurface) };
         result.context("VideoProcessorBlt failed")
     }
@@ -208,11 +224,19 @@ fn spend_bitrate(writer: &IMFSinkWriter, stream: u32, bitrate: u32) -> Result<()
     let writer: IMFSinkWriterEx = writer.cast()?;
     for index in 0.. {
         let mut transform = None;
+        // SAFETY: `writer` is a live sink writer and `transform` a local
+        // that lives across the call; Media Foundation fails an index past
+        // the stream's last transform rather than reading anything.
         unsafe { writer.GetTransformForStream(stream, index, None, &mut transform) }
             .context("no encoder that takes settings")?;
         let Some(codec) = transform.and_then(|t| t.cast::<ICodecAPI>().ok()) else {
             continue;
         };
+        // SAFETY: `codec` is the encoder's own ICodecAPI, and the GUIDs and
+        // variants passed live across each call. Both values set and read
+        // are VT_UI4, which keeps its value in `ulVal`; windows-rs zeroes
+        // the VARIANT `GetValue` fills, so reading the `u32` reads
+        // initialized bytes whatever type came back.
         unsafe {
             codec.SetValue(
                 &CODECAPI_AVEncCommonRateControlMode,
@@ -378,6 +402,12 @@ impl Mp4Writer {
             _ => None,
         };
         let aac = sound && direct.is_none();
+        // SAFETY: plain Media Foundation calls on objects made here or
+        // handed in alive (`gpu.device`, the media types); every GUID,
+        // HSTRING and out-parameter is a local or a static that lives across
+        // its call. The recorder thread called MFStartup before making a
+        // writer (`record`), and keeps Media Foundation up until the writer
+        // is gone.
         unsafe {
             let mut token = 0;
             let mut manager = None;
@@ -517,6 +547,13 @@ impl Mp4Writer {
             }
         };
         let bytes = std::mem::size_of_val(samples);
+        // SAFETY: the buffer is new and ours alone, made `bytes` long, so
+        // while it is locked `data` points at `bytes` writable bytes that
+        // cannot overlap `samples`; the copy reads exactly `samples`' own
+        // bytes and ends before `Unlock`. (`bytes` fits a u32: a call's
+        // samples are the mix since the last call, and 4 GiB would be over
+        // six hours of it.) The rest are COM calls
+        // on that buffer, a new sample and the live writer.
         unsafe {
             let buffer = MFCreateMemoryBuffer(bytes as u32)?;
             let mut data = std::ptr::null_mut();
@@ -538,6 +575,12 @@ impl Mp4Writer {
     /// Hand the slot's texture to the encoder at `time`.
     pub(super) fn write(&self, nv12: &Nv12, slot: usize, time: i64, duration: i64) -> Result<()> {
         let slot = &nv12.slots[slot];
+        // SAFETY: the slot's texture was made on `gpu.device`, the device
+        // the writer's DXGI device manager holds, so the encoder may read
+        // it; the IID names its own interface. The sample keeps the buffer
+        // (and through it the texture) alive while the encoder has it, and
+        // `slot.release`, an IMFAsyncCallback of ours, lives as long as the
+        // slot.
         unsafe {
             let buffer = MFCreateDXGISurfaceBuffer(&ID3D11Texture2D::IID, &slot.texture, 0, false)?;
             let length = buffer.cast::<IMF2DBuffer>()?.GetContiguousLength()?;
@@ -563,12 +606,18 @@ impl Mp4Writer {
     pub(super) fn finish(&mut self) -> Result<bool> {
         self.finished = true;
         let hardware = self.hardware_encoder();
+        // SAFETY: a COM call without arguments on the writer this owns.
         unsafe { self.writer.Finalize() }.context("could not finish the video file")?;
         Ok(hardware)
     }
 
     /// A hardware encoder carries `MFT_ENUM_HARDWARE_URL_Attribute`.
     fn hardware_encoder(&self) -> bool {
+        // SAFETY: GUID_NULL asks the sink writer for the stream's encoder
+        // itself; on success `raw` holds an IMFTransform (the IID asked
+        // for) with a reference added for us, which `from_raw` takes over
+        // and releases when `transform` drops. A null or failed result
+        // returns before `from_raw`.
         unsafe {
             let mut raw = std::ptr::null_mut();
             if self
@@ -596,6 +645,8 @@ impl Mp4Writer {
 /// The sound track's format, 48 kHz 16-bit stereo, in `subtype` (PCM in,
 /// AAC out).
 fn sound_type(subtype: &windows::core::GUID) -> Result<IMFMediaType> {
+    // SAFETY: a new media type, only ours, set with GUIDs that are statics
+    // or borrowed for the whole call.
     unsafe {
         let t = MFCreateMediaType()?;
         t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Audio)?;
@@ -637,6 +688,11 @@ pub fn encodes(codec: VideoCodec) -> bool {
         guidSubtype: codec_types(Some(codec)).0,
     };
     let (mut found, mut count) = (std::ptr::null_mut(), 0);
+    // SAFETY: `output` and the out-parameters live across MFTEnumEx. On
+    // success it hands over an array of `count` activation objects, each
+    // ours to release, in memory to free with CoTaskMemFree: the loop
+    // takes and drops each one (releasing it once), and the array is freed
+    // once after, and not touched again.
     unsafe {
         if MFTEnumEx(
             MFT_CATEGORY_VIDEO_ENCODER,
@@ -655,8 +711,6 @@ pub fn encodes(codec: VideoCodec) -> bool {
         {
             return false;
         }
-        // SAFETY: MFTEnumEx hands over an array of `count` activation
-        // objects, each to release, in memory to free with CoTaskMemFree.
         for activate in std::slice::from_raw_parts_mut(found, count as usize) {
             drop(activate.take());
         }
@@ -666,6 +720,8 @@ pub fn encodes(codec: VideoCodec) -> bool {
 }
 
 fn video_type(subtype: &windows::core::GUID, w: u32, h: u32, fps: u32) -> Result<IMFMediaType> {
+    // SAFETY: as in `sound_type`: a new media type, only ours, set with
+    // GUIDs that are statics or borrowed for the whole call.
     unsafe {
         let t = MFCreateMediaType()?;
         t.SetGUID(&MF_MT_MAJOR_TYPE, &MFMediaType_Video)?;
@@ -687,6 +743,7 @@ fn video_type(subtype: &windows::core::GUID, w: u32, h: u32, fps: u32) -> Result
 impl Drop for Mp4Writer {
     fn drop(&mut self) {
         if !self.finished {
+            // SAFETY: as in `finish`: no arguments, on the writer this owns.
             let _ = unsafe { self.writer.Finalize() };
         }
     }
@@ -713,6 +770,7 @@ mod tests {
 
     impl Pictures {
         fn new(w: u32, h: u32, fps: u32, codec: VideoCodec) -> Self {
+            // SAFETY: no pointers; paired with the MFShutdown in `drop`.
             unsafe { MFStartup(MF_VERSION, MFSTARTUP_FULL) }.unwrap();
             let gpu = Gpu::video(None).unwrap();
             let rgba = gpu
@@ -777,6 +835,10 @@ mod tests {
                 for (i, px) in pixels.as_chunks_mut::<4>().0.iter_mut().enumerate() {
                     *px = paint(n, i as u32 % w);
                 }
+                // SAFETY: `rgba` is a `w`×`h` RGBA8 texture on this
+                // device, and `pixels` holds `w * h * 4` bytes, rows `w * 4`
+                // apart: exactly what a whole-texture update (no box)
+                // reads. `pixels` lives across the call, which copies it.
                 unsafe {
                     self.gpu.context.UpdateSubresource(
                         &self.rgba,
@@ -805,6 +867,7 @@ mod tests {
 
     impl Drop for Pictures {
         fn drop(&mut self) {
+            // SAFETY: no pointers; it ends the MFStartup in `new`.
             let _ = unsafe { MFShutdown() };
         }
     }
@@ -927,6 +990,7 @@ mod tests {
         (w, h): (u32, u32),
     ) -> Seen {
         let device = player.device();
+        // SAFETY: a COM call without arguments on the player's live device.
         let context = unsafe { device.GetImmediateContext() }.unwrap();
         let gpu = Gpu::from_device(device, context).unwrap();
         let texture = gpu

@@ -10,6 +10,7 @@ use windows::Win32::System::Performance::{QueryPerformanceCounter, QueryPerforma
 /// Now, in ticks.
 pub(crate) fn now() -> i64 {
     let (mut counter, mut frequency) = (0i64, 0i64);
+    // SAFETY: each call writes one `i64` into a local that outlives it.
     unsafe {
         let _ = QueryPerformanceCounter(&mut counter);
         let _ = QueryPerformanceFrequency(&mut frequency);

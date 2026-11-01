@@ -127,6 +127,8 @@ impl MonitorItems {
             "Windows.Graphics.Capture is not available"
         );
         let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+        // SAFETY: `interop` is a live factory. `monitor` is only a value
+        // Windows checks: a stale or unknown handle fails the call.
         unsafe { interop.CreateForMonitor(monitor) }.context("CreateForMonitor failed")
     }
 }
@@ -146,6 +148,8 @@ pub fn capture_window(
         "Windows.Graphics.Capture is not available"
     );
     let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+    // SAFETY: `interop` is a live factory. `window` is only a value Windows
+    // checks: a closed or unknown window fails the call.
     let item: GraphicsCaptureItem =
         unsafe { interop.CreateForWindow(window) }.context("CreateForWindow failed")?;
     capture_item(gpu, &item, format, false, include_cursor)
@@ -262,8 +266,11 @@ fn copy_frame_content(
     let height = content.Height.min(size.Height) as u32;
     ensure!(width > 0 && height > 0, "the frame is empty");
     let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
+    // SAFETY: `access` is the frame's live surface; the texture comes back
+    // with its own reference, so it outlives `access`.
     let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
     let mut desc = D3D11_TEXTURE2D_DESC::default();
+    // SAFETY: `source` is live and `desc` a local it fills.
     unsafe { source.GetDesc(&mut desc) };
     ensure!(
         desc.Format == format.dxgi(),
@@ -280,6 +287,11 @@ fn copy_frame_content(
         bottom: height,
         back: 1,
     };
+    // SAFETY: both textures are on `gpu`'s device: the frame pool was made
+    // with it. `region` is `width` x `height`, no more than the content,
+    // which lies inside the frame's texture, and exactly the new texture's
+    // size. `region` lives across the call. The caller closes the frame
+    // only after this.
     unsafe {
         gpu.context
             .CopySubresourceRegion(&texture, 0, 0, 0, 0, &source, 0, Some(&region))

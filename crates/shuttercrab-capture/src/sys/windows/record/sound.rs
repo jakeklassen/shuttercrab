@@ -83,6 +83,9 @@ impl Source {
 
 /// The microphones plugged in and on, Windows' default first.
 pub fn microphones() -> Result<Vec<Microphone>> {
+    // SAFETY: plain COM calls on objects this function owns, with no
+    // pointers passed in. Without COM on this thread CoCreateInstance fails
+    // with an error rather than misbehaving.
     unsafe {
         let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
             .context("no audio device enumerator")?;
@@ -105,6 +108,9 @@ pub fn microphones() -> Result<Vec<Microphone>> {
 }
 
 fn device_id(device: &IMMDevice) -> Result<String> {
+    // SAFETY: GetId gives a null-terminated string of our own, made with
+    // CoTaskMemAlloc. It is copied into `text` before CoTaskMemFree frees
+    // it, once, and not touched after.
     unsafe {
         let id = device.GetId()?;
         let text = id.to_string();
@@ -114,6 +120,8 @@ fn device_id(device: &IMMDevice) -> Result<String> {
 }
 
 fn device_name(device: &IMMDevice) -> Result<String> {
+    // SAFETY: the device is alive for this call and the key is a static.
+    // The PROPVARIANT GetValue returns is ours, cleared when dropped.
     unsafe {
         let store = device.OpenPropertyStore(STGM_READ)?;
         let name = store.GetValue(&PKEY_Device_FriendlyName)?;
@@ -242,6 +250,10 @@ struct Stream {
 
 impl Stream {
     fn open(source: Source, device: &Device) -> Result<Self> {
+        // SAFETY: `device_client` and `process_client` ask nothing of their
+        // caller; their `unsafe` only marks that they call COM. `format` lives across Initialize,
+        // which copies it. The event is ours: on failure it is closed here,
+        // otherwise the Stream owns it and closes it when dropped.
         unsafe {
             let client = match (source, device) {
                 (Source::System, Device::Process(id)) => process_client(*id)?,
@@ -291,10 +303,14 @@ impl Stream {
     /// away.
     fn pass_on(&self, source: Source, events: &Sender<Event>, stop: &AtomicBool) -> Result<()> {
         while !stop.load(Ordering::Acquire) {
+            // SAFETY: `event` is this stream's own handle, open until it is
+            // dropped.
             let woken = unsafe { WaitForSingleObject(self.event, WAKE_MS) };
             if woken != WAIT_OBJECT_0 {
                 continue;
             }
+            // SAFETY: the capture client is this stream's own, used only on
+            // the thread that opened it.
             while unsafe { self.capture.GetNextPacketSize() }? > 0 {
                 let packet = self.next_packet(source)?;
                 if events.send(Event::Sound(packet)).is_err() {
@@ -306,6 +322,14 @@ impl Stream {
     }
 
     fn next_packet(&self, source: Source) -> Result<Packet> {
+        // SAFETY: GetBuffer lends `frames` frames at `data` until
+        // ReleaseBuffer. The stream was opened as 16-bit stereo, so that is
+        // `frames * CHANNELS` samples of 2 bytes each. The audio engine's
+        // buffers are allocated aligned and handed out in whole 4-byte
+        // frames, so `data` is aligned for `i16`, and any bits are a valid
+        // `i16`. An empty buffer can come back null; that is checked
+        // before the slice is made. The samples are copied out before
+        // ReleaseBuffer, and nothing between can return early.
         unsafe {
             let (mut data, mut frames, mut flags, mut qpc) = (std::ptr::null_mut(), 0, 0, 0);
             self.capture
@@ -339,6 +363,9 @@ impl Stream {
 
 /// A client for a device: the speakers' loopback, or a microphone.
 unsafe fn device_client(source: Source, device: &Device) -> Result<IAudioClient> {
+    // SAFETY: COM calls on objects this function owns. The microphone's id
+    // is an HSTRING, null-terminated, that lives until the end of the
+    // statement, past the GetDevice call that reads it.
     unsafe {
         let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
             .context("no audio device enumerator")?;
@@ -362,6 +389,13 @@ unsafe fn device_client(source: Source, device: &Device) -> Result<IAudioClient>
 /// A client for what process `id` and the processes it started play
 /// (Windows 10 2004 and later): Windows hands it over asynchronously.
 unsafe fn process_client(id: u32) -> Result<IAudioClient> {
+    // SAFETY: `PROPVARIANT::default()` is zeroed, so its inner struct is
+    // the union's live field to fill in. The blob points at `params`,
+    // which outlives the ActivateAudioInterfaceAsync call; an [in]
+    // argument is only read during the call (Microsoft's own sample keeps
+    // both on the stack the same way), and the variant is never cleared,
+    // which would free that stack memory. `result` and `client` are locals
+    // that GetActivateResult writes, and the client it gives is ours.
     unsafe {
         let params = AUDIOCLIENT_ACTIVATION_PARAMS {
             ActivationType: AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
@@ -426,6 +460,9 @@ impl IAgileObject_Impl for Activated_Impl {}
 
 impl Drop for Stream {
     fn drop(&mut self) {
+        // SAFETY: the client is this stream's own, and `event` its own
+        // handle: `open` closes it only when no Stream is made, so it is
+        // closed exactly once, here.
         unsafe {
             let _ = self.client.Stop();
             let _ = CloseHandle(self.event);

@@ -126,7 +126,12 @@ impl<'a> Target<'a> {
         };
         if let Some(window) = options.window {
             let hwnd = hwnd(window);
+            // SAFETY: a window handle is checked by Windows, not read as a
+            // pointer: one that is stale or closed gives a null monitor,
+            // which `find` turns into an error.
             let monitor = find(unsafe { MonitorFromWindow(hwnd, MONITOR_DEFAULTTONEAREST) })?;
+            // SAFETY: as above, Windows checks the handle; a window that
+            // cannot be captured gives an error, not a broken item.
             let item: GraphicsCaptureItem = unsafe { interop.CreateForWindow(hwnd) }
                 .context("this window cannot be recorded")?;
             let size = item.Size()?;
@@ -140,6 +145,9 @@ impl<'a> Target<'a> {
             });
         }
         let monitor = find(hmonitor(options.monitor))?;
+        // SAFETY: the handle is one `display::enumerate` just listed, and
+        // Windows checks it in any case: a monitor gone since gives an
+        // error.
         let item: GraphicsCaptureItem =
             unsafe { interop.CreateForMonitor(hmonitor(options.monitor)) }
                 .context("CreateForMonitor failed")?;
@@ -468,6 +476,8 @@ impl Session {
             // colour as it minimised). The app pauses the recording, but
             // only once Windows has told it.
             if let Some(window) = &self.window
+                // SAFETY: Windows checks the window handle; a closed window
+                // is simply not iconic.
                 && unsafe { IsIconic(window.hwnd) }.as_bool()
             {
                 frame.Close()?;
@@ -647,6 +657,9 @@ impl Session {
             window.pool_size = content;
             log::debug!("the window is now {}×{}", content.Width, content.Height);
         }
+        // SAFETY: Windows checks the window handle rather than reading
+        // through it; a closed window gives a null monitor, which only
+        // makes the white level be read again.
         let monitor = unsafe { MonitorFromWindow(window.hwnd, MONITOR_DEFAULTTONEAREST) };
         if monitor != window.monitor {
             window.monitor = monitor;
@@ -661,11 +674,15 @@ impl Session {
     /// differs from the size it started at.
     fn copy_frame(&mut self, frame: &Direct3D11CaptureFrame) -> Result<()> {
         let access: IDirect3DDxgiInterfaceAccess = frame.Surface()?.cast()?;
+        // SAFETY: `access` is the frame's live surface; GetInterface hands
+        // back its texture with a reference of our own.
         let source: ID3D11Texture2D = unsafe { access.GetInterface()? };
         let r = self.region;
         let content = frame.ContentSize()?;
         if let Some(window) = self.window.as_mut() {
             let mut desc = D3D11_TEXTURE2D_DESC::default();
+            // SAFETY: `source` is alive, and `desc` is a local that lives
+            // across the call.
             unsafe { source.GetDesc(&mut desc) };
             // A frame from before the pool was remade is the old size.
             let size = (
@@ -700,6 +717,14 @@ impl Session {
             bottom: r.y as u32 + r.height,
             back: 1,
         };
+        // SAFETY: the frame pool was made on this device, so `source` and
+        // `crop` share it; both are FP16. Without a scaler `crop` is the
+        // region's size, so the box fits it. In the frame it fits too: a
+        // display's region lies within the monitor's starting size, which
+        // is the pool's size and so every frame texture's; for a window,
+        // `same` found the texture at least the region's size. `area` lives
+        // across the call. The context is multithread-protected, as the
+        // encoder uses it from its own thread.
         unsafe {
             self.gpu
                 .context
@@ -749,6 +774,9 @@ impl Session {
             Highlights::Tonemap,
             |analysis| exposure.apply(analysis, time),
         )?;
+        // SAFETY: `work_textures` made `sdr` and `rgba` on this device at
+        // the same size, in the same RGBA8 format family, as CopyResource
+        // requires. The context is multithread-protected.
         unsafe { self.gpu.context.CopyResource(&self.rgba, &self.sdr) };
         Ok(())
     }

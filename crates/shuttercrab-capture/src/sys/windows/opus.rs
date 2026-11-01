@@ -20,7 +20,9 @@ const MOST_SAMPLES: usize = 5760;
 /// `code`, or libopus's error for it.
 fn check(code: i32) -> Result<i32> {
     if code < 0 {
-        // SAFETY: opus_strerror gives a static string for any code.
+        // SAFETY: opus_strerror returns a pointer to a static,
+        // NUL-terminated string for any code, "unknown error" for codes it
+        // does not know, so the borrow can be as long as it likes.
         let why = unsafe { CStr::from_ptr(ffi::opus_strerror(code)) };
         bail!("Opus: {}", why.to_string_lossy());
     }
@@ -29,14 +31,19 @@ fn check(code: i32) -> Result<i32> {
 
 pub(crate) struct Encoder(NonNull<ffi::OpusEncoder>);
 
-// SAFETY: an encoder's state is its own; it is used from one thread at a
-// time.
+// SAFETY: the pointer is to a heap block libopus made for this encoder
+// alone: `Encoder` is the only owner (not `Clone`, freed once in Drop), and
+// libopus keeps no thread-local or global state, so the block may be used
+// and freed on any thread. `Encoder` is not `Sync`, so it is never used from
+// two threads at once.
 unsafe impl Send for Encoder {}
 
 impl Encoder {
     pub(crate) fn new() -> Result<Self> {
         let mut error = 0;
-        // SAFETY: valid arguments; the state is freed in Drop.
+        // SAFETY: plain numbers, and `error` lives across the call for the
+        // one int it writes. A null result is turned into an error below;
+        // otherwise the state is ours, freed in Drop.
         let raw = unsafe {
             ffi::opus_encoder_create(
                 RATE,
@@ -47,7 +54,9 @@ impl Encoder {
         };
         check(error)?;
         let encoder = Self(NonNull::new(raw).context("no Opus encoder")?);
-        // SAFETY: OPUS_SET_BITRATE takes one opus_int32.
+        // SAFETY: the state was just made and is not null. The variadic
+        // OPUS_SET_BITRATE request reads exactly one opus_int32, which
+        // `BITRATE` is.
         check(unsafe {
             ffi::opus_encoder_ctl(
                 encoder.0.as_ptr(),
@@ -62,7 +71,10 @@ impl Encoder {
     /// per channel.
     pub(crate) fn lookahead(&self) -> Result<usize> {
         let mut samples = 0i32;
-        // SAFETY: OPUS_GET_LOOKAHEAD writes one opus_int32.
+        // SAFETY: the state lives as long as `self`. The variadic
+        // OPUS_GET_LOOKAHEAD request writes one opus_int32 through the
+        // pointer it is given, and `samples` is an i32 that lives across the
+        // call.
         check(unsafe {
             ffi::opus_encoder_ctl(
                 self.0.as_ptr(),
@@ -77,8 +89,10 @@ impl Encoder {
     pub(crate) fn encode(&mut self, samples: &[i16]) -> Result<Vec<u8>> {
         anyhow::ensure!(samples.len() == FRAME * CHANNELS, "not 10 ms of stereo");
         let mut packet = vec![0; MOST_BYTES];
-        // SAFETY: `samples` holds FRAME samples a channel; `packet` has
-        // room for MOST_BYTES.
+        // SAFETY: the state lives as long as `self`, borrowed mutably here.
+        // libopus reads FRAME samples a channel, interleaved, which is the
+        // length checked above, and writes at most MOST_BYTES into `packet`,
+        // which is that long.
         let len = check(unsafe {
             ffi::opus_encode(
                 self.0.as_ptr(),
@@ -95,20 +109,25 @@ impl Encoder {
 
 impl Drop for Encoder {
     fn drop(&mut self) {
-        // SAFETY: made by opus_encoder_create, freed once.
+        // SAFETY: the state was made by opus_encoder_create and is owned by
+        // this encoder alone; Drop runs once, so it is freed once.
         unsafe { ffi::opus_encoder_destroy(self.0.as_ptr()) };
     }
 }
 
 pub(crate) struct Decoder(NonNull<ffi::OpusDecoder>);
 
-// SAFETY: as the encoder.
+// SAFETY: as the encoder's: a heap block libopus made for this decoder
+// alone, owned only by `Decoder`, with no thread-bound state, and `Decoder`
+// is not `Sync`.
 unsafe impl Send for Decoder {}
 
 impl Decoder {
     pub(crate) fn new() -> Result<Self> {
         let mut error = 0;
-        // SAFETY: valid arguments; the state is freed in Drop.
+        // SAFETY: plain numbers, and `error` lives across the call for the
+        // one int it writes. A null result is turned into an error below;
+        // otherwise the state is ours, freed in Drop.
         let raw = unsafe { ffi::opus_decoder_create(RATE, CHANNELS as i32, &mut error) };
         check(error)?;
         Ok(Self(NonNull::new(raw).context("no Opus decoder")?))
@@ -117,7 +136,10 @@ impl Decoder {
     /// The 16-bit stereo samples, interleaved, in `packet`.
     pub(crate) fn decode(&mut self, packet: &[u8]) -> Result<Vec<i16>> {
         let mut samples = vec![0; MOST_SAMPLES * CHANNELS];
-        // SAFETY: `samples` has room for MOST_SAMPLES a channel.
+        // SAFETY: the state lives as long as `self`, borrowed mutably here.
+        // libopus reads `packet.len()` bytes from `packet`, and writes at
+        // most MOST_SAMPLES samples a channel, interleaved, into `samples`,
+        // which has room for that many.
         let decoded = check(unsafe {
             ffi::opus_decode(
                 self.0.as_ptr(),
@@ -135,7 +157,8 @@ impl Decoder {
 
 impl Drop for Decoder {
     fn drop(&mut self) {
-        // SAFETY: made by opus_decoder_create, freed once.
+        // SAFETY: the state was made by opus_decoder_create and is owned by
+        // this decoder alone; Drop runs once, so it is freed once.
         unsafe { ffi::opus_decoder_destroy(self.0.as_ptr()) };
     }
 }

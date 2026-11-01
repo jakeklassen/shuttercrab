@@ -124,13 +124,23 @@ pub(super) struct Aac {
     output_size: Option<u32>,
 }
 
-// SAFETY: Media Foundation's AAC decoder is free-threaded (created in the
-// multithreaded apartment); the player uses it from one thread at a time,
-// behind a mutex.
+// SAFETY: `transform` is the only reference to its decoder; nothing else
+// holds it. The decoder is made in `LivePlayer::new`, whose `Started` puts
+// that thread in the multithreaded apartment first, and the apartment lives
+// as long as the player. An object made from the MTA may be called from any
+// thread in it, and threads that never chose an apartment join the MTA
+// implicitly while it exists. The decoder itself is registered
+// ThreadingModel=Both, so it is thread-safe wherever it lives. Media
+// Foundation's decoders only ask that calls do not overlap: `Aac` is not
+// `Sync`, and the player reaches it only through `Mutex<sound::Decoder>`.
 unsafe impl Send for Aac {}
 
 impl Aac {
     fn new() -> Result<Self> {
+        // SAFETY: called on the thread making the player, in COM (see the
+        // Send impl above) and after MFStartup. Every call is on the decoder
+        // and media type made here; the GUIDs, the blob and the closure's
+        // `offered` all live across the calls that read them.
         unsafe {
             let transform: IMFTransform =
                 CoCreateInstance(&CLSID_MSAACDecMFT, None, CLSCTX_INPROC_SERVER)
@@ -176,6 +186,9 @@ impl Aac {
             let Some(size) = size else {
                 return Ok(None);
             };
+            // SAFETY: Media Foundation calls with numbers and objects made
+            // here: a new sample, and a new buffer that lives across
+            // AddBuffer, which takes its own reference.
             unsafe {
                 let sample = MFCreateSample()?;
                 sample.AddBuffer(&MFCreateMemoryBuffer(size)?)?;
@@ -183,12 +196,20 @@ impl Aac {
             }
         };
         let mut take = |sample: IMFSample| -> Result<()> {
+            // SAFETY: calls on a sample the decoder handed over and the
+            // buffer it holds; `data` and `length` live across Lock, and
+            // the slice is read as said below.
             unsafe {
                 let buffer = sample.ConvertToContiguousBuffer()?;
                 let (mut data, mut length) = (std::ptr::null_mut(), 0);
                 buffer.Lock(&mut data, None, Some(&mut length))?;
-                // SAFETY: Lock gives `length` readable bytes at `data`
-                // until Unlock; 16-bit samples, aligned as allocated.
+                // SAFETY: Lock gives `length` readable bytes at `data` until
+                // Unlock, and the slice covers `length / 2` i16s of them; any
+                // bits are a valid i16. It is copied out by `to_vec` before
+                // Unlock. Alignment: Media Foundation promises only 1-byte
+                // alignment for memory buffers, but it allocates them from
+                // the heap, which aligns every block to 16 bytes on 64-bit
+                // Windows, more than the 2 bytes i16 needs.
                 let samples =
                     std::slice::from_raw_parts(data.cast::<i16>(), length as usize / 2).to_vec();
                 buffer.Unlock()?;
@@ -583,12 +604,20 @@ struct Event(HANDLE);
 
 impl Drop for Event {
     fn drop(&mut self) {
+        // SAFETY: the handle came from CreateEventW and is owned by this
+        // `Event` alone, so it is open and closed once.
         let _ = unsafe { CloseHandle(self.0) };
     }
 }
 
 /// Play the queue on the default speakers until told to stop.
 fn play(shared: &Shared) -> Result<()> {
+    // SAFETY: runs on the "live sound" thread, which joined the MTA before
+    // calling this, and every COM object here is made and used on it alone.
+    // `format` lives across Initialize, and `position` and `qpc` across
+    // GetPosition. `event` stays open until the function returns, after
+    // the client is stopped on the normal path; on an error path the client
+    // is released just after it. The device buffer is written as said below.
     unsafe {
         let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
             .context("no audio device enumerator")?;
@@ -642,8 +671,12 @@ fn play(shared: &Shared) -> Result<()> {
                 continue;
             }
             let data = render.GetBuffer(free)?;
-            // SAFETY: GetBuffer gives room for `free` frames of 16-bit
-            // stereo until ReleaseBuffer.
+            // SAFETY: GetBuffer gives room for `free` frames of the format
+            // passed to Initialize, 16-bit stereo, so `free * CHANNELS`
+            // i16s, writable until ReleaseBuffer; `out` is not used after
+            // that. WASAPI states no alignment, but its buffer starts on a
+            // frame boundary of a block it allocates, aligned well past the
+            // 2 bytes i16 needs in practice.
             let out = std::slice::from_raw_parts_mut(
                 data.cast::<i16>(),
                 free as usize * usize::from(CHANNELS),
