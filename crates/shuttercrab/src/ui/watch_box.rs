@@ -71,7 +71,7 @@ impl WatchBox {
         if crate::helpers::viewer::is_link(&text) {
             cx.emit(WatchBoxEvent::Watch(text.trim().to_string()));
         } else {
-            self.error = Some("That is not a stream link: they start shuttercrab://watch/".into());
+            self.error = Some(crate::helpers::viewer::why_not_a_link(&text).into());
             cx.notify();
         }
     }

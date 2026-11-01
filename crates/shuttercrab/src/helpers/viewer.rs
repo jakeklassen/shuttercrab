@@ -19,6 +19,16 @@ pub fn is_link(text: &str) -> bool {
     shuttercrab_stream::Link::parse(text.trim()).is_ok()
 }
 
+/// What to tell the user about `text`, which is not a stream link. One
+/// that starts right was most likely cut short when copied.
+pub fn why_not_a_link(text: &str) -> &'static str {
+    if text.trim().starts_with(shuttercrab_stream::Link::PREFIX) {
+        "That stream link is cut short or damaged. Copy the whole link again."
+    } else {
+        "That is not a Shuttercrab stream link. Links start shuttercrab://watch/."
+    }
+}
+
 /// Open a viewer for `link` in its own process.
 pub fn open(link: &str) -> Result<()> {
     let exe = std::env::current_exe().context("could not find shuttercrab.exe")?;
@@ -42,10 +52,7 @@ pub fn serve() -> i32 {
         Ok(link) => link,
         Err(e) => {
             log::error!("not a stream link: {e:#}");
-            tell(
-                "Shuttercrab",
-                "That is not a Shuttercrab stream link. Links start shuttercrab://watch/.",
-            );
+            tell("Shuttercrab", why_not_a_link(&given));
             return 2;
         }
     };
@@ -117,5 +124,16 @@ mod tests {
         assert!(!is_link("https://example.com"));
         assert!(!is_link("shuttercrab://watch/"));
         assert!(!is_link(""));
+    }
+
+    #[test]
+    fn a_link_cut_short_is_told_apart_from_no_link() {
+        let cut_short = why_not_a_link(" shuttercrab://watch/AAAAAAAAAAAAAAAAAAAAAA ");
+        assert!(cut_short.contains("cut short"), "{cut_short}");
+        let other = why_not_a_link("https://example.com");
+        assert!(
+            other.contains("Links start shuttercrab://watch/"),
+            "{other}"
+        );
     }
 }
