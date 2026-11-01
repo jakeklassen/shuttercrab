@@ -266,10 +266,14 @@ fn active_paths() -> Result<Vec<DISPLAYCONFIG_PATH_INFO>> {
     bail!("the display topology kept changing; try again")
 }
 
+/// Have Windows fill in `packet`, a DisplayConfig request; its status.
+///
+/// # Safety
+///
 /// `packet` must be a `#[repr(C)]` DisplayConfig packet that starts with a
 /// header made by `header::<T>`, so the size Windows reads and writes is
-/// exactly `T`'s. Every caller in this module passes such a packet.
-fn device_info<T>(packet: &mut T) -> i32 {
+/// exactly `T`'s.
+unsafe fn device_info<T>(packet: &mut T) -> i32 {
     // SAFETY: by the contract above, the pointer is to a live, writable
     // `T` that starts with its header, and the header's size is
     // `size_of::<T>()`, so Windows stays inside the packet.
@@ -338,7 +342,10 @@ fn path_for<'a>(
             ),
             ..Default::default()
         };
-        if device_info(&mut source) == 0 && wide_to_string(&source.viewGdiDeviceName) == device_name
+        // SAFETY: `source` is a `#[repr(C)]` packet whose header was made
+        // by `header::<_>` for its own type, as `device_info` requires.
+        if unsafe { device_info(&mut source) } == 0
+            && wide_to_string(&source.viewGdiDeviceName) == device_name
         {
             matching.push(path);
         }
@@ -431,7 +438,9 @@ fn read_dpi_scale(device_name: &str) -> Result<(DpiScale, DISPLAYCONFIG_PATH_SOU
         current_steps: 0,
         max_steps: 0,
     };
-    let status = device_info(&mut packet);
+    // SAFETY: `packet` is a `#[repr(C)]` packet whose header was made
+    // by `header::<_>` for its own type, as `device_info` requires.
+    let status = unsafe { device_info(&mut packet) };
     ensure!(
         status == 0,
         "reading the scale of {device_name} failed ({status})"
@@ -565,7 +574,9 @@ fn describe_output(
         ),
         ..Default::default()
     };
-    let friendly_name = if device_info(&mut name) == 0 {
+    // SAFETY: `name` is a `#[repr(C)]` packet whose header was made
+    // by `header::<_>` for its own type, as `device_info` requires.
+    let friendly_name = if unsafe { device_info(&mut name) } == 0 {
         wide_to_string(&name.monitorFriendlyDeviceName)
     } else {
         String::new()
@@ -579,7 +590,9 @@ fn describe_output(
         ),
         ..Default::default()
     };
-    let status = device_info(&mut legacy);
+    // SAFETY: `legacy` is a `#[repr(C)]` packet whose header was made
+    // by `header::<_>` for its own type, as `device_info` requires.
+    let status = unsafe { device_info(&mut legacy) };
     ensure!(
         status == 0,
         "reading Advanced Color state of {device_name} failed ({status})"
@@ -600,7 +613,9 @@ fn describe_output(
         bits_per_color_channel: 0,
         active_color_mode: 0,
     };
-    let info2 = (device_info(&mut info2) == 0).then_some(info2);
+    // SAFETY: `info2` is a `#[repr(C)]` packet whose header was made
+    // by `header::<_>` for its own type, as `device_info` requires.
+    let info2 = (unsafe { device_info(&mut info2) } == 0).then_some(info2);
 
     let color_mode = decide_color_mode(
         info2.as_ref().map(|i| i.active_color_mode),
@@ -616,7 +631,9 @@ fn describe_output(
         ),
         SDRWhiteLevel: 0,
     };
-    let sdr_white_level = (device_info(&mut white) == 0).then_some(white.SDRWhiteLevel);
+    // SAFETY: `white` is a `#[repr(C)]` packet whose header was made
+    // by `header::<_>` for its own type, as `device_info` requires.
+    let sdr_white_level = (unsafe { device_info(&mut white) } == 0).then_some(white.SDRWhiteLevel);
 
     let hmonitor = desc.Monitor;
     let mut info = MONITORINFO {

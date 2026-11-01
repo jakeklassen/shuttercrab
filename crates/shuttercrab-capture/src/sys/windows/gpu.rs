@@ -5,6 +5,7 @@ use crate::color::{
     find_regions,
 };
 use anyhow::{Context, Result, anyhow, bail, ensure};
+use std::ffi::CStr;
 use windows::{
     Graphics::DirectX::Direct3D11::IDirect3DDevice,
     Win32::{
@@ -139,6 +140,14 @@ impl Gpu {
             BindFlags: bind.0 as u32,
             ..Default::default()
         };
+        if let Some((bytes, pitch)) = initial {
+            let row = u64::from(width) * bytes_per_pixel(format)?;
+            ensure!(
+                u64::from(pitch) >= row
+                    && bytes.len() as u64 >= u64::from(pitch) * u64::from(height),
+                "the pixels for a {width}x{height} texture are too few"
+            );
+        }
         let data = initial.map(|(bytes, pitch)| D3D11_SUBRESOURCE_DATA {
             pSysMem: bytes.as_ptr().cast(),
             SysMemPitch: pitch,
@@ -146,9 +155,8 @@ impl Gpu {
         });
         let mut texture = None;
         // SAFETY: `desc` and `data` live across the call. With initial data
-        // the driver reads `height` rows `pitch` apart from `bytes`, which
-        // the caller sizes to match (`upload_rgba16f` checks it); nothing
-        // here checks it for other callers.
+        // the driver reads `height` rows `pitch` apart from `bytes`, each
+        // `width` pixels of `format`: checked above to be within `bytes`.
         unsafe {
             self.device.CreateTexture2D(
                 &desc,
@@ -162,7 +170,7 @@ impl Gpu {
     /// Upload tightly packed little-endian RGBA FP16 pixels.
     pub fn upload_rgba16f(&self, width: u32, height: u32, bytes: &[u8]) -> Result<ID3D11Texture2D> {
         ensure!(
-            bytes.len() == (width * height * 8) as usize,
+            bytes.len() as u64 == u64::from(width) * u64::from(height) * 8,
             "FP16 upload has the wrong size"
         );
         self.texture(
@@ -196,12 +204,7 @@ impl Gpu {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
         // SAFETY: `texture` is a live texture and `desc` a local it fills.
         unsafe { texture.GetDesc(&mut desc) };
-        let bytes_per_pixel = match desc.Format {
-            DXGI_FORMAT_R16G16B16A16_FLOAT => 8,
-            DXGI_FORMAT_B8G8R8A8_UNORM | DXGI_FORMAT_R8G8B8A8_UNORM | DXGI_FORMAT_R32_UINT => 4,
-            DXGI_FORMAT_R32_FLOAT => 4,
-            other => bail!("read_back does not handle {other:?}"),
-        };
+        let bytes_per_pixel = bytes_per_pixel(desc.Format)? as usize;
         let (width, height) = (desc.Width, desc.Height);
         let row = width as usize * bytes_per_pixel;
         // Read back through a band a few megabytes tall, a band at a time:
@@ -273,6 +276,19 @@ const BAND_BYTES: usize = 1024 * 1024;
 
 /// How many rows of `row` bytes a readback band holds: about
 /// [`BAND_BYTES`], at least one row, at most the whole texture.
+/// How many bytes a pixel of `format` takes, for the formats Shuttercrab
+/// uploads and reads back.
+fn bytes_per_pixel(format: DXGI_FORMAT) -> Result<u64> {
+    Ok(match format {
+        DXGI_FORMAT_R16G16B16A16_FLOAT => 8,
+        DXGI_FORMAT_B8G8R8A8_UNORM
+        | DXGI_FORMAT_R8G8B8A8_UNORM
+        | DXGI_FORMAT_R32_UINT
+        | DXGI_FORMAT_R32_FLOAT => 4,
+        other => bail!("no pixel size known for {other:?}"),
+    })
+}
+
 fn band_rows(row: usize, height: u32) -> u32 {
     ((BAND_BYTES / row.max(1)).max(1) as u32).min(height.max(1))
 }
@@ -338,9 +354,9 @@ struct GpuTileStat {
 impl SdrConverter {
     pub fn new(gpu: &Gpu) -> Result<Self> {
         Ok(Self {
-            classify: compile(gpu, s!("classify"))?,
-            tile_stats: compile(gpu, s!("tile_stats"))?,
-            convert: compile(gpu, s!("convert"))?,
+            classify: compile(gpu, c"classify")?,
+            tile_stats: compile(gpu, c"tile_stats")?,
+            convert: compile(gpu, c"convert")?,
         })
     }
 
@@ -562,9 +578,9 @@ impl VideoConverter {
             staging_buffer(gpu, bytes)?,
         ];
         Ok(Self {
-            classify: compile(gpu, s!("classify"))?,
-            tile_stats: compile(gpu, s!("tile_stats"))?,
-            convert: compile(gpu, s!("convert"))?,
+            classify: compile(gpu, c"classify")?,
+            tile_stats: compile(gpu, c"tile_stats")?,
+            convert: compile(gpu, c"convert")?,
             width,
             height,
             tiles_x,
@@ -829,14 +845,22 @@ fn staging_buffer(gpu: &Gpu, bytes: u32) -> Result<ID3D11Buffer> {
 }
 
 /// The `count` tile stats in a staging buffer, or `None` if the GPU has not
-/// finished writing them and `wait` is false. The buffer must hold at least
-/// `count` of them.
+/// finished writing them and `wait` is false. A buffer too small for
+/// `count` of them is an error.
 fn read_staging(
     gpu: &Gpu,
     staging: &ID3D11Buffer,
     count: u32,
     wait: bool,
 ) -> Result<Option<Vec<GpuTileStat>>> {
+    let mut desc = D3D11_BUFFER_DESC::default();
+    // SAFETY: `staging` is a live buffer and `desc` a local it fills.
+    unsafe { staging.GetDesc(&mut desc) };
+    let wanted = u64::from(count) * size_of::<GpuTileStat>() as u64;
+    ensure!(
+        u64::from(desc.ByteWidth) >= wanted,
+        "the staging buffer holds fewer than {count} tile stats"
+    );
     let flags = if wait {
         0
     } else {
@@ -853,8 +877,8 @@ fn read_staging(
         Err(e) if e.code() == DXGI_ERROR_WAS_STILL_DRAWING => return Ok(None),
         Err(e) => return Err(e).context("reading the analysis back"),
     }
-    // SAFETY: the mapped memory is the staging buffer's, which the caller
-    // made at least `count * size_of::<GpuTileStat>()` bytes. Direct3D maps
+    // SAFETY: the mapped memory is the staging buffer's, checked above to be
+    // at least `count * size_of::<GpuTileStat>()` bytes. Direct3D maps
     // it at least 16-byte aligned, more than `GpuTileStat` needs, and
     // `GpuTileStat` is `#[repr(C)]` with only `f32` and `u32` fields, so
     // every bit pattern the GPU wrote is a valid value. `to_vec` copies the
@@ -988,8 +1012,8 @@ pub(crate) fn uav(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11Unordere
     view.context("no unordered access view")
 }
 
-fn compile(gpu: &Gpu, entry: PCSTR) -> Result<ID3D11ComputeShader> {
-    compile_source(gpu, SHADER_SOURCE, s!("hdr_to_sdr.hlsl"), entry)
+fn compile(gpu: &Gpu, entry: &CStr) -> Result<ID3D11ComputeShader> {
+    compile_source(gpu, SHADER_SOURCE, c"hdr_to_sdr.hlsl", entry)
 }
 
 /// Compile the compute shader `entry` of HLSL `source`, named `name` in
@@ -997,21 +1021,21 @@ fn compile(gpu: &Gpu, entry: PCSTR) -> Result<ID3D11ComputeShader> {
 pub(crate) fn compile_source(
     gpu: &Gpu,
     source: &str,
-    name: PCSTR,
-    entry: PCSTR,
+    name: &CStr,
+    entry: &CStr,
 ) -> Result<ID3D11ComputeShader> {
     let (mut code, mut errors) = (None, None);
     // SAFETY: the source is passed with its length, so it needs no NUL.
-    // `name`, `entry` and the profile are NUL-terminated strings (every
-    // caller passes `s!` literals), and the out slots live across the call.
+    // `name`, `entry` and the profile are NUL-terminated strings that live
+    // across the call, and so do the out slots.
     let result = unsafe {
         D3DCompile(
             source.as_ptr().cast(),
             source.len(),
-            name,
+            PCSTR(name.as_ptr().cast()),
             None,
             None,
-            entry,
+            PCSTR(entry.as_ptr().cast()),
             s!("cs_5_0"),
             D3DCOMPILE_ENABLE_STRICTNESS
                 | D3DCOMPILE_IEEE_STRICTNESS
@@ -1025,8 +1049,7 @@ pub(crate) fn compile_source(
         let detail = errors.map(|b| blob_text(&b)).unwrap_or_default();
         return Err(anyhow!(
             "shader {} failed to compile: {e}\n{detail}",
-            // SAFETY: `entry` is a NUL-terminated `s!` literal, as above.
-            unsafe { entry.display() }
+            entry.to_string_lossy()
         ));
     }
     let code = code.context("D3DCompile returned no bytecode")?;

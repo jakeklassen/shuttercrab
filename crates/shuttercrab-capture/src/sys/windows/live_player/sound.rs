@@ -204,14 +204,15 @@ impl Aac {
                 let (mut data, mut length) = (std::ptr::null_mut(), 0);
                 buffer.Lock(&mut data, None, Some(&mut length))?;
                 // SAFETY: Lock gives `length` readable bytes at `data` until
-                // Unlock, and the slice covers `length / 2` i16s of them; any
-                // bits are a valid i16. It is copied out by `to_vec` before
-                // Unlock. Alignment: Media Foundation promises only 1-byte
-                // alignment for memory buffers, but it allocates them from
-                // the heap, which aligns every block to 16 bytes on 64-bit
-                // Windows, more than the 2 bytes i16 needs.
-                let samples =
-                    std::slice::from_raw_parts(data.cast::<i16>(), length as usize / 2).to_vec();
+                // Unlock, and the slice covers exactly those, read as bytes:
+                // Media Foundation promises no alignment for i16. They are
+                // copied out before Unlock.
+                let samples = std::slice::from_raw_parts(data, length as usize)
+                    .as_chunks::<2>()
+                    .0
+                    .iter()
+                    .map(|&bytes| i16::from_le_bytes(bytes))
+                    .collect();
                 buffer.Unlock()?;
                 out(sample.GetSampleTime().unwrap_or(frame.time), samples)
             }
@@ -658,6 +659,9 @@ fn play(shared: &Shared) -> Result<()> {
         // Each fill: the frames written to the device by its end, and the
         // time just after its last, if it was sound.
         let mut volume = Volume::default();
+        // Each fill's samples, mixed here and then written to the device's
+        // buffer, which WASAPI does not promise to align for i16.
+        let mut mixed = Vec::<i16>::new();
         let mut fills = VecDeque::<(u64, Option<i64>)>::new();
         let mut written = 0u64;
         client.Start()?;
@@ -670,23 +674,23 @@ fn play(shared: &Shared) -> Result<()> {
             if free == 0 {
                 continue;
             }
-            let data = render.GetBuffer(free)?;
-            // SAFETY: GetBuffer gives room for `free` frames of the format
-            // passed to Initialize, 16-bit stereo, so `free * CHANNELS`
-            // i16s, writable until ReleaseBuffer; `out` is not used after
-            // that. WASAPI states no alignment, but its buffer starts on a
-            // frame boundary of a block it allocates, aligned well past the
-            // 2 bytes i16 needs in practice.
-            let out = std::slice::from_raw_parts_mut(
-                data.cast::<i16>(),
-                free as usize * usize::from(CHANNELS),
-            );
-            let end = lock(&shared.queue).fill(out);
+            mixed.clear();
+            mixed.resize(free as usize * usize::from(CHANNELS), 0);
+            let end = lock(&shared.queue).fill(&mut mixed);
             let percent = shared.volume.load(Ordering::Relaxed);
             if shared.muted.load(Ordering::Relaxed) {
-                out.fill(0);
+                mixed.fill(0);
             } else if percent != 100 {
-                volume.apply(out, percent as f32 / 100.0);
+                volume.apply(&mut mixed, percent as f32 / 100.0);
+            }
+            let data = render.GetBuffer(free)?;
+            // SAFETY: GetBuffer gives room for `free` frames of the format
+            // passed to Initialize, 16-bit stereo, so `mixed.len() * 2`
+            // bytes, writable until ReleaseBuffer; `out` is not used after
+            // that. It is written as bytes, needing no alignment.
+            let out = std::slice::from_raw_parts_mut(data, mixed.len() * 2);
+            for (to, sample) in out.as_chunks_mut::<2>().0.iter_mut().zip(&mixed) {
+                *to = sample.to_le_bytes();
             }
             render.ReleaseBuffer(free, 0)?;
             written += u64::from(free);

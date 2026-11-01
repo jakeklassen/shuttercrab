@@ -64,6 +64,11 @@ pub struct LivePlayer {
 impl LivePlayer {
     /// Play a recording of `format`. `failed` hears why the sound stopped,
     /// if it does; the pictures then show as they arrive.
+    ///
+    /// Make it on a thread that has not joined COM's single-threaded
+    /// apartment (a window's UI thread usually has): its decoders are then
+    /// in the multithreaded apartment, where the player's other threads may
+    /// call them. The viewer's player thread is such a thread.
     pub fn new(format: LiveFormat, failed: impl Fn(String) + Send + 'static) -> Result<Self> {
         let started = Started::new()?;
         let gpu = Gpu::video(None)?;

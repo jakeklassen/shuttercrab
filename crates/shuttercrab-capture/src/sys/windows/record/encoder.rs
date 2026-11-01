@@ -547,20 +547,19 @@ impl Mp4Writer {
             }
         };
         let bytes = std::mem::size_of_val(samples);
+        let length = u32::try_from(bytes).context("over 4 GiB of sound at once")?;
         // SAFETY: the buffer is new and ours alone, made `bytes` long, so
         // while it is locked `data` points at `bytes` writable bytes that
         // cannot overlap `samples`; the copy reads exactly `samples`' own
-        // bytes and ends before `Unlock`. (`bytes` fits a u32: a call's
-        // samples are the mix since the last call, and 4 GiB would be over
-        // six hours of it.) The rest are COM calls
+        // bytes and ends before `Unlock`. The rest are COM calls
         // on that buffer, a new sample and the live writer.
         unsafe {
-            let buffer = MFCreateMemoryBuffer(bytes as u32)?;
+            let buffer = MFCreateMemoryBuffer(length)?;
             let mut data = std::ptr::null_mut();
             buffer.Lock(&mut data, None, None)?;
             std::ptr::copy_nonoverlapping(samples.as_ptr().cast::<u8>(), data, bytes);
             buffer.Unlock()?;
-            buffer.SetCurrentLength(bytes as u32)?;
+            buffer.SetCurrentLength(length)?;
             let sample = MFCreateSample()?;
             sample.AddBuffer(&buffer)?;
             sample.SetSampleTime(time)?;
