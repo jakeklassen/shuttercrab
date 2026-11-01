@@ -19,6 +19,8 @@ shuttercrab-types = { path = "../shuttercrab-types" }
 [target.'cfg(windows)'.dependencies]
 # The COM `implement` macro refers to windows-core by name.
 windows-core = "0.62"
+# Sound capture and playback through WASAPI.
+wasapi = "0.26"
 # A live stream's sound: the reference libopus, built from source.
 opus-head-sys = { version = "0.3.3", default-features = false }
 
@@ -34,7 +36,6 @@ features = [
   "Graphics_DirectX_Direct3D11",
   "Wdk_System_SystemServices",
   "Win32_Devices_Display",
-  "Win32_Devices_FunctionDiscovery",
   "Win32_Foundation",
   "Win32_Graphics_Direct3D",
   "Win32_Graphics_Direct3D11",

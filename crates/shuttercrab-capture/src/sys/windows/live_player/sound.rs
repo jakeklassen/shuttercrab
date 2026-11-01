@@ -20,13 +20,10 @@ use std::{
     thread::JoinHandle,
     time::{Duration, Instant},
 };
+use wasapi::{DeviceEnumerator, Direction, SampleType, StreamMode, WasapiError, WaveFormat};
 use windows::Win32::{
-    Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
-    Media::{Audio::*, MediaFoundation::*},
-    System::{
-        Com::{CLSCTX_ALL, CLSCTX_INPROC_SERVER, CoCreateInstance},
-        Threading::{CreateEventW, WaitForSingleObject},
-    },
+    Media::MediaFoundation::*,
+    System::Com::{CLSCTX_INPROC_SERVER, CoCreateInstance},
 };
 
 /// The sound's rate, frames a second, and channels: as the recorder
@@ -600,137 +597,103 @@ fn instant_at(qpc: u64) -> Instant {
     Instant::now().checked_sub(ago).unwrap_or_else(Instant::now)
 }
 
-/// An event handle, closed when dropped.
-struct Event(HANDLE);
-
-impl Drop for Event {
-    fn drop(&mut self) {
-        // SAFETY: the handle came from CreateEventW and is owned by this
-        // `Event` alone, so it is open and closed once.
-        let _ = unsafe { CloseHandle(self.0) };
-    }
-}
-
-/// Play the queue on the default speakers until told to stop.
+/// Play the queue on the default speakers until told to stop. Runs on the
+/// "live sound" thread, which joined the MTA before calling this.
 fn play(shared: &Shared) -> Result<()> {
-    // SAFETY: runs on the "live sound" thread, which joined the MTA before
-    // calling this, and every COM object here is made and used on it alone.
-    // `format` lives across Initialize, and `position` and `qpc` across
-    // GetPosition. `event` stays open until the function returns, after
-    // the client is stopped on the normal path; on an error path the client
-    // is released just after it. The device buffer is written as said below.
-    unsafe {
-        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .context("no audio device enumerator")?;
-        let device = devices
-            .GetDefaultAudioEndpoint(eRender, eConsole)
-            .context("no speakers")?;
-        let client: IAudioClient = device
-            .Activate(CLSCTX_ALL, None)
-            .context("could not open the speakers")?;
-        let format = WAVEFORMATEX {
-            wFormatTag: WAVE_FORMAT_PCM as u16,
-            nChannels: CHANNELS,
-            nSamplesPerSec: RATE,
-            nAvgBytesPerSec: RATE * u32::from(CHANNELS) * 2,
-            nBlockAlign: CHANNELS * 2,
-            wBitsPerSample: 16,
-            cbSize: 0,
-        };
-        // Windows converts to the device's own format.
-        client
-            .Initialize(
-                AUDCLNT_SHAREMODE_SHARED,
-                AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                    | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                    | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY,
-                DEVICE_BUFFER,
-                0,
-                &format,
-                None,
-            )
-            .context("could not start playing sound")?;
-        let event = Event(CreateEventW(None, false, false, None).context("no event")?);
-        client.SetEventHandle(event.0)?;
-        let render: IAudioRenderClient = client.GetService()?;
-        let speakers: IAudioClock = client.GetService()?;
-        let frequency = speakers.GetFrequency()?;
-        let size = client.GetBufferSize()?;
-        // Each fill: the frames written to the device by its end, and the
-        // time just after its last, if it was sound.
-        let mut volume = Volume::default();
-        // Each fill's samples, mixed here and then written to the device's
-        // buffer, which WASAPI does not promise to align for i16.
-        let mut mixed = Vec::<i16>::new();
-        let mut fills = VecDeque::<(u64, Option<i64>)>::new();
-        let mut written = 0u64;
-        client.Start()?;
-        shared.alive.store(true, Ordering::Relaxed);
-        while !shared.stop.load(Ordering::Acquire) {
-            if WaitForSingleObject(event.0, WAKE_MS) != WAIT_OBJECT_0 {
-                continue;
-            }
-            let free = size - client.GetCurrentPadding()?;
-            if free == 0 {
-                continue;
-            }
-            mixed.clear();
-            mixed.resize(free as usize * usize::from(CHANNELS), 0);
-            let end = lock(&shared.queue).fill(&mut mixed);
-            let percent = shared.volume.load(Ordering::Relaxed);
-            if shared.muted.load(Ordering::Relaxed) {
-                mixed.fill(0);
-            } else if percent != 100 {
-                volume.apply(&mut mixed, percent as f32 / 100.0);
-            }
-            let data = render.GetBuffer(free)?;
-            // SAFETY: GetBuffer gives room for `free` frames of the format
-            // passed to Initialize, 16-bit stereo, so `mixed.len() * 2`
-            // bytes, writable until ReleaseBuffer; `out` is not used after
-            // that. It is written as bytes, needing no alignment.
-            let out = std::slice::from_raw_parts_mut(data, mixed.len() * 2);
-            for (to, sample) in out.as_chunks_mut::<2>().0.iter_mut().zip(&mixed) {
-                *to = sample.to_le_bytes();
-            }
-            render.ReleaseBuffer(free, 0)?;
-            written += u64::from(free);
-            fills.push_back((written, end));
-            if fills.len() > 64 {
-                fills.pop_front();
-            }
-
-            // Which frame the speakers are playing, and when that was.
-            let (mut position, mut qpc) = (0, 0);
-            speakers.GetPosition(&mut position, Some(&mut qpc))?;
-            let played = position * u64::from(RATE) / frequency;
-            let playing = fills
-                .iter()
-                .find(|(end, _)| *end > played)
-                .and_then(|&(end, time)| Some(time? - frames_to_ticks((end - played) as usize)));
-            let at = instant_at(qpc);
-            let mut queue = lock(&shared.queue);
-            queue.clock = match (playing, queue.clock) {
-                (Some(time), Some(mut clock)) if clock.running => {
-                    clock.steer(time, at);
-                    Some(clock)
-                }
-                (Some(time), _) => Some(Clock {
-                    at,
-                    time,
-                    running: true,
-                }),
-                // Playing silence (run dry): the clock waits for the sound.
-                (None, Some(clock)) => Some(Clock {
-                    at: Instant::now(),
-                    time: clock.now(),
-                    running: false,
-                }),
-                (None, None) => None,
-            };
+    let speakers = DeviceEnumerator::new()
+        .context("no audio device enumerator")?
+        .get_default_device(&Direction::Render)
+        .context("no speakers")?;
+    let mut client = speakers
+        .get_iaudioclient()
+        .context("could not open the speakers")?;
+    let format = WaveFormat::new(
+        16,
+        16,
+        &SampleType::Int,
+        RATE as usize,
+        usize::from(CHANNELS),
+        None,
+    );
+    // Windows converts to the device's own format.
+    let mode = StreamMode::EventsShared {
+        autoconvert: true,
+        buffer_duration_hns: DEVICE_BUFFER,
+    };
+    client
+        .initialize_client(&format, &Direction::Render, &mode)
+        .context("could not start playing sound")?;
+    let event = client.set_get_eventhandle()?;
+    let render = client.get_audiorenderclient()?;
+    let clock_of_speakers = client.get_audioclock()?;
+    let frequency = clock_of_speakers.get_frequency()?;
+    // Each fill: the frames written to the device by its end, and the
+    // time just after its last, if it was sound.
+    let mut volume = Volume::default();
+    // Each fill's samples, mixed here, and the same as bytes for the device.
+    let (mut mixed, mut bytes) = (Vec::<i16>::new(), Vec::<u8>::new());
+    let mut fills = VecDeque::<(u64, Option<i64>)>::new();
+    let mut written = 0u64;
+    client.start_stream()?;
+    shared.alive.store(true, Ordering::Relaxed);
+    while !shared.stop.load(Ordering::Acquire) {
+        match event.wait_for_event(WAKE_MS) {
+            Ok(()) => {}
+            Err(WasapiError::EventTimeout) => continue,
+            Err(e) => return Err(e.into()),
         }
-        client.Stop()?;
-        Ok(())
+        let free = client.get_available_space_in_frames()?;
+        if free == 0 {
+            continue;
+        }
+        mixed.clear();
+        mixed.resize(free as usize * usize::from(CHANNELS), 0);
+        let end = lock(&shared.queue).fill(&mut mixed);
+        let percent = shared.volume.load(Ordering::Relaxed);
+        if shared.muted.load(Ordering::Relaxed) {
+            mixed.fill(0);
+        } else if percent != 100 {
+            volume.apply(&mut mixed, percent as f32 / 100.0);
+        }
+        bytes.clear();
+        bytes.extend(mixed.iter().flat_map(|s| s.to_le_bytes()));
+        render.write_to_device(free as usize, &bytes, None)?;
+        written += u64::from(free);
+        fills.push_back((written, end));
+        if fills.len() > 64 {
+            fills.pop_front();
+        }
+
+        // Which frame the speakers are playing, and when that was.
+        let (position, qpc) = clock_of_speakers.get_position()?;
+        let played = position * u64::from(RATE) / frequency;
+        let playing = fills
+            .iter()
+            .find(|(end, _)| *end > played)
+            .and_then(|&(end, time)| Some(time? - frames_to_ticks((end - played) as usize)));
+        let at = instant_at(qpc);
+        let mut queue = lock(&shared.queue);
+        queue.clock = match (playing, queue.clock) {
+            (Some(time), Some(mut clock)) if clock.running => {
+                clock.steer(time, at);
+                Some(clock)
+            }
+            (Some(time), _) => Some(Clock {
+                at,
+                time,
+                running: true,
+            }),
+            // Playing silence (run dry): the clock waits for the sound.
+            (None, Some(clock)) => Some(Clock {
+                at: Instant::now(),
+                time: clock.now(),
+                running: false,
+            }),
+            (None, None) => None,
+        };
     }
+    client.stop_stream()?;
+    Ok(())
 }
 
 #[cfg(test)]
