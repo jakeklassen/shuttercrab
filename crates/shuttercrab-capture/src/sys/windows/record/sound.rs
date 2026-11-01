@@ -24,34 +24,27 @@ use std::{
     thread::JoinHandle,
     time::Duration,
 };
+use wasapi::{
+    AudioCaptureClient, AudioClient, DeviceEnumerator, Direction, Handle, SampleType, StreamMode,
+    WasapiError, WaveFormat,
+};
 use windows::{
     Win32::{
-        Devices::FunctionDiscovery::PKEY_Device_FriendlyName,
-        Foundation::{CloseHandle, HANDLE, WAIT_OBJECT_0},
         Media::Audio::{
-            AUDCLNT_BUFFERFLAGS_SILENT, AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR,
-            AUDCLNT_SHAREMODE_SHARED, AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM,
-            AUDCLNT_STREAMFLAGS_EVENTCALLBACK, AUDCLNT_STREAMFLAGS_LOOPBACK,
-            AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY, AUDIOCLIENT_ACTIVATION_PARAMS,
-            AUDIOCLIENT_ACTIVATION_PARAMS_0, AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK,
-            AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS, ActivateAudioInterfaceAsync, DEVICE_STATE_ACTIVE,
-            IActivateAudioInterfaceAsyncOperation, IActivateAudioInterfaceCompletionHandler,
-            IActivateAudioInterfaceCompletionHandler_Impl, IAudioCaptureClient, IAudioClient,
-            IMMDevice, IMMDeviceEnumerator, MMDeviceEnumerator,
+            AUDIOCLIENT_ACTIVATION_PARAMS, AUDIOCLIENT_ACTIVATION_PARAMS_0,
+            AUDIOCLIENT_ACTIVATION_TYPE_PROCESS_LOOPBACK, AUDIOCLIENT_PROCESS_LOOPBACK_PARAMS,
+            ActivateAudioInterfaceAsync, IActivateAudioInterfaceAsyncOperation,
+            IActivateAudioInterfaceCompletionHandler,
+            IActivateAudioInterfaceCompletionHandler_Impl, IAudioClient,
             PROCESS_LOOPBACK_MODE_INCLUDE_TARGET_PROCESS_TREE,
-            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK, WAVE_FORMAT_PCM, WAVEFORMATEX, eCapture,
-            eConsole, eRender,
+            VIRTUAL_AUDIO_DEVICE_PROCESS_LOOPBACK,
         },
         System::{
-            Com::{
-                BLOB, CLSCTX_ALL, CoCreateInstance, CoTaskMemFree, IAgileObject, IAgileObject_Impl,
-                STGM_READ, StructuredStorage::PROPVARIANT,
-            },
-            Threading::{CreateEventW, WaitForSingleObject},
+            Com::{BLOB, IAgileObject, IAgileObject_Impl, StructuredStorage::PROPVARIANT},
             Variant::VT_BLOB,
         },
     },
-    core::{HRESULT, HSTRING, IUnknown, Interface, PCWSTR, Ref, implement},
+    core::{HRESULT, IUnknown, Interface, Ref, implement},
 };
 
 /// Which device a capture records.
@@ -72,6 +65,9 @@ pub(super) const RATE: u32 = 48_000;
 /// The track's channels: stereo.
 pub(super) const CHANNELS: u16 = 2;
 
+/// Bytes in one frame of the track: a 16-bit sample for each channel.
+const FRAME_BYTES: usize = 2 * CHANNELS as usize;
+
 impl Source {
     fn index(self) -> usize {
         match self {
@@ -83,50 +79,24 @@ impl Source {
 
 /// The microphones plugged in and on, Windows' default first.
 pub fn microphones() -> Result<Vec<Microphone>> {
-    // SAFETY: plain COM calls on objects this function owns, with no
-    // pointers passed in. Without COM on this thread CoCreateInstance fails
-    // with an error rather than misbehaving.
-    unsafe {
-        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .context("no audio device enumerator")?;
-        let default = devices
-            .GetDefaultAudioEndpoint(eCapture, eConsole)
-            .ok()
-            .and_then(|d| device_id(&d).ok());
-        let all = devices.EnumAudioEndpoints(eCapture, DEVICE_STATE_ACTIVE)?;
-        let mut found = Vec::new();
-        for i in 0..all.GetCount()? {
-            let device = all.Item(i)?;
-            found.push(Microphone {
-                id: device_id(&device)?,
-                name: device_name(&device).unwrap_or_else(|_| "Microphone".into()),
-            });
-        }
-        found.sort_by_key(|m| Some(&m.id) != default.as_ref());
-        Ok(found)
+    let devices = DeviceEnumerator::new().context("no audio device enumerator")?;
+    let default = devices
+        .get_default_device(&Direction::Capture)
+        .ok()
+        .and_then(|d| d.get_id().ok());
+    let all = devices.get_device_collection(&Direction::Capture)?;
+    let mut found = Vec::new();
+    for i in 0..all.get_nbr_devices()? {
+        let device = all.get_device_at_index(i)?;
+        found.push(Microphone {
+            id: device.get_id()?,
+            name: device
+                .get_friendlyname()
+                .unwrap_or_else(|_| "Microphone".into()),
+        });
     }
-}
-
-fn device_id(device: &IMMDevice) -> Result<String> {
-    // SAFETY: GetId gives a null-terminated string of our own, made with
-    // CoTaskMemAlloc. It is copied into `text` before CoTaskMemFree frees
-    // it, once, and not touched after.
-    unsafe {
-        let id = device.GetId()?;
-        let text = id.to_string();
-        CoTaskMemFree(Some(id.0.cast()));
-        Ok(text?)
-    }
-}
-
-fn device_name(device: &IMMDevice) -> Result<String> {
-    // SAFETY: the device is alive for this call and the key is a static.
-    // The PROPVARIANT GetValue returns is ours, cleared when dropped.
-    unsafe {
-        let store = device.OpenPropertyStore(STGM_READ)?;
-        let name = store.GetValue(&PKEY_Device_FriendlyName)?;
-        Ok(name.to_string())
-    }
+    found.sort_by_key(|m| Some(&m.id) != default.as_ref());
+    Ok(found)
 }
 
 /// Sound from one source, captured from `captured` (QPC ticks, its first
@@ -206,7 +176,7 @@ fn capture(
     let _com = ComApartment::multithreaded();
     let mut ready = Some(ready);
     while !stop.load(Ordering::Acquire) {
-        let stream = match Stream::open(source, &device) {
+        let mut stream = match Stream::open(source, &device) {
             Ok(stream) => stream,
             Err(e) => {
                 match ready.take() {
@@ -241,78 +211,66 @@ fn capture(
     }
 }
 
-/// An open capture stream: the output device's loopback, or a microphone.
+/// An open capture stream: the output device's loopback, a process's
+/// sound, or a microphone.
 struct Stream {
-    client: IAudioClient,
-    capture: IAudioCaptureClient,
-    event: HANDLE,
+    client: AudioClient,
+    capture: AudioCaptureClient,
+    event: Handle,
+    /// A packet's bytes as read from the device, kept between packets.
+    bytes: Vec<u8>,
 }
 
 impl Stream {
     fn open(source: Source, device: &Device) -> Result<Self> {
-        // SAFETY: `device_client` and `process_client` ask nothing of their
-        // caller; their `unsafe` only marks that they call COM. `format` lives across Initialize,
-        // which copies it. The event is ours: on failure it is closed here,
-        // otherwise the Stream owns it and closes it when dropped.
-        unsafe {
-            let client = match (source, device) {
-                (Source::System, Device::Process(id)) => process_client(*id)?,
-                _ => device_client(source, device)?,
-            };
-            let format = WAVEFORMATEX {
-                wFormatTag: WAVE_FORMAT_PCM as u16,
-                nChannels: CHANNELS,
-                nSamplesPerSec: RATE,
-                nAvgBytesPerSec: RATE * u32::from(CHANNELS) * 2,
-                nBlockAlign: CHANNELS * 2,
-                wBitsPerSample: 16,
-                cbSize: 0,
-            };
-            // Windows converts from the device's own format to the track's.
-            let mut flags = AUDCLNT_STREAMFLAGS_EVENTCALLBACK
-                | AUDCLNT_STREAMFLAGS_AUTOCONVERTPCM
-                | AUDCLNT_STREAMFLAGS_SRC_DEFAULT_QUALITY;
-            if source == Source::System {
-                flags |= AUDCLNT_STREAMFLAGS_LOOPBACK;
+        let mut client = match (source, device) {
+            (Source::System, Device::Process(id)) => {
+                AudioClient::from_iaudioclient(process_client(*id)?, Direction::Render)
             }
-            client
-                .Initialize(AUDCLNT_SHAREMODE_SHARED, flags, BUFFER, 0, &format, None)
-                .context("could not start capturing sound")?;
-            let event = CreateEventW(None, false, false, None).context("no event")?;
-            let opened = (|| {
-                client.SetEventHandle(event)?;
-                let capture: IAudioCaptureClient = client.GetService()?;
-                client.Start()?;
-                anyhow::Ok(capture)
-            })();
-            match opened {
-                Ok(capture) => Ok(Self {
-                    client,
-                    capture,
-                    event,
-                }),
-                Err(e) => {
-                    let _ = CloseHandle(event);
-                    Err(e.context("could not start capturing sound"))
-                }
-            }
-        }
+            _ => device_client(source, device)?,
+        };
+        let format = WaveFormat::new(
+            16,
+            16,
+            &SampleType::Int,
+            RATE as usize,
+            usize::from(CHANNELS),
+            None,
+        );
+        // Captured from an output device, or a process's sound, this is its
+        // loopback. Windows converts from the device's own format to the
+        // track's.
+        let mode = StreamMode::EventsShared {
+            autoconvert: true,
+            buffer_duration_hns: BUFFER,
+        };
+        client
+            .initialize_client(&format, &Direction::Capture, &mode)
+            .context("could not start capturing sound")?;
+        let event = client.set_get_eventhandle()?;
+        let capture = client.get_audiocaptureclient()?;
+        client
+            .start_stream()
+            .context("could not start capturing sound")?;
+        Ok(Self {
+            client,
+            capture,
+            event,
+            bytes: Vec::new(),
+        })
     }
 
     /// Send every packet on until `stop`; an error means the device went
     /// away.
-    fn pass_on(&self, source: Source, events: &Sender<Event>, stop: &AtomicBool) -> Result<()> {
+    fn pass_on(&mut self, source: Source, events: &Sender<Event>, stop: &AtomicBool) -> Result<()> {
         while !stop.load(Ordering::Acquire) {
-            // SAFETY: `event` is this stream's own handle, open until it is
-            // dropped.
-            let woken = unsafe { WaitForSingleObject(self.event, WAKE_MS) };
-            if woken != WAIT_OBJECT_0 {
-                continue;
+            match self.event.wait_for_event(WAKE_MS) {
+                Ok(()) => {}
+                Err(WasapiError::EventTimeout) => continue,
+                Err(e) => return Err(e.into()),
             }
-            // SAFETY: the capture client is this stream's own, used only on
-            // the thread that opened it.
-            while unsafe { self.capture.GetNextPacketSize() }? > 0 {
-                let packet = self.next_packet(source)?;
+            while let Some(frames) = self.capture.get_next_packet_size()?.filter(|&f| f > 0) {
+                let packet = self.next_packet(source, frames)?;
                 if events.send(Event::Sound(packet)).is_err() {
                     return Ok(());
                 }
@@ -321,74 +279,69 @@ impl Stream {
         Ok(())
     }
 
-    fn next_packet(&self, source: Source) -> Result<Packet> {
-        // SAFETY: GetBuffer lends `frames` frames at `data` until
-        // ReleaseBuffer. The stream was opened as 16-bit stereo, so that is
-        // `frames * CHANNELS` samples of 2 bytes each. The audio engine's
-        // buffers are allocated aligned and handed out in whole 4-byte
-        // frames, so `data` is aligned for `i16`, and any bits are a valid
-        // `i16`. An empty buffer can come back null; that is checked
-        // before the slice is made. The samples are copied out before
-        // ReleaseBuffer, and nothing between can return early.
-        unsafe {
-            let (mut data, mut frames, mut flags, mut qpc) = (std::ptr::null_mut(), 0, 0, 0);
-            self.capture
-                .GetBuffer(&mut data, &mut frames, &mut flags, None, Some(&mut qpc))?;
-            let count = frames as usize * usize::from(CHANNELS);
-            let samples = if flags & AUDCLNT_BUFFERFLAGS_SILENT.0 as u32 != 0 || data.is_null() {
-                vec![0; count]
-            } else {
-                std::slice::from_raw_parts(data.cast::<i16>(), count).to_vec()
-            };
-            self.capture.ReleaseBuffer(frames)?;
-            // Sound cannot have been captured after it arrived. The speakers'
-            // loopback stamps it a fifth of a second ahead (when it will be
-            // heard, it seems), and a sync test recorded it that much behind
-            // the picture; a process's sound may come with no time at all.
-            let arrived = clock::now() - frames_to_ticks(u64::from(frames));
-            let timed = flags & AUDCLNT_BUFFERFLAGS_TIMESTAMP_ERROR.0 as u32 == 0 && qpc != 0;
-            let captured = if timed {
-                (qpc as i64).min(arrived)
-            } else {
-                arrived
-            };
-            Ok(Packet {
-                source,
-                captured,
-                samples,
-            })
-        }
+    /// The next packet, `frames` long.
+    fn next_packet(&mut self, source: Source, frames: u32) -> Result<Packet> {
+        self.bytes.resize(frames as usize * FRAME_BYTES, 0);
+        let (read, info) = self.capture.read_from_device(&mut self.bytes)?;
+        let bytes = &self.bytes[..read as usize * FRAME_BYTES];
+        let samples = if info.flags.silent {
+            vec![0; bytes.len() / 2]
+        } else {
+            bytes
+                .as_chunks::<2>()
+                .0
+                .iter()
+                .map(|&b| i16::from_le_bytes(b))
+                .collect()
+        };
+        // Sound cannot have been captured after it arrived. The speakers'
+        // loopback stamps it a fifth of a second ahead (when it will be
+        // heard, it seems), and a sync test recorded it that much behind
+        // the picture; a process's sound may come with no time at all.
+        let arrived = clock::now() - frames_to_ticks(u64::from(read));
+        let timed = !info.flags.timestamp_error && info.timestamp != 0;
+        let captured = if timed {
+            (info.timestamp as i64).min(arrived)
+        } else {
+            arrived
+        };
+        Ok(Packet {
+            source,
+            captured,
+            samples,
+        })
+    }
+}
+
+impl Drop for Stream {
+    fn drop(&mut self) {
+        let _ = self.client.stop_stream();
     }
 }
 
 /// A client for a device: the speakers' loopback, or a microphone.
-unsafe fn device_client(source: Source, device: &Device) -> Result<IAudioClient> {
-    // SAFETY: COM calls on objects this function owns. The microphone's id
-    // is an HSTRING, null-terminated, that lives until the end of the
-    // statement, past the GetDevice call that reads it.
-    unsafe {
-        let devices: IMMDeviceEnumerator = CoCreateInstance(&MMDeviceEnumerator, None, CLSCTX_ALL)
-            .context("no audio device enumerator")?;
-        let device = match (source, device) {
-            (Source::System, _) => devices
-                .GetDefaultAudioEndpoint(eRender, eConsole)
-                .context("no default output device")?,
-            (Source::Microphone, Device::Microphone(id)) => devices
-                .GetDevice(PCWSTR(HSTRING::from(id.as_str()).as_ptr()))
-                .context("the chosen microphone is not there")?,
-            (Source::Microphone, _) => devices
-                .GetDefaultAudioEndpoint(eCapture, eConsole)
-                .context("no microphone")?,
-        };
-        device
-            .Activate(CLSCTX_ALL, None)
-            .context("could not open the sound device")
-    }
+fn device_client(source: Source, device: &Device) -> Result<AudioClient> {
+    let devices = DeviceEnumerator::new().context("no audio device enumerator")?;
+    let device = match (source, device) {
+        (Source::System, _) => devices
+            .get_default_device(&Direction::Render)
+            .context("no default output device")?,
+        (Source::Microphone, Device::Microphone(id)) => devices
+            .get_device(id)
+            .context("the chosen microphone is not there")?,
+        (Source::Microphone, _) => devices
+            .get_default_device(&Direction::Capture)
+            .context("no microphone")?,
+    };
+    device
+        .get_iaudioclient()
+        .context("could not open the sound device")
 }
 
 /// A client for what process `id` and the processes it started play
-/// (Windows 10 2004 and later): Windows hands it over asynchronously.
-unsafe fn process_client(id: u32) -> Result<IAudioClient> {
+/// (Windows 10 2004 and later): Windows hands it over asynchronously. Made
+/// here, not by `wasapi`, to give up after 5 s rather than wait forever.
+fn process_client(id: u32) -> Result<IAudioClient> {
     // SAFETY: `PROPVARIANT::default()` is zeroed, so its inner struct is
     // the union's live field to fill in. The blob points at `params`,
     // which outlives the ActivateAudioInterfaceAsync call; an [in]
@@ -457,18 +410,6 @@ impl IActivateAudioInterfaceCompletionHandler_Impl for Activated_Impl {
 }
 
 impl IAgileObject_Impl for Activated_Impl {}
-
-impl Drop for Stream {
-    fn drop(&mut self) {
-        // SAFETY: the client is this stream's own, and `event` its own
-        // handle: `open` closes it only when no Stream is made, so it is
-        // closed exactly once, here.
-        unsafe {
-            let _ = self.client.Stop();
-            let _ = CloseHandle(self.event);
-        }
-    }
-}
 
 /// Within this, ticks, a packet counts as on time after the one before it
 /// from the same source: placed right after it, nothing added or trimmed.
