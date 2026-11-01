@@ -175,6 +175,7 @@ pub use shuttercrab_capture::display::windows_build;
 
 /// Local time as `YYYYMMDD-HHMMSS`, for directory names.
 pub fn timestamp() -> String {
+    // SAFETY: GetLocalTime takes nothing and returns the time by value.
     let t = unsafe { windows::Win32::System::SystemInformation::GetLocalTime() };
     format!(
         "{:04}{:02}{:02}-{:02}{:02}{:02}",

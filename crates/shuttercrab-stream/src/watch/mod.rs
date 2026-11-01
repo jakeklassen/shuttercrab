@@ -108,6 +108,8 @@ pub fn watch(
 ) -> Result<()> {
     // Physical pixels, as the app has, and COM for the sound and the
     // decoders. Either may be set up already.
+    // SAFETY: both take only constants, and CoInitializeEx's reserved
+    // argument is None. A second call fails, or only counts again.
     unsafe {
         let _ = SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let _ = CoInitializeEx(None, COINIT_MULTITHREADED);
@@ -121,6 +123,8 @@ pub fn watch(
     std::thread::spawn(move || {
         // Should the window close first, the stream is let go here.
         if joined.send(join().and_then(Joined::read)).is_ok() {
+            // SAFETY: PostMessageW may be called from any thread, and the
+            // message carries no pointers. If the window has gone, it fails.
             let _ = unsafe {
                 PostMessageW(
                     Some(HWND(window as *mut _)),
@@ -133,6 +137,9 @@ pub fn watch(
     });
 
     let mut playing = None;
+    // SAFETY: `hwnd` was made on this thread, which runs its message loop
+    // here. `message` is a local GetMessageW fills, and TranslateMessage
+    // and DispatchMessageW get it as GetMessageW left it.
     unsafe {
         let _ = ShowWindow(hwnd, SW_SHOW);
         let _ = SetForegroundWindow(hwnd);
@@ -197,6 +204,8 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
     let (reader_player, reader_bytes) = (player.clone(), bytes.clone());
     readers.push(std::thread::spawn(move || {
         read_frames(pictures, &reader_player, &reader_bytes);
+        // SAFETY: PostMessageW may be called from any thread, and the
+        // message carries no pointers. If the window has gone, it fails.
         let _ =
             unsafe { PostMessageW(Some(HWND(window as *mut _)), WM_ENDED, WPARAM(0), LPARAM(0)) };
     }));
@@ -226,6 +235,8 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
                     &title,
                     &format!("The viewer could not show the stream any more: {e:#}"),
                 );
+                // SAFETY: as above: any thread may post, WM_CLOSE carries
+                // no pointers, and a window that has gone makes it fail.
                 let _ = unsafe { PostMessageW(Some(hwnd), WM_CLOSE, WPARAM(0), LPARAM(0)) };
             }
         })
@@ -247,6 +258,10 @@ fn play(joined: Joined, hwnd: HWND, options: &WatchOptions) -> Result<Playing> {
             connection,
         });
     });
+    // SAFETY: `hwnd` is the viewer's window and this is its thread; the
+    // HSTRING lives until SetWindowTextW returns, and `WINDOW` is no longer
+    // borrowed for the WM_SETTEXT it sends. With no timer procedure, the
+    // timer only posts WM_TIMER, and goes with the window.
     unsafe {
         let _ = SetWindowTextW(hwnd, &HSTRING::from(options.title.as_str()));
         SetTimer(Some(hwnd), 1, 500, None);
@@ -301,10 +316,14 @@ fn draw(
         // The window may have moved to another display: look again now
         // and then.
         if refreshes.is_multiple_of(120) {
+            // SAFETY: a plain query of the live swap chain; it fails if the
+            // window is on no output.
             output = unsafe { swap_chain.GetContainingOutput() }.ok();
         }
         refreshes = refreshes.wrapping_add(1);
         match &output {
+            // SAFETY: `output` is a live output the swap chain gave; the
+            // call takes nothing and only blocks this thread.
             Some(output) => unsafe { output.WaitForVBlank() }?,
             None => std::thread::sleep(Duration::from_millis(8)),
         }
@@ -312,11 +331,19 @@ fn draw(
         // and the window stretches them as before.
         let now = player.size();
         if now != size {
+            // SAFETY: nothing holds a buffer of the swap chain here, as
+            // ResizeBuffers requires: last turn's `back` was dropped at the
+            // end of that turn, and the Direct2D targets made on it when
+            // `Notices` returned; were one held, the call would fail. Count 0
+            // and DXGI_FORMAT_UNKNOWN keep the buffers' count and format.
             unsafe {
                 swap_chain.ResizeBuffers(0, now.0, now.1, DXGI_FORMAT_UNKNOWN, Default::default())
             }?;
             size = now;
         }
+        // SAFETY: a flip-discard swap chain gives its current back buffer
+        // as buffer 0. The interface is asked for by its IID, so a wrong
+        // one would fail rather than be misread.
         let back: ID3D11Texture2D = unsafe { swap_chain.GetBuffer(0) }?;
         // Drawn into the frames rather than painted on the window: once a
         // window has shown pictures, what it paints stays behind the last.
@@ -328,6 +355,8 @@ fn draw(
                     None => notices.insert(Notices::new()?),
                 };
                 notices.draw(&back, &notice)?;
+                // SAFETY: presents the live swap chain on its own drawing
+                // thread, with no dirty rectangles or other pointers.
                 unsafe { swap_chain.Present(0, DXGI_PRESENT(0)) }.ok()?;
                 shown = Some(notice);
             }
@@ -343,6 +372,8 @@ fn draw(
                 notices.badge(&back, &label)?;
             }
             // Just after a refresh: shown at the next.
+            // SAFETY: as for the notice above: the live swap chain, on its
+            // drawing thread, no pointers passed.
             unsafe { swap_chain.Present(0, DXGI_PRESENT(0)) }.ok()?;
             drawn.fetch_add(1, Ordering::Relaxed);
         }

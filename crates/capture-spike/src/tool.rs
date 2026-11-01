@@ -159,6 +159,8 @@ fn run() -> Result<()> {
         build >= 22000,
         "Shuttercrab requires Windows 11 (this is build {build})"
     );
+    // SAFETY: both take only constants, and run first thing on the main
+    // thread, before any window or WinRT object exists.
     unsafe {
         // Physical pixels everywhere; monitor bounds and DPI depend on it.
         SetProcessDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2)?;
@@ -915,6 +917,8 @@ fn play(mut args: Args) -> Result<()> {
         .transpose()?
         .unwrap_or(1);
     args.finish()?;
+    // SAFETY: the reserved argument is None. `run` has already joined this
+    // thread to the multithreaded apartment, so this only counts again.
     unsafe { CoInitializeEx(None, COINIT_MULTITHREADED).ok()? };
 
     print_memory("before");
@@ -1036,6 +1040,8 @@ fn cpu_time() -> Duration {
     };
     let (mut created, mut exited, mut kernel, mut user) = Default::default();
     let ticks = |t: FILETIME| u64::from(t.dwHighDateTime) << 32 | u64::from(t.dwLowDateTime);
+    // SAFETY: GetCurrentProcess's pseudo handle needs no closing, and the
+    // four FILETIMEs are locals the call writes into.
     unsafe {
         if GetProcessTimes(
             GetCurrentProcess(),

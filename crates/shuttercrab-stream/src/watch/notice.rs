@@ -57,6 +57,8 @@ thread_local! {
 /// pictures.
 pub(super) fn show_notice(hwnd: HWND, headline: &str, detail: &str) {
     NOTICE.with_borrow_mut(|notice| *notice = Some((headline.into(), detail.into())));
+    // SAFETY: `hwnd` is the viewer's window, on its thread, and no area means
+    // the whole of it: no pointers are passed.
     let _ = unsafe { InvalidateRect(Some(hwnd), None, true) };
 }
 
@@ -66,6 +68,11 @@ pub(super) fn paint_notice(hwnd: HWND) -> bool {
         let Some((headline, detail)) = notice else {
             return false;
         };
+        // SAFETY: this runs for WM_PAINT, on the window's thread. The DC
+        // from BeginPaint is used only until the EndPaint at the end, which
+        // gets the same `paint`, and nothing in between returns early.
+        // `paint` and `area` are locals the calls write into, the stock brush
+        // is never deleted, and `draw_text` leaves the DC as it found it.
         unsafe {
             let mut paint = PAINTSTRUCT::default();
             let dc = BeginPaint(hwnd, &mut paint);
@@ -107,6 +114,11 @@ pub(super) fn paint_notice(hwnd: HWND) -> bool {
 
 /// Draw `text` in Segoe UI `height` pixels high, in `color` (0x00BBGGRR),
 /// in `area`.
+///
+/// # Safety
+///
+/// `dc` must be a device context that stays valid for the call, such as one
+/// from `BeginPaint` before its `EndPaint`.
 unsafe fn draw_text(
     dc: HDC,
     text: &str,
@@ -114,6 +126,12 @@ unsafe fn draw_text(
     area: &mut RECT,
     format: DRAW_TEXT_FORMAT,
 ) {
+    // SAFETY: the caller gives a DC valid for the call. The font made here
+    // is selected into it only while the text is drawn, and the old font is
+    // put back before this one is deleted, so the DC never holds a deleted
+    // font. `text` is a local buffer DrawTextW may write into and `area` a
+    // live `&mut`. Should CreateFontW fail, the calls given its null handle
+    // fail too, and nothing else changes.
     unsafe {
         let font = CreateFontW(
             -height,
@@ -143,6 +161,9 @@ unsafe fn draw_text(
 /// Tell the user `text` in a message box titled `title`, for a viewer with
 /// no window yet to say it in.
 pub fn tell(title: &str, text: &str) {
+    // SAFETY: no owner window, and both HSTRINGs live until MessageBoxW
+    // returns. It may be called on any thread, and runs its own message
+    // loop on that one.
     unsafe {
         MessageBoxW(
             None,
@@ -174,6 +195,9 @@ pub(super) struct Notices {
 
 impl Notices {
     pub(super) fn new() -> Result<Self> {
+        // SAFETY: both take only a factory type and no options. The
+        // Direct2D factory is single-threaded: `draw` in the parent module
+        // makes it on the drawing thread, and it is used and dropped there.
         unsafe {
             Ok(Self {
                 d2d: D2D1CreateFactory(D2D1_FACTORY_TYPE_SINGLE_THREADED, None)?,
@@ -190,6 +214,8 @@ impl Notices {
     ) -> Result<()> {
         let surface: IDXGISurface = frame.cast()?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `frame` is a live texture and `desc` a local it describes
+        // itself into.
         unsafe { frame.GetDesc(&mut desc) };
         let (width, height) = (desc.Width as f32, desc.Height as f32);
         let color = |grey: f32| D2D1_COLOR_F {
@@ -198,6 +224,13 @@ impl Notices {
             b: grey,
             a: 1.0,
         };
+        // SAFETY: `surface` is `frame`, a back buffer of the viewer's swap
+        // chain on a device made with BGRA support, as Direct2D needs. The
+        // render target and all made from it are dropped when this returns,
+        // so none holds the buffer when the swap chain is resized. The UTF-16
+        // strings, text formats and rectangles are temporaries that live
+        // through each DrawText. This runs on the drawing thread, the only
+        // one using the single-threaded factory.
         unsafe {
             let target = self.d2d.CreateDxgiSurfaceRenderTarget(
                 &surface,
@@ -258,6 +291,8 @@ impl Notices {
     pub(super) fn badge(&self, frame: &ID3D11Texture2D, label: &str) -> Result<()> {
         let surface: IDXGISurface = frame.cast()?;
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `frame` is a live texture and `desc` a local it describes
+        // itself into.
         unsafe { frame.GetDesc(&mut desc) };
         let (width, height) = (desc.Width as f32, desc.Height as f32);
         // As for the notice: sized for a frame shown about 1080 pixels high.
@@ -269,6 +304,10 @@ impl Notices {
             right: width - margin,
             bottom: margin + box_height,
         };
+        // SAFETY: as in `draw`: `surface` is a back buffer of the viewer's
+        // swap chain on a BGRA-capable device, the render target and its
+        // brushes are dropped when this returns, before any resize, and the
+        // label's UTF-16 buffer lives through DrawText. On the drawing thread.
         unsafe {
             let target = self.d2d.CreateDxgiSurfaceRenderTarget(
                 &surface,
@@ -326,6 +365,9 @@ impl Notices {
     /// Segoe UI `size` pixels high, centred, against the top, the middle or
     /// the bottom of its box.
     fn format(&self, size: f32, against: DWRITE_PARAGRAPH_ALIGNMENT) -> Result<IDWriteTextFormat> {
+        // SAFETY: the font family and locale are static wide strings, no
+        // font collection means the system's, and the new format is ours
+        // alone to set up before it is returned.
         unsafe {
             let format = self.write.CreateTextFormat(
                 w!("Segoe UI"),
