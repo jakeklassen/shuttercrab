@@ -253,11 +253,14 @@ impl Notices {
             let scale = height / 1080.0;
             let middle = height / 2.0;
             let margin = width * 0.1;
+            // Made before drawing begins, so a failure cannot leave it open.
+            let headline_format = self.format(40.0 * scale, DWRITE_PARAGRAPH_ALIGNMENT_FAR)?;
+            let detail_format = self.format(22.0 * scale, DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?;
             target.BeginDraw();
             target.Clear(Some(&color(0.0)));
             target.DrawText(
                 &headline.encode_utf16().collect::<Vec<_>>(),
-                &self.format(40.0 * scale, DWRITE_PARAGRAPH_ALIGNMENT_FAR)?,
+                &headline_format,
                 &D2D_RECT_F {
                     left: margin,
                     top: 0.0,
@@ -270,7 +273,7 @@ impl Notices {
             );
             target.DrawText(
                 &detail.encode_utf16().collect::<Vec<_>>(),
-                &self.format(22.0 * scale, DWRITE_PARAGRAPH_ALIGNMENT_NEAR)?,
+                &detail_format,
                 &D2D_RECT_F {
                     left: margin,
                     top: middle + 16.0 * scale,

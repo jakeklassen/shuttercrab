@@ -42,7 +42,13 @@ pub fn visible_windows() -> Vec<WindowTarget> {
     found
 }
 
-extern "system" fn visit(hwnd: HWND, found: LPARAM) -> BOOL {
+/// One window `EnumWindows` found: added to `found` if it is a target.
+///
+/// # Safety
+///
+/// `found` must be a live `&mut Vec<WindowTarget>` cast to an `LPARAM`, as
+/// `visible_windows` passes it, not used elsewhere while this runs.
+unsafe extern "system" fn visit(hwnd: HWND, found: LPARAM) -> BOOL {
     // SAFETY: `visible_windows` passes a live `&mut Vec` for the duration of
     // EnumWindows, which calls back synchronously on the same thread.
     let found = unsafe { &mut *(found.0 as *mut Vec<WindowTarget>) };

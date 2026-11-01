@@ -264,7 +264,13 @@ pub(super) fn send_event(event: PlatformEvent) {
     });
 }
 
-extern "system" fn window_proc(
+/// The platform window's window procedure.
+///
+/// # Safety
+///
+/// Only Windows calls it, with a message for the platform window and that
+/// message's own arguments.
+unsafe extern "system" fn window_proc(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,

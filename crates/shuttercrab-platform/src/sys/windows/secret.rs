@@ -21,11 +21,19 @@ fn blob(bytes: &[u8]) -> CRYPT_INTEGER_BLOB {
 }
 
 /// The bytes DPAPI gave back, freed.
-fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
-    // SAFETY: `take` is only given the output of a successful DPAPI call:
-    // `cbData` bytes at a non-null `pbData` (even for an empty secret),
-    // allocated with LocalAlloc and owned by us. They are copied out
-    // before the block is freed, once.
+///
+/// # Safety
+///
+/// `out` must be what a successful DPAPI call gave back, and not taken
+/// before: `cbData` bytes at `pbData`, allocated with LocalAlloc and ours
+/// to free.
+unsafe fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
+    if out.pbData.is_null() {
+        return Vec::new();
+    }
+    // SAFETY: by the contract above, `pbData` holds `cbData` readable bytes
+    // and is ours; checked above not to be null. They are copied out before
+    // the block is freed, once.
     unsafe {
         let bytes = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
         let _ = LocalFree(Some(HLOCAL(out.pbData.cast())));
@@ -51,7 +59,8 @@ pub fn protect(secret: &str) -> Result<String> {
         )
     }
     .context("could not encrypt the secret")?;
-    Ok(to_hex(&take(out)))
+    // SAFETY: `out` is what CryptProtectData gave back on success, taken once.
+    Ok(to_hex(&unsafe { take(out) }))
 }
 
 /// What [`protect`] kept as `kept`.
@@ -71,5 +80,7 @@ pub fn unprotect(kept: &str) -> Result<String> {
         )
     }
     .context("could not decrypt the secret: it was kept by another user or PC")?;
-    String::from_utf8(take(out)).context("the secret is not text")
+    // SAFETY: `out` is what CryptUnprotectData gave back on success, taken
+    // once.
+    String::from_utf8(unsafe { take(out) }).context("the secret is not text")
 }

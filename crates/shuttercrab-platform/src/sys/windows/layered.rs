@@ -23,7 +23,13 @@ use windows::{
     core::w,
 };
 
-extern "system" fn layered_proc(
+/// The layered windows' window procedure.
+///
+/// # Safety
+///
+/// Only Windows calls it, with a message for one of these windows and that
+/// message's own arguments.
+unsafe extern "system" fn layered_proc(
     hwnd: HWND,
     message: u32,
     wparam: WPARAM,
