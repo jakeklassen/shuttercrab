@@ -46,39 +46,50 @@ pub struct Player {
 /// than joining it on one thread: any thread that has not joined COM is then
 /// in it.
 pub(super) struct Started {
-    /// The apartment's usage cookie, as a number so the player stays
-    /// Send; None if it could not be kept.
-    mta: Option<usize>,
+    /// Let go of after Media Foundation ends, being dropped after `drop`.
+    _mta: Option<MtaUsage>,
 }
 
 impl Started {
     pub(super) fn new() -> Result<Self> {
-        // SAFETY: takes nothing and hands back a cookie, kept as a number
-        // and given back once in Drop.
-        let mta = unsafe { CoIncrementMTAUsage() }
-            .ok()
-            .map(|cookie| cookie.0 as usize);
-        let started = Self { mta };
+        let mta = MtaUsage::keep();
         // SAFETY: takes no pointers; MF_VERSION is the version these
-        // bindings were built against.
+        // bindings were built against. If it fails, no `Started` is made,
+        // so Media Foundation is not ended without having started.
         unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) }.context("MFStartup failed")?;
-        Ok(started)
+        Ok(Self { _mta: mta })
     }
 }
 
 impl Drop for Started {
     fn drop(&mut self) {
-        // SAFETY: the owners keep `Started` as their last field, so every
-        // COM and Media Foundation object they hold is released before
-        // this ends Media Foundation and lets go of the apartment.
-        unsafe {
-            let _ = MFShutdown();
-            if let Some(cookie) = self.mta {
-                // SAFETY: the cookie came from CoIncrementMTAUsage and is
-                // given back once; any thread may give it back.
-                let _ = CoDecrementMTAUsage(CO_MTA_USAGE_COOKIE(cookie as *mut _));
-            }
-        }
+        // SAFETY: MFStartup succeeded in `new`. The owners keep `Started`
+        // as their last field, so every Media Foundation object they hold
+        // is released before this ends it.
+        let _ = unsafe { MFShutdown() };
+    }
+}
+
+/// COM's multithreaded apartment, kept for the process while this lives.
+/// The cookie is held as a number so the player stays `Send`: any thread
+/// may give it back.
+struct MtaUsage(usize);
+
+impl MtaUsage {
+    /// `None` if COM would not keep it.
+    fn keep() -> Option<Self> {
+        // SAFETY: takes nothing and hands back a cookie, given back once in
+        // Drop.
+        let cookie = unsafe { CoIncrementMTAUsage() }.ok()?;
+        Some(Self(cookie.0 as usize))
+    }
+}
+
+impl Drop for MtaUsage {
+    fn drop(&mut self) {
+        // SAFETY: the cookie came from CoIncrementMTAUsage and is given back
+        // once, here; CoDecrementMTAUsage may be called from any thread.
+        let _ = unsafe { CoDecrementMTAUsage(CO_MTA_USAGE_COOKIE(self.0 as *mut _)) };
     }
 }
 

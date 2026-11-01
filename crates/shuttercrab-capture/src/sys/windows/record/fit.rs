@@ -5,10 +5,7 @@
 
 use crate::sys::imp::gpu::{Gpu, compile_source, default_buffer, srv, uav};
 use anyhow::{Context, Result};
-use windows::{
-    Win32::Graphics::{Direct3D11::*, Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT},
-    core::s,
-};
+use windows::Win32::Graphics::{Direct3D11::*, Dxgi::Common::DXGI_FORMAT_R16G16B16A16_FLOAT};
 
 const SHADER_SOURCE: &str = include_str!("../../../../shaders/fit.hlsl");
 
@@ -75,7 +72,7 @@ impl Fitter {
             )?;
         }
         Ok(Self {
-            shader: compile_source(gpu, SHADER_SOURCE, s!("fit.hlsl"), s!("fit"))?,
+            shader: compile_source(gpu, SHADER_SOURCE, c"fit.hlsl", c"fit")?,
             sampler: sampler.context("CreateSamplerState returned no sampler")?,
             params: default_buffer(gpu, size_of::<Params>() as u32)?,
             output: uav(gpu, output)?,
