@@ -18,8 +18,8 @@ use windows::{
         },
         Media::MediaFoundation::*,
         System::Com::{
-            CLSCTX_INPROC_SERVER, COINIT_MULTITHREADED, CoCreateInstance, CoInitializeEx,
-            CoUninitialize,
+            CLSCTX_INPROC_SERVER, CO_MTA_USAGE_COOKIE, CoCreateInstance, CoDecrementMTAUsage,
+            CoIncrementMTAUsage,
         },
     },
     core::{BSTR, Interface, implement},
@@ -40,16 +40,23 @@ pub struct Player {
     _started: Started,
 }
 
-/// COM and Media Foundation, started for the player's thread; ended when
-/// dropped.
+/// COM's multithreaded apartment and Media Foundation, kept for the player;
+/// ended when dropped. A player is shared between threads and may be
+/// dropped on any of them, so it keeps the apartment for the process rather
+/// than joining it on one thread: any thread that has not joined COM is then
+/// in it.
 pub(super) struct Started {
-    com: bool,
+    /// The apartment's usage cookie, as a number so the player stays
+    /// Send; None if it could not be kept.
+    mta: Option<usize>,
 }
 
 impl Started {
     pub(super) fn new() -> Result<Self> {
-        let com = unsafe { CoInitializeEx(None, COINIT_MULTITHREADED) }.is_ok();
-        let started = Self { com };
+        let mta = unsafe { CoIncrementMTAUsage() }
+            .ok()
+            .map(|cookie| cookie.0 as usize);
+        let started = Self { mta };
         unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) }.context("MFStartup failed")?;
         Ok(started)
     }
@@ -59,8 +66,10 @@ impl Drop for Started {
     fn drop(&mut self) {
         unsafe {
             let _ = MFShutdown();
-            if self.com {
-                CoUninitialize();
+            if let Some(cookie) = self.mta {
+                // SAFETY: the cookie came from CoIncrementMTAUsage and is
+                // given back once; any thread may give it back.
+                let _ = CoDecrementMTAUsage(CO_MTA_USAGE_COOKIE(cookie as *mut _));
             }
         }
     }
