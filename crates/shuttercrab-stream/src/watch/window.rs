@@ -88,6 +88,8 @@ thread_local! {
 /// The monitor under the pointer.
 pub(super) fn pointer_monitor() -> HMONITOR {
     let mut at = POINT::default();
+    // SAFETY: GetCursorPos writes into `at`, a local; MonitorFromPoint takes
+    // it by value and, with MONITOR_DEFAULTTOPRIMARY, always finds a monitor.
     unsafe {
         let _ = GetCursorPos(&mut at);
         MonitorFromPoint(at, MONITOR_DEFAULTTOPRIMARY)
@@ -99,6 +101,12 @@ const STYLE: WINDOW_STYLE = WS_OVERLAPPEDWINDOW;
 
 /// A window for pictures `size` big, placed by [`placement`].
 pub(super) fn open_window(size: (u32, u32), monitor: HMONITOR, title: &str) -> Result<HWND> {
+    // SAFETY: the module is this program's, loaded for as long as the
+    // process runs, and the icon IDs are resource numbers, as LoadIconW
+    // takes them. The class name is a static string, `window_proc` has the
+    // signature Windows calls a window procedure with, and RegisterClassW
+    // copies `class`. The title's HSTRING outlives CreateWindowExW, which is
+    // given no creation data.
     unsafe {
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
@@ -143,6 +151,9 @@ pub(super) fn open_window(size: (u32, u32), monitor: HMONITOR, title: &str) -> R
 /// Size and place the window for pictures `size` big, on the monitor it is
 /// on now.
 pub(super) fn fit_window(hwnd: HWND, size: (u32, u32)) {
+    // SAFETY: `hwnd` is the viewer's window, and this runs on its thread.
+    // Both calls take only handles and numbers, and fail on a window that
+    // has gone.
     unsafe {
         let monitor = MonitorFromWindow(hwnd, MONITOR_DEFAULTTOPRIMARY);
         if let Ok(frame) = placement(size, monitor) {
@@ -162,6 +173,9 @@ pub(super) fn fit_window(hwnd: HWND, size: (u32, u32)) {
 /// Where a window for pictures `size` big goes: at their size where it fits
 /// on `monitor` and scaled down where it does not, in the middle.
 fn placement((width, height): (u32, u32), monitor: HMONITOR) -> Result<RECT> {
+    // SAFETY: `info`, `dpi`, `unused` and `frame` are locals the calls write
+    // into, and `info.cbSize` tells GetMonitorInfoW how big `info` is. A
+    // monitor that has gone makes the calls fail, leaving the defaults.
     unsafe {
         let mut info = MONITORINFO {
             cbSize: size_of::<MONITORINFO>() as u32,
@@ -202,6 +216,10 @@ pub(super) fn swap_chain(
     width: u32,
     height: u32,
 ) -> Result<IDXGISwapChain1> {
+    // SAFETY: the factory is the parent of `device`'s own adapter, as
+    // CreateSwapChainForHwnd requires, and `desc` is a local that outlives
+    // the call. `hwnd` is the viewer's window: DXGI takes a window made on
+    // another thread, and fails if it has gone.
     unsafe {
         let factory: IDXGIFactory2 = device.cast::<IDXGIDevice>()?.GetAdapter()?.GetParent()?;
         let desc = DXGI_SWAP_CHAIN_DESC1 {
@@ -343,6 +361,9 @@ extern "system" fn window_proc(
 ) -> LRESULT {
     // Escape closes the window whether or not it is playing yet.
     if message == WM_KEYDOWN && wparam.0 == usize::from(VK_ESCAPE.0) {
+        // SAFETY: `hwnd` is the window this is called for, on the thread
+        // that made it, as DestroyWindow requires. `WINDOW` is not borrowed
+        // yet, so the WM_DESTROY this sends back in can borrow it.
         let _ = unsafe { DestroyWindow(hwnd) };
         return LRESULT(0);
     }
@@ -387,17 +408,27 @@ extern "system" fn window_proc(
     if let Some(after) = handled {
         match after {
             After::Title(title) => {
+                // SAFETY: `hwnd` is the window this is called for, on its
+                // thread; the HSTRING lives until the call returns. The
+                // borrow of `WINDOW` has ended, so the WM_SETTEXT this sends
+                // back in can borrow it.
                 let _ = unsafe { SetWindowTextW(hwnd, &HSTRING::from(title)) };
             }
             After::Close => {
+                // SAFETY: as for Escape above: our own window, on its
+                // thread, and `WINDOW` is no longer borrowed for WM_DESTROY.
                 let _ = unsafe { DestroyWindow(hwnd) };
             }
         }
         return LRESULT(0);
     }
     if message == WM_DESTROY {
+        // SAFETY: takes only an exit code; it ends this thread's message
+        // loop in `watch`.
         unsafe { PostQuitMessage(0) };
         return LRESULT(0);
     }
+    // SAFETY: passes on, unchanged, the message Windows called this window
+    // procedure with, on the window's thread.
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }

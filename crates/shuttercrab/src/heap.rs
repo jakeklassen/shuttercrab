@@ -20,8 +20,15 @@ static ALLOCATED: AtomicUsize = AtomicUsize::new(0);
 /// The system allocator, counting what is allocated.
 pub struct Counting;
 
+// SAFETY: every method hands its arguments to `System` unchanged and
+// returns what it returns, so `System`'s allocations keep GlobalAlloc's
+// contract. The counting around them is relaxed atomic adds and subtracts:
+// they do not allocate, panic or unwind, and a wrong count is only a wrong
+// number in the log.
 unsafe impl GlobalAlloc for Counting {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller upholds `alloc`'s contract for `layout`, which
+        // is passed on as is.
         let p = unsafe { System.alloc(layout) };
         if !p.is_null() {
             ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
@@ -30,6 +37,8 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn alloc_zeroed(&self, layout: Layout) -> *mut u8 {
+        // SAFETY: the caller upholds `alloc_zeroed`'s contract for
+        // `layout`, which is passed on as is.
         let p = unsafe { System.alloc_zeroed(layout) };
         if !p.is_null() {
             ALLOCATED.fetch_add(layout.size(), Ordering::Relaxed);
@@ -38,11 +47,15 @@ unsafe impl GlobalAlloc for Counting {
     }
 
     unsafe fn dealloc(&self, p: *mut u8, layout: Layout) {
+        // SAFETY: the caller guarantees `p` came from this allocator with
+        // `layout`, so from `System`, which made every block it hands out.
         unsafe { System.dealloc(p, layout) };
         ALLOCATED.fetch_sub(layout.size(), Ordering::Relaxed);
     }
 
     unsafe fn realloc(&self, p: *mut u8, layout: Layout, size: usize) -> *mut u8 {
+        // SAFETY: the caller guarantees `p` came from this allocator, so
+        // from `System`, with `layout`, and that `size` is valid for it.
         let q = unsafe { System.realloc(p, layout, size) };
         if !q.is_null() {
             ALLOCATED.fetch_sub(layout.size(), Ordering::Relaxed);
