@@ -1,8 +1,10 @@
 //! One frame of a monitor or a window through Windows.Graphics.Capture.
 
 use super::gpu::Gpu;
+use crate::PhysicalRect;
 use anyhow::{Context, Result, bail, ensure};
 use std::{
+    collections::HashMap,
     sync::mpsc::Receiver,
     time::{Duration, Instant},
 };
@@ -72,14 +74,61 @@ pub fn capture_monitor(
     format: PixelFormat,
     include_cursor: bool,
 ) -> Result<Frame> {
-    ensure!(
-        GraphicsCaptureSession::IsSupported()?,
-        "Windows.Graphics.Capture is not available"
-    );
-    let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
-    let item: GraphicsCaptureItem =
-        unsafe { interop.CreateForMonitor(monitor) }.context("CreateForMonitor failed")?;
+    let item = MonitorItems::default().item(monitor)?;
     capture_item(gpu, &item, format, true, include_cursor)
+}
+
+/// The monitors' capture items, kept between captures: making one is most
+/// of a monitor capture's cost. Keeping one captures nothing. Each is kept
+/// for a monitor handle at its bounds, since Windows may give a handle to
+/// another monitor after the displays change.
+#[derive(Default)]
+pub struct MonitorItems(HashMap<(isize, PhysicalRect), GraphicsCaptureItem>);
+
+impl MonitorItems {
+    /// Capture one frame of `monitor` at `bounds`, as [`capture_monitor`]
+    /// does, with its kept item.
+    pub fn capture(
+        &mut self,
+        gpu: &Gpu,
+        monitor: HMONITOR,
+        bounds: PhysicalRect,
+        format: PixelFormat,
+        include_cursor: bool,
+    ) -> Result<Frame> {
+        let item = self.kept(monitor, bounds)?;
+        capture_item(gpu, &item, format, true, include_cursor)
+    }
+
+    /// Make `monitor`'s item now, so its first capture is as quick as the
+    /// rest.
+    pub fn prepare(&mut self, monitor: HMONITOR, bounds: PhysicalRect) -> Result<()> {
+        self.kept(monitor, bounds).map(drop)
+    }
+
+    /// Make each item again when next used: the displays changed.
+    pub fn clear(&mut self) {
+        self.0.clear();
+    }
+
+    fn kept(&mut self, monitor: HMONITOR, bounds: PhysicalRect) -> Result<GraphicsCaptureItem> {
+        let key = (monitor.0 as isize, bounds);
+        if let Some(item) = self.0.get(&key) {
+            return Ok(item.clone());
+        }
+        let item = self.item(monitor)?;
+        self.0.insert(key, item.clone());
+        Ok(item)
+    }
+
+    fn item(&self, monitor: HMONITOR) -> Result<GraphicsCaptureItem> {
+        ensure!(
+            GraphicsCaptureSession::IsSupported()?,
+            "Windows.Graphics.Capture is not available"
+        );
+        let interop = factory::<GraphicsCaptureItem, IGraphicsCaptureItemInterop>()?;
+        unsafe { interop.CreateForMonitor(monitor) }.context("CreateForMonitor failed")
+    }
 }
 
 /// Capture one frame of the top-level window `window`, as the window itself
