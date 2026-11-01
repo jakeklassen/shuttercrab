@@ -27,6 +27,9 @@ impl Link {
         BASE64.encode(self.room)
     }
 
+    /// How every link starts.
+    pub const PREFIX: &str = PREFIX;
+
     pub fn parse(text: &str) -> Result<Self> {
         let rest = text
             .trim()
