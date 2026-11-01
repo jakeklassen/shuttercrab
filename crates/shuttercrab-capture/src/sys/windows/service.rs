@@ -8,7 +8,7 @@
 //! screenshot is cut from it, so what the user sees is what they get.
 
 use super::{
-    capture::{self, PixelFormat},
+    capture::{self, MonitorItems, PixelFormat},
     display,
     gpu::{Gpu, SdrConverter},
 };
@@ -142,12 +142,15 @@ fn stopped() -> CaptureError {
 struct Service {
     /// Device and shaders per adapter, created on first use.
     gpus: HashMap<String, (Gpu, SdrConverter)>,
+    /// The monitors' capture items, made at warm-up or first use.
+    items: MonitorItems,
 }
 
 impl Service {
     fn new() -> Self {
         Self {
             gpus: HashMap::new(),
+            items: MonitorItems::default(),
         }
     }
 
@@ -206,9 +209,11 @@ impl Service {
                         .map_or("n/a".into(), |n| format!("{n:.0} nits")),
                     monitor.adapter_name
                 );
-                match self.gpu_for(monitor) {
+                match gpu_for(&mut self.gpus, monitor) {
                     Ok((gpu, _)) => {
-                        if let Err(e) = capture::warm_up(gpu) {
+                        let warmed = capture::warm_up(gpu)
+                            .and_then(|()| self.items.prepare(monitor.hmonitor, monitor.bounds));
+                        if let Err(e) = warmed {
                             log::warn!("warm-up failed on {}: {e:#}", monitor.device_name);
                         }
                     }
@@ -237,15 +242,22 @@ impl Service {
                 )
             })?;
         let white_scale = white_scale(monitor)?;
-        let (gpu, converter) = self.gpu_for(monitor)?;
-        let frame =
-            capture_desktop(gpu, converter, monitor, white_scale, include_cursor).map_err(|e| {
-                classify(
-                    e,
-                    CaptureErrorCode::CaptureUnavailable,
-                    "Could not capture the screen",
-                )
-            })?;
+        let (gpu, converter) = gpu_for(&mut self.gpus, monitor)?;
+        let frame = capture_desktop(
+            gpu,
+            converter,
+            &mut self.items,
+            monitor,
+            white_scale,
+            include_cursor,
+        )
+        .map_err(|e| {
+            classify(
+                e,
+                CaptureErrorCode::CaptureUnavailable,
+                "Could not capture the screen",
+            )
+        })?;
         ensure_unchanged(monitor)?;
         log::debug!(
             "froze {} ({}x{}, {}) in {} ms",
@@ -267,6 +279,8 @@ impl Service {
 
     /// Get ready to try again after a failure `retry_once` retries.
     fn recover(&mut self, code: CaptureErrorCode) {
+        // The monitors' items may be for displays that are gone.
+        self.items.clear();
         if code == CaptureErrorCode::DeviceLost {
             // A reset or removed device stays unusable; start afresh.
             log::warn!("the graphics device was lost; creating a new one");
@@ -274,28 +288,6 @@ impl Service {
         } else {
             log::info!("the display changed during capture; capturing again");
         }
-    }
-
-    fn gpu_for(&mut self, monitor: &display::Monitor) -> Result<&(Gpu, SdrConverter)> {
-        let key = monitor.adapter_name.clone();
-        if !self.gpus.contains_key(&key) {
-            let gpu = Gpu::hardware(Some(&monitor.adapter)).map_err(|e| {
-                CaptureError::new(
-                    CaptureErrorCode::CaptureUnavailable,
-                    "Could not start Direct3D",
-                    e,
-                )
-            })?;
-            let converter = SdrConverter::new(&gpu).map_err(|e| {
-                CaptureError::new(
-                    CaptureErrorCode::CaptureUnavailable,
-                    "Could not compile the color shader",
-                    e,
-                )
-            })?;
-            self.gpus.insert(key.clone(), (gpu, converter));
-        }
-        Ok(&self.gpus[&key])
     }
 
     fn capture_window(&mut self, id: WindowId, include_cursor: bool) -> Result<Screenshot> {
@@ -314,7 +306,7 @@ impl Service {
                 )
             })?;
         let white_scale = white_scale(monitor)?;
-        let (gpu, converter) = self.gpu_for(monitor)?;
+        let (gpu, converter) = gpu_for(&mut self.gpus, monitor)?;
         let failed = |e: anyhow::Error| {
             classify(
                 e,
@@ -384,14 +376,49 @@ fn white_scale(monitor: &display::Monitor) -> Result<f32> {
 /// One frame of `monitor`, as opaque 8-bit BGRA. SDR monitors give the
 /// desktop as it is (PRD §9.5); Advanced Color monitors go through the FP16
 /// path and the transform.
+/// The device and shaders for `monitor`'s adapter, made on first use.
+fn gpu_for<'a>(
+    gpus: &'a mut HashMap<String, (Gpu, SdrConverter)>,
+    monitor: &display::Monitor,
+) -> Result<&'a (Gpu, SdrConverter)> {
+    let key = monitor.adapter_name.clone();
+    if !gpus.contains_key(&key) {
+        let gpu = Gpu::hardware(Some(&monitor.adapter)).map_err(|e| {
+            CaptureError::new(
+                CaptureErrorCode::CaptureUnavailable,
+                "Could not start Direct3D",
+                e,
+            )
+        })?;
+        let converter = SdrConverter::new(&gpu).map_err(|e| {
+            CaptureError::new(
+                CaptureErrorCode::CaptureUnavailable,
+                "Could not compile the color shader",
+                e,
+            )
+        })?;
+        gpus.insert(key.clone(), (gpu, converter));
+    }
+    Ok(&gpus[&key])
+}
+
 fn capture_desktop(
     gpu: &Gpu,
     converter: &SdrConverter,
+    items: &mut MonitorItems,
     monitor: &display::Monitor,
     white_scale: f32,
     include_cursor: bool,
 ) -> anyhow::Result<FrozenFrame> {
-    let capture = |format| capture::capture_monitor(gpu, monitor.hmonitor, format, include_cursor);
+    let mut capture = |format| {
+        items.capture(
+            gpu,
+            monitor.hmonitor,
+            monitor.bounds,
+            format,
+            include_cursor,
+        )
+    };
     let (width, height, bgra, frame_peak, hdr_regions) = match monitor.color_mode {
         ColorMode::Sdr => {
             let frame = capture(PixelFormat::Bgra8)?;
