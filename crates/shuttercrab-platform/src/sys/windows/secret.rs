@@ -22,7 +22,10 @@ fn blob(bytes: &[u8]) -> CRYPT_INTEGER_BLOB {
 
 /// The bytes DPAPI gave back, freed.
 fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
-    // SAFETY: DPAPI allocated `cbData` bytes at `pbData` with LocalAlloc.
+    // SAFETY: `take` is only given the output of a successful DPAPI call:
+    // `cbData` bytes at a non-null `pbData` (even for an empty secret),
+    // allocated with LocalAlloc and owned by us. They are copied out
+    // before the block is freed, once.
     unsafe {
         let bytes = std::slice::from_raw_parts(out.pbData, out.cbData as usize).to_vec();
         let _ = LocalFree(Some(HLOCAL(out.pbData.cast())));
@@ -33,8 +36,9 @@ fn take(out: CRYPT_INTEGER_BLOB) -> Vec<u8> {
 /// `secret`, encrypted to this user, as hex.
 pub fn protect(secret: &str) -> Result<String> {
     let mut out = CRYPT_INTEGER_BLOB::default();
-    // SAFETY: the blobs point at live bytes for the call; DPAPI only reads
-    // them, and allocates `out`.
+    // SAFETY: the input blobs point at live bytes of the length they give,
+    // for the call; DPAPI only reads them, and fills `out` with a block
+    // `take` frees.
     unsafe {
         CryptProtectData(
             &blob(secret.as_bytes()),

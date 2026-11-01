@@ -38,6 +38,8 @@ impl Seen {
     /// Windows' events alone are not to be trusted (one says "restored" as
     /// the minimise animation ends).
     fn now(hwnd: HWND) -> Self {
+        // SAFETY: queries that take a window handle by value; Windows checks
+        // it, and a closed window just answers "no".
         unsafe {
             if !IsWindow(Some(hwnd)).as_bool() {
                 Self::Closed
@@ -56,6 +58,8 @@ impl Seen {
 /// another virtual desktop).
 fn cloaked(hwnd: HWND) -> bool {
     let mut cloaked = 0u32;
+    // SAFETY: DWMWA_CLOAKED is a u32, and the call is given `cloaked`, a
+    // live u32, with its size.
     unsafe {
         DwmGetWindowAttribute(
             hwnd,
@@ -88,6 +92,8 @@ pub(crate) fn follow(window: Option<WindowId>) {
     FOLLOWED.with(|followed| {
         if let Some(old) = followed.borrow_mut().take() {
             for hook in old.hooks {
+                // SAFETY: `hook` was set on this thread (FOLLOWED is per
+                // thread) and is unhooked only here, once.
                 let _ = unsafe { UnhookWinEvent(hook) };
             }
         }
@@ -96,6 +102,8 @@ pub(crate) fn follow(window: Option<WindowId>) {
         };
         let hwnd = to_hwnd(window);
         let mut process = 0;
+        // SAFETY: `process` is a live u32 for the call to write; Windows
+        // checks `hwnd`.
         if unsafe { GetWindowThreadProcessId(hwnd, Some(&mut process)) } == 0 {
             log::warn!("the window to follow is gone");
             return;
@@ -112,6 +120,10 @@ pub(crate) fn follow(window: Option<WindowId>) {
         let hooks = ranges
             .into_iter()
             .filter_map(|(first, last)| {
+                // SAFETY: `on_event` is a static function that fits the
+                // WinEvent signature. Out of context, Windows calls it on
+                // this thread, from its message loop, and only until the
+                // hook is unhooked above.
                 let hook = unsafe {
                     SetWinEventHook(
                         first,
@@ -142,6 +154,8 @@ pub(crate) fn follow(window: Option<WindowId>) {
 /// shadow.
 pub fn visible_bounds(window: WindowId) -> Option<PhysicalRect> {
     let mut rect = RECT::default();
+    // SAFETY: DWMWA_EXTENDED_FRAME_BOUNDS is a RECT, and the call is given
+    // `rect`, a live RECT, with its size.
     unsafe {
         DwmGetWindowAttribute(
             to_hwnd(window),

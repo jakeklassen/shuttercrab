@@ -16,6 +16,12 @@ pub(crate) fn hicon(size: u32) -> Result<HICON> {
         bail!("icon size must be positive");
     }
     let pixels = rgba(size);
+    // SAFETY: on success CreateDIBSection points `bits` at the section's
+    // `size` rows of `size` 32-bit pixels, top-down with no row padding:
+    // `size * size * 4` bytes, which is `pixels.len()` as `rgba` makes it.
+    // (A `size` past i32 makes the width negative and the call fail.)
+    // Nothing else touches the section before it is deleted, after the icon
+    // has copied it. The mask bitmap is made without bits to read.
     unsafe {
         let info = BITMAPINFO {
             bmiHeader: BITMAPINFOHEADER {
@@ -62,6 +68,7 @@ mod tests {
     fn makes_icons_at_tray_sizes() {
         for size in [16, 20, 24, 32, 48] {
             let icon = hicon(size).unwrap();
+            // SAFETY: `icon` was just made by `hicon`, and is destroyed once.
             unsafe { windows::Win32::UI::WindowsAndMessaging::DestroyIcon(icon).unwrap() };
         }
         assert!(hicon(0).is_err());

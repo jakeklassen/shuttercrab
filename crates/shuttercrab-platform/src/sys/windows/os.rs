@@ -27,6 +27,8 @@ fn build() -> u32 {
         dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
         ..Default::default()
     };
+    // SAFETY: `info` is a live OSVERSIONINFOW whose size field says so, so
+    // the call writes within it.
     match unsafe { RtlGetVersion(&mut info) }.ok() {
         Ok(()) => info.dwBuildNumber,
         Err(_) => 0,

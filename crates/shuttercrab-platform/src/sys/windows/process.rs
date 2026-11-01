@@ -42,6 +42,9 @@ impl Process {
     /// Wait for the process to end; returns its exit code.
     pub fn wait(&self) -> Result<u32> {
         let handle = HANDLE(std::os::windows::io::AsRawHandle::as_raw_handle(&self.0));
+        // SAFETY: `handle` is the process handle `self` owns, open for as
+        // long as `self` is borrowed here, and `code` is a live u32 for
+        // GetExitCodeProcess to write.
         unsafe {
             if WaitForSingleObject(handle, INFINITE) != WAIT_OBJECT_0 {
                 bail!("could not wait for the process");
@@ -69,9 +72,12 @@ impl Pipe {
             bInheritHandle: true.into(),
         };
         let (mut read, mut write) = (HANDLE::default(), HANDLE::default());
+        // SAFETY: `read` and `write` are live for the call to fill, and
+        // `inherit` is a complete SECURITY_ATTRIBUTES with no descriptor.
         unsafe { CreatePipe(&mut read, &mut write, Some(&inherit), 0) }
             .context("could not make a pipe")?;
-        // SAFETY: CreatePipe opened both, and nothing else owns them.
+        // SAFETY: CreatePipe succeeded, so it opened both, and nothing else
+        // owns them.
         let (read, write) = unsafe {
             (
                 OwnedHandle::from_raw_handle(read.0),
@@ -84,6 +90,8 @@ impl Pipe {
             (write, read)
         };
         // Only the child's end is inherited.
+        // SAFETY: `parent` is an open handle owned here; only its flags
+        // change.
         unsafe { SetHandleInformation(raw(&parent), HANDLE_FLAG_INHERIT.0, Default::default()) }
             .context("could not keep a pipe to this process")?;
         Ok(Self { child, parent })
@@ -118,11 +126,21 @@ pub fn spawn_quiet(exe: &Path, args: &[&str]) -> Result<Spawned> {
         raw(&pipes[2].child),
     ];
     let mut size = 0;
+    // SAFETY: with no list, the call only writes the size it needs to
+    // `size`, a live usize (and reports an error, as documented).
     unsafe {
         let _ = InitializeProcThreadAttributeList(None, 1, None, &mut size);
     }
     let mut buffer = vec![0u8; size];
     let list = LPPROC_THREAD_ATTRIBUTE_LIST(buffer.as_mut_ptr().cast());
+    // SAFETY: `list` is `buffer`, `size` bytes as the first call asked for
+    // (from the system heap, so aligned enough for the pointers in it),
+    // and outlives every use of it: it is deleted before `buffer` drops,
+    // and only if it was initialised. The handle list points at `handles`,
+    // three open handles that live until after CreateProcessW and the
+    // list's deletion. `command` is a mutable, null-terminated buffer, as
+    // CreateProcessW requires, and `startup` and `info` are live structs
+    // with the sizes the call expects.
     let started = unsafe {
         InitializeProcThreadAttributeList(Some(list), 1, None, &mut size)
             .context("could not set up the process's attributes")?;
@@ -165,11 +183,15 @@ pub fn spawn_quiet(exe: &Path, args: &[&str]) -> Result<Spawned> {
     };
     // On failure, the pipes close as they drop.
     let info = started?;
+    // SAFETY: CreateProcessW succeeded, so `hThread` is an open handle that
+    // is ours; nothing else uses or closes it.
     unsafe {
         let _ = CloseHandle(info.hThread);
     }
     let [stdin, stdout, stderr] = pipes.map(Pipe::into_parent);
     Ok(Spawned {
+        // SAFETY: CreateProcessW succeeded, so `hProcess` is an open handle
+        // that is ours, and only this OwnedHandle owns it.
         process: Process(unsafe { OwnedHandle::from_raw_handle(info.hProcess.0) }),
         stdin,
         stdout,

@@ -35,6 +35,8 @@ fn puts_png_and_bitmap_on_the_clipboard() {
     let rgba = vec![200u8; 4 * 3 * 2];
     let png = std::sync::Arc::new(vec![0x89, b'P', b'N', b'G']);
     block_on(platform.copy_image(png, std::sync::Arc::new(rgba), 3, 2)).unwrap();
+    // SAFETY: `w!` gives a static wide string; the clipboard is opened and
+    // closed on this thread, and only queried in between.
     unsafe {
         let png = RegisterClipboardFormatW(windows::core::w!("PNG"));
         OpenClipboard(None).unwrap();
@@ -63,6 +65,9 @@ fn cover_makes_the_client_area_the_whole_rectangle() {
         },
         core::w,
     };
+    // SAFETY: the class and title are static wide strings from `w!`, with no
+    // parent, module or creation data. The window is made and destroyed on
+    // this thread, and not used after.
     unsafe {
         SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
         let hwnd = CreateWindowExW(
@@ -107,6 +112,7 @@ fn shuttercrabs_own_windows_are_targets_unless_excluded_from_capture() {
         },
         core::w,
     };
+    // SAFETY: as in the test above.
     unsafe {
         let hwnd = CreateWindowExW(
             WINDOW_EX_STYLE(0),
@@ -158,6 +164,8 @@ fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
     assert_eq!(windows.len(), 4);
     for handle in windows {
         let hwnd = HWND(handle.raw() as _);
+        // SAFETY: `hwnd` is one of `frame`'s windows, alive until it drops;
+        // `affinity` is a live u32 for the call to write.
         unsafe {
             assert!(IsWindowVisible(hwnd).as_bool());
             let ex = GetWindowLongW(hwnd, GWL_EXSTYLE) as u32;
@@ -176,6 +184,8 @@ fn the_recording_border_lets_the_pointer_through_and_stays_out_of_captures() {
     let expected = shuttercrab_platform::frame::strips(moved, bounds, 3);
     for (handle, (want, _)) in frame.windows().into_iter().zip(expected) {
         let mut rect = RECT::default();
+        // SAFETY: the window is `frame`'s, alive until it drops, and `rect`
+        // is a live RECT for the call to write.
         unsafe { GetWindowRect(HWND(handle.raw() as _), &mut rect).unwrap() };
         let got = PhysicalRect::new(
             rect.left,

@@ -44,6 +44,9 @@ use windows::{
 /// thread), outside any GPUI update: it runs a modal loop until the user
 /// drops or cancels. Returns whether something accepted the file.
 pub fn drag_file(path: &Path, image: Option<DragImage>) -> Result<bool> {
+    // SAFETY: the path is a null-terminated HSTRING that lives through the
+    // call, and the item and its data object are COM interfaces windows-rs
+    // reference-counts.
     let data: IDataObject = unsafe {
         let item: IShellItem = SHCreateItemFromParsingName(&HSTRING::from(path), None)
             .with_context(|| format!("no shell item for {}", path.display()))?;
@@ -67,6 +70,10 @@ pub fn drag_file(path: &Path, image: Option<DragImage>) -> Result<bool> {
     }
     .into();
     let mut effect = DROPEFFECT_NONE;
+    // SAFETY: `data` and `source` are live COM objects held across the
+    // modal loop, and `effect` is a live DROPEFFECT for it to write. The
+    // loop calls `source` back on this thread only. Without OLE on the
+    // thread the call fails rather than misbehaves.
     let result = unsafe { DoDragDrop(&data, &source, DROPEFFECT_COPY, &mut effect) };
     drop(ghost);
     match result {
@@ -111,6 +118,8 @@ impl IDropSource_Impl for DropSource_Impl {
 
 fn move_to_pointer(hwnd: HWND, half: (i32, i32)) {
     let mut at = POINT::default();
+    // SAFETY: `at` is a live POINT for GetCursorPos to write; SetWindowPos
+    // takes plain values, and Windows checks `hwnd`.
     unsafe {
         if GetCursorPos(&mut at).is_ok() {
             let _ = SetWindowPos(
@@ -183,6 +192,8 @@ impl Ghost {
 /// GPUI can still revoke a registered target when the window closes.
 pub fn refuse_drops(window: WindowId) -> Result<()> {
     let hwnd = to_hwnd(window);
+    // SAFETY: both calls take a window handle Windows checks, and OLE keeps
+    // its own reference to `target` until the window's target is revoked.
     unsafe {
         let _ = RevokeDragDrop(hwnd);
         let target: IDropTarget = NoDrop.into();
@@ -233,7 +244,9 @@ impl IDropTarget_Impl for NoDrop_Impl {
 
 fn refuse(effect: *mut DROPEFFECT) {
     if !effect.is_null() {
-        // SAFETY: OLE passes a valid pointer for the effect.
+        // SAFETY: `refuse` is only given the effect pointer OLE passes to a
+        // drop target's methods, which points at a DROPEFFECT it owns for
+        // the call; it is checked for null above.
         unsafe { *effect = DROPEFFECT_NONE };
     }
 }

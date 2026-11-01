@@ -30,7 +30,10 @@ impl Cursor {
     /// `hotspot`.
     pub fn from_rgba(rgba: &[u8], size: u32, hotspot: (u32, u32)) -> Result<Cursor> {
         anyhow::ensure!(
-            rgba.len() == (size * size * 4) as usize,
+            (size as usize)
+                .checked_mul(size as usize)
+                .and_then(|n| n.checked_mul(4))
+                == Some(rgba.len()),
             "the pixels do not fill the cursor"
         );
         // Windows wants blue first, and blends a cursor's soft edges as
@@ -50,10 +53,17 @@ impl Cursor {
             })
             .collect();
         let side = size as i32;
+        // SAFETY: CreateBitmap reads `side` rows of `side` 32-bit pixels
+        // from `bgra`, which holds exactly that (checked above without
+        // overflow, which also keeps `side` from going negative), and
+        // `side` rows of `side` bits, each padded to a 2-byte word, from
+        // `mask_bits`, which is that long. With `side` 0 it reads nothing
+        // and gives a stock 1×1 bitmap. Both buffers live through the
+        // calls. The bitmaps are deleted once the cursor has copied them.
         unsafe {
             let color = CreateBitmap(side, side, 1, 32, Some(bgra.as_ptr().cast()));
             // Every pixel shows through the colour bitmap's alpha.
-            let mask_bits = vec![0u8; (size.div_ceil(16) * 2 * size) as usize];
+            let mask_bits = vec![0u8; size.div_ceil(16) as usize * 2 * size as usize];
             let mask = CreateBitmap(side, side, 1, 1, Some(mask_bits.as_ptr().cast()));
             let info = ICONINFO {
                 fIcon: false.into(),
@@ -73,6 +83,8 @@ impl Cursor {
 
     /// Windows' four-way arrow, for moving something.
     pub fn move_all() -> Result<Cursor> {
+        // SAFETY: loads a system cursor by its id; with no module there is
+        // nothing else to pass. Shared system cursors are never destroyed.
         let cursor = unsafe { LoadCursorW(None, IDC_SIZEALL) }.context("no move cursor")?;
         Ok(Cursor(cursor.0 as isize))
     }
@@ -95,6 +107,10 @@ pub fn show(window: WindowId, over: Option<CursorOver>) {
         let mut shown = shown.borrow_mut();
         let first = !shown.contains_key(&hwnd);
         if first {
+            // SAFETY: `subclass` is a static function that fits the
+            // subclass signature and uses no reference data. Windows checks
+            // `hwnd`, and the call fails for a window of another thread.
+            // The subclass removes itself when the window is destroyed.
             let installed =
                 unsafe { SetWindowSubclass(HWND(hwnd as _), Some(subclass), SUBCLASS, 0) };
             if !installed.as_bool() {
@@ -107,6 +123,7 @@ pub fn show(window: WindowId, over: Option<CursorOver>) {
     if changed && pointer_on(hwnd) {
         // As if the pointer moved: the subclass, or GPUI, sets the cursor.
         let hit = LPARAM(((WM_MOUSEMOVE as isize) << 16) | HTCLIENT as isize);
+        // SAFETY: posts plain values, no pointers; Windows checks `hwnd`.
         let _ = unsafe {
             PostMessageW(
                 Some(HWND(hwnd as _)),
@@ -121,6 +138,8 @@ pub fn show(window: WindowId, over: Option<CursorOver>) {
 /// Whether the pointer is over window `hwnd`.
 fn pointer_on(hwnd: isize) -> bool {
     let mut at = POINT::default();
+    // SAFETY: `at` is a live POINT for GetCursorPos to write; WindowFromPoint
+    // takes it by value.
     unsafe { GetCursorPos(&mut at).is_ok() && WindowFromPoint(at).0 as isize == hwnd }
 }
 
@@ -128,6 +147,8 @@ fn pointer_on(hwnd: isize) -> bool {
 fn cursor_at(hwnd: isize) -> Option<HCURSOR> {
     let over = SHOWN.with(|shown| shown.borrow().get(&hwnd).copied().flatten())?;
     let mut at = POINT::default();
+    // SAFETY: `at` is a live POINT for both calls to write. Windows checks
+    // `hwnd`; a window gone since makes ScreenToClient fail.
     unsafe {
         GetCursorPos(&mut at).ok()?;
         ScreenToClient(HWND(hwnd as _), &mut at).ok().ok()?;
@@ -150,12 +171,18 @@ unsafe extern "system" fn subclass(
         && (lparam.0 & 0xFFFF) as u32 == HTCLIENT
         && let Some(cursor) = cursor_at(window)
     {
+        // SAFETY: `cursor` is a `Cursor`'s handle, which is never destroyed
+        // while Shuttercrab runs, and this is the window's own thread.
         unsafe { SetCursor(Some(cursor)) };
         return LRESULT(1);
     }
     if message == WM_NCDESTROY {
         SHOWN.with(|shown| shown.borrow_mut().remove(&window));
+        // SAFETY: called on the window's thread, from the subclass being
+        // removed, as Windows' last message to it.
         let _ = unsafe { RemoveWindowSubclass(hwnd, Some(subclass), SUBCLASS) };
     }
+    // SAFETY: passes on, unchanged, the message Windows gave this subclass,
+    // on the same thread.
     unsafe { DefSubclassProc(hwnd, message, wparam, lparam) }
 }

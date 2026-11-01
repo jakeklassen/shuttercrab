@@ -109,6 +109,8 @@ impl Platform {
     }
 
     fn send(&self, command: Command) -> bool {
+        // SAFETY: posts plain values, no pointers, to the platform window;
+        // once that is gone, Windows refuses the handle.
         self.commands.send(command).is_ok()
             && unsafe {
                 PostMessageW(
@@ -208,6 +210,8 @@ pub fn signal_running_instance(request: Request) -> bool {
     // instance reads back: that order is what passes between versions, so
     // new requests go at its end.
     let code = Request::ALL.iter().position(|r| *r == request).unwrap_or(0);
+    // SAFETY: the names are static wide strings from `w!`, and the message
+    // carries plain values, no pointers, to the other process.
     unsafe {
         FindWindowW(w!("ShuttercrabPlatform"), w!("Shuttercrab")).is_ok_and(|window| {
             PostMessageW(Some(window), WM_ANOTHER_INSTANCE, WPARAM(code), LPARAM(0)).is_ok()
@@ -217,6 +221,8 @@ pub fn signal_running_instance(request: Request) -> bool {
 
 impl Drop for Platform {
     fn drop(&mut self) {
+        // SAFETY: posts plain values, no pointers, to the platform window;
+        // once that is gone, Windows refuses the handle.
         let _ =
             unsafe { PostMessageW(Some(HWND(self.window as _)), WM_STOP, WPARAM(0), LPARAM(0)) };
     }
@@ -285,6 +291,8 @@ extern "system" fn window_proc(
         add_tray_icon();
         return LRESULT(0);
     }
+    // SAFETY: passes on, unchanged, the message Windows gave this window
+    // procedure, on the same thread.
     unsafe { DefWindowProcW(hwnd, message, wparam, lparam) }
 }
 
@@ -293,6 +301,11 @@ fn show_menu(hwnd: HWND) {
     else {
         return;
     };
+    // SAFETY: on the platform thread, with `hwnd` its window. Each label
+    // is an HSTRING that lives through its AppendMenuW, which copies it.
+    // `at` is a live POINT. The menu is ours, destroyed once after the
+    // modal TrackPopupMenu returns. The state is not borrowed here, so the
+    // messages dispatched meanwhile can use it.
     unsafe {
         let Ok(menu) = CreatePopupMenu() else { return };
         for item in &items {
@@ -363,12 +376,18 @@ fn add_tray_icon() {
     let data = with_state(|s| {
         s.tray.as_ref()?;
         if s.icon.is_none() {
+            // SAFETY: takes a constant and returns a number; it sends no
+            // messages, so the borrowed state is not reentered.
             let size = unsafe { GetSystemMetrics(SM_CXSMICON) }.max(16) as u32;
             s.icon = icon::hicon(size).ok();
         }
         Some(tray_data(s, NIF_ICON | NIF_MESSAGE | NIF_TIP | NIF_SHOWTIP))
     });
     let Some(Some(mut data)) = data else { return };
+    // SAFETY: `data` is a live NOTIFYICONDATAW whose `cbSize` is its own
+    // size, naming this thread's window and an icon kept in the state.
+    // The state is not borrowed, so the messages the shell sends during
+    // the call can use it.
     unsafe {
         if Shell_NotifyIconW(NIM_ADD, &data).as_bool() {
             data.Anonymous.uVersion = NOTIFYICON_VERSION_4;
@@ -386,6 +405,8 @@ fn notify(title: &str, message: &str) {
     copy_utf16(&mut data.szInfoTitle, title);
     copy_utf16(&mut data.szInfo, message);
     data.dwInfoFlags = NIIF_NOSOUND;
+    // SAFETY: as in `add_tray_icon`; the texts are null-terminated within
+    // their fixed arrays by `copy_utf16`.
     unsafe {
         let _ = Shell_NotifyIconW(NIM_MODIFY, &data);
     }
@@ -394,6 +415,9 @@ fn notify(title: &str, message: &str) {
 fn register_hotkeys(window: HWND, hotkeys: &[(u32, Hotkey)]) -> Vec<HotkeyConflict> {
     let mut conflicts = Vec::new();
     for (id, hotkey) in hotkeys {
+        // SAFETY: takes plain values; `window` is the platform thread's own
+        // window, and this runs on that thread, so WM_HOTKEY reaches its
+        // message loop.
         if let Err(e) = unsafe {
             RegisterHotKey(
                 Some(window),
@@ -414,6 +438,7 @@ fn register_hotkeys(window: HWND, hotkeys: &[(u32, Hotkey)]) -> Vec<HotkeyConfli
 
 fn unregister_hotkeys(window: HWND, hotkeys: &[(u32, Hotkey)]) {
     for (id, _) in hotkeys {
+        // SAFETY: takes plain values, on the thread that registered them.
         let _ = unsafe { UnregisterHotKey(Some(window), *id as i32) };
     }
 }
@@ -426,6 +451,7 @@ fn run(
     ready: Sender<Result<(isize, Vec<HotkeyConflict>)>>,
 ) {
     // Tray icon sizes and menu positions are physical pixels.
+    // SAFETY: changes only this new thread's own DPI awareness.
     unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     let window = match create_window() {
         Ok(window) => window,
@@ -436,6 +462,7 @@ fn run(
     };
     let mut hotkeys = hotkeys;
     let conflicts = register_hotkeys(window, &hotkeys);
+    // SAFETY: `w!` gives a static null-terminated wide string.
     let taskbar_created = unsafe { RegisterWindowMessageW(w!("TaskbarCreated")) };
     EVENTS.with(|e| e.set(events.clone()).ok());
     STATE.with(|s| {
@@ -451,6 +478,7 @@ fn run(
 
     let mut msg = MSG::default();
     // 0 when quitting, -1 if it fails: either way, the loop is over.
+    // SAFETY: `msg` is a live MSG for the call to fill.
     while unsafe { GetMessageW(&mut msg, None, 0, 0) }.0 > 0 {
         match msg.message {
             WM_HOTKEY => {
@@ -494,7 +522,10 @@ fn run(
                 let request = request.unwrap_or(Request::Show);
                 let _ = events.unbounded_send(PlatformEvent::AnotherInstance(request));
             }
+            // SAFETY: takes an exit code; it ends this thread's loop.
             WM_STOP => unsafe { PostQuitMessage(0) },
+            // SAFETY: `msg` is the message GetMessageW just filled, on the
+            // thread that owns its window.
             _ => unsafe {
                 DispatchMessageW(&msg);
             },
@@ -505,16 +536,22 @@ fn run(
     if let Some(state) = state {
         if state.tray.is_some() {
             let data = tray_data(&state, NOTIFY_ICON_DATA_FLAGS(0));
+            // SAFETY: `data` is a live NOTIFYICONDATAW whose `cbSize` is its
+            // own size, naming the icon this thread added.
             unsafe {
                 let _ = Shell_NotifyIconW(NIM_DELETE, &data);
             }
         }
         if let Some(icon) = state.icon {
+            // SAFETY: the icon was made by `icon::hicon` for the tray, which
+            // no longer shows it, and is destroyed only here.
             unsafe {
                 let _ = DestroyIcon(icon);
             }
         }
     }
+    // SAFETY: the platform window was made on this thread, as DestroyWindow
+    // requires, and is destroyed only here.
     let _ = unsafe { DestroyWindow(window) };
 }
 
@@ -522,6 +559,10 @@ fn run(
 /// that survives an Explorer restart, because they miss the
 /// `TaskbarCreated` broadcast.
 fn create_window() -> Result<HWND> {
+    // SAFETY: the class and window names are static wide strings from `w!`,
+    // `window_proc` is a static function with the window procedure's
+    // signature, and `class` lives through RegisterClassW, which copies it.
+    // No creation data is passed.
     unsafe {
         let instance = GetModuleHandleW(None)?;
         let class = WNDCLASSW {
