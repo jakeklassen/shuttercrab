@@ -7,6 +7,23 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.35](https://github.com/jakeklassen/shuttercrab/compare/v0.1.34...v0.1.35) - 2026-11-01
+
+### Changed
+
+- *(capture)* keep each monitor's capture item between screenshots
+
+### Fixed
+
+- *(viewer)* a link cut short says so, rather than how links start
+- *(capture)* the soundness gaps the SAFETY sweep found
+- *(capture)* players keep COM for the process, not the thread they start on
+- *(platform, stream)* the last soundness notes from the SAFETY sweep
+
+### Other
+
+- *(capture)* sound capture and playback through the wasapi crate
+
 ## [0.1.34](https://github.com/jakeklassen/shuttercrab/compare/v0.1.33...v0.1.34) - 2026-10-31
 
 ### Other
