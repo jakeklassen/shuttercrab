@@ -234,6 +234,9 @@ pub fn attached(monitor: MonitorId) -> bool {
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
+    // SAFETY: `info` is a MONITORINFO with its `cbSize` set, and lives
+    // across the call. A stale handle is the point of asking: Windows
+    // looks it up and fails, without reading through it.
     unsafe { GetMonitorInfoW(hmonitor(monitor), &mut info) }.as_bool()
 }
 
@@ -262,6 +265,8 @@ fn record(
         let _ = ready.send(Err(anyhow::anyhow!("{e:#}")));
         Err(e)
     };
+    // SAFETY: no pointers; each sets up this thread, the recorder's own,
+    // which the recording runs on from here to the end.
     unsafe {
         let _ = RoInitialize(RO_INIT_MULTITHREADED);
         SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2);
@@ -278,6 +283,9 @@ fn record(
         }
         Err(e) => failed(e),
     };
+    // SAFETY: no pointers; it ends the MFStartup above, which succeeded
+    // (or this returned early), and the session and its Media Foundation
+    // objects were dropped at the end of the match.
     unsafe {
         let _ = MFShutdown();
     }

@@ -55,8 +55,12 @@ pub(super) struct Fitter {
 impl Fitter {
     pub(super) fn new(gpu: &Gpu, output: &ID3D11Texture2D) -> Result<Self> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `output` is a live texture and `desc` a local the call
+        // fills.
         unsafe { output.GetDesc(&mut desc) };
         let mut sampler = None;
+        // SAFETY: the sampler description and `sampler` live across the
+        // call, which writes only `sampler`.
         unsafe {
             gpu.device.CreateSamplerState(
                 &D3D11_SAMPLER_DESC {
@@ -103,6 +107,13 @@ impl Fitter {
             samples: (shrink.ceil() as u32).clamp(1, MAX_SAMPLES),
             unused: 0,
         };
+        // SAFETY: `params` is a `#[repr(C)]` `Params`, 48 bytes, and the
+        // constant buffer was made `size_of::<Params>()` bytes (rounded up
+        // to 16, which 48 already is), so the whole-buffer update reads
+        // exactly `params`, which lives across the call. The
+        // shader, buffer, sampler and views were all made on `gpu`'s device
+        // (`source`, through `copy_of`, too), and the views are unbound
+        // again before returning.
         unsafe {
             ctx.UpdateSubresource(&self.params, 0, None, (&raw const params).cast(), 0, 0);
             ctx.CSSetShader(&self.shader, None);
@@ -151,6 +162,12 @@ impl Fitter {
             bottom: y + content.1,
             back: 1,
         };
+        // SAFETY: both textures are on `gpu`'s device and FP16. The copy is
+        // at least `content` in size (checked or made above), so the box
+        // lands inside it at (0, 0); the box lies inside `source` because
+        // both callers keep it there (the window's size is clamped to the
+        // texture's, a display's region is checked against the frame).
+        // `area` lives across the call.
         unsafe {
             gpu.context
                 .CopySubresourceRegion(texture, 0, 0, 0, 0, source, 0, Some(&area))

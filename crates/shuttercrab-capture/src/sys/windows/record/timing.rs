@@ -31,6 +31,8 @@ impl Timer {
     pub(super) fn new(gpu: &Gpu) -> Result<Self> {
         let query = |kind| -> Result<ID3D11Query> {
             let mut q = None;
+            // SAFETY: the query description and `q` live across the call,
+            // which writes only `q`.
             unsafe {
                 gpu.device.CreateQuery(
                     &D3D11_QUERY_DESC {
@@ -79,6 +81,10 @@ impl Timer {
         };
         let read_disjoint = || {
             let mut data = D3D11_QUERY_DATA_TIMESTAMP_DISJOINT::default();
+            // SAFETY: a disjoint query's result is one
+            // D3D11_QUERY_DATA_TIMESTAMP_DISJOINT, and `data` is one, with
+            // its size passed; it lives across the call. The query was made
+            // on the device whose context this is.
             let ok = unsafe {
                 context.GetData(
                     &slot.disjoint,
@@ -104,6 +110,8 @@ impl Timer {
         };
         let mut ticks = [0u64; 4];
         for (stamp, tick) in slot.stamps.iter().zip(ticks.iter_mut()) {
+            // SAFETY: a timestamp query's result is one u64, and `tick`
+            // points at one, with its size passed.
             let ok = unsafe {
                 context.GetData(
                     stamp,
@@ -129,6 +137,8 @@ impl Timer {
         self.next = (self.next + 1) % Self::DEPTH;
         self.collect(context, index, false);
         let slot = &mut self.ring[index];
+        // SAFETY: the queries were made on the device whose immediate
+        // context the recorder passes in; Begin and End take nothing else.
         unsafe {
             context.Begin(&slot.disjoint);
             context.End(&slot.stamps[0]);
@@ -137,6 +147,8 @@ impl Timer {
     }
 
     pub(super) fn stamp(&self, context: &ID3D11DeviceContext, index: usize, which: usize) {
+        // SAFETY: as in `begin`; a bad `index` or `which` panics on the
+        // indexing, before the call.
         unsafe { context.End(&self.ring[index].stamps[which]) };
     }
 
@@ -148,6 +160,7 @@ impl Timer {
         cpu_write: Duration,
     ) {
         let slot = &mut self.ring[index];
+        // SAFETY: as in `begin`.
         unsafe { context.End(&slot.disjoint) };
         slot.pending = true;
         self.cpu[0] += cpu_convert.as_secs_f64() * 1000.0;

@@ -41,6 +41,9 @@ pub(super) fn create(
     }
     .into();
     for stream in &streams {
+        // SAFETY: every stream sink in `streams` was made by
+        // `StreamSink::create`, so each interface is backed by a
+        // `StreamSink`, as `as_impl` requires.
         let inner: &StreamSink = unsafe { stream.as_impl() };
         *lock(&inner.sink) = Some(sink.clone());
     }
@@ -58,6 +61,9 @@ impl MediaSink_Impl {
     /// it is starting.
     fn tell(&self, event: MF_EVENT_TYPE) -> Result<()> {
         for stream in &self.streams {
+            // SAFETY: the stream sinks are this sink's own, alive while it
+            // holds them. The zero GUID is a temporary that lives across
+            // each call, and a null value means the event carries none.
             unsafe {
                 stream.QueueEvent(event.0 as u32, &GUID::zeroed(), S_OK, std::ptr::null())?;
                 if event == MEStreamSinkStarted {
@@ -107,9 +113,13 @@ impl IMFMediaSink_Impl for MediaSink_Impl {
         let mut current = lock(&self.clock);
         let me: IMFClockStateSink = self.to_interface();
         if let Some(old) = current.take() {
+            // SAFETY: `old` is the clock this sink held a reference to, and
+            // `me` is this sink's own interface, alive across the call.
             unsafe { old.RemoveClockStateSink(&me)? };
         }
         if let Some(clock) = clock.as_ref() {
+            // SAFETY: the caller's clock is alive for this call, and the
+            // clock takes its own reference to `me` to keep.
             unsafe { clock.AddClockStateSink(&me)? };
             *current = Some(clock.clone());
         }
@@ -127,11 +137,18 @@ impl IMFMediaSink_Impl for MediaSink_Impl {
     fn Shutdown(&self) -> Result<()> {
         if let Some(clock) = lock(&self.clock).take() {
             let me: IMFClockStateSink = self.to_interface();
+            // SAFETY: `clock` is the clock this sink held a reference to,
+            // and `me` is this sink's own interface, alive across the call.
             let _ = unsafe { clock.RemoveClockStateSink(&me) };
         }
         for stream in &self.streams {
+            // SAFETY: `create` filled `streams` with sinks made by
+            // `StreamSink::create`, so each is backed by a `StreamSink`, as
+            // `as_impl` requires.
             let inner: &StreamSink = unsafe { stream.as_impl() };
             lock(&inner.sink).take();
+            // SAFETY: the event queue is the stream sink's own, alive while
+            // it is; Media Foundation's event queues are thread-safe.
             let _ = unsafe { inner.queue.Shutdown() };
         }
         Ok(())
@@ -181,6 +198,8 @@ impl StreamSink {
         Ok(Self {
             id,
             track,
+            // SAFETY: MFCreateEventQueue takes no arguments; the queue it
+            // returns is owned here.
             queue: unsafe { MFCreateEventQueue()? },
             media_type: Mutex::new(media_type.clone()),
             sink: Mutex::new(None),
@@ -203,6 +222,8 @@ impl StreamSink_Impl {
     /// frames.
     fn takes(&self, media_type: &IMFMediaType) -> Result<bool> {
         let ours = self.media_type();
+        // SAFETY: both media types are held alive across the calls, and
+        // the GUID keys are statics.
         unsafe {
             Ok(media_type.GetMajorType()? == ours.GetMajorType()?
                 && media_type.GetGUID(&MF_MT_SUBTYPE)? == ours.GetGUID(&MF_MT_SUBTYPE)?)
@@ -211,6 +232,8 @@ impl StreamSink_Impl {
 
     /// How the pictures are coded.
     fn codec(&self) -> VideoCodec {
+        // SAFETY: the media type is a clone held across the call, and the
+        // key is a static GUID.
         match unsafe { self.media_type().GetGUID(&MF_MT_SUBTYPE) } {
             Ok(subtype) if subtype == MFVideoFormat_HEVC => VideoCodec::Hevc,
             Ok(subtype) if subtype == MFVideoFormat_AV1 => VideoCodec::Av1,
@@ -223,6 +246,9 @@ impl StreamSink_Impl {
     /// wraps it.
     fn parameter_sets(&self) -> Vec<u8> {
         let media_type = self.media_type();
+        // SAFETY: `media_type` is held across the calls. `blob` is made
+        // `size` bytes long, the size the attribute just reported, and
+        // GetBlob writes at most the slice's length.
         unsafe {
             let Ok(size) = media_type.GetBlobSize(&MF_MT_MPEG_SEQUENCE_HEADER) else {
                 return Vec::new();
@@ -241,13 +267,16 @@ impl StreamSink_Impl {
     }
 
     fn frame(&self, sample: &IMFSample) -> Result<LiveFrame> {
+        // SAFETY: `sample` is the caller's, alive for this call, and
+        // `buffer` is held until the block ends. A successful Lock gives a
+        // non-null `data` with `length` readable bytes until Unlock; they
+        // are copied out first, and nothing between can return early. Bytes
+        // have no alignment or validity rules.
         unsafe {
             let buffer = sample.ConvertToContiguousBuffer()?;
             let mut data = std::ptr::null_mut();
             let mut length = 0;
             buffer.Lock(&mut data, None, Some(&mut length))?;
-            // SAFETY: Lock gives `length` readable bytes at `data` until
-            // Unlock.
             let bytes = std::slice::from_raw_parts(data, length as usize).to_vec();
             buffer.Unlock()?;
             let key = sample.GetUINT32(&MFSampleExtension_CleanPoint).unwrap_or(0) != 0;
@@ -319,6 +348,8 @@ fn obus(mut bytes: &[u8]) -> impl Iterator<Item = u8> {
 
 impl IMFMediaEventGenerator_Impl for StreamSink_Impl {
     fn GetEvent(&self, flags: MEDIA_EVENT_GENERATOR_GET_EVENT_FLAGS) -> Result<IMFMediaEvent> {
+        // SAFETY: the queue is this stream sink's own and thread-safe; the
+        // flags are passed on as the caller gave them.
         unsafe { self.queue.GetEvent(flags.0) }
     }
 
@@ -327,10 +358,14 @@ impl IMFMediaEventGenerator_Impl for StreamSink_Impl {
         callback: Ref<IMFAsyncCallback>,
         state: Ref<windows::core::IUnknown>,
     ) -> Result<()> {
+        // SAFETY: the caller's callback and state are alive for this call,
+        // and the queue takes its own references to keep them.
         unsafe { self.queue.BeginGetEvent(callback.as_ref(), state.as_ref()) }
     }
 
     fn EndGetEvent(&self, result: Ref<IMFAsyncResult>) -> Result<IMFMediaEvent> {
+        // SAFETY: the caller's result is alive for this call, and the
+        // queue is this stream sink's own.
         unsafe { self.queue.EndGetEvent(result.as_ref()) }
     }
 
@@ -341,6 +376,10 @@ impl IMFMediaEventGenerator_Impl for StreamSink_Impl {
         status: HRESULT,
         value: *const PROPVARIANT,
     ) -> Result<()> {
+        // SAFETY: `extended` and `value` are passed on unchanged, so they
+        // are as valid as IMFMediaEventGenerator::QueueEvent requires of
+        // its caller (`value` may be null); the queue copies them into the
+        // event before it returns.
         unsafe {
             self.queue
                 .QueueEventParamVar(event, extended, status, value)
@@ -371,6 +410,9 @@ impl IMFStreamSink_Impl for StreamSink_Impl {
             .ok_or_else(|| windows::core::Error::from(E_INVALIDARG))?;
         let frame = self.frame(sample)?;
         (self.out)(frame);
+        // SAFETY: the queue is this stream sink's own and thread-safe. The
+        // zero GUID is a temporary that lives across the call, and a null
+        // value means the event carries none.
         unsafe {
             self.queue.QueueEventParamVar(
                 MEStreamSinkRequestSample.0 as u32,
@@ -388,6 +430,10 @@ impl IMFStreamSink_Impl for StreamSink_Impl {
         context: *const PROPVARIANT,
     ) -> Result<()> {
         // Nothing is held back, so every marker is reached at once.
+        // SAFETY: `context` is passed on unchanged, so it is as valid as
+        // IMFStreamSink::PlaceMarker requires of its caller (it may be
+        // null); the queue copies it into the event before it returns. The
+        // zero GUID is a temporary that lives across the call.
         unsafe {
             self.queue.QueueEventParamVar(
                 MEStreamSinkMarker.0 as u32,
@@ -449,6 +495,7 @@ impl IMFMediaTypeHandler_Impl for StreamSink_Impl {
     }
 
     fn GetMajorType(&self) -> Result<GUID> {
+        // SAFETY: the media type is a clone held across the call.
         unsafe { self.media_type().GetMajorType() }
     }
 }

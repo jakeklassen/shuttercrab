@@ -53,10 +53,14 @@ pub(super) struct Started {
 
 impl Started {
     pub(super) fn new() -> Result<Self> {
+        // SAFETY: takes nothing and hands back a cookie, kept as a number
+        // and given back once in Drop.
         let mta = unsafe { CoIncrementMTAUsage() }
             .ok()
             .map(|cookie| cookie.0 as usize);
         let started = Self { mta };
+        // SAFETY: takes no pointers; MF_VERSION is the version these
+        // bindings were built against.
         unsafe { MFStartup(MF_VERSION, MFSTARTUP_LITE) }.context("MFStartup failed")?;
         Ok(started)
     }
@@ -64,6 +68,9 @@ impl Started {
 
 impl Drop for Started {
     fn drop(&mut self) {
+        // SAFETY: the owners keep `Started` as their last field, so every
+        // COM and Media Foundation object they hold is released before
+        // this ends Media Foundation and lets go of the apartment.
         unsafe {
             let _ = MFShutdown();
             if let Some(cookie) = self.mta {
@@ -94,6 +101,13 @@ impl Player {
     ) -> Result<Self> {
         let started = Started::new()?;
         let gpu = Gpu::video(None)?;
+        // SAFETY: COM and Media Foundation were started on this thread just
+        // above. Every out-parameter is a local that outlives its call, and
+        // each interface passed in is a live, owned reference. The
+        // attributes, manager and callback are AddRef'd by whatever keeps
+        // them, and the BSTR outlives `SetSource`, which copies the URL.
+        // The callback runs on Media Foundation's threads, so its listener
+        // is `Send + Sync`.
         unsafe {
             let mut token = 0;
             let mut manager = None;
@@ -142,6 +156,8 @@ impl Player {
     /// The pictures' size, once the file has loaded.
     pub fn size(&self) -> Option<(u32, u32)> {
         let (mut width, mut height) = (0, 0);
+        // SAFETY: `engine` is live while `self` is; both outputs are locals
+        // that outlive the call.
         unsafe {
             self.engine
                 .GetNativeVideoSize(Some(&mut width), Some(&mut height))
@@ -152,41 +168,51 @@ impl Player {
 
     /// How long the recording is, once the file has loaded.
     pub fn duration(&self) -> Duration {
+        // SAFETY: `engine` is live while `self` is; no pointers are passed.
         seconds(unsafe { self.engine.GetDuration() })
     }
 
     /// Where playing is.
     pub fn position(&self) -> Duration {
+        // SAFETY: `engine` is live while `self` is; no pointers are passed.
         seconds(unsafe { self.engine.GetCurrentTime() })
     }
 
     pub fn play(&self) -> Result<()> {
+        // SAFETY: `engine` is live while `self` is; no pointers are passed.
         unsafe { self.engine.Play() }.context("cannot play")
     }
 
     pub fn pause(&self) -> Result<()> {
+        // SAFETY: `engine` is live while `self` is; no pointers are passed.
         unsafe { self.engine.Pause() }.context("cannot pause")
     }
 
     pub fn is_paused(&self) -> bool {
+        // SAFETY: `engine` is live while `self` is; no pointers are passed.
         unsafe { self.engine.IsPaused() }.as_bool()
     }
 
     pub fn is_ended(&self) -> bool {
+        // SAFETY: `engine` is live while `self` is; no pointers are passed.
         unsafe { self.engine.IsEnded() }.as_bool()
     }
 
     /// Go to `at`; [`PlayerEvent::Seeked`] follows.
     pub fn seek(&self, at: Duration) -> Result<()> {
+        // SAFETY: `engine` is live while `self` is; the time is by value.
         unsafe { self.engine.SetCurrentTime(at.as_secs_f64()) }.context("cannot seek")
     }
 
     /// The sound's volume, 0 to 1.
     pub fn set_volume(&self, volume: f64) -> Result<()> {
+        // SAFETY: `engine` is live while `self` is; the volume is by value
+        // and clamped to the range the engine takes.
         unsafe { self.engine.SetVolume(volume.clamp(0.0, 1.0)) }.context("cannot set the volume")
     }
 
     pub fn set_muted(&self, muted: bool) -> Result<()> {
+        // SAFETY: `engine` is live while `self` is; no pointers are passed.
         unsafe { self.engine.SetMuted(muted) }.context("cannot mute")
     }
 
@@ -196,6 +222,9 @@ impl Player {
         let output = match &self.output {
             Some(output) => output,
             None => {
+                // SAFETY: `cast` asks the player's own live device for
+                // IDXGIDevice through QueryInterface; each call returns an
+                // owned interface or an error, and no pointers are passed.
                 let output = unsafe {
                     self.gpu
                         .device
@@ -207,6 +236,8 @@ impl Player {
                 self.output.insert(output)
             }
         };
+        // SAFETY: `output` is held in `self.output`, live across the call;
+        // the wait takes no arguments.
         unsafe { output.WaitForVBlank() }.context("WaitForVBlank failed")
     }
 
@@ -216,6 +247,10 @@ impl Player {
         let mut time = 0i64;
         // S_FALSE means there is no new picture; windows-rs would call that
         // success too, so look at the code itself.
+        // SAFETY: the vtable entry is IMFMediaEngine's own
+        // `OnVideoStreamTick`, called with the engine's raw pointer, which
+        // `self.engine` keeps alive across the call, and a pointer to the
+        // local `time`, which it writes one i64 to.
         let code = unsafe {
             (Interface::vtable(&self.engine).OnVideoStreamTick)(self.engine.as_raw(), &mut time)
         };
@@ -251,6 +286,10 @@ impl Player {
             rgbRed: 0,
             rgbAlpha: 255,
         };
+        // SAFETY: `picture.target` is a render-target texture made on the
+        // device the engine's device manager holds, sized `width` ×
+        // `height`, so `area` lies inside it. `area` and `black` are locals
+        // that outlive the call.
         unsafe {
             self.engine
                 .TransferVideoFrame(&picture.target, None, &area, Some(&black))
@@ -262,6 +301,8 @@ impl Player {
 
 impl Drop for Player {
     fn drop(&mut self) {
+        // SAFETY: `engine` is still live here (fields drop after this body)
+        // and is shut down once, before its textures and device go.
         unsafe {
             let _ = self.engine.Shutdown();
         }
@@ -289,6 +330,8 @@ impl Picture {
             MiscFlags: 0,
         };
         let (mut target, mut staging) = (None, None);
+        // SAFETY: `desc` and both out-parameters are locals that outlive
+        // the calls; no initial data is given, so nothing else is read.
         unsafe {
             gpu.device.CreateTexture2D(&desc, None, Some(&mut target))?;
             desc.Usage = D3D11_USAGE_STAGING;
@@ -309,6 +352,15 @@ impl Picture {
     fn read(&self, gpu: &Gpu) -> Result<Vec<u8>> {
         let row = self.width as usize * 4;
         let mut bytes = vec![0u8; row * self.height as usize];
+        // SAFETY: both textures were made on `gpu.device` with the same
+        // size and format, as `CopyResource` requires. The device is the
+        // player's own, made in `open`; its context is multithread
+        // protected (see `Gpu::on`), so Media Foundation's use of it on its
+        // own threads cannot tear a call, and only this player touches the
+        // staging texture. `map` is a local
+        // that `Map` fills; the rows read from it are justified below, and
+        // `Unmap` comes after the last read. If `Map` fails, `?` returns
+        // before any read.
         unsafe {
             gpu.context.CopyResource(&self.staging, &self.target);
             let mut map = D3D11_MAPPED_SUBRESOURCE::default();

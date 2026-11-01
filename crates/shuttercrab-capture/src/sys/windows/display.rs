@@ -233,6 +233,8 @@ fn active_paths() -> Result<Vec<DISPLAYCONFIG_PATH_INFO>> {
     // The topology can change between sizing and querying; retry a few times.
     for _ in 0..5 {
         let (mut path_count, mut mode_count) = (0u32, 0u32);
+        // SAFETY: both counts are locals that outlive the call, which only
+        // writes one u32 to each.
         unsafe {
             GetDisplayConfigBufferSizes(QDC_ONLY_ACTIVE_PATHS, &mut path_count, &mut mode_count)
         }
@@ -240,6 +242,10 @@ fn active_paths() -> Result<Vec<DISPLAYCONFIG_PATH_INFO>> {
         .context("GetDisplayConfigBufferSizes failed")?;
         let mut paths = vec![DISPLAYCONFIG_PATH_INFO::default(); path_count as usize];
         let mut modes = vec![DISPLAYCONFIG_MODE_INFO::default(); mode_count as usize];
+        // SAFETY: `paths` holds `path_count` elements and `modes` holds
+        // `mode_count`, the very counts passed in, so Windows writes no more
+        // than each buffer holds; if the topology grew it returns
+        // ERROR_INSUFFICIENT_BUFFER instead. Both vectors outlive the call.
         let status = unsafe {
             QueryDisplayConfig(
                 QDC_ONLY_ACTIVE_PATHS,
@@ -260,27 +266,42 @@ fn active_paths() -> Result<Vec<DISPLAYCONFIG_PATH_INFO>> {
     bail!("the display topology kept changing; try again")
 }
 
+/// `packet` must be a `#[repr(C)]` DisplayConfig packet that starts with a
+/// header made by `header::<T>`, so the size Windows reads and writes is
+/// exactly `T`'s. Every caller in this module passes such a packet.
 fn device_info<T>(packet: &mut T) -> i32 {
+    // SAFETY: by the contract above, the pointer is to a live, writable
+    // `T` that starts with its header, and the header's size is
+    // `size_of::<T>()`, so Windows stays inside the packet.
     unsafe { DisplayConfigGetDeviceInfo(packet as *mut T as *mut DISPLAYCONFIG_DEVICE_INFO_HEADER) }
 }
 
 pub fn enumerate() -> Result<Vec<Monitor>> {
     let paths = active_paths()?;
+    // SAFETY: takes no pointers; windows-rs checks the returned interface
+    // matches `IDXGIFactory1`.
     let factory: IDXGIFactory1 = unsafe { CreateDXGIFactory1()? };
     let mut monitors = Vec::new();
     for adapter_index in 0.. {
+        // SAFETY: `factory` is a live factory; an index past the last
+        // adapter returns DXGI_ERROR_NOT_FOUND, which ends the loop.
         let adapter = match unsafe { factory.EnumAdapters1(adapter_index) } {
             Ok(adapter) => adapter,
             Err(e) if e.code() == DXGI_ERROR_NOT_FOUND => break,
             Err(e) => return Err(e.into()),
         };
+        // SAFETY: `adapter` is live; the description is returned by value.
         let adapter_name = wide_to_string(&unsafe { adapter.GetDesc1()? }.Description);
         for output_index in 0.. {
+            // SAFETY: `adapter` is live; an index past the last output
+            // returns DXGI_ERROR_NOT_FOUND, which ends the loop.
             let output = match unsafe { adapter.EnumOutputs(output_index) } {
                 Ok(output) => output,
                 Err(e) if e.code() == DXGI_ERROR_NOT_FOUND => break,
                 Err(e) => return Err(e.into()),
             };
+            // SAFETY: `cast` asks the live output for IDXGIOutput6 through
+            // QueryInterface; the description is returned by value.
             let desc = unsafe { output.cast::<IDXGIOutput6>()?.GetDesc1()? };
             if !desc.AttachedToDesktop.as_bool() {
                 continue;
@@ -383,7 +404,9 @@ pub fn set_dpi_scale(device_name: &str, percent: u32) -> Result<()> {
         header: header::<SetDpiScale>(SET_DPI_SCALE, source.adapterId, source.id),
         steps: index - scale.recommended as i32,
     };
-    // SAFETY: the packet starts with its header, whose size covers it.
+    // SAFETY: the packet is `#[repr(C)]`, starts with its header, and the
+    // header's size is `size_of::<SetDpiScale>()`, so Windows reads only the
+    // packet. It lives across the call.
     let status = unsafe { DisplayConfigSetDeviceInfo((&raw const packet).cast()) };
     ensure!(
         status == 0,
@@ -468,6 +491,8 @@ pub fn set_refresh_rate(device_name: &str, hz: u32) -> Result<()> {
     let mut mode = display_mode(&name, ENUM_CURRENT_SETTINGS).context("no current mode")?;
     mode.dmDisplayFrequency = hz;
     mode.dmFields = DM_DISPLAYFREQUENCY;
+    // SAFETY: `name` is a NUL-terminated HSTRING and `mode` a DEVMODEW with
+    // its own `dmSize`; both outlive the call, which only reads them.
     let result = unsafe { ChangeDisplaySettingsExW(&name, Some(&mode), None, CDS_TYPE(0), None) };
     ensure!(
         result == DISP_CHANGE_SUCCESSFUL,
@@ -481,6 +506,8 @@ fn display_mode(name: &HSTRING, which: ENUM_DISPLAY_SETTINGS_MODE) -> Option<DEV
         dmSize: size_of::<DEVMODEW>() as u16,
         ..Default::default()
     };
+    // SAFETY: `name` is a NUL-terminated HSTRING; `mode` is a local
+    // DEVMODEW whose `dmSize` tells Windows how much of it to fill.
     unsafe { EnumDisplaySettingsW(name, which, &mut mode) }
         .as_bool()
         .then_some(mode)
@@ -496,7 +523,9 @@ pub fn set_hdr(device_name: &str, on: bool) -> Result<()> {
             header: header::<SetHdrState>(SET_HDR_STATE, target.adapterId, target.id),
             value: on as u32,
         };
-        // SAFETY: the packet starts with its header, whose size covers it.
+        // SAFETY: the packet is `#[repr(C)]`, starts with its header, and the
+        // header's size is `size_of::<SetHdrState>()`, so Windows reads only
+        // the packet. It lives across the call.
         unsafe { DisplayConfigSetDeviceInfo((&raw const packet).cast()) }
     } else {
         let packet = DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE {
@@ -507,7 +536,8 @@ pub fn set_hdr(device_name: &str, on: bool) -> Result<()> {
             ),
             Anonymous: DISPLAYCONFIG_SET_ADVANCED_COLOR_STATE_0 { value: on as u32 },
         };
-        // SAFETY: as above.
+        // SAFETY: as above: the SDK packet starts with its header, sized as
+        // the whole packet, and lives across the call.
         unsafe { DisplayConfigSetDeviceInfo((&raw const packet).cast()) }
     };
     ensure!(
@@ -554,6 +584,9 @@ fn describe_output(
         status == 0,
         "reading Advanced Color state of {device_name} failed ({status})"
     );
+    // SAFETY: both union fields are a plain u32 (`value` and the bit-field
+    // struct over it), so every bit pattern is valid; the union was zeroed
+    // by `Default` and then filled by Windows.
     let legacy_flags = unsafe { legacy.Anonymous.value };
 
     let mut info2 = AdvancedColorInfo2 {
@@ -590,9 +623,14 @@ fn describe_output(
         cbSize: size_of::<MONITORINFO>() as u32,
         ..Default::default()
     };
+    // SAFETY: `info` is a local MONITORINFO with `cbSize` set, so Windows
+    // writes only that much. A monitor that has gone since DXGI listed it
+    // makes the call fail, not misbehave.
     let primary = unsafe { GetMonitorInfoW(hmonitor, &mut info) }.as_bool()
         && info.dwFlags & MONITORINFOF_PRIMARY != 0;
     let (mut dpi_x, mut dpi_y) = (96u32, 96u32);
+    // SAFETY: both DPI outputs are locals that outlive the call; a stale
+    // `hmonitor` makes it fail, not misbehave.
     unsafe { GetDpiForMonitor(hmonitor, MDT_EFFECTIVE_DPI, &mut dpi_x, &mut dpi_y) }
         .with_context(|| format!("GetDpiForMonitor failed for {device_name}"))?;
 
@@ -655,7 +693,12 @@ pub fn select<'a>(monitors: &'a [Monitor], spec: Option<&str>) -> Result<&'a Mon
         }
         None => {
             let mut point = POINT::default();
+            // SAFETY: `point` is a local that outlives the call, which
+            // writes one POINT to it.
             unsafe { GetCursorPos(&mut point)? };
+            // SAFETY: takes the point by value; MONITOR_DEFAULTTONULL makes
+            // a point off every monitor return a null handle, which is only
+            // compared, never used.
             let under = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONULL) };
             monitors
                 .iter()
@@ -683,6 +726,8 @@ pub fn windows_build() -> u32 {
         dwOSVersionInfoSize: size_of::<OSVERSIONINFOW>() as u32,
         ..Default::default()
     };
+    // SAFETY: `info` is a local OSVERSIONINFOW whose size field matches
+    // its type, so the kernel fills no more than it holds.
     match unsafe { RtlGetVersion(&mut info) }.ok() {
         Ok(()) => info.dwBuildNumber,
         Err(_) => 0,

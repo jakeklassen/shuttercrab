@@ -121,11 +121,20 @@ impl Capture {
 /// The monitor under the pointer. Cheap; no service round trip.
 pub fn monitor_under_pointer() -> Option<MonitorId> {
     // Physical coordinates, whatever the calling thread's DPI awareness.
+    // SAFETY: the context is one of the predefined pseudo-handles; this only
+    // changes the calling thread's awareness, and the old one is put back
+    // below.
     let previous =
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
     let mut point = POINT::default();
+    // SAFETY: `point` is a local that outlives the call, which writes one
+    // POINT to it.
     let found = unsafe { GetCursorPos(&mut point) };
+    // SAFETY: takes the point by value and returns a handle, no pointers.
     let monitor = unsafe { MonitorFromPoint(point, MONITOR_DEFAULTTONEAREST) };
+    // SAFETY: `previous` is the context this thread had a moment ago, as
+    // returned above; if that call failed it is null, which Windows rejects
+    // without effect.
     unsafe { SetThreadDpiAwarenessContext(previous) };
     found.ok()?;
     (!monitor.is_invalid()).then_some(monitor_id(monitor))
@@ -158,7 +167,12 @@ impl Service {
         // Windows.Graphics.Capture needs a WinRT apartment on this thread, and
         // monitor bounds are only physical pixels for DPI-aware code: make
         // this thread aware whatever the host process declares.
+        // SAFETY: this is the service thread's own start; joining the MTA
+        // takes no pointers. It is never uninitialized: the apartment lasts
+        // as long as the thread, which outlives every COM object it makes.
         let _ = unsafe { RoInitialize(RO_INIT_MULTITHREADED) };
+        // SAFETY: the context is a predefined pseudo-handle, and it changes
+        // only this thread's awareness.
         unsafe { SetThreadDpiAwarenessContext(DPI_AWARENESS_CONTEXT_PER_MONITOR_AWARE_V2) };
         for request in inbox {
             match request {
@@ -293,6 +307,9 @@ impl Service {
     fn capture_window(&mut self, id: WindowId, include_cursor: bool) -> Result<Screenshot> {
         let started = Instant::now();
         let window = hwnd(id);
+        // SAFETY: a window handle is only a value Windows checks, so one
+        // that has closed cannot be misused; the returned monitor handle is
+        // only compared with the listed ones below.
         let nearest = unsafe { MonitorFromWindow(window, MONITOR_DEFAULTTONEAREST) };
         let monitors = list_monitors()?;
         let monitor = monitors

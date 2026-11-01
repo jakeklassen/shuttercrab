@@ -29,14 +29,28 @@ pub(super) struct Decoder {
     _manager: IMFDXGIDeviceManager,
 }
 
-// SAFETY: Media Foundation's decoder and device manager are free-threaded
-// (created in the multithreaded apartment); the player uses the decoder
-// from one thread at a time, behind a mutex.
+// SAFETY: `transform` and `_manager` are this struct's own references. Both
+// are made in `LivePlayer::new`, whose `Started` puts that thread in the
+// multithreaded apartment first, and the apartment lives as long as the
+// player. An object made from the MTA may be called from any thread in it
+// (directly if it is free-threaded, as Windows' H.264 decoder,
+// ThreadingModel=Both, and the DXGI device manager are; through a proxy if
+// not), and threads that never chose an apartment join the MTA implicitly
+// while it exists. Media Foundation's decoders only ask that calls do not
+// overlap: `Decoder` is not `Sync`, and the player reaches it only through
+// `Mutex<video::Decoder>`. The Direct3D device they share is multithread
+// protected (`Gpu::from_device`).
 unsafe impl Send for Decoder {}
 
 impl Decoder {
     pub(super) fn new(gpu: &Gpu, w: u32, h: u32, fps: u32, codec: VideoCodec) -> Result<Self> {
         let (coded, wanted) = subtypes(codec);
+        // SAFETY: on the thread making the player, in the MTA and after
+        // MFStartup. Calls are on the decoder, manager and media type made
+        // here; `token` and `manager` live across the call that fills them,
+        // and the GUIDs across the calls that read them. The decoder takes
+        // its own reference to the manager passed by pointer in
+        // MFT_MESSAGE_SET_D3D_MANAGER, and `_manager` keeps one too.
         unsafe {
             let transform = decoder(codec)?;
             let attributes = transform.GetAttributes()?;
@@ -96,11 +110,17 @@ impl Decoder {
         // Read by each picture, set by a change of stream between them.
         let kind = std::cell::Cell::new(self.kind);
         let mut out = |sample: IMFSample| -> Result<()> {
+            // SAFETY: calls on a sample the decoder handed over and its
+            // buffer; `raw` lives across GetResource, and is taken as said
+            // below.
             unsafe {
                 let buffer: IMFDXGIBuffer = sample.GetBufferByIndex(0)?.cast()?;
                 let mut raw = std::ptr::null_mut();
                 buffer.GetResource(&ID3D11Texture2D::IID, &mut raw)?;
-                // SAFETY: GetResource hands over a reference to the texture.
+                // SAFETY: GetResource succeeded, so `raw` is a non-null
+                // ID3D11Texture2D (the IID asked for) carrying one reference
+                // that is ours; `from_raw` takes over that reference, and it
+                // is released once when `texture` drops.
                 let texture = ID3D11Texture2D::from_raw(raw);
                 picture(
                     sample.GetSampleTime()?,
@@ -132,6 +152,11 @@ impl Decoder {
 /// The size of the decoder's pictures: the part shown, without the rows
 /// that round the coded picture up to whole macroblocks.
 fn picture_size(transform: &IMFTransform) -> Result<(u32, u32)> {
+    // SAFETY: `transform` is the caller's decoder, used by one thread at a
+    // time. GetBlob writes into a byte view of `area` that is exactly
+    // `size_of::<MFVideoArea>()` long, failing rather than writing past it
+    // if the blob is bigger; `area` is plain integers, so any bytes are a
+    // valid value, and it outlives the view.
     unsafe {
         let output = transform.GetOutputCurrentType(0)?;
         let mut area = MFVideoArea::default();
@@ -151,6 +176,8 @@ fn picture_size(transform: &IMFTransform) -> Result<(u32, u32)> {
 /// Have the decoder write `wanted` if it offers it, NV12 if not (HEVC's
 /// offers P010 only once it has read that the stream is 10 bits): which.
 fn choose(transform: &IMFTransform, wanted: GUID) -> Result<DXGI_FORMAT> {
+    // SAFETY: `transform` is the caller's decoder, used by one thread at a
+    // time; each media type it offers lives across the GetGUID read of it.
     let offered = |subtype: GUID| unsafe {
         (0..)
             .map_while(|index| transform.GetOutputAvailableType(0, index).ok())
@@ -161,6 +188,8 @@ fn choose(transform: &IMFTransform, wanted: GUID) -> Result<DXGI_FORMAT> {
     } else {
         MFVideoFormat_NV12
     };
+    // SAFETY: `offered` is a media type the decoder made, borrowed for the
+    // read.
     choose_output(transform, |offered| unsafe {
         offered.GetGUID(&MF_MT_SUBTYPE).ok() == Some(subtype)
     })?;
@@ -188,6 +217,9 @@ pub(super) fn decodes(codec: VideoCodec) -> bool {
 
 /// Windows' decoder for `codec`.
 fn decoder(codec: VideoCodec) -> Result<IMFTransform> {
+    // SAFETY: called from `Decoder::new`, on a thread in COM; the CLSID is
+    // a static, and ActivateObject is called on an activation object
+    // `installed` handed over.
     unsafe {
         match codec {
             VideoCodec::H264 => {
@@ -210,6 +242,8 @@ fn installed(codec: VideoCodec) -> Result<Option<IMFActivate>> {
         guidSubtype: subtypes(codec).0,
     };
     let (mut found, mut count) = (std::ptr::null_mut(), 0);
+    // SAFETY: `input`, `found` and `count` live across MFTEnumEx. The array
+    // it hands over is read and freed as said below, once.
     unsafe {
         MFTEnumEx(
             MFT_CATEGORY_VIDEO_DECODER,
@@ -224,6 +258,11 @@ fn installed(codec: VideoCodec) -> Result<Option<IMFActivate>> {
         }
         // SAFETY: MFTEnumEx hands over an array of `count` activation
         // objects, each to release, in memory to free with CoTaskMemFree.
+        // `Option<IMFActivate>` has the layout of the nullable pointers it
+        // holds, CoTaskMemAlloc aligns the array for them, and the slice
+        // is the only view of it. Every reference is taken out (one kept,
+        // the rest released) before the array is freed, and the slice is not
+        // used after.
         let list = std::slice::from_raw_parts_mut(found, count as usize);
         let best = list.first_mut().and_then(Option::take);
         for rest in list.iter_mut() {
@@ -252,6 +291,9 @@ fn bgra(
         )
         .context("no BGRA texture")?;
     let mut view = None;
+    // SAFETY: `texture` was just made on `gpu.device`, the device `device`
+    // and `enumerator` belong to; the descriptor is a temporary that lives
+    // across the call, and `view` lives across it for the view written out.
     unsafe {
         device.CreateVideoProcessorOutputView(
             &texture,
@@ -305,6 +347,12 @@ impl Pictures {
             OutputHeight: h,
             Usage: D3D11_VIDEO_USAGE_PLAYBACK_NORMAL,
         };
+        // SAFETY: `device` and `video` are `gpu`'s device and immediate
+        // context, which is multithread protected, so this may run on the
+        // drawing thread while the decoder uses the device. The enumerator,
+        // processor, textures and views are all made here on that device.
+        // `content`, the view descriptor and `input` live across the calls
+        // that read or fill them.
         unsafe {
             let enumerator = device
                 .CreateVideoProcessorEnumerator(&content)
@@ -394,6 +442,13 @@ impl Pictures {
             bottom: h,
             back: 1,
         };
+        // SAFETY: `self.decoded` was made on `gpu.device`, and `texture` is
+        // the decoder's, made on the same device through the device manager.
+        // `index` is the subresource the decoder named. The box is the
+        // picture's size, which `decoded` is and the decoder's texture is
+        // at least (it is rounded up to whole macroblocks); Direct3D drops a
+        // copy whose box falls outside. `area` lives across the call, and
+        // the context is multithread protected.
         unsafe {
             gpu.context.CopySubresourceRegion(
                 &self.decoded,
@@ -411,12 +466,18 @@ impl Pictures {
             pInputSurface: std::mem::ManuallyDrop::new(Some(self.input.clone())),
             ..Default::default()
         }];
+        // SAFETY: the processor and both views were made together on this
+        // device in `new`; `streams` lives across the call, which only reads
+        // it and does not take over the input view's reference.
         let result = unsafe {
             self.video
                 .VideoProcessorBlt(&self.processor, &self.output, 0, &streams)
         };
         // Release the reference the stream took.
         let [mut stream] = streams;
+        // SAFETY: `pInputSurface` holds the one reference cloned in above,
+        // and `stream` is moved out of `streams` and not used again, so it
+        // is released exactly once.
         unsafe { std::mem::ManuallyDrop::drop(&mut stream.pInputSurface) };
         result.context("VideoProcessorBlt failed")
     }
@@ -429,10 +490,17 @@ impl Pictures {
     /// picture's size: whether it did.
     pub(super) fn copy_to(&self, gpu: &Gpu, target: &ID3D11Texture2D) -> bool {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `target` is a live texture the caller lent; `desc` lives
+        // across the call that fills it.
         unsafe { target.GetDesc(&mut desc) };
         if (desc.Width, desc.Height) != self.kind.size {
             return false;
         }
+        // SAFETY: `self.bgra` is on `gpu.device`, and `target` is the
+        // caller's texture of that device ([`LivePlayer::draw`] asks for
+        // one), checked just above to be the same size. Direct3D drops a
+        // copy between textures of other formats. The context is
+        // multithread protected.
         unsafe { gpu.context.CopyResource(target, &self.bgra) };
         true
     }

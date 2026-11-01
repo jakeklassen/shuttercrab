@@ -60,6 +60,9 @@ impl Gpu {
         flags: D3D11_CREATE_DEVICE_FLAG,
     ) -> Result<Self> {
         let (mut device, mut context) = (None, None);
+        // SAFETY: `adapter`, the feature-level slice and the two out slots
+        // all live across the call, and no software module is passed, as
+        // the driver types used here require.
         unsafe {
             D3D11CreateDevice(
                 adapter,
@@ -84,11 +87,17 @@ impl Gpu {
     /// enabled).
     pub fn from_device(device: ID3D11Device, context: ID3D11DeviceContext) -> Result<Self> {
         // WGC's free-threaded frame pool uses this device from its own thread.
+        // SAFETY: `context` is a live immediate context, and turning on its
+        // lock takes no pointers. Every `Gpu` is made here, so every one
+        // has it: windows-rs lets the context be shared between threads,
+        // and the lock is what makes each call on it whole.
         unsafe {
             let _ = context
                 .cast::<ID3D11Multithread>()?
                 .SetMultithreadProtected(true);
         }
+        // SAFETY: plain calls on live COM objects; the description comes
+        // back by value, and its name is read only up to the array's end.
         let adapter_name = unsafe {
             let dxgi = device.cast::<IDXGIDevice>()?.GetAdapter()?.GetDesc()?;
             wide_to_string(&dxgi.Description)
@@ -103,6 +112,8 @@ impl Gpu {
     /// The same device, as the WinRT object Windows.Graphics.Capture takes.
     pub fn winrt_device(&self) -> Result<IDirect3DDevice> {
         let dxgi = self.device.cast::<IDXGIDevice>()?;
+        // SAFETY: `dxgi` is this device, alive across the call; the WinRT
+        // wrapper takes its own reference.
         Ok(unsafe { CreateDirect3D11DeviceFromDXGIDevice(&dxgi)? }.cast()?)
     }
 
@@ -134,6 +145,10 @@ impl Gpu {
             SysMemSlicePitch: 0,
         });
         let mut texture = None;
+        // SAFETY: `desc` and `data` live across the call. With initial data
+        // the driver reads `height` rows `pitch` apart from `bytes`, which
+        // the caller sizes to match (`upload_rgba16f` checks it); nothing
+        // here checks it for other callers.
         unsafe {
             self.device.CreateTexture2D(
                 &desc,
@@ -163,11 +178,15 @@ impl Gpu {
     /// done (PRD §23). Released textures otherwise stay allocated for
     /// reuse: about 400 MB after one 4K capture, kept while Shuttercrab idles.
     pub fn trim(&self) {
+        // SAFETY: plain calls on the live immediate context, which is
+        // multithread-protected (see `from_device`). `ClearState` first
+        // unbinds everything, as `Trim` asks.
         unsafe {
             self.context.ClearState();
             self.context.Flush();
         }
         if let Ok(dxgi) = self.device.cast::<IDXGIDevice3>() {
+            // SAFETY: `dxgi` is this live device; `Trim` takes no arguments.
             unsafe { dxgi.Trim() };
         }
     }
@@ -175,6 +194,7 @@ impl Gpu {
     /// Copy a texture to system memory, tightly packed.
     pub fn read_back(&self, texture: &ID3D11Texture2D) -> Result<Vec<u8>> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `texture` is a live texture and `desc` a local it fills.
         unsafe { texture.GetDesc(&mut desc) };
         let bytes_per_pixel = match desc.Format {
             DXGI_FORMAT_R16G16B16A16_FLOAT => 8,
@@ -194,6 +214,8 @@ impl Gpu {
         desc.CPUAccessFlags = D3D11_CPU_ACCESS_READ.0 as u32;
         desc.MiscFlags = 0;
         let mut staging = None;
+        // SAFETY: `desc` and the out slot live across the call; a staging
+        // texture takes no initial data.
         unsafe {
             self.device
                 .CreateTexture2D(&desc, None, Some(&mut staging))?;
@@ -211,6 +233,12 @@ impl Gpu {
                 bottom: top + rows,
                 back: 1,
             };
+            // SAFETY: `area` covers rows `top..top + rows` of `texture`,
+            // inside it, and lands at the staging texture's top, which is
+            // `band` (≥ `rows`) rows tall with the same width and format.
+            // `area` and `map` live across the calls that take them. The
+            // mapping is read only between `Map` and `Unmap`; if `Map`
+            // fails there is nothing to unmap.
             unsafe {
                 self.context
                     .CopySubresourceRegion(&staging, 0, 0, 0, 0, texture, 0, Some(&area));
@@ -337,6 +365,7 @@ impl SdrConverter {
         anchor: Anchor,
     ) -> Result<SdrFrame> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `source` is a live texture and `desc` a local it fills.
         unsafe { source.GetDesc(&mut desc) };
         let output = gpu.texture(
             desc.Width,
@@ -377,6 +406,7 @@ impl SdrConverter {
             "invalid SDR white scale {white_scale}"
         );
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `source` is a live texture and `desc` a local it fills.
         unsafe { source.GetDesc(&mut desc) };
         ensure!(
             desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -393,6 +423,7 @@ impl SdrConverter {
             None,
         )?;
         let mut out_desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `output` is a live texture and `out_desc` a local it fills.
         unsafe { output.GetDesc(&mut out_desc) };
         ensure!(
             (out_desc.Width, out_desc.Height) == (width, height),
@@ -505,6 +536,7 @@ impl VideoConverter {
         every: u32,
     ) -> Result<Self> {
         let mut desc = D3D11_TEXTURE2D_DESC::default();
+        // SAFETY: `source` is a live texture and `desc` a local it fills.
         unsafe { source.GetDesc(&mut desc) };
         ensure!(
             desc.Format == DXGI_FORMAT_R16G16B16A16_FLOAT,
@@ -582,6 +614,10 @@ impl VideoConverter {
                 highlight_mode,
                 unused: [0; 2],
             };
+            // SAFETY: with no box, the whole of `self.params` is written
+            // from `params`. That buffer is `size_of::<Params>()` rounded up
+            // to 16 bytes, and `Params` is 32 bytes, so exactly `params` is
+            // read; it lives across the call.
             unsafe {
                 ctx.UpdateSubresource(&self.params, 0, None, (&raw const params).cast(), 0, 0)
             };
@@ -612,6 +648,9 @@ impl VideoConverter {
                 [Some(self.params.clone()), None],
                 (self.tiles_x, self.tiles_y),
             );
+            // SAFETY: both buffers were made in `new` on this device, the
+            // same size, so the copy is whole. None is left mapped:
+            // `read_staging` unmaps before it returns.
             unsafe { ctx.CopyResource(&self.staging[free], &self.stats) };
             self.in_flight.push_back(free);
         }
@@ -639,6 +678,10 @@ impl VideoConverter {
             let mut analysis = analysis_from_tiles(stats, self.tiles_x, self.tiles_y);
             anchor(&mut analysis);
             let region_params = region_params(&analysis.regions);
+            // SAFETY: as for `params` above: `self.regions` is
+            // `size_of::<RegionParams>()` (656, already a multiple of 16)
+            // bytes, so the whole of `region_params` is read, and it lives
+            // across the call.
             unsafe {
                 ctx.UpdateSubresource(
                     &self.regions,
@@ -678,6 +721,9 @@ fn dispatch_pass(
     groups: (u32, u32),
 ) {
     unbind_views(ctx);
+    // SAFETY: the shader, views and buffers are live and were made on this
+    // context's device. `outputs` holds the 3 views the count says, and
+    // lives across the call; no UAV initial counts are passed.
     unsafe {
         ctx.CSSetShader(shader, None);
         ctx.CSSetConstantBuffers(0, Some(&buffers));
@@ -690,10 +736,13 @@ fn dispatch_pass(
 /// Unbind the passes' views and shader, so the output can be used elsewhere.
 fn unbind_compute(ctx: &ID3D11DeviceContext) {
     unbind_views(ctx);
+    // SAFETY: unbinding the shader takes no pointers.
     unsafe { ctx.CSSetShader(None, None) };
 }
 
 fn unbind_views(ctx: &ID3D11DeviceContext) {
+    // SAFETY: the array of 3 empty views lives to the end of the statement,
+    // across the call, and the count is 3; no initial counts are passed.
     unsafe {
         ctx.CSSetUnorderedAccessViews(0, 3, Some([None, None, None].as_ptr()), None);
         ctx.CSSetShaderResources(0, Some(&[None, None]));
@@ -743,6 +792,8 @@ fn region_params(regions: &[HdrRegion]) -> RegionParams {
 /// A constant buffer updated with `UpdateSubresource`.
 pub(crate) fn default_buffer(gpu: &Gpu, bytes: u32) -> Result<ID3D11Buffer> {
     let mut buffer = None;
+    // SAFETY: the description and the out slot live across the call, and
+    // no initial data is passed, so nothing is read from memory.
     unsafe {
         gpu.device.CreateBuffer(
             &D3D11_BUFFER_DESC {
@@ -760,6 +811,8 @@ pub(crate) fn default_buffer(gpu: &Gpu, bytes: u32) -> Result<ID3D11Buffer> {
 
 fn staging_buffer(gpu: &Gpu, bytes: u32) -> Result<ID3D11Buffer> {
     let mut buffer = None;
+    // SAFETY: the description and the out slot live across the call, and
+    // no initial data is passed, so nothing is read from memory.
     unsafe {
         gpu.device.CreateBuffer(
             &D3D11_BUFFER_DESC {
@@ -790,6 +843,8 @@ fn read_staging(
         D3D11_MAP_FLAG_DO_NOT_WAIT.0 as u32
     };
     let mut map = D3D11_MAPPED_SUBRESOURCE::default();
+    // SAFETY: `staging` is a live CPU-readable staging buffer on this
+    // device, and `map` a local it fills. A failed `Map` maps nothing.
     match unsafe {
         gpu.context
             .Map(staging, 0, D3D11_MAP_READ, flags, Some(&mut map))
@@ -808,6 +863,8 @@ fn read_staging(
     let values = unsafe {
         std::slice::from_raw_parts(map.pData.cast::<GpuTileStat>(), count as usize).to_vec()
     };
+    // SAFETY: `staging` was mapped above, and nothing points into the
+    // mapping any more: the values were copied out.
     unsafe { gpu.context.Unmap(staging, 0) };
     Ok(Some(values))
 }
@@ -823,6 +880,8 @@ fn packed_uav(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11UnorderedAcc
         },
     };
     let mut view = None;
+    // SAFETY: `texture` is live, and `desc` and the out slot live across
+    // the call. A format the texture cannot be viewed as fails the call.
     unsafe {
         gpu.device
             .CreateUnorderedAccessView(texture, Some(&desc), Some(&mut view))?
@@ -832,6 +891,10 @@ fn packed_uav(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11UnorderedAcc
 
 fn constant_buffer<T>(gpu: &Gpu, value: &T) -> Result<ID3D11Buffer> {
     let mut buffer = None;
+    // SAFETY: the initial data is `value`, and the buffer is
+    // `size_of::<T>()` bytes, so the driver reads exactly the borrowed
+    // value, which outlives the call. A size that is not a multiple of 16
+    // fails the call rather than reading more.
     unsafe {
         gpu.device.CreateBuffer(
             &D3D11_BUFFER_DESC {
@@ -852,6 +915,8 @@ fn constant_buffer<T>(gpu: &Gpu, value: &T) -> Result<ID3D11Buffer> {
 
 fn structured_buffer(gpu: &Gpu, count: u32, stride: u32) -> Result<ID3D11Buffer> {
     let mut buffer = None;
+    // SAFETY: the description and the out slot live across the call, and
+    // no initial data is passed, so nothing is read from memory.
     unsafe {
         gpu.device.CreateBuffer(
             &D3D11_BUFFER_DESC {
@@ -882,6 +947,8 @@ fn buffer_uav(gpu: &Gpu, buffer: &ID3D11Buffer, count: u32) -> Result<ID3D11Unor
         },
     };
     let mut view = None;
+    // SAFETY: `buffer` is live, and `desc` and the out slot live across the
+    // call. A view larger than the buffer fails the call.
     unsafe {
         gpu.device
             .CreateUnorderedAccessView(buffer, Some(&desc), Some(&mut view))?
@@ -892,6 +959,8 @@ fn buffer_uav(gpu: &Gpu, buffer: &ID3D11Buffer, count: u32) -> Result<ID3D11Unor
 /// Copy a buffer of `count` tile stats to system memory, waiting for the GPU.
 fn read_tile_stats(gpu: &Gpu, buffer: &ID3D11Buffer, count: u32) -> Result<Vec<GpuTileStat>> {
     let staging = staging_buffer(gpu, count * size_of::<GpuTileStat>() as u32)?;
+    // SAFETY: `staging` was just made on this device at the size of
+    // `count` stats, as `buffer` is, and is not mapped.
     unsafe { gpu.context.CopyResource(&staging, buffer) };
     let stats = read_staging(gpu, &staging, count, true)?;
     Ok(stats.expect("a waiting read always returns the values"))
@@ -899,6 +968,8 @@ fn read_tile_stats(gpu: &Gpu, buffer: &ID3D11Buffer, count: u32) -> Result<Vec<G
 
 pub(crate) fn srv(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11ShaderResourceView> {
     let mut view = None;
+    // SAFETY: `texture` is live and the out slot lives across the call; no
+    // description means a view of the whole texture in its own format.
     unsafe {
         gpu.device
             .CreateShaderResourceView(texture, None, Some(&mut view))?
@@ -908,6 +979,8 @@ pub(crate) fn srv(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11ShaderRe
 
 pub(crate) fn uav(gpu: &Gpu, texture: &ID3D11Texture2D) -> Result<ID3D11UnorderedAccessView> {
     let mut view = None;
+    // SAFETY: `texture` is live and the out slot lives across the call; no
+    // description means a view of the whole texture in its own format.
     unsafe {
         gpu.device
             .CreateUnorderedAccessView(texture, None, Some(&mut view))?
@@ -928,6 +1001,9 @@ pub(crate) fn compile_source(
     entry: PCSTR,
 ) -> Result<ID3D11ComputeShader> {
     let (mut code, mut errors) = (None, None);
+    // SAFETY: the source is passed with its length, so it needs no NUL.
+    // `name`, `entry` and the profile are NUL-terminated strings (every
+    // caller passes `s!` literals), and the out slots live across the call.
     let result = unsafe {
         D3DCompile(
             source.as_ptr().cast(),
@@ -949,11 +1025,15 @@ pub(crate) fn compile_source(
         let detail = errors.map(|b| blob_text(&b)).unwrap_or_default();
         return Err(anyhow!(
             "shader {} failed to compile: {e}\n{detail}",
+            // SAFETY: `entry` is a NUL-terminated `s!` literal, as above.
             unsafe { entry.display() }
         ));
     }
     let code = code.context("D3DCompile returned no bytecode")?;
     let mut shader = None;
+    // SAFETY: the blob owns `GetBufferSize` bytes at `GetBufferPointer`,
+    // and `code` keeps it alive past the slice's last use. Bytes need no
+    // alignment, and the driver copies the bytecode before returning.
     unsafe {
         let bytes =
             std::slice::from_raw_parts(code.GetBufferPointer().cast::<u8>(), code.GetBufferSize());
@@ -964,6 +1044,9 @@ pub(crate) fn compile_source(
 }
 
 fn blob_text(blob: &ID3DBlob) -> String {
+    // SAFETY: the blob owns `GetBufferSize` bytes at `GetBufferPointer`,
+    // and the borrow keeps it alive while the bytes are copied into the
+    // `String`. Bytes need no alignment.
     unsafe {
         let bytes =
             std::slice::from_raw_parts(blob.GetBufferPointer().cast::<u8>(), blob.GetBufferSize());
