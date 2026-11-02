@@ -2039,6 +2039,25 @@ fn quick_redact_blacks_out_emails_and_phones_as_one_change(cx: &mut TestAppConte
     press(cx, &opened, &["escape", "q"]);
     assert_eq!(redactions(cx, &opened), 1);
     assert_eq!(notice(cx).as_deref(), Some("1 item redacted"));
+    // Only IP addresses, of which the text has none: it says what it
+    // looked for.
+    press(cx, &opened, &["shift-q"]);
+    for _ in 0..4 {
+        press(cx, &opened, &["down", "enter"]);
+    }
+    {
+        let settings = opened.settings.borrow();
+        let kept = (
+            settings.redact_phones,
+            settings.redact_cards,
+            settings.redact_keys,
+            settings.redact_ips,
+        );
+        assert_eq!(kept, (false, false, false, true));
+    }
+    press(cx, &opened, &["escape", "q"]);
+    assert_eq!(redactions(cx, &opened), 1);
+    assert_eq!(notice(cx).as_deref(), Some("No IP addresses found"));
     // Redactions are marks: the copied screenshot has them.
     press(cx, &opened, &["escape", "ctrl-c"]);
     assert_eq!(opened.seen.copied_marks.get(), 1);

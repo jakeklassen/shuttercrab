@@ -1,9 +1,15 @@
 //! The text read from a screenshot ([`shuttercrab_platform::ocr`]), and
 //! what Text actions do with it: pick words as a text selection does, in
-//! reading order; copy them as lines; find email addresses and phone
-//! numbers; and size the black boxes that redact them.
+//! reading order; copy them as lines; find email addresses, phone
+//! numbers, card numbers, keys and IP addresses; and size the black boxes
+//! that redact them.
 
 use crate::markup::Redaction;
+use cloakrs_core::Recognizer;
+use cloakrs_patterns::{
+    ApiKeyRecognizer, AwsAccessKeyRecognizer, CreditCardRecognizer, IbanRecognizer,
+    IpAddressRecognizer, JwtRecognizer,
+};
 pub use shuttercrab_platform::ocr::{Line, Rect, Text, Word};
 
 /// A word's place: its line, and its place in the line.
@@ -302,15 +308,44 @@ fn distance(v: f32, low: f32, high: f32) -> f32 {
 }
 
 /// What Quick redact looks for.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct Finds {
     pub emails: bool,
     pub phones: bool,
+    /// Card numbers and IBANs.
+    pub cards: bool,
+    /// API keys, access tokens and other secrets.
+    pub keys: bool,
+    pub ips: bool,
 }
 
-/// The email addresses and phone numbers in `text`, as `finds` asks, each
-/// as the words it covers.
+impl Finds {
+    /// Whether it looks for anything.
+    pub fn any(self) -> bool {
+        self.emails || self.phones || self.cards || self.keys || self.ips
+    }
+}
+
+/// Card numbers that pass the card check digit, and bank account numbers
+/// (IBANs) that pass theirs.
+const CARDS: &[&dyn Recognizer] = &[&CreditCardRecognizer, &IbanRecognizer];
+/// AWS access keys, JSON web tokens, and values labelled as a key, token
+/// or secret (`api_key = …`, `Authorization: Bearer …`).
+const KEYS: &[&dyn Recognizer] = &[&AwsAccessKeyRecognizer, &JwtRecognizer, &ApiKeyRecognizer];
+/// IPv4 and IPv6 addresses.
+const IPS: &[&dyn Recognizer] = &[&IpAddressRecognizer];
+
+/// What `finds` asks for in `text`, each as the words it covers. Email
+/// addresses and phone numbers are found here, as OCR reads them (split at
+/// an @ or a dot, cut short in a cell); cards, keys and IP addresses by
+/// `cloakrs`, in each run's words read as one line.
 pub fn sensitive(text: &Text, finds: Finds) -> Vec<Span> {
+    let recognizers: Vec<&dyn Recognizer> =
+        [(finds.cards, CARDS), (finds.keys, KEYS), (finds.ips, IPS)]
+            .into_iter()
+            .filter(|(wanted, _)| *wanted)
+            .flat_map(|(_, recognizers)| recognizers.iter().copied())
+            .collect();
     let mut found = Vec::new();
     for run in runs(text) {
         let words: Vec<Word> = run
@@ -324,9 +359,36 @@ pub fn sensitive(text: &Text, finds: Finds) -> Vec<Span> {
         if finds.phones {
             found.extend(phone_runs(&words).into_iter().map(span));
         }
+        found.extend(recognized(&recognizers, &words).into_iter().map(span));
     }
     found.sort_by_key(|span| span.first);
+    found.dedup();
     found
+}
+
+/// What `recognizers` find in `words` read as one line, a space between
+/// each: by the first and last word each find reaches into.
+fn recognized(recognizers: &[&dyn Recognizer], words: &[Word]) -> Vec<(usize, usize)> {
+    if recognizers.is_empty() || words.is_empty() {
+        return Vec::new();
+    }
+    let mut line = String::new();
+    let mut starts = Vec::with_capacity(words.len());
+    for word in words {
+        if !line.is_empty() {
+            line.push(' ');
+        }
+        starts.push(line.len());
+        line.push_str(&word.text);
+    }
+    // The word a byte of `line` is in, or the space after it.
+    let word_at = |byte: usize| starts.partition_point(|&start| start <= byte) - 1;
+    recognizers
+        .iter()
+        .flat_map(|recognizer| recognizer.scan(&line))
+        .filter(|found| found.span.end > found.span.start)
+        .map(|found| (word_at(found.span.start), word_at(found.span.end - 1)))
+        .collect()
 }
 
 /// The words of `text`, in runs of lines that read on from each other: on
@@ -634,6 +696,7 @@ mod tests {
         let finds = Finds {
             emails: true,
             phones: true,
+            ..Finds::default()
         };
         let hidden: Vec<Redaction> = sensitive(&text, finds)
             .into_iter()
@@ -704,6 +767,7 @@ mod tests {
         let both = Finds {
             emails: true,
             phones: true,
+            ..Finds::default()
         };
         assert_eq!(
             sensitive(&text, both),
@@ -715,6 +779,7 @@ mod tests {
         let emails = Finds {
             emails: true,
             phones: false,
+            ..Finds::default()
         };
         assert_eq!(sensitive(&text, emails).len(), 1);
     }
@@ -730,6 +795,7 @@ mod tests {
         let finds = Finds {
             emails: true,
             phones: true,
+            ..Finds::default()
         };
         // OCR read the row as two lines, the number's parts in both.
         let row = reading_order(text(vec![
@@ -772,6 +838,7 @@ mod tests {
         let emails = Finds {
             emails: true,
             phones: false,
+            ..Finds::default()
         };
         assert_eq!(
             sensitive(&text, emails),
@@ -825,6 +892,42 @@ mod tests {
         ] {
             assert_eq!(found(no), [], "{no:?}");
         }
+    }
+
+    #[test]
+    fn quick_redact_finds_cards_keys_and_ip_addresses() {
+        let found = |words: &[&str], finds| sensitive(&text(vec![line(0., words)]), finds);
+        let one = |first, last| [Span::between(at(0, first), at(0, last))];
+        let cards = Finds {
+            cards: true,
+            ..Finds::default()
+        };
+        // OCR reads a card number as four words, an IBAN as six.
+        let card = ["Card", "4111", "1111", "1111", "1111", "exp"];
+        assert_eq!(found(&card, cards), one(1, 4));
+        let iban = ["IBAN", "GB82", "WEST", "1234", "5698", "7654", "32"];
+        assert_eq!(found(&iban, cards), one(1, 6));
+        // Sixteen digits that fail the check digit are no card.
+        assert_eq!(found(&["4111", "1111", "1111", "1112"], cards), []);
+
+        let keys = Finds {
+            keys: true,
+            ..Finds::default()
+        };
+        let labelled = ["api_key", "=", "sk_live_51HxQ2abcdefghijklmnop"];
+        assert_eq!(found(&labelled, keys), one(2, 2));
+        assert_eq!(found(&["aws", "AKIAIOSFODNN7EXAMPLE"], keys), one(1, 1));
+
+        let ips = Finds {
+            ips: true,
+            ..Finds::default()
+        };
+        let hosts = ["server", "10.0.0.12", "and", "fe80::1ff:fe23:4567:890a"];
+        assert_eq!(found(&hosts, ips), [one(1, 1)[0], one(3, 3)[0]]);
+        assert_eq!(found(&["version", "0.1.35"], ips), []);
+
+        // Not asked for, not found.
+        assert_eq!(found(&card, Finds::default()), []);
     }
 
     #[test]
