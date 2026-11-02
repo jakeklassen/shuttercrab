@@ -10,6 +10,10 @@ license.workspace = true
 [dependencies]
 anyhow = "1"
 chrono = { version = "0.4", default-features = false, features = ["std", "clock"] }
+# Quick redact's card numbers, IBANs, keys and IP addresses; -core has the
+# trait they share, and moves with -patterns.
+cloakrs-core = "0.4"
+cloakrs-patterns = "0.4"
 dirs = "7"
 shuttercrab-capture = { path = "../shuttercrab-capture" }
 shuttercrab-platform = { path = "../shuttercrab-platform" }

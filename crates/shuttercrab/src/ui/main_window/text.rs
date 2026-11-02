@@ -79,13 +79,19 @@ enum TextMenu {
 enum RedactItem {
     Emails,
     Phones,
+    Cards,
+    Keys,
+    Ips,
     RemoveAll,
 }
 
 impl RedactItem {
-    const ALL: [RedactItem; 3] = [
+    const ALL: [RedactItem; 6] = [
         RedactItem::Emails,
         RedactItem::Phones,
+        RedactItem::Cards,
+        RedactItem::Keys,
+        RedactItem::Ips,
         RedactItem::RemoveAll,
     ];
 
@@ -93,8 +99,40 @@ impl RedactItem {
         match self {
             RedactItem::Emails => "Email addresses",
             RedactItem::Phones => "Phone numbers",
+            RedactItem::Cards => "Card and bank numbers",
+            RedactItem::Keys => "Keys and tokens",
+            RedactItem::Ips => "IP addresses",
             RedactItem::RemoveAll => "Remove all redactions",
         }
+    }
+
+    /// Whether `finds` looks for it; `None` for Remove all redactions.
+    fn ticked(self, finds: Finds) -> Option<bool> {
+        match self {
+            RedactItem::Emails => Some(finds.emails),
+            RedactItem::Phones => Some(finds.phones),
+            RedactItem::Cards => Some(finds.cards),
+            RedactItem::Keys => Some(finds.keys),
+            RedactItem::Ips => Some(finds.ips),
+            RedactItem::RemoveAll => None,
+        }
+    }
+}
+
+/// What a Quick redact that found nothing of what `finds` asks for says:
+/// what it looked for, when that was one thing.
+fn none_found(finds: Finds) -> &'static str {
+    let asked: Vec<RedactItem> = RedactItem::ALL
+        .into_iter()
+        .filter(|item| item.ticked(finds) == Some(true))
+        .collect();
+    match asked.as_slice() {
+        [RedactItem::Emails] => "No email addresses found",
+        [RedactItem::Phones] => "No phone numbers found",
+        [RedactItem::Cards] => "No card or bank numbers found",
+        [RedactItem::Keys] => "No keys or tokens found",
+        [RedactItem::Ips] => "No IP addresses found",
+        _ => "Nothing found to redact",
     }
 }
 
@@ -321,6 +359,9 @@ impl MainWindow {
         Finds {
             emails: settings.redact_emails,
             phones: settings.redact_phones,
+            cards: settings.redact_cards,
+            keys: settings.redact_keys,
+            ips: settings.redact_ips,
         }
     }
 
@@ -434,9 +475,12 @@ impl MainWindow {
 
     fn choose_redact(&mut self, item: RedactItem, window: &mut Window, cx: &mut Context<Self>) {
         match item {
-            // The options stay open, to change both.
+            // The options stay open, to change several.
             RedactItem::Emails => self.change(cx, |s| s.redact_emails = !s.redact_emails),
             RedactItem::Phones => self.change(cx, |s| s.redact_phones = !s.redact_phones),
+            RedactItem::Cards => self.change(cx, |s| s.redact_cards = !s.redact_cards),
+            RedactItem::Keys => self.change(cx, |s| s.redact_keys = !s.redact_keys),
+            RedactItem::Ips => self.change(cx, |s| s.redact_ips = !s.redact_ips),
             RedactItem::RemoveAll => {
                 self.close_text_menu();
                 self.remove_redactions(window, cx);
@@ -543,11 +587,11 @@ impl MainWindow {
         cx.notify();
     }
 
-    /// Black out the email addresses and phone numbers the options ask
-    /// for, as one change, and say how many.
+    /// Black out what the options ask for (email addresses, phone numbers
+    /// and so on), as one change, and say how many.
     fn quick_redact(&mut self, window: &mut Window, cx: &mut Context<Self>) {
         let finds = self.finds();
-        if !(finds.emails || finds.phones) {
+        if !finds.any() {
             // Nothing chosen: the options, to choose.
             if let Some(texting) = self.texting_mut() {
                 texting.menu = Some(TextMenu::Redact(0));
@@ -566,11 +610,7 @@ impl MainWindow {
         let boxes = found.iter().flat_map(|&span| text::cover(&text, span, pad));
         let added = shown.add_redactions(boxes.collect());
         let message: SharedString = match (found.len(), added) {
-            (0, _) => match (finds.emails, finds.phones) {
-                (true, true) => "No email addresses or phone numbers found".into(),
-                (true, false) => "No email addresses found".into(),
-                _ => "No phone numbers found".into(),
-            },
+            (0, _) => none_found(finds).into(),
             (_, 0) => "Already redacted".into(),
             (_, 1) => "1 item redacted".into(),
             (_, n) => format!("{n} items redacted").into(),
@@ -812,10 +852,9 @@ impl MainWindow {
         let finds = self.finds();
         let any = shown.marks.redactions() > 0;
         let items = RedactItem::ALL.into_iter().enumerate().map(|(i, item)| {
-            let (ticked, enabled) = match item {
-                RedactItem::Emails => (finds.emails, true),
-                RedactItem::Phones => (finds.phones, true),
-                RedactItem::RemoveAll => (false, any),
+            let (ticked, enabled) = match item.ticked(finds) {
+                Some(ticked) => (ticked, true),
+                None => (false, any),
             };
             let mark = match item {
                 RedactItem::RemoveAll => {

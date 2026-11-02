@@ -110,10 +110,14 @@ pub struct Settings {
     pub shape_fill_color: String,
     pub shape_fill_opacity: u8,
     pub shape_size: f32,
-    /// What Text actions' Quick redact blacks out: email addresses and
-    /// phone numbers.
+    /// What Text actions' Quick redact blacks out: email addresses, phone
+    /// numbers, card and bank account numbers, keys and tokens, and IP
+    /// addresses.
     pub redact_emails: bool,
     pub redact_phones: bool,
+    pub redact_cards: bool,
+    pub redact_keys: bool,
+    pub redact_ips: bool,
     /// The quality a stream starts at; the stream's bar switches it.
     pub stream_quality: Quality,
     /// The key that lets this PC stream, encrypted to the user: read
@@ -171,6 +175,11 @@ impl Default for Settings {
             shape_size: ShapeStyle::DEFAULT.size,
             redact_emails: true,
             redact_phones: true,
+            redact_cards: true,
+            redact_keys: true,
+            // Off: a developer's screenshots are full of harmless ones
+            // (127.0.0.1, 192.168.1.20).
+            redact_ips: false,
             stream_quality: Quality::P1080,
             stream_host_key: String::new(),
         }
