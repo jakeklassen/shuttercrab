@@ -329,7 +329,8 @@ fn main_hooks(state: &Rc<State>, monitors: Vec<MonitorInfo>) -> MainHooks {
 
 /// Read the text in the screenshot the main window shows, off the main
 /// thread: as taken, marks aside, and twice as large if it was taken at a
-/// small scale, where OCR misreads small text.
+/// small scale, where OCR misreads small text. Lines with an @ are read
+/// again closer, so Quick redact covers each email address whole.
 fn read_text(shot: &Shot, cx: &mut App) -> Task<Result<crate::text::Text, String>> {
     use shuttercrab_platform::ocr;
     let image = shot.image.clone();
@@ -338,7 +339,14 @@ fn read_text(shot: &Shot, cx: &mut App) -> Task<Result<crate::text::Text, String
     cx.background_executor().spawn(async move {
         let started = std::time::Instant::now();
         let bgra = image.as_bytes(0).unwrap_or_default();
-        let read = ocr::read(bgra, width, height, None, enlarge);
+        let mut read = ocr::read(bgra, width, height, None, enlarge);
+        if let Ok(text) = &mut read {
+            let closer =
+                ocr::read_closer(bgra, width, height, text, |line| line.text.contains('@'));
+            if let Err(e) = closer {
+                log::warn!("could not read the lines with an @ closer: {e:#}");
+            }
+        }
         match &read {
             Ok(text) => log::info!(
                 "read {} lines of text ({}) from a {width}×{height} screenshot, ×{enlarge}, in {} ms",
