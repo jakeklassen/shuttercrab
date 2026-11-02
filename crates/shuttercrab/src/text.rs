@@ -398,26 +398,41 @@ fn email_at(words: &[Word], word: usize) -> Option<(usize, usize)> {
     })
 }
 
-/// The part of `word` before its last @, and whether what follows is a
+/// The part of `word` before its last @, and what follows if it is a
 /// domain, punctuation around the word aside: `None` without both an @ and
-/// a domain.
+/// a domain. A domain cut short with `…` or `...`, as a table cell too
+/// narrow for it shows it (`example.co…`, `example...`), counts.
 fn email_domain(word: &str) -> Option<(&str, &str)> {
-    let word = word.trim_start_matches(OPENERS).trim_end_matches(CLOSERS);
-    let (local, domain) = word.rsplit_once('@')?;
+    let (local, domain) = word.trim_start_matches(OPENERS).rsplit_once('@')?;
+    // Closing marks after the cut aside: `(jane@example.co…)`.
+    let cut = domain.trim_end_matches(|c| c != '.' && CLOSERS.contains(&c));
+    if let Some(start) = cut.strip_suffix('…').or_else(|| cut.strip_suffix("...")) {
+        let start = start.trim_end_matches('.');
+        return labels(start).is_some().then_some((local, start));
+    }
+    let domain = domain.trim_end_matches(CLOSERS);
     is_domain(domain).then_some((local, domain))
 }
 
 /// Whether `domain` is one: labels of letters, digits and hyphens, at
 /// least two, the last all letters.
 fn is_domain(domain: &str) -> bool {
+    labels(domain).is_some_and(|labels| {
+        labels.len() >= 2
+            && labels
+                .last()
+                .is_some_and(|tld| tld.chars().count() >= 2 && tld.chars().all(char::is_alphabetic))
+    })
+}
+
+/// The labels of `domain` between its dots, if each is letters, digits and
+/// hyphens.
+fn labels(domain: &str) -> Option<Vec<&str>> {
     let labels: Vec<&str> = domain.split('.').collect();
-    labels.len() >= 2
-        && labels.iter().all(|label| {
-            !label.is_empty() && label.chars().all(|c| c.is_alphanumeric() || c == '-')
-        })
-        && labels
-            .last()
-            .is_some_and(|tld| tld.chars().count() >= 2 && tld.chars().all(char::is_alphabetic))
+    labels
+        .iter()
+        .all(|label| !label.is_empty() && label.chars().all(|c| c.is_alphanumeric() || c == '-'))
+        .then_some(labels)
 }
 
 /// The runs of words in a line that make phone numbers, by their first and
@@ -743,6 +758,12 @@ mod tests {
             "<o'brien@example.ie>",
             // A name OCR misread, under an editor's error squiggle.
             "jß&gsgpgey@example.com",
+            // Cut short in a table cell too narrow for it.
+            "jane.doe@example.co…",
+            "jane.doe@example.co...",
+            "jane.doe@example....",
+            "jane.doe@exa…",
+            "(jane.doe@example.co…),",
         ] {
             assert!(is_email(yes), "{yes}");
         }
@@ -776,6 +797,10 @@ mod tests {
             "a@b.c",
             "x@y.123",
             "@",
+            "jane@…",
+            "jane@...",
+            "@example…",
+            "jane@exa_mple…",
         ] {
             assert!(!is_email(no), "{no}");
         }

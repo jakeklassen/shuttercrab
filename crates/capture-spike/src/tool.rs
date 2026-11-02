@@ -106,7 +106,7 @@ USAGE
       picture, CPU and memory, and a seek. --frame saves the first picture.
       --repeat plays it N times over, to find leaks.
 
-  capture-spike ocr IMAGE.png [--language TAG] [--upscale N] [--boxes OUT.png]
+  capture-spike ocr IMAGE.png [--language TAG] [--upscale N] [--closer] [--boxes OUT.png]
       Read the text in an image with Windows' OCR, as the app's text actions
       do, and print the OCR languages installed, the time it took, and each
       line with its words' boxes. --upscale reads it N times larger (smoothly) first;
@@ -737,6 +737,11 @@ impl Args {
         Ok(Some(self.0.remove(i)))
     }
 
+    fn flag(&mut self, name: &str) -> bool {
+        let at = self.0.iter().position(|a| a == name);
+        at.map(|i| self.0.remove(i)).is_some()
+    }
+
     fn positional(&mut self, what: &str) -> Result<String> {
         let i = self
             .0
@@ -819,6 +824,8 @@ fn ocr(mut args: Args) -> Result<()> {
         .map(|n| n.parse())
         .transpose()?
         .unwrap_or(1);
+    // Read the lines with an @ again, alone and larger, as the app does.
+    let closer = args.flag("--closer");
     let boxes = args.option("--boxes")?.map(PathBuf::from);
     args.finish()?;
     ensure!(upscale >= 1, "--upscale takes 1 or more");
@@ -836,7 +843,12 @@ fn ocr(mut args: Args) -> Result<()> {
         px.swap(0, 2);
     }
     let started = std::time::Instant::now();
-    let text = ocr::read(&bgra, width, height, language.as_deref(), upscale)?;
+    let mut text = ocr::read(&bgra, width, height, language.as_deref(), upscale)?;
+    if closer {
+        ocr::read_closer(&bgra, width, height, &mut text, |line| {
+            line.text.contains('@')
+        })?;
+    }
     let took = started.elapsed();
     let words: usize = text.lines.iter().map(|l| l.words.len()).sum();
     println!(
