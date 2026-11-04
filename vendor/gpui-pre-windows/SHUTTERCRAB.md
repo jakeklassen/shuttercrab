@@ -3,7 +3,7 @@
 This is `gpui-pre-windows` 0.3.10 as published on crates.io (GPUI's Windows
 platform layer, from [longbridge/gpui-kit](https://github.com/longbridge/gpui-kit),
 Apache-2.0, see `LICENSE-APACHE`), used through `[patch.crates-io]` in the
-workspace `Cargo.toml`, with three changes.
+workspace `Cargo.toml`, with four changes.
 
 ## Path textures only when a window draws paths
 
@@ -42,6 +42,21 @@ about 330 MB of private memory behind. With the change: 97–99 MB private and
 48 MB graphics after a screenshot, against 85 MB and 39 MB at idle
 (docs/TEST_MATRIX.md, Milestone 5). The upstream report is drafted in
 `docs/upstream/gpui-trim-after-window-close.md`.
+
+## Resizing the renderer on restore
+
+`src/events.rs`, `handle_size_msg`: restoring a minimized window resizes
+the renderer like any other `WM_SIZE` (`DirectXRenderer::resize` does
+nothing when the size is unchanged), and a second `SIZE_MINIMIZED` keeps
+the frame callback kept by the first.
+
+Why: upstream skipped the renderer on restore but still told the window
+its new size. A window restored at another size than it was minimized at
+was laid out at the new size and drawn at the old one, so the rest of the
+window was see-through. Shuttercrab's main window showed this after being
+restored. A second `SIZE_MINIMIZED`, which a window moved or sized while
+minimized can get, replaced the kept callback with nothing, so the window
+would never draw again. Upstream could take this as it is.
 
 ## Updating
 
