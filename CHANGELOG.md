@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.37](https://github.com/jakeklassen/shuttercrab/compare/v0.1.36...v0.1.37) - 2026-11-04
+
+### Fixed
+
+- *(platform)* restore a minimized window before fitting it
+
 ## [0.1.36](https://github.com/jakeklassen/shuttercrab/compare/v0.1.35...v0.1.36) - 2026-11-02
 
 ### Added
