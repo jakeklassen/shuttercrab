@@ -56,7 +56,8 @@ was laid out at the new size and drawn at the old one, so the rest of the
 window was see-through. Shuttercrab's main window showed this after being
 restored. A second `SIZE_MINIMIZED`, which a window moved or sized while
 minimized can get, replaced the kept callback with nothing, so the window
-would never draw again. Upstream could take this as it is.
+would never draw again. Upstream could take this as it is; the report is
+drafted in `docs/upstream/gpui-resize-on-restore.md`.
 
 ## Updating
 
