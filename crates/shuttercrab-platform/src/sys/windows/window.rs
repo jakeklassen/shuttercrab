@@ -298,7 +298,8 @@ pub fn work_area(monitor: MonitorId) -> Option<PhysicalRect> {
 /// work area across and down, but its client area at least `least`
 /// (width, height) where the work area allows. It keeps its centre, moved
 /// only as far as needed to stay on that monitor. Works on a hidden window
-/// too.
+/// too; a minimized one is restored first, without the keyboard, as its
+/// own size and place are only known then.
 pub fn fit_client_area(
     hwnd: WindowId,
     (width, height): (u32, u32),
@@ -309,9 +310,15 @@ pub fn fit_client_area(
         Graphics::Gdi::{
             GetMonitorInfoW, MONITOR_DEFAULTTONEAREST, MONITORINFO, MonitorFromWindow,
         },
-        UI::WindowsAndMessaging::{GetWindowRect, SWP_NOZORDER},
+        UI::WindowsAndMessaging::{GetWindowRect, IsIconic, SW_SHOWNOACTIVATE, SWP_NOZORDER},
     };
     let hwnd = to_hwnd(hwnd);
+    // SAFETY: takes plain values; Windows checks the handle.
+    unsafe {
+        if IsIconic(hwnd).as_bool() {
+            let _ = ShowWindow(hwnd, SW_SHOWNOACTIVATE);
+        }
+    }
     let (mut window, mut client) = (RECT::default(), RECT::default());
     let mut monitor = MONITORINFO {
         cbSize: size_of::<MONITORINFO>() as u32,
