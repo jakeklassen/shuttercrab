@@ -47,8 +47,9 @@ ttf-parser = { opt-level = 3 }
 [profile.dev.package."*"]
 debug = "line-tables-only"
 
-# GPUI's Windows layer with Shuttercrab's fix for graphics memory kept after
-# windows close (vendor/gpui-pre-windows/SHUTTERCRAB.md). Remove once upstream
-# has it.
+# GPUI's Windows layer with Shuttercrab's fixes, among them graphics memory
+# kept after windows close (vendor/gpui-pre-windows/SHUTTERCRAB.md). Remove
+# once upstream has them. crates/shuttercrab/tests/vendored_gpui.rs fails if
+# GPUI moves past the copy and this patch goes unused.
 [patch.crates-io]
 gpui-pre-windows = { path = "vendor/gpui-pre-windows" }
