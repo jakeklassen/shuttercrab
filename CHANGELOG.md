@@ -7,6 +7,12 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.38](https://github.com/jakeklassen/shuttercrab/compare/v0.1.37...v0.1.38) - 2026-11-05
+
+### Fixed
+
+- *(vendor)* don't log redrawing a window just destroyed as an error
+
 ## [0.1.37](https://github.com/jakeklassen/shuttercrab/compare/v0.1.36...v0.1.37) - 2026-11-04
 
 ### Fixed
