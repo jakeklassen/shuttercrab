@@ -23,7 +23,7 @@ allows and keeps up with everything Shuttercrab draws.
 Together with Shuttercrab's own changes (the frozen screen held once, the
 Freeform outline drawn without paths), the overlay's peak with two 4K
 monitors went from about 770 MB private to about 300–340 MB
-(docs/TEST_MATRIX.md, "The overlay's memory peak").
+(docs/history/TEST_MATRIX.md, "The overlay's memory peak").
 
 ## Trimming after a window closes
 
@@ -40,7 +40,7 @@ closes a full-screen 4K window for every screenshot (the selection
 overlay), so each screenshot left about 300 MB of graphics memory and
 about 330 MB of private memory behind. With the change: 97–99 MB private and
 48 MB graphics after a screenshot, against 85 MB and 39 MB at idle
-(docs/TEST_MATRIX.md, Milestone 5). The upstream report is drafted in
+(docs/history/TEST_MATRIX.md, Milestone 5). The upstream report is drafted in
 `docs/upstream/gpui-trim-after-window-close.md`.
 
 ## Resizing the renderer on restore
@@ -84,4 +84,4 @@ fails until the copy is updated:
    unchanged, then reapply each change above as its own commit (skipping
    any upstream now makes), and update the version at the top of this
    file.
-3. Rerun the memory check in docs/TEST_MATRIX.md (Milestone 5).
+3. Rerun the memory check in docs/history/TEST_MATRIX.md (Milestone 5).
