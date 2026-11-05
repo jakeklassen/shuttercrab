@@ -7,6 +7,17 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.39](https://github.com/jakeklassen/shuttercrab/compare/v0.1.38...v0.1.39) - 2026-11-05
+
+### Added
+
+- light the setting the saved note leads to
+- say where a capture was saved, above it in the window
+
+### Fixed
+
+- name the note's settings button Change folder, lighting the folder
+
 ## [0.1.38](https://github.com/jakeklassen/shuttercrab/compare/v0.1.37...v0.1.38) - 2026-11-05
 
 ### Fixed
