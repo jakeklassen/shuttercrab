@@ -86,9 +86,12 @@ fn open(cx: &mut TestAppContext) -> Opened {
 /// The window at `size`: the test window keeps it, whatever the app asks.
 fn open_sized(cx: &mut TestAppContext, size: gpui_kit::Size<gpui_kit::Pixels>) -> Opened {
     cx.update(gpui_kit::init);
-    // The keys under test: single keys are off by default.
+    // The keys under test: single keys are off by default. The note on
+    // where captures are saved changes the window's layout; its own tests
+    // turn it on.
     let settings = Rc::new(RefCell::new(Settings {
         single_key_shortcuts: true,
+        saved_note: false,
         ..Settings::default()
     }));
     let seen = Rc::new(Seen::default());
@@ -648,6 +651,133 @@ fn the_menu_offers_paint_and_open_with_for_a_screenshot(cx: &mut TestAppContext)
             .update(cx, |view, cx| view.show_shot(saved, window, cx));
     });
     assert_eq!(labels(cx)[1], "Show in folder");
+}
+
+/// A screenshot saved as `name` in the home folder's `Pictures\Shuttercrab`,
+/// and that folder as the note shows it.
+fn saved_shot(name: &str) -> (Shot, String) {
+    let folder = std::path::Path::new("Pictures").join("Shuttercrab");
+    let home = dirs::home_dir().unwrap();
+    let shot = Shot {
+        saved: Some(home.join(&folder).join(name)),
+        ..shot(800, 600)
+    };
+    (shot, folder.display().to_string())
+}
+
+#[gpui_kit::test]
+fn a_saved_screenshot_says_where_it_went_until_closed_or_turned_off(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    opened.settings.borrow_mut().saved_note = true;
+    let page = |cx: &mut TestAppContext| cx.update(|cx| opened.view.read(cx).page());
+    let show = |cx: &mut TestAppContext, shot: Shot| {
+        update(cx, &opened, |window, cx| {
+            opened
+                .view
+                .update(cx, |view, cx| view.show_shot(shot, window, cx));
+        });
+    };
+    let mut scale = 1.;
+    update(cx, &opened, |window, _| scale = window.scale_factor());
+    let height = |logical: f32| (logical * scale).ceil() as u32;
+
+    // Not saved, as with saving off: nothing to say.
+    show(cx, shot(800, 600));
+    assert_eq!(label_of(cx, &opened, "saved-note"), None);
+    assert_eq!(
+        opened.seen.fits.borrow().last().unwrap().1,
+        height(600. / scale + 34. + 59. + 32.)
+    );
+
+    // Saved: the folder, with the window taller by the bar, so the
+    // screenshot still shows at full size.
+    let (saved, folder) = saved_shot("a.png");
+    show(cx, saved);
+    assert_eq!(
+        label_of(cx, &opened, "saved-note"),
+        Some(format!("Screenshots are saved to {folder}."))
+    );
+    assert_eq!(
+        opened.seen.fits.borrow().last().unwrap().1,
+        height(600. / scale + 34. + 59. + 44. + 32.)
+    );
+
+    // Show in folder, and the way to the setting, which comes back to it.
+    update(cx, &opened, |window, cx| {
+        window.click("saved-note-folder", cx)
+    });
+    assert_eq!(opened.seen.folders.get(), 1);
+    update(cx, &opened, |window, cx| {
+        window.click("saved-note-settings", cx)
+    });
+    assert_eq!(page(cx), Page::ScreenshotSettings);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("output-folder").is_some());
+    });
+    press(cx, &opened, &["escape"]);
+    assert_eq!(page(cx), Page::Home);
+    assert!(label_of(cx, &opened, "saved-note").is_some());
+
+    // × hides it for the rest of the run, the setting kept.
+    update(cx, &opened, |window, cx| {
+        window.click("saved-note-close", cx)
+    });
+    assert_eq!(label_of(cx, &opened, "saved-note"), None);
+    show(cx, saved_shot("b.png").0);
+    assert_eq!(label_of(cx, &opened, "saved-note"), None);
+    assert!(opened.settings.borrow().saved_note);
+}
+
+#[gpui_kit::test]
+fn dont_show_again_turns_the_saved_note_off(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    opened.settings.borrow_mut().saved_note = true;
+    update(cx, &opened, |window, cx| {
+        let shot = saved_shot("a.png").0;
+        opened
+            .view
+            .update(cx, |view, cx| view.show_shot(shot, window, cx));
+    });
+    assert!(label_of(cx, &opened, "saved-note").is_some());
+    update(cx, &opened, |window, cx| {
+        window.click("saved-note-never", cx)
+    });
+    assert_eq!(label_of(cx, &opened, "saved-note"), None);
+    assert!(!opened.settings.borrow().saved_note);
+}
+
+#[gpui_kit::test]
+fn a_recording_says_where_it_went(cx: &mut TestAppContext) {
+    let opened = open_sized(cx, shot_size());
+    opened.settings.borrow_mut().saved_note = true;
+    let page = |cx: &mut TestAppContext| cx.update(|cx| opened.view.read(cx).page());
+    let folder = dirs::home_dir().unwrap().join("Videos").join("Shuttercrab");
+    update(cx, &opened, |window, cx| {
+        opened.view.update(cx, |view, cx| {
+            view.show_recording(
+                folder.join("Recording 2026-11-05 14-00-00.mp4"),
+                Some((800, 600)),
+                window,
+                cx,
+            )
+        });
+    });
+    let shown = std::path::Path::new("Videos").join("Shuttercrab");
+    assert_eq!(
+        label_of(cx, &opened, "saved-note"),
+        Some(format!("Recordings are saved to {}.", shown.display()))
+    );
+    update(cx, &opened, |window, cx| {
+        window.click("saved-note-folder", cx)
+    });
+    assert_eq!(opened.seen.reveals.borrow().len(), 1);
+    update(cx, &opened, |window, cx| {
+        window.click("saved-note-settings", cx)
+    });
+    assert_eq!(page(cx), Page::RecordingSettings);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("settings-window").is_some());
+    });
 }
 
 /// The window's least size with a screenshot shown.

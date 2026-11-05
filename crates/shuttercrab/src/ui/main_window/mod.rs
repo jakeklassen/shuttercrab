@@ -26,6 +26,7 @@ mod crop;
 mod emoji;
 mod home;
 mod moment;
+mod saved_note;
 mod selection;
 mod shapes;
 mod stream_hint;
@@ -40,9 +41,9 @@ use crate::{
     settings::Settings,
     shot_view::{self, Xy},
     ui::palette::{border, coral, hover, muted, surface, tile},
-    ui::settings_window::{HostKeyNote, SettingsHooks, SettingsPage},
+    ui::settings_window::{HostKeyNote, SettingsHooks, SettingsPage, SettingsSpot},
 };
-use canvas::{Shown, canvas_size, pointer_in_canvas};
+use canvas::{Shown, pointer_in_canvas};
 use chrono::NaiveDateTime;
 use gpui_kit::{
     Animation, AnimationExt as _, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
@@ -290,6 +291,27 @@ pub enum Page {
     Settings,
     /// Settings, open on Streaming: where a stream's host key goes.
     StreamingSettings,
+    /// Settings, open on Screenshot: Save to the folder.
+    ScreenshotSettings,
+    /// Settings, open on Recording: their folder.
+    RecordingSettings,
+}
+
+impl Page {
+    /// Whether it is the settings, wherever they open.
+    pub fn is_settings(self) -> bool {
+        self != Page::Home
+    }
+
+    /// Where in the settings it opens, if not at the top.
+    fn spot(self) -> Option<SettingsSpot> {
+        match self {
+            Page::Home | Page::Settings => None,
+            Page::StreamingSettings => Some(SettingsSpot::Streaming),
+            Page::ScreenshotSettings => Some(SettingsSpot::Screenshot),
+            Page::RecordingSettings => Some(SettingsSpot::Recording),
+        }
+    }
 }
 
 actions!(main_menu, [NextItem, PreviousItem]);
@@ -379,6 +401,9 @@ pub struct MainWindow {
     /// The pointer is over the screenshot itself, not a bar or a menu on
     /// it: where the window shows the pointers GPUI lacks.
     canvas_hovered: bool,
+    /// The note saying where captures are saved was closed with its ×: it
+    /// stays away until Shuttercrab starts again.
+    saved_note_closed: bool,
     focus: FocusHandle,
 }
 
@@ -418,6 +443,7 @@ impl MainWindow {
             size_note: Momentary::default(),
             space_held: false,
             canvas_hovered: false,
+            saved_note_closed: false,
             focus,
         }
     }
@@ -567,7 +593,7 @@ impl MainWindow {
         } else {
             FOOTER_HEIGHT
         };
-        let height = (height as f32 / scale + around + TOOLBAR_HEIGHT + bottom).max(least.1);
+        let height = (height as f32 / scale + around + self.canvas_top() + bottom).max(least.1);
         let physical = |logical: f32| (logical * scale).ceil() as u32;
         let fit = Fit {
             width: physical(width),
@@ -591,7 +617,7 @@ impl MainWindow {
                 self.fit_home(window, cx);
                 window.focus(&self.focus, cx);
             }
-            Page::Settings | Page::StreamingSettings => {
+            _ => {
                 let hooks = self.hooks.settings.clone();
                 let main = cx.entity().downgrade();
                 let back = move |window: &mut Window, cx: &mut App| {
@@ -599,10 +625,9 @@ impl MainWindow {
                 };
                 self.settings = Some(cx.new(|cx| {
                     let settings = SettingsPage::new(hooks, back, window, cx);
-                    if page == Page::StreamingSettings {
-                        settings.at_streaming()
-                    } else {
-                        settings
+                    match page.spot() {
+                        Some(spot) => settings.opens_at(spot),
+                        None => settings,
                     }
                 }));
                 window.resize(SETTINGS_SIZE);
@@ -1091,15 +1116,16 @@ impl Render for MainWindow {
         }
         // No screenshot to point at: none of the window's own pointers.
         if self.page != Page::Home || self.shown.is_none() {
-            canvas::show_pointer(window, None);
+            canvas::show_pointer(window, None, TOOLBAR_HEIGHT);
         }
         self.tools_below = self.shown.is_some() && is_narrow(window);
         self.folded = (self.shown.is_some() || self.recording.is_some()) && is_narrow(window);
-        self.pointer = pointer_in_canvas(window).filter(|_| self.shown.is_some());
+        self.pointer =
+            pointer_in_canvas(window, self.canvas_top()).filter(|_| self.shown.is_some());
         let zoom = self
             .shown
             .as_ref()
-            .map(|shown| (shown.view.zoom(canvas_size(window)) * 100.).round() as u32);
+            .map(|shown| (shown.view.zoom(self.canvas_area(window)) * 100.).round() as u32);
         let root = div()
             .id("main-window")
             .role(Role::Pane)
@@ -1142,11 +1168,14 @@ impl Render for MainWindow {
                 }),
             );
         match (self.page, self.settings.clone()) {
-            (Page::Settings | Page::StreamingSettings, Some(settings)) => {
+            (page, Some(settings)) if page.is_settings() => {
                 root.child(self.settings_page(settings, cx))
             }
             _ => root
                 .child(self.toolbar(zoom, cx))
+                .when_some(self.saved_note(), |d, note| {
+                    d.child(self.saved_note_bar(note, cx))
+                })
                 .map(|d| match (&self.shown, &self.recording) {
                     (Some(shown), _) => d.child(self.canvas(shown, window, cx)),
                     (None, Some(_)) => d.child(self.video_view(window, cx)),

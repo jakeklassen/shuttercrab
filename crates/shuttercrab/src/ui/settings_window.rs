@@ -436,6 +436,24 @@ impl Render for HotkeyField {
 /// What Escape does: go back from the settings.
 type Escape = Rc<dyn Fn(&mut Window, &mut App)>;
 
+/// A page the settings can open on, other than General. Pages only: GPUI
+/// Kit marks a chosen group in the sidebar but does not scroll to it, and
+/// with untitled groups the sidebar would then mark nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SettingsSpot {
+    /// Where the host key goes.
+    Streaming,
+    /// Save to the folder, near the top, and the folder.
+    Screenshot,
+    /// The folder recordings go to, among the rest.
+    Recording,
+}
+
+/// The Screenshot and Recording pages' places, in the order
+/// `SettingsPage::render` lists the pages.
+const SCREENSHOT_PAGE: usize = 1;
+const RECORDING_PAGE: usize = 2;
+
 /// The settings, as a page of the main window.
 pub struct SettingsPage {
     hooks: Rc<SettingsHooks>,
@@ -446,8 +464,8 @@ pub struct SettingsPage {
     on_escape: Escape,
     /// The microphones plugged in when the settings opened.
     microphones: Vec<Microphone>,
-    /// Open on Streaming, for a stream started without a host key.
-    at_streaming: bool,
+    /// Where the settings open, if not at the top of General.
+    opens_at: Option<SettingsSpot>,
     /// What the last press of the host key's buttons did.
     host_key_note: KeyNote,
 }
@@ -474,14 +492,14 @@ impl SettingsPage {
             focus,
             on_escape: Rc::new(on_escape),
             microphones,
-            at_streaming: false,
+            opens_at: None,
             host_key_note: KeyNote::default(),
         }
     }
 
-    /// Open on the Streaming page, where the host key goes.
-    pub fn at_streaming(mut self) -> Self {
-        self.at_streaming = true;
+    /// Open at `spot` rather than at the top of General.
+    pub fn opens_at(mut self, spot: SettingsSpot) -> Self {
+        self.opens_at = Some(spot);
         self
     }
 
@@ -632,6 +650,15 @@ impl SettingsPage {
                         "Show screenshots in Shuttercrab's window",
                         self.switch(|s| s.show_in_window, |s, v| s.show_in_window = v),
                     ))
+                    .item(
+                        SettingItem::new(
+                            "Say where captures are saved",
+                            self.switch(|s| s.saved_note, |s, v| s.saved_note = v),
+                        )
+                        .description(
+                            "A bar above each saved screenshot or recording in Shuttercrab's window, with its folder.",
+                        ),
+                    )
                     .item(SettingItem::new(
                         "Show a thumbnail",
                         self.switch(|s| s.show_thumbnail, |s, v| s.show_thumbnail = v),
@@ -1139,6 +1166,7 @@ fn folder_row(hooks: Rc<SettingsHooks>, folder: Folder) -> impl IntoElement {
         .child(
             div()
                 .id(text_id)
+                .test_support()
                 .max_w(px(280.))
                 .overflow_hidden()
                 .text_sm()
@@ -1272,17 +1300,26 @@ impl Render for SettingsPage {
                     pages.push(self.streaming());
                 }
                 pages.extend([self.diagnostics(), notices()]);
-                // Another id for the page chosen first: the page shown is
-                // kept by id, and the settings may be open already.
-                let settings = if self.at_streaming && cfg!(windows) {
-                    SettingsUi::new("shuttercrab-settings-streaming").default_selected_index(
-                        SelectIndex {
-                            page_ix: streaming,
-                            group_ix: None,
-                        },
-                    )
-                } else {
-                    SettingsUi::new("shuttercrab-settings")
+                let spot = match self.opens_at {
+                    // Streaming is Windows only for now.
+                    Some(SettingsSpot::Streaming) if cfg!(windows) => {
+                        Some(("streaming", streaming))
+                    }
+                    Some(SettingsSpot::Streaming) | None => None,
+                    Some(SettingsSpot::Screenshot) => Some(("screenshot", SCREENSHOT_PAGE)),
+                    Some(SettingsSpot::Recording) => Some(("recording", RECORDING_PAGE)),
+                };
+                // Another id for each page opened on: the page shown is kept
+                // by id, and the settings may be open already.
+                let settings = match spot {
+                    Some((name, page_ix)) => {
+                        SettingsUi::new(SharedString::from(format!("shuttercrab-settings-{name}")))
+                            .default_selected_index(SelectIndex {
+                                page_ix,
+                                group_ix: None,
+                            })
+                    }
+                    None => SettingsUi::new("shuttercrab-settings"),
                 };
                 settings.sidebar_width(px(200.)).pages(pages)
             })

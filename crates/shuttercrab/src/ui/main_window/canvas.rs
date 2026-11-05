@@ -11,7 +11,7 @@
 //! screenshot it covers, as the stroke grows, and shown over it.
 
 use super::{
-    Hand, MainWindow, Shot, TOOLBAR_HEIGHT, bottom_height,
+    Hand, MainWindow, Shot, bottom_height,
     crop::{CropDrag, Cropping},
     selection::{Editing, Grip, Placing},
     text::{Reading, TextActions},
@@ -429,7 +429,7 @@ pub(super) enum Pointer {
 /// Have the window show `over`'s pointer over the canvas (of its size,
 /// under the toolbar), if it is one GPUI lacks; otherwise, or with
 /// `None`, leave the pointer to GPUI.
-pub(super) fn show_pointer(window: &Window, over: Option<(Pointer, Xy)>) {
+pub(super) fn show_pointer(window: &Window, over: Option<(Pointer, Xy)>, top: f32) {
     let Some(os_window) = popup::os_window(window) else {
         return;
     };
@@ -445,7 +445,7 @@ pub(super) fn show_pointer(window: &Window, over: Option<(Pointer, Xy)>) {
     let physical = |logical: f32| (logical * scale).round() as u32;
     let area = PhysicalRect::new(
         0,
-        physical(TOOLBAR_HEIGHT) as i32,
+        physical(top) as i32,
         physical(canvas.x),
         physical(canvas.y),
     );
@@ -485,13 +485,14 @@ const WHEEL_LINE: f32 = 40.;
 /// same whatever the zoom.
 const ERASER_RADIUS: f32 = 8.;
 
-/// The canvas's size: the window less the toolbar and what is below the
+/// The canvas's size, it starting `top` down the window: the window less
+/// what is above it (the toolbar, and any note) and what is below the
 /// screenshot (the footer, or the tools' bar in a narrow window).
-pub(super) fn canvas_size(window: &Window) -> Xy {
+pub(super) fn canvas_size(window: &Window, top: f32) -> Xy {
     let viewport = window.viewport_size();
     Xy::new(
         f32::from(viewport.width),
-        f32::from(viewport.height) - TOOLBAR_HEIGHT - bottom_height(window),
+        f32::from(viewport.height) - top - bottom_height(window),
     )
 }
 
@@ -575,27 +576,35 @@ fn chisel_outline(at: Xy, size: f32) -> impl IntoElement {
     .size_full()
 }
 
-/// Where the pointer is in the canvas, if it is over it (and over the
-/// window: GPUI redraws the window when the pointer leaves it).
-pub(super) fn pointer_in_canvas(window: &Window) -> Option<Xy> {
+/// Where the pointer is in the canvas starting `top` down the window, if it
+/// is over it (and over the window: GPUI redraws the window when the
+/// pointer leaves it).
+pub(super) fn pointer_in_canvas(window: &Window, top: f32) -> Option<Xy> {
     if !window.is_window_hovered() {
         return None;
     }
-    let at = canvas_point(window.mouse_position());
-    let canvas = canvas_size(window);
+    let at = canvas_point(window.mouse_position(), top);
+    let canvas = canvas_size(window, top);
     ((0. ..canvas.x).contains(&at.x) && (0. ..canvas.y).contains(&at.y)).then_some(at)
 }
 
-/// A window position as a point in the canvas, which starts under the
-/// toolbar.
-fn canvas_point(position: Point<Pixels>) -> Xy {
-    Xy::new(
-        f32::from(position.x),
-        f32::from(position.y) - TOOLBAR_HEIGHT,
-    )
+/// A window position as a point in the canvas starting `top` down the
+/// window.
+fn canvas_point(position: Point<Pixels>, top: f32) -> Xy {
+    Xy::new(f32::from(position.x), f32::from(position.y) - top)
 }
 
 impl MainWindow {
+    /// The canvas's size as the window is now.
+    pub(super) fn canvas_area(&self, window: &Window) -> Xy {
+        canvas_size(window, self.canvas_top())
+    }
+
+    /// A window position as a point in the canvas.
+    fn canvas_at(&self, position: Point<Pixels>) -> Xy {
+        canvas_point(position, self.canvas_top())
+    }
+
     /// Change the shown screenshot's zoom or position, with the canvas's
     /// size.
     pub(super) fn zoom(
@@ -604,8 +613,9 @@ impl MainWindow {
         cx: &mut Context<Self>,
         change: impl FnOnce(&mut ShotView, Xy),
     ) {
+        let canvas = self.canvas_area(window);
         if let Some(shown) = &mut self.shown {
-            change(&mut shown.view, canvas_size(window));
+            change(&mut shown.view, canvas);
             cx.notify();
         }
     }
@@ -616,7 +626,7 @@ impl MainWindow {
     fn on_wheel(&mut self, event: &ScrollEvent, window: &mut Window, cx: &mut Context<Self>) {
         let delta = event.delta.pixel_delta(px(WHEEL_LINE));
         let (x, y) = (f32::from(delta.x), f32::from(delta.y));
-        let at = canvas_point(event.position);
+        let at = self.canvas_at(event.position);
         self.zoom(window, cx, |view, canvas| {
             if event.modifiers.control {
                 if y != 0. {
@@ -725,8 +735,8 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let canvas = canvas_size(window);
-        let at = canvas_point(event.position);
+        let canvas = self.canvas_area(window);
+        let at = self.canvas_at(event.position);
         let hand = self
             .hand
             .filter(|_| !(self.space_held || event.modifiers.control));
@@ -831,7 +841,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let (canvas, at) = (canvas_size(window), canvas_point(event.position));
+        let (canvas, at) = (self.canvas_area(window), self.canvas_at(event.position));
         if let Some(shown) = &mut self.shown
             && shown.texting.is_some()
         {
@@ -915,7 +925,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) {
-        let canvas = canvas_size(window);
+        let (canvas, at) = (self.canvas_area(window), self.canvas_at(event.position));
         if self.hand.is_some() || self.is_cropping() {
             // The tip outline, or the crop frame's cursor, follows the
             // pointer.
@@ -931,7 +941,6 @@ impl MainWindow {
             // Let go outside the window.
             return self.finish_gesture(window, cx);
         }
-        let at = canvas_point(event.position);
         let pixel = shown.placing(canvas).pixel(at);
         if let Some(Gesture::Crop(drag)) = &shown.gesture {
             let drag = *drag;
@@ -1094,11 +1103,11 @@ impl MainWindow {
         window: &Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement {
-        let canvas_area = canvas_size(window);
+        let canvas_area = self.canvas_area(window);
         let pointer = self.pointer(shown, canvas_area);
         let over =
             (self.canvas_hovered && self.pointer.is_some()).then_some((pointer, canvas_area));
-        show_pointer(window, over);
+        show_pointer(window, over, self.canvas_top());
         let placing = shown.placing(canvas_area);
         let (image, pending) = shown.layers();
         let (per_pixel, scale) = (placing.per_pixel, window.scale_factor());

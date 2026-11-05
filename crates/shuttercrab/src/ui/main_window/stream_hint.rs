@@ -158,8 +158,9 @@ impl MainWindow {
             .child(text)
     }
 
-    /// A button in the middle of the window: an icon, a label and its key.
-    fn hint_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
+    /// A button in the middle of the window, or on a bar: an icon, a label
+    /// and its key.
+    pub(super) fn hint_button<F: Fn(&ClickEvent, &mut Window, &mut App) + 'static>(
         face: ButtonFace,
         click: F,
     ) -> impl IntoElement + use<F> {

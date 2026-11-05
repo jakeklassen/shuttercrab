@@ -57,6 +57,9 @@ pub struct Settings {
     /// Show each screenshot in Shuttercrab's window, as Snipping Tool does,
     /// whatever started it. The window comes forward with the keyboard.
     pub show_in_window: bool,
+    /// Above a saved screenshot or a recording in Shuttercrab's window, say
+    /// which folder it was saved to, until "Don't show again" (issue #26).
+    pub saved_note: bool,
     /// Show a thumbnail in the corner after each screenshot.
     pub show_thumbnail: bool,
     /// How long the thumbnail stays without the pointer over it.
@@ -145,6 +148,7 @@ impl Default for Settings {
             last_mode: CaptureMode::Screenshot,
             last_target: CaptureTarget::Area,
             show_in_window: true,
+            saved_note: true,
             show_thumbnail: true,
             thumbnail_seconds: 6,
             notify_after_capture: false,
