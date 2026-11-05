@@ -14,17 +14,19 @@ use crate::{
 };
 use futures::future::LocalBoxFuture;
 use gpui_kit::{
-    App, AppContext as _, Context, Entity, FocusHandle, InteractiveElement as _, IntoElement,
-    KeyDownEvent, Keystroke, Modifiers, MouseButton, MouseUpEvent, ParentElement as _,
-    PathPromptOptions, Render, Role, SharedString, StatefulInteractiveElement as _, Styled as _,
-    TestSupportExt as _, Window,
+    Animation, AnimationExt as _, AnyElement, App, AppContext as _, Context, Entity, FocusHandle,
+    InteractiveElement as _, IntoElement, KeyDownEvent, Keystroke, Modifiers, MouseButton,
+    MouseUpEvent, ParentElement as _, PathPromptOptions, Render, Role, SharedString,
+    StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
     component::{
         ActiveTheme as _, Disableable as _,
         button::Button,
+        label::Label,
         setting::{
             SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage,
             Settings as SettingsUi,
         },
+        switch::Switch,
     },
     div,
     prelude::FluentBuilder as _,
@@ -36,7 +38,13 @@ use shuttercrab_platform::{
     os::{Os, os},
 };
 use shuttercrab_stream::Quality;
-use std::{cell::RefCell, path::PathBuf, rc::Rc};
+use std::{
+    cell::RefCell,
+    path::PathBuf,
+    rc::Rc,
+    sync::atomic::{AtomicU64, Ordering},
+    time::Duration,
+};
 
 /// What the settings page needs from the rest of Shuttercrab.
 pub struct SettingsHooks {
@@ -466,6 +474,9 @@ pub struct SettingsPage {
     microphones: Vec<Microphone>,
     /// Where the settings open, if not at the top of General.
     opens_at: Option<SettingsSpot>,
+    /// The id of the pulse lighting the row they opened at: new with each
+    /// opening, so it pulses afresh, and kept, so it plays out once.
+    pulse_id: SharedString,
     /// What the last press of the host key's buttons did.
     host_key_note: KeyNote,
 }
@@ -493,6 +504,11 @@ impl SettingsPage {
             on_escape: Rc::new(on_escape),
             microphones,
             opens_at: None,
+            pulse_id: {
+                static OPENINGS: AtomicU64 = AtomicU64::new(0);
+                let opening = OPENINGS.fetch_add(1, Ordering::Relaxed);
+                SharedString::from(format!("lit-{opening}"))
+            },
             host_key_note: KeyNote::default(),
         }
     }
@@ -501,6 +517,38 @@ impl SettingsPage {
     pub fn opens_at(mut self, spot: SettingsSpot) -> Self {
         self.opens_at = Some(spot);
         self
+    }
+
+    /// The id of the pulse that lights the row `spot` is about, if the
+    /// settings opened there.
+    fn lit(&self, spot: SettingsSpot) -> Option<SharedString> {
+        (self.opens_at == Some(spot)).then(|| self.pulse_id.clone())
+    }
+
+    /// Save to the folder, drawn here so it can be lit when a note on a
+    /// saved screenshot led here.
+    fn save_to_folder(&self) -> SettingItem {
+        let hooks = self.hooks.clone();
+        let lit = self.lit(SettingsSpot::Screenshot);
+        SettingItem::render(move |_, _, cx| {
+            let write = hooks.clone();
+            let switch = Switch::new("save-to-folder")
+                .accessibility_label("Save to the folder")
+                .checked(hooks.settings.borrow().auto_save)
+                .on_click(move |checked: &bool, window, cx| {
+                    write.settings.borrow_mut().auto_save = *checked;
+                    (write.changed)(cx);
+                    window.refresh();
+                });
+            setting_row(
+                "Save to the folder",
+                Some("When off, screenshots go to the clipboard only."),
+                switch,
+                lit.clone(),
+                cx,
+            )
+        })
+        .keywords(["Save to the folder", "screenshots"])
     }
 
     /// The field for `kind`, as a setting.
@@ -629,13 +677,7 @@ impl SettingsPage {
                         "Copy to the clipboard",
                         self.switch(|s| s.copy_to_clipboard, |s, v| s.copy_to_clipboard = v),
                     ))
-                    .item(
-                        SettingItem::new(
-                            "Save to the folder",
-                            self.switch(|s| s.auto_save, |s, v| s.auto_save = v),
-                        )
-                        .description("When off, screenshots go to the clipboard only."),
-                    )
+                    .item(self.save_to_folder())
                     .item(SettingItem::new(
                         "Folder",
                         SettingField::render(move |_, _, _| {
@@ -716,12 +758,21 @@ impl SettingsPage {
     /// Where recordings go, and what follows when one is saved.
     fn recording_files(&self) -> SettingGroup {
         let folder = self.hooks.clone();
+        let lit = self.lit(SettingsSpot::Recording);
         SettingGroup::new()
             .item(heading("Where recordings go", None))
-            .item(SettingItem::new(
-                "Folder",
-                SettingField::render(move |_, _, _| folder_row(folder.clone(), Folder::Recordings)),
-            ))
+            .item(
+                SettingItem::render(move |_, _, cx| {
+                    setting_row(
+                        "Folder",
+                        None,
+                        folder_row(folder.clone(), Folder::Recordings),
+                        lit.clone(),
+                        cx,
+                    )
+                })
+                .keywords(["Folder", "recordings"]),
+            )
             .item(
                 SettingItem::new(
                     "Open in Shuttercrab's window",
@@ -850,8 +901,8 @@ impl SettingsPage {
                         .description("Over the chosen area, never recorded. Esc cancels, Enter starts at once."),
                     ),
             )
-            .group(self.sound())
             .group(self.recording_files())
+            .group(self.sound())
             .group(
                 SettingGroup::new()
                     .item(heading(
@@ -1110,6 +1161,78 @@ fn heading(title: &'static str, description: Option<&'static str>) -> SettingIte
                 )
             })
     })
+}
+
+/// How long a row the settings opened at stays lit, pulsing twice.
+const LIT_FOR: Duration = Duration::from_millis(1800);
+
+/// A setting's row laid out as GPUI Kit lays one out (its title and
+/// description, the control at the right), for the rows drawn here. With
+/// `lit`, a coral frame pulses around it twice, then fades: the row a note
+/// in the main window led to.
+fn setting_row(
+    title: &'static str,
+    description: Option<&'static str>,
+    control: impl IntoElement,
+    lit: Option<SharedString>,
+    cx: &App,
+) -> AnyElement {
+    let row = div()
+        .w_full()
+        .flex()
+        .justify_between()
+        .items_center()
+        .gap_3()
+        .child(
+            div()
+                .flex()
+                .flex_col()
+                .flex_1()
+                .max_w_3_5()
+                .child(Label::new(title).text_sm())
+                .when_some(description, |d, text| {
+                    d.child(
+                        div()
+                            .size_full()
+                            .text_sm()
+                            .text_color(cx.theme().muted_foreground)
+                            .child(text),
+                    )
+                }),
+        )
+        .child(control);
+    let Some(id) = lit else {
+        return row.into_any_element();
+    };
+    div()
+        .relative()
+        .w_full()
+        .child(row)
+        .child(
+            div()
+                .id("lit")
+                .test_support()
+                .absolute()
+                .top(px(-6.))
+                .bottom(px(-6.))
+                .left(px(-8.))
+                .right(px(-8.))
+                .rounded_md()
+                .border_1()
+                .border_color(coral())
+                .bg(coral().opacity(0.12))
+                .with_animation(id, Animation::new(LIT_FOR), |frame, t| {
+                    frame.opacity(pulse(t))
+                }),
+        )
+        .into_any_element()
+}
+
+/// Two pulses that fade, over `t` from 0 to 1: lit at once, dim, lit
+/// again less, gone.
+fn pulse(t: f32) -> f32 {
+    let wave = (t * 2. * std::f32::consts::TAU).cos() * 0.5 + 0.5;
+    wave * (1. - t)
 }
 
 /// Which output folder a row shows.

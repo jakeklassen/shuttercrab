@@ -12,7 +12,9 @@ use shuttercrab::{
     playback::{Command, PlayerLink, Update},
     settings::Settings,
     text::{Line, Rect, Text, Word},
-    ui::main_window::{HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, SHOT_MIN_WIDTH, Shot},
+    ui::main_window::{
+        HOME_SIZE, MIN_SIZE, MainHooks, MainWindow, Page, SETTINGS_SIZE, SHOT_MIN_WIDTH, Shot,
+    },
     ui::settings_window::{Diagnostics, SettingsHooks},
 };
 use shuttercrab_types::PhysicalRect;
@@ -711,12 +713,20 @@ fn a_saved_screenshot_says_where_it_went_until_closed_or_turned_off(cx: &mut Tes
         window.click("saved-note-settings", cx)
     });
     assert_eq!(page(cx), Page::ScreenshotSettings);
+    // Save to the folder is in view, lit.
     update(cx, &opened, |window, _| {
-        assert!(window.try_find("output-folder").is_some());
+        assert!(window.try_find("save-to-folder").is_some());
+        assert!(window.try_find("lit").is_some());
     });
     press(cx, &opened, &["escape"]);
     assert_eq!(page(cx), Page::Home);
     assert!(label_of(cx, &opened, "saved-note").is_some());
+    // Settings opened otherwise light nothing.
+    press(cx, &opened, &[","]);
+    update(cx, &opened, |window, _| {
+        assert!(window.try_find("lit").is_none());
+    });
+    press(cx, &opened, &["escape"]);
 
     // × hides it for the rest of the run, the setting kept.
     update(cx, &opened, |window, cx| {
@@ -748,7 +758,11 @@ fn dont_show_again_turns_the_saved_note_off(cx: &mut TestAppContext) {
 
 #[gpui_kit::test]
 fn a_recording_says_where_it_went(cx: &mut TestAppContext) {
-    let opened = open_sized(cx, shot_size());
+    // As tall as the settings are: the folder must be in view there.
+    let opened = open_sized(
+        cx,
+        gpui_kit::size(gpui_kit::px(SHOT_MIN_WIDTH), SETTINGS_SIZE.height),
+    );
     opened.settings.borrow_mut().saved_note = true;
     let page = |cx: &mut TestAppContext| cx.update(|cx| opened.view.read(cx).page());
     let folder = dirs::home_dir().unwrap().join("Videos").join("Shuttercrab");
@@ -775,8 +789,10 @@ fn a_recording_says_where_it_went(cx: &mut TestAppContext) {
         window.click("saved-note-settings", cx)
     });
     assert_eq!(page(cx), Page::RecordingSettings);
+    // The folder is in view, lit.
     update(cx, &opened, |window, _| {
-        assert!(window.try_find("settings-window").is_some());
+        assert!(window.try_find("recording-folder").is_some());
+        assert!(window.try_find("lit").is_some());
     });
 }
 
