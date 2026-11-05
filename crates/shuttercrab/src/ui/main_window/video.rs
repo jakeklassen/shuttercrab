@@ -9,7 +9,7 @@
 //! seconds, Home and End go to the start and the end, Up and Down change
 //! the volume, M mutes. Escape closes the volume's slider.
 
-use super::{Cleared, FOOTER_HEIGHT, MainWindow, TOOLBAR_HEIGHT};
+use super::{Cleared, FOOTER_HEIGHT, MainWindow};
 use crate::{
     generation::{Generation, Token},
     pixels,
@@ -154,13 +154,13 @@ pub fn fitted(size: (u32, u32), area: Xy, scale: f32) -> Xy {
     Xy::new(natural.x * k, natural.y * k)
 }
 
-/// The space a recording shows in: the window less the toolbar and the
-/// footer.
-fn video_area(window: &Window) -> Xy {
+/// The space a recording shows in, starting `top` down the window: the
+/// window less what is above it (the toolbar, and any note) and the footer.
+fn video_area(window: &Window, top: f32) -> Xy {
     let viewport = window.viewport_size();
     Xy::new(
         f32::from(viewport.width),
-        f32::from(viewport.height) - TOOLBAR_HEIGHT - FOOTER_HEIGHT,
+        f32::from(viewport.height) - top - FOOTER_HEIGHT,
     )
 }
 
@@ -557,7 +557,7 @@ impl MainWindow {
         window: &mut Window,
         cx: &mut Context<Self>,
     ) -> impl IntoElement + use<> {
-        let area = video_area(window);
+        let area = video_area(window, self.canvas_top());
         let scale = window.scale_factor();
         let Some(video) = self.recording.as_mut() else {
             return div().into_any_element();

@@ -4,7 +4,7 @@
 //! it square) and turn; another, while one sits unmoved there, lands a
 //! little down and right of it.
 
-use super::{MainWindow, canvas::canvas_size};
+use super::MainWindow;
 use crate::{
     markup::{self, Emoji, Ink, Mark, Shape, ShapeKind},
     pixels,
@@ -88,7 +88,7 @@ impl MainWindow {
     /// picker.
     fn place_emoji(&mut self, emoji: Emoji, window: &mut Window, cx: &mut Context<Self>) {
         self.emoji_menu = None;
-        let canvas = canvas_size(window);
+        let canvas = self.canvas_area(window);
         let Some(shown) = &mut self.shown else {
             return;
         };
