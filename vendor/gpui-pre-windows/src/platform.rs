@@ -484,9 +484,15 @@ impl WindowsPlatform {
                                     hwnd.frame_signal.take();
                                 }
                             }
-                            RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE)
-                                .ok()
-                                .log_err();
+                            let redrawn =
+                                RedrawWindow(Some(hwnd.as_raw()), None, None, RDW_INVALIDATE).ok();
+                            // A window just destroyed stays in the list until its posted
+                            // WM_GPUI_CLOSE_ONE_WINDOW removes it; it has nothing to redraw.
+                            if !redrawn.as_ref().is_err_and(|e| {
+                                e.code() == ERROR_INVALID_WINDOW_HANDLE.to_hresult()
+                            }) {
+                                redrawn.log_err();
+                            }
                         }
                     }
                 }

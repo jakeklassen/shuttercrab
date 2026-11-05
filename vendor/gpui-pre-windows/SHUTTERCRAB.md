@@ -3,7 +3,7 @@
 This is `gpui-pre-windows` 0.3.10 as published on crates.io (GPUI's Windows
 platform layer, from [longbridge/gpui-kit](https://github.com/longbridge/gpui-kit),
 Apache-2.0, see `LICENSE-APACHE`), used through `[patch.crates-io]` in the
-workspace `Cargo.toml`, with four changes.
+workspace `Cargo.toml`, with five changes.
 
 ## Path textures only when a window draws paths
 
@@ -58,6 +58,17 @@ restored. A second `SIZE_MINIMIZED`, which a window moved or sized while
 minimized can get, replaced the kept callback with nothing, so the window
 would never draw again. Upstream could take this as it is; the report is
 drafted in `docs/upstream/gpui-resize-on-restore.md`.
+
+## No error for redrawing a window just destroyed
+
+`src/platform.rs`, the VSyncProvider thread: `RedrawWindow` failing with
+`ERROR_INVALID_WINDOW_HANDLE` is not logged; any other failure still is.
+
+Why: a destroyed window leaves the list of windows only when the
+`WM_GPUI_CLOSE_ONE_WINDOW` it posts is handled, and the thread can reach it
+in between. Upstream logged "Invalid window handle. (0x80070578)" as an
+error after every selection overlay closed, which is harmless but buried
+real errors. Upstream could take this as it is.
 
 ## Updating
 
