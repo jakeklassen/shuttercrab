@@ -26,7 +26,6 @@ use gpui_kit::{
             SelectIndex, SettingField, SettingGroup, SettingItem, SettingPage,
             Settings as SettingsUi,
         },
-        switch::Switch,
     },
     div,
     prelude::FluentBuilder as _,
@@ -451,9 +450,9 @@ type Escape = Rc<dyn Fn(&mut Window, &mut App)>;
 pub enum SettingsSpot {
     /// Where the host key goes.
     Streaming,
-    /// Save to the folder, near the top, and the folder.
+    /// The screenshots' folder, under Save to the folder.
     Screenshot,
-    /// The folder recordings go to, among the rest.
+    /// The folder recordings go to.
     Recording,
 }
 
@@ -523,32 +522,6 @@ impl SettingsPage {
     /// settings opened there.
     fn lit(&self, spot: SettingsSpot) -> Option<SharedString> {
         (self.opens_at == Some(spot)).then(|| self.pulse_id.clone())
-    }
-
-    /// Save to the folder, drawn here so it can be lit when a note on a
-    /// saved screenshot led here.
-    fn save_to_folder(&self) -> SettingItem {
-        let hooks = self.hooks.clone();
-        let lit = self.lit(SettingsSpot::Screenshot);
-        SettingItem::render(move |_, _, cx| {
-            let write = hooks.clone();
-            let switch = Switch::new("save-to-folder")
-                .accessibility_label("Save to the folder")
-                .checked(hooks.settings.borrow().auto_save)
-                .on_click(move |checked: &bool, window, cx| {
-                    write.settings.borrow_mut().auto_save = *checked;
-                    (write.changed)(cx);
-                    window.refresh();
-                });
-            setting_row(
-                "Save to the folder",
-                Some("When off, screenshots go to the clipboard only."),
-                switch,
-                lit.clone(),
-                cx,
-            )
-        })
-        .keywords(["Save to the folder", "screenshots"])
     }
 
     /// The field for `kind`, as a setting.
@@ -677,12 +650,17 @@ impl SettingsPage {
                         "Copy to the clipboard",
                         self.switch(|s| s.copy_to_clipboard, |s, v| s.copy_to_clipboard = v),
                     ))
-                    .item(self.save_to_folder())
-                    .item(SettingItem::new(
-                        "Folder",
-                        SettingField::render(move |_, _, _| {
-                            folder_row(folder.clone(), Folder::Screenshots)
-                        }),
+                    .item(
+                        SettingItem::new(
+                            "Save to the folder",
+                            self.switch(|s| s.auto_save, |s, v| s.auto_save = v),
+                        )
+                        .description("When off, screenshots go to the clipboard only."),
+                    )
+                    .item(folder_item(
+                        folder,
+                        Folder::Screenshots,
+                        self.lit(SettingsSpot::Screenshot),
                     )),
             )
             .group(
@@ -757,22 +735,13 @@ impl SettingsPage {
 
     /// Where recordings go, and what follows when one is saved.
     fn recording_files(&self) -> SettingGroup {
-        let folder = self.hooks.clone();
-        let lit = self.lit(SettingsSpot::Recording);
         SettingGroup::new()
             .item(heading("Where recordings go", None))
-            .item(
-                SettingItem::render(move |_, _, cx| {
-                    setting_row(
-                        "Folder",
-                        None,
-                        folder_row(folder.clone(), Folder::Recordings),
-                        lit.clone(),
-                        cx,
-                    )
-                })
-                .keywords(["Folder", "recordings"]),
-            )
+            .item(folder_item(
+                self.hooks.clone(),
+                Folder::Recordings,
+                self.lit(SettingsSpot::Recording),
+            ))
             .item(
                 SettingItem::new(
                     "Open in Shuttercrab's window",
@@ -1161,6 +1130,21 @@ fn heading(title: &'static str, description: Option<&'static str>) -> SettingIte
                 )
             })
     })
+}
+
+/// An output folder's row, drawn here so it can be lit when a note on a
+/// saved capture led here (`lit`, the pulse's id).
+fn folder_item(hooks: Rc<SettingsHooks>, folder: Folder, lit: Option<SharedString>) -> SettingItem {
+    SettingItem::render(move |_, _, cx| {
+        setting_row(
+            "Folder",
+            None,
+            folder_row(hooks.clone(), folder),
+            lit.clone(),
+            cx,
+        )
+    })
+    .keywords(["Folder"])
 }
 
 /// How long a row the settings opened at stays lit, pulsing twice.

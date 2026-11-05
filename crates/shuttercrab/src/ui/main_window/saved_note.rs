@@ -1,7 +1,7 @@
 //! Above a saved screenshot or a recording, a bar saying which folder it
 //! went to, as Snipping Tool says of its recordings (issue #26), with ways
-//! to the file, to the setting that turns saving off or moves the folder,
-//! and to stop saying so. Its × hides it until Shuttercrab starts again;
+//! to the file, to the folder's setting (lit as the settings open), and to
+//! stop saying so. Its × hides it until Shuttercrab starts again;
 //! "Don't show again" turns it off in the settings, where it can be turned
 //! back on.
 
@@ -71,10 +71,10 @@ impl MainWindow {
             "{what} are saved to {}.",
             shown_folder(&note.folder)
         ));
-        let (setting, page) = if note.recording {
-            ("Change in Settings", Page::RecordingSettings)
+        let page = if note.recording {
+            Page::RecordingSettings
         } else {
-            ("Turn off in Settings", Page::ScreenshotSettings)
+            Page::ScreenshotSettings
         };
         let show_in_folder = Self::hint_button(
             ButtonFace {
@@ -90,7 +90,7 @@ impl MainWindow {
         let settings = Self::hint_button(
             ButtonFace {
                 id: "saved-note-settings",
-                label: setting,
+                label: "Change folder",
                 icon: IconName::Settings,
                 key: "",
             },
