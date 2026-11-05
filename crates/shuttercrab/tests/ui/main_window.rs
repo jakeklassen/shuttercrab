@@ -713,10 +713,10 @@ fn a_saved_screenshot_says_where_it_went_until_closed_or_turned_off(cx: &mut Tes
         window.click("saved-note-settings", cx)
     });
     assert_eq!(page(cx), Page::ScreenshotSettings);
-    // Save to the folder is in view, lit.
+    // The folder is in view, lit.
     update(cx, &opened, |window, _| {
-        assert!(window.try_find("save-to-folder").is_some());
-        assert!(window.try_find("lit").is_some());
+        let (folder, lit) = (window.find("output-folder"), window.find("lit"));
+        assert!(lit.bounds().contains(&folder.bounds().center()));
     });
     press(cx, &opened, &["escape"]);
     assert_eq!(page(cx), Page::Home);
@@ -791,8 +791,8 @@ fn a_recording_says_where_it_went(cx: &mut TestAppContext) {
     assert_eq!(page(cx), Page::RecordingSettings);
     // The folder is in view, lit.
     update(cx, &opened, |window, _| {
-        assert!(window.try_find("recording-folder").is_some());
-        assert!(window.try_find("lit").is_some());
+        let (folder, lit) = (window.find("recording-folder"), window.find("lit"));
+        assert!(lit.bounds().contains(&folder.bounds().center()));
     });
 }
 
