@@ -31,7 +31,7 @@ restored and never draws again.
 
 ## Environment
 
-- gpui-kit 0.8.1 / gpui-pre-windows 0.3.10.
+- gpui-kit 0.8.1 / gpui-pre-windows 0.3.10, and unchanged in 0.9.0 / 0.3.11.
 - Windows 11 (build 26300), two 3840×2160 HDR monitors.
 
 ## Reproduction
