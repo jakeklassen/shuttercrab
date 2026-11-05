@@ -72,7 +72,9 @@ real errors. Upstream could take this as it is.
 
 ## Updating
 
-When gpui-kit moves to a new `gpui-pre-windows`:
+When gpui-kit moves to a new `gpui-pre-windows`, Cargo leaves this copy
+unused with only a warning, so `crates/shuttercrab/tests/vendored_gpui.rs`
+fails until the copy is updated:
 
 1. Check whether upstream trims after closing windows (search its
    `src/` for `Trim`). If it does, delete this folder and the
