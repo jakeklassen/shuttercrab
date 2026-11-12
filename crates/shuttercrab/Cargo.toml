@@ -1,6 +1,6 @@
 [package]
 name = "shuttercrab"
-version = "0.1.39"
+version = "0.1.40"
 description = "A Windows 11 tray app for screenshots, screen recording and live streaming, whose SDR output looks right with HDR on"
 edition.workspace = true
 rust-version.workspace = true
