@@ -7,6 +7,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.40](https://github.com/jakeklassen/shuttercrab/compare/v0.1.39...v0.1.40) - 2026-11-12
+
+### Fixed
+
+- *(deps)* update resvg to 0.50
+- *(deps)* update GPUI Kit to 0.9.1, its Windows layer to 0.3.12
+- *(deps)* update wasapi to 0.27
+
 ## [0.1.39](https://github.com/jakeklassen/shuttercrab/compare/v0.1.38...v0.1.39) - 2026-11-05
 
 ### Added
