@@ -81,10 +81,10 @@ impl Source {
 pub fn microphones() -> Result<Vec<Microphone>> {
     let devices = DeviceEnumerator::new().context("no audio device enumerator")?;
     let default = devices
-        .get_default_device(&Direction::Capture)
+        .get_default_device(Direction::Capture)
         .ok()
         .and_then(|d| d.get_id().ok());
-    let all = devices.get_device_collection(&Direction::Capture)?;
+    let all = devices.get_device_collection(Direction::Capture)?;
     let mut found = Vec::new();
     for i in 0..all.get_nbr_devices()? {
         let device = all.get_device_at_index(i)?;
@@ -232,7 +232,7 @@ impl Stream {
         let format = WaveFormat::new(
             16,
             16,
-            &SampleType::Int,
+            SampleType::Int,
             RATE as usize,
             usize::from(CHANNELS),
             None,
@@ -245,7 +245,7 @@ impl Stream {
             buffer_duration_hns: BUFFER,
         };
         client
-            .initialize_client(&format, &Direction::Capture, &mode)
+            .initialize_client(&format, Direction::Capture, mode, None)
             .context("could not start capturing sound")?;
         let event = client.set_get_eventhandle()?;
         let capture = client.get_audiocaptureclient()?;
@@ -324,13 +324,13 @@ fn device_client(source: Source, device: &Device) -> Result<AudioClient> {
     let devices = DeviceEnumerator::new().context("no audio device enumerator")?;
     let device = match (source, device) {
         (Source::System, _) => devices
-            .get_default_device(&Direction::Render)
+            .get_default_device(Direction::Render)
             .context("no default output device")?,
         (Source::Microphone, Device::Microphone(id)) => devices
             .get_device(id)
             .context("the chosen microphone is not there")?,
         (Source::Microphone, _) => devices
-            .get_default_device(&Direction::Capture)
+            .get_default_device(Direction::Capture)
             .context("no microphone")?,
     };
     device

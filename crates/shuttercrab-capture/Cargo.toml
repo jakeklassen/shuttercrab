@@ -20,7 +20,7 @@ shuttercrab-types = { path = "../shuttercrab-types" }
 # The COM `implement` macro refers to windows-core by name.
 windows-core = "0.62"
 # Sound capture and playback through WASAPI.
-wasapi = "0.26"
+wasapi = "0.27"
 # A live stream's sound: the reference libopus, built from source.
 opus-head-sys = { version = "0.3.3", default-features = false }
 
