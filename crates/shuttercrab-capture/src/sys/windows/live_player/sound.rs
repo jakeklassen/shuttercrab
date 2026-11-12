@@ -602,7 +602,7 @@ fn instant_at(qpc: u64) -> Instant {
 fn play(shared: &Shared) -> Result<()> {
     let speakers = DeviceEnumerator::new()
         .context("no audio device enumerator")?
-        .get_default_device(&Direction::Render)
+        .get_default_device(Direction::Render)
         .context("no speakers")?;
     let mut client = speakers
         .get_iaudioclient()
@@ -610,7 +610,7 @@ fn play(shared: &Shared) -> Result<()> {
     let format = WaveFormat::new(
         16,
         16,
-        &SampleType::Int,
+        SampleType::Int,
         RATE as usize,
         usize::from(CHANNELS),
         None,
@@ -621,7 +621,7 @@ fn play(shared: &Shared) -> Result<()> {
         buffer_duration_hns: DEVICE_BUFFER,
     };
     client
-        .initialize_client(&format, &Direction::Render, &mode)
+        .initialize_client(&format, Direction::Render, mode, None)
         .context("could not start playing sound")?;
     let event = client.set_get_eventhandle()?;
     let render = client.get_audiorenderclient()?;
@@ -657,7 +657,7 @@ fn play(shared: &Shared) -> Result<()> {
         }
         bytes.clear();
         bytes.extend(mixed.iter().flat_map(|s| s.to_le_bytes()));
-        render.write_to_device(free as usize, &bytes, None)?;
+        render.write_to_device(&bytes, None)?;
         written += u64::from(free);
         fills.push_back((written, end));
         if fills.len() > 64 {
