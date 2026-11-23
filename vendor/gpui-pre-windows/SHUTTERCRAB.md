@@ -13,6 +13,12 @@ window-sized depth buffer (`DXGI_FORMAT_D32_FLOAT`, one sample: 33 MB at
 4K), which each frame uses to skip what opaque rectangles cover, so it
 cannot be left out the same way.
 
+Measured on two 4K monitors (private memory, a snip at a time): about 423
+MB while the overlays close, against 270–316 MB on 0.3.12 (the overlays'
+two depth buffers, and a little more), and 105–107 MB once settled, against
+98–103 MB (the main window's depth buffer). Both free the overlays within
+half a second of the selection.
+
 ## Two swap chain buffers
 
 `src/directx_renderer.rs`: `BUFFER_COUNT` is 2, not 3. Each buffer is the
