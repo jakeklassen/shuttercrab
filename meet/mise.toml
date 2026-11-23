@@ -1,4 +1,4 @@
 [tools]
 # For the meeting point's Worker: its type check, tests and deploys.
-node = "24.14.0"
+node = "26.13.1"
 pnpm = "12.12.1"
