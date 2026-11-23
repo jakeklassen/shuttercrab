@@ -1,18 +1,17 @@
 # Shuttercrab's copy of gpui-pre-windows
 
-This is `gpui-pre-windows` 0.3.12 as published on crates.io (GPUI's Windows
+This is `gpui-pre-windows` 0.3.14 as published on crates.io (GPUI's Windows
 platform layer, from [longbridge/gpui-kit](https://github.com/longbridge/gpui-kit),
 Apache-2.0, see `LICENSE-APACHE`), used through `[patch.crates-io]` in the
-workspace `Cargo.toml`, with five changes.
+workspace `Cargo.toml`, with four changes.
 
-## Path textures only when a window draws paths
-
-`src/directx_renderer.rs`: the path intermediate textures (one
-window-sized, one window-sized and 4× multisampled) are made the first
-time a scene has paths (`PathTextures`), and dropped on resize, rather than
-made with every window. Why: a full-screen 4K window spent about 166 MB on
-them whether it drew a path or not, and Shuttercrab's selection overlay
-covers every monitor. Upstream could take this as it is.
+Up to 0.3.12 there was a fifth: the path intermediate textures (one
+window-sized, one window-sized and 4× multisampled, about 166 MB for a
+full-screen 4K window) made only when a scene had paths. 0.3.14 draws
+paths without them, so it went. 0.3.14 instead gives every window a
+window-sized depth buffer (`DXGI_FORMAT_D32_FLOAT`, one sample: 33 MB at
+4K), which each frame uses to skip what opaque rectangles cover, so it
+cannot be left out the same way.
 
 ## Two swap chain buffers
 

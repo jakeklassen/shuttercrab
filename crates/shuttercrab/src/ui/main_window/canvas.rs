@@ -28,12 +28,11 @@ use crate::{
 };
 use gpui_kit::{
     AnyElement, Bounds, ContentMask, Context, Corners, CursorStyle, InteractiveElement as _,
-    IntoElement, KeyUpEvent, MouseButton, MouseDownEvent, MouseMoveEvent, MouseUpEvent,
-    ParentElement as _, PathBuilder, PathStyle, Pixels, Point, RenderImage, ScrollEvent,
-    SharedString, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
-    canvas, div, img, point, px, rgb, size,
+    IntoElement, KeyUpEvent, LineCap, LineJoin, MouseButton, MouseDownEvent, MouseMoveEvent,
+    MouseUpEvent, ParentElement as _, PathBuilder, PathStyle, Pixels, Point, RenderImage,
+    ScrollEvent, SharedString, StatefulInteractiveElement as _, StrokeOptions, Styled as _,
+    TestSupportExt as _, Window, canvas, div, img, point, px, rgb, size,
 };
-use lyon_tessellation::{LineCap, LineJoin, StrokeOptions};
 use shuttercrab_platform::cursor::{Cursor, CursorOver};
 use shuttercrab_types::PhysicalRect;
 use std::{cell::RefCell, sync::Arc};
@@ -1296,10 +1295,12 @@ fn paint_shape(
                 width,
             } => {
                 let width = (width * per_pixel).max(1.);
-                let options = StrokeOptions::default()
-                    .with_line_width(width)
-                    .with_line_cap(LineCap::Butt)
-                    .with_line_join(LineJoin::Miter);
+                let options = StrokeOptions {
+                    line_width: width,
+                    line_cap: LineCap::Butt,
+                    line_join: LineJoin::Miter,
+                    ..StrokeOptions::default()
+                };
                 let builder = PathBuilder::stroke(px(width)).with_style(PathStyle::Stroke(options));
                 (points, *closed, builder)
             }
@@ -1331,10 +1332,12 @@ fn paint_pen_stroke(
     to_window: impl Fn((f32, f32)) -> Point<Pixels>,
 ) {
     let width = (stroke.width * per_pixel).max(1.);
-    let options = StrokeOptions::default()
-        .with_line_width(width)
-        .with_line_cap(LineCap::Round)
-        .with_line_join(LineJoin::Round);
+    let options = StrokeOptions {
+        line_width: width,
+        line_cap: LineCap::Round,
+        line_join: LineJoin::Round,
+        ..StrokeOptions::default()
+    };
     let mut path = PathBuilder::stroke(px(width)).with_style(PathStyle::Stroke(options));
     let points = &stroke.points;
     path.move_to(to_window(points[0]));

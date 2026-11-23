@@ -25,13 +25,12 @@ use crate::{
     ui::palette::{border, coral, hover, muted, tile},
 };
 use gpui_kit::{
-    AnyElement, ClickEvent, Context, CursorStyle, Div, Hsla, InteractiveElement as _, IntoElement,
-    Keystroke, MouseButton, ParentElement as _, PathBuilder, PathStyle, Role, SharedString,
-    Stateful, StatefulInteractiveElement as _, Styled as _, TestSupportExt as _, Window,
-    assets::IconName, canvas, component::Icon, deferred, div, point, prelude::FluentBuilder as _,
-    px, rgb,
+    AnyElement, ClickEvent, Context, CursorStyle, Div, FillOptions, FillRule, Hsla,
+    InteractiveElement as _, IntoElement, Keystroke, MouseButton, ParentElement as _, PathBuilder,
+    PathStyle, Role, SharedString, Stateful, StatefulInteractiveElement as _, Styled as _,
+    TestSupportExt as _, Window, assets::IconName, canvas, component::Icon, deferred, div, point,
+    prelude::FluentBuilder as _, px, rgb,
 };
-use lyon_tessellation::FillOptions;
 use std::sync::Arc;
 
 /// How far a redaction reaches past the text, logical pixels of the screen
@@ -1040,7 +1039,9 @@ fn lines(text: &Text, picked: Option<Span>, placing: Placing) -> Vec<AnyElement>
         |_, _, _| {},
         move |bounds, _, window, _| {
             let at = |x: f32, y: f32| point(bounds.origin.x + px(x), bounds.origin.y + px(y));
-            let mut path = PathBuilder::fill().with_style(PathStyle::Fill(FillOptions::even_odd()));
+            let mut path = PathBuilder::fill().with_style(PathStyle::Fill(FillOptions {
+                fill_rule: FillRule::EvenOdd,
+            }));
             let mut rect = |(l, t, r, b): (f32, f32, f32, f32)| {
                 path.move_to(at(l, t));
                 path.line_to(at(r, t));
