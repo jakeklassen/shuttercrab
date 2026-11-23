@@ -4,7 +4,7 @@
 //! previous run's log is kept as `shuttercrab.previous.log`. Logs never
 //! contain pixels, clipboard contents or window titles.
 
-use chrono::Local;
+use jiff::ZonedDateTime;
 use log::{Level, LevelFilter, Log, Metadata, Record};
 use std::{
     fs::File,
@@ -72,7 +72,7 @@ impl Log for Logger {
         };
         let line = format!(
             "{} {:<5} {source}: {}",
-            Local::now().format("%Y-%m-%d %H:%M:%S%.3f"),
+            ZonedDateTime::now().strftime("%Y-%m-%d %H:%M:%S%.3f"),
             record.level(),
             record.args()
         );

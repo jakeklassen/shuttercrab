@@ -481,10 +481,7 @@ fn shot(width: u32, height: u32) -> Shot {
     Shot {
         image: shuttercrab::pixels::render_image(&rgba, width, height),
         png: Arc::new(Vec::new()),
-        taken_at: chrono::NaiveDate::from_ymd_opt(2026, 10, 4)
-            .unwrap()
-            .and_hms_opt(10, 30, 0)
-            .unwrap(),
+        taken_at: jiff::civil::date(2026, 10, 4).at(10, 30, 0, 0),
         saved: None,
         scale: None,
         marks: Vec::new(),

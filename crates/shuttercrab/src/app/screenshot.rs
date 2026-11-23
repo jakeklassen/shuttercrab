@@ -10,11 +10,11 @@ use crate::{
     ui::overlay::{Mode, OverlayEvent, OverlayFrame, SelectionOverlay},
     ui::popup::{self, Activation},
 };
-use chrono::Local;
 use futures::{
     FutureExt as _, Stream, StreamExt as _, channel::mpsc::UnboundedReceiver, stream::SelectAll,
 };
 use gpui_kit::{AppContext as _, AsyncApp};
+use jiff::ZonedDateTime;
 use shuttercrab_capture::{
     CaptureError, FrozenFrame, MonitorId, MonitorInfo, PhysicalRect, Screenshot, cut, cut_shape,
 };
@@ -140,7 +140,7 @@ pub(super) async fn capture(
     pressed: Instant,
     cx: &mut AsyncApp,
 ) -> Result<(), Failure> {
-    let taken_at = Local::now().naive_local();
+    let taken_at = ZonedDateTime::now().datetime();
     let include_cursor = state.settings.borrow().include_cursor;
     let frame = state
         .capture

@@ -13,8 +13,8 @@ use crate::{
     recording::{self, Clock},
     ui::record_bar::{BarMode, Destructive, RecordBar},
 };
-use chrono::Local;
 use gpui_kit::{AsyncApp, Entity};
+use jiff::ZonedDateTime;
 use shuttercrab_capture::record::Source;
 use shuttercrab_platform::window as platform_window;
 use shuttercrab_types::WindowId;
@@ -317,7 +317,7 @@ async fn restart_recording(state: &Rc<State>, keep_previous: bool, cx: &mut Asyn
         return;
     };
     let dir = state.settings.borrow().recording_dir();
-    let started_at = Local::now().naive_local();
+    let started_at = ZonedDateTime::now().datetime();
     let restarted = cx
         .background_executor()
         .spawn(async move {
