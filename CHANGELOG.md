@@ -7,6 +7,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+## [0.1.41](https://github.com/jakeklassen/shuttercrab/compare/v0.1.40...v0.1.41) - 2026-11-23
+
+### Fixed
+
+- *(deps)* update GPUI Kit to 0.11, its Windows layer to 0.3.14
+- *(deps)* move capture times and the log's clock from chrono to jiff
+
 ## [0.1.40](https://github.com/jakeklassen/shuttercrab/compare/v0.1.39...v0.1.40) - 2026-11-12
 
 ### Fixed

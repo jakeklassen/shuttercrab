@@ -7109,7 +7109,7 @@ checksum = "f8fadd59c855ef2080decdef8ff161eb6661b86933c9d82e5ba29dc602a55aba"
 
 [[package]]
 name = "shuttercrab"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "cloakrs-core",
@@ -7134,7 +7134,7 @@ dependencies = [
 
 [[package]]
 name = "shuttercrab-capture"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "futures",
@@ -7154,7 +7154,7 @@ dependencies = [
 
 [[package]]
 name = "shuttercrab-connect"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "base64 0.23.1",
@@ -7175,7 +7175,7 @@ dependencies = [
 
 [[package]]
 name = "shuttercrab-platform"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "arboard",
@@ -7194,7 +7194,7 @@ dependencies = [
 
 [[package]]
 name = "shuttercrab-stream"
-version = "0.1.40"
+version = "0.1.41"
 dependencies = [
  "anyhow",
  "futures",
@@ -7207,7 +7207,7 @@ dependencies = [
 
 [[package]]
 name = "shuttercrab-types"
-version = "0.1.40"
+version = "0.1.41"
 
 [[package]]
 name = "signal-hook-registry"
