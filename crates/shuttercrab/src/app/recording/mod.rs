@@ -46,11 +46,11 @@ use crate::{
     ui::record_bar::{BarMode, RecordBar, RecordBarEvent},
 };
 use border::BORDER_PAUSED;
-use chrono::{Local, NaiveDateTime};
 use controls::handle_controls;
 use follow::{Waiting, waiting_on};
 use futures::{StreamExt as _, channel::mpsc::UnboundedReceiver};
 use gpui_kit::{AppContext as _, AsyncApp, Entity};
+use jiff::{ZonedDateTime, civil::DateTime};
 use shuttercrab_capture::{
     MonitorId, MonitorInfo, PhysicalRect,
     record::{RecordOptions, Source},
@@ -271,7 +271,7 @@ pub(super) async fn record(
         // `start_take` names the file.
         path: PathBuf::new(),
     };
-    let started_at = Local::now().naive_local();
+    let started_at = ZonedDateTime::now().datetime();
     let started = cx
         .background_executor()
         .spawn(async move { start_take(&dir, started_at, options) })
@@ -330,11 +330,7 @@ struct Take {
 /// Start a take of what `options` say, into a new file in `dir` named for
 /// `started_at`; that file replaces `options.path`. Blocks while the
 /// helper process starts, so it runs off the main thread.
-fn start_take(
-    dir: &Path,
-    started_at: NaiveDateTime,
-    options: RecordOptions,
-) -> Result<Take, Failure> {
+fn start_take(dir: &Path, started_at: DateTime, options: RecordOptions) -> Result<Take, Failure> {
     // Said before anything starts: what to install (on Linux, a GStreamer
     // plugin package), in the notification.
     if let Some(message) = shuttercrab_capture::record::missing_software() {

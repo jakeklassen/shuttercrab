@@ -44,7 +44,6 @@ use crate::{
     ui::settings_window::{HostKeyNote, SettingsHooks, SettingsPage, SettingsSpot},
 };
 use canvas::{Shown, pointer_in_canvas};
-use chrono::NaiveDateTime;
 use gpui_kit::{
     Animation, AnimationExt as _, App, AppContext as _, ClickEvent, Context, Entity, FocusHandle,
     InteractiveElement as _, IntoElement, KeyBinding, KeyDownEvent, MouseButton, MouseDownEvent,
@@ -57,6 +56,7 @@ use gpui_kit::{
     px, rgb,
 };
 use home::{Menu, More};
+use jiff::civil::DateTime;
 use moment::Momentary;
 use shuttercrab_types::PhysicalRect;
 use std::{
@@ -156,7 +156,7 @@ pub struct Shot {
     /// The same image as a PNG file, for saving.
     pub png: Arc<Vec<u8>>,
     /// When it was taken, which names its file.
-    pub taken_at: NaiveDateTime,
+    pub taken_at: DateTime,
     /// Its file in the screenshots folder, if it was saved there.
     pub saved: Option<PathBuf>,
     /// The scale of the screen it was taken on, if known: pen sizes are in

@@ -2,17 +2,17 @@
 //! `Recording 2026-09-22 13-45-03.mp4` (PRD §12).
 
 use anyhow::{Context, Result};
-use chrono::NaiveDateTime;
+use jiff::civil::DateTime;
 use std::path::{Path, PathBuf};
 
 /// The file name for a screenshot taken at `at` (local time).
-pub fn capture_name(at: NaiveDateTime) -> String {
-    format!("Capture {}.png", at.format("%Y-%m-%d %H-%M-%S"))
+pub fn capture_name(at: DateTime) -> String {
+    format!("Capture {}.png", at.strftime("%Y-%m-%d %H-%M-%S"))
 }
 
 /// The file name for a recording started at `at` (local time).
-pub fn recording_name(at: NaiveDateTime) -> String {
-    format!("Recording {}.mp4", at.format("%Y-%m-%d %H-%M-%S"))
+pub fn recording_name(at: DateTime) -> String {
+    format!("Recording {}.mp4", at.strftime("%Y-%m-%d %H-%M-%S"))
 }
 
 /// The extension a recording has until it is finished.
@@ -43,14 +43,14 @@ pub fn partial_path(path: &Path) -> PathBuf {
 }
 
 /// The path for a new recording in `dir`, creating the folder if needed.
-pub fn new_recording(dir: &Path, at: NaiveDateTime) -> Result<PathBuf> {
+pub fn new_recording(dir: &Path, at: DateTime) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     Ok(unused_path(dir, &recording_name(at)))
 }
 
 /// Save `png` as a new screenshot in `dir`, creating the folder if needed.
 /// Returns the path written.
-pub fn save_screenshot(dir: &Path, at: NaiveDateTime, png: &[u8]) -> Result<PathBuf> {
+pub fn save_screenshot(dir: &Path, at: DateTime, png: &[u8]) -> Result<PathBuf> {
     std::fs::create_dir_all(dir).with_context(|| format!("creating {}", dir.display()))?;
     let path = unused_path(dir, &capture_name(at));
     std::fs::write(&path, png).with_context(|| format!("writing {}", path.display()))?;
@@ -91,13 +91,8 @@ mod tests {
     fn scratch(name: &str) -> PathBuf {
         crate::test_folder().join(format!("{name}-{}", std::process::id()))
     }
-    use chrono::NaiveDate;
-
-    fn at() -> NaiveDateTime {
-        NaiveDate::from_ymd_opt(2026, 9, 22)
-            .unwrap()
-            .and_hms_opt(13, 42, 18)
-            .unwrap()
+    fn at() -> DateTime {
+        jiff::civil::date(2026, 9, 22).at(13, 42, 18, 0)
     }
 
     #[test]

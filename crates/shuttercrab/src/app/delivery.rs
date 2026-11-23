@@ -10,9 +10,9 @@ use crate::{
     ui::popup::{self, Activation},
     ui::thumbnail::{self, Thumbnail, ThumbnailEvent},
 };
-use chrono::NaiveDateTime;
 use futures::StreamExt as _;
 use gpui_kit::{AppContext as _, AsyncApp, Task};
+use jiff::civil::DateTime;
 use shuttercrab_capture::{MonitorInfo, PhysicalRect, Screenshot};
 use shuttercrab_platform::{drag::DragImage, window as platform_window};
 use std::{
@@ -37,7 +37,7 @@ pub(super) async fn deliver(
     shot: Screenshot,
     monitor: &MonitorInfo,
     released: Instant,
-    taken_at: NaiveDateTime,
+    taken_at: DateTime,
     cx: &mut AsyncApp,
 ) -> Result<(), Failure> {
     let settings = state.settings.borrow().clone();
@@ -155,7 +155,7 @@ async fn show_in_window(
     state: &Rc<State>,
     rgba: Arc<Vec<u8>>,
     (width, height): (u32, u32),
-    (png, taken_at, saved): (Arc<Vec<u8>>, NaiveDateTime, Option<PathBuf>),
+    (png, taken_at, saved): (Arc<Vec<u8>>, DateTime, Option<PathBuf>),
     scale: f32,
     cx: &mut AsyncApp,
 ) {
@@ -245,8 +245,10 @@ pub(super) async fn show_file_in_main(state: &Rc<State>, path: PathBuf, cx: &mut
     // Only Save as uses the time, to suggest a name; the file's is close.
     let taken_at = std::fs::metadata(&path)
         .and_then(|m| m.modified())
-        .map(|t| chrono::DateTime::<chrono::Local>::from(t).naive_local())
-        .unwrap_or_else(|_| chrono::Local::now().naive_local());
+        .ok()
+        .and_then(|t| jiff::ZonedDateTime::try_from(t).ok())
+        .unwrap_or_else(jiff::ZonedDateTime::now)
+        .datetime();
     match CaptureFile::Saved(path).shot(taken_at, None, cx).await {
         Ok(shot) => show_in_main(state, shot, cx),
         Err(e) => log::error!("{e}"),
@@ -259,7 +261,7 @@ enum CaptureFile {
     Saved(PathBuf),
     Unsaved {
         png: Arc<Vec<u8>>,
-        taken_at: NaiveDateTime,
+        taken_at: DateTime,
     },
 }
 
@@ -268,7 +270,7 @@ impl CaptureFile {
     /// back from the file if it was saved, and decoded.
     async fn shot(
         &self,
-        taken_at: NaiveDateTime,
+        taken_at: DateTime,
         scale: Option<f32>,
         cx: &mut AsyncApp,
     ) -> Result<Shot, String> {
@@ -333,7 +335,7 @@ struct PendingThumbnail {
     /// The screenshot's size, physical pixels.
     size: (u32, u32),
     file: CaptureFile,
-    taken_at: NaiveDateTime,
+    taken_at: DateTime,
     monitor: MonitorInfo,
     seconds: u32,
 }
