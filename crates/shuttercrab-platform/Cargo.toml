@@ -18,8 +18,8 @@ shuttercrab-types = { path = "../shuttercrab-types" }
 
 [target.'cfg(windows)'.dependencies]
 # The COM `implement` macro refers to windows-core by name.
-windows-core = "0.62"
-windows-registry = "0.6"
+windows-core = "0.100"
+windows-registry = "0.100"
 
 [target.'cfg(windows)'.dependencies.windows]
 version = "0.62"
